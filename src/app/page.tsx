@@ -1,10 +1,8 @@
-"use client";  // <-- forces this page to run only on the client
+export const dynamic = "force-dynamic"; // ⛔ no static export for "/"
+export const runtime = "nodejs";        // use Node runtime, not Edge
+
+import HomeClient from "@/components/HomeClient";
 
 export default function Home() {
-  return (
-    <section className="p-10">
-      <h1 className="text-4xl font-bold">PeakOps Starter ✅</h1>
-      <p>This page is client-only, so SSR cannot fetch.</p>
-    </section>
-  );
+  return <HomeClient />;
 }
