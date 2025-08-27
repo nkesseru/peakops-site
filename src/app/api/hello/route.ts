@@ -1,3 +1,9 @@
+import { getHello } from "@/lib/api/hello";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function GET() {
-  return Response.json({ message: "Hello from API" });
+  const data = await getHello();
+  return Response.json(data);
 }
