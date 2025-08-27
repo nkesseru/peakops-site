@@ -1,5 +1,5 @@
-export const dynamic = "force-dynamic"; // ⛔ no static export for "/"
-export const runtime = "nodejs";        // use Node runtime, not Edge
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 import HomeClient from "@/components/HomeClient";
 
