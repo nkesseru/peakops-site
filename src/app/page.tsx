@@ -1,6 +1,8 @@
 import Button from "@/components/Button";
 import { getBaseUrl } from "@/lib/url";
 
+export const dynamic = "force-dynamic"; // don't try to prerender at build
+
 export default async function Home() {
   let message = "unavailable";
   try {
@@ -9,7 +11,9 @@ export default async function Home() {
       const data = await res.json();
       message = data.message ?? "ok";
     }
-  } catch { /* swallow to avoid SSR crash */ }
+  } catch {
+    // swallow—page still renders
+  }
 
   return (
     <section className="flex min-h-[70vh] flex-col items-center justify-center gap-6 p-10">
