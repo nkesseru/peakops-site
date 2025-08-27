@@ -1,18 +1,22 @@
 import Button from "@/components/Button";
 import { getBaseUrl } from "@/lib/url";
 
-export const dynamic = "force-dynamic"; // don't try to prerender at build
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export default async function Home() {
   let message = "unavailable";
   try {
-    const res = await fetch(`${getBaseUrl()}/api/hello`, { cache: "no-store" });
+    const res = await fetch(`${getBaseUrl()}/api/hello`, {
+      cache: "no-store",
+      next: { revalidate: 0 },
+    });
     if (res.ok) {
       const data = await res.json();
       message = data.message ?? "ok";
     }
-  } catch {
-    // swallow—page still renders
+  } catch (e) {
+    console.error("HOME /api/hello fetch failed:", e);
   }
 
   return (

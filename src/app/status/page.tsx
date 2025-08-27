@@ -17,6 +17,9 @@ async function check(path: string, timeoutMs = 2500) {
   }
 }
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export default async function Status() {
   const [hello, ping, health] = await Promise.all([
     check("/api/hello"),
