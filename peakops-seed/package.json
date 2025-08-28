@@ -1,0 +1,11 @@
+{
+  "name": "peakops-firestore-seed",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "firebase-admin": "^12.5.0"
+  },
+  "scripts": {
+    "seed": "node seed.js"
+  }
+}
