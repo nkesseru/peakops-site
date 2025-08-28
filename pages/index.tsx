@@ -7,6 +7,7 @@ export default function Home() {
         <li><a href="/api/ping2">/api/ping2</a></li>
         <li><a href="/api/seed">/api/seed</a></li>
         <li><a href="/mission-control">Mission Control</a></li>
+        <li><a href="/about">About</a></li>
       </ul>
     </main>
   );
