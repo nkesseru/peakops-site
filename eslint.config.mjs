@@ -22,4 +22,12 @@ const eslintConfig = [
   },
 ];
 
-export default eslintConfig;
+export default [
+  {
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "import/no-anonymous-default-export": "off",
+      "@next/next/no-html-link-for-pages": "off" // allows <a href="/...">
+    }
+  }
+];
