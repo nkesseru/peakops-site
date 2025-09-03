@@ -1,51 +1,68 @@
 import * as admin from "firebase-admin";
 
-// Read base envs
-const projectId   = process.env.FIREBASE_PROJECT_ID;
-const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+// Keep a single Admin app across dev hot-reloads
+declare global {
+  // eslint-disable-next-line no-var
+  var __FIREBASE_ADMIN_APP__: admin.app.App | undefined;
+}
 
-// Build a robust PEM from env:
-// 1) Prefer base64 (avoids any \n or quote issues),
-// 2) Fallback to raw with \n escapes (strip quotes, convert \n to newlines).
-function buildPem(): string {
+function req(name: string): string {
+  const v = process.env[name];
+  if (!v || v.length === 0) {
+    throw new Error(`Missing env: ${name}`);
+  }
+  return v;
+}
+
+function privateKeyFromEnv(): string {
+  // Preferred: base64-encoded PEM (no newline/quote issues)
   const b64 = process.env.FIREBASE_PRIVATE_KEY_BASE64?.trim();
   if (b64) {
-    try {
-      return Buffer.from(b64, "base64").toString("utf8");
-    } catch {
-      // fall through to next method
+    const pem = Buffer.from(b64, "base64").toString("utf8");
+    if (
+      pem.startsWith("-----BEGIN PRIVATE KEY-----") &&
+      pem.trim().endsWith("-----END PRIVATE KEY-----")
+    ) {
+      return pem;
     }
+    throw new Error("Invalid PEM after base64 decode");
   }
-  const raw = process.env.FIREBASE_PRIVATE_KEY || "";
-  const withoutQuotes = raw.replace(/^"+|"+$/g, ""); // remove wrapping quotes if pasted
-  return withoutQuotes.replace(/\\n/g, "\n");
+
+  // Fallback: FIREBASE_PRIVATE_KEY with \n escapes
+  const raw = process.env.FIREBASE_PRIVATE_KEY;
+  if (raw) {
+    const withoutQuotes = raw.replace(/^"+|"+$/g, ""); // strip accidental wrapping quotes
+    const pem = withoutQuotes.replace(/\\n/g, "\n");   // unescape newlines
+    if (
+      pem.startsWith("-----BEGIN PRIVATE KEY-----") &&
+      pem.trim().endsWith("-----END PRIVATE KEY-----")
+    ) {
+      return pem;
+    }
+    throw new Error("Invalid PEM in FIREBASE_PRIVATE_KEY");
+  }
+
+  throw new Error(
+    "Missing FIREBASE_PRIVATE_KEY_BASE64 (preferred) or FIREBASE_PRIVATE_KEY"
+  );
 }
 
-const privateKey = buildPem();
-
-if (!admin.apps.length) {
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error("Missing FIREBASE_* admin env vars");
-  }
-
-  // quick guard so we fail fast if PEM is malformed
-  const begins = privateKey.startsWith("-----BEGIN PRIVATE KEY-----");
-  const ends   = privateKey.trim().endsWith("-----END PRIVATE KEY-----");
-  if (!begins || !ends) {
-    throw new Error("Invalid PEM: missing BEGIN/END lines after sanitize");
-  }
-
+const app =
+  globalThis.__FIREBASE_ADMIN_APP__ ??
   admin.initializeApp({
     credential: admin.credential.cert({
-      projectId,
-      clientEmail,
-      privateKey,
+      projectId: req("FIREBASE_PROJECT_ID"),
+      clientEmail: req("FIREBASE_CLIENT_EMAIL"),
+      privateKey: privateKeyFromEnv(),
     }),
   });
+
+if (!globalThis.__FIREBASE_ADMIN_APP__) {
+  globalThis.__FIREBASE_ADMIN_APP__ = app;
 }
 
-// Named + default-ish exports for compatibility
-export function getAdminDb() {
-  return admin.firestore();
-}
+export const adminApp = app;
 export const db = admin.firestore();
+export function getAdminDb() {
+  return db;
+}
