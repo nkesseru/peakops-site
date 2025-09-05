@@ -1,12 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getAdminDb } from "../../lib/firebaseAdmin";
 
-export default async function handler(_: NextApiRequest, res: NextApiResponse) {
+export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
   try {
-    await getAdminDb().collection("_health").limit(1).get();
-    res.status(200).json({ ok: true });
+    const db = getAdminDb();
+    const qs = await db.collection("jobs").limit(1).get();
+    res.status(200).json({ ok: true, jobsSampleCount: qs.size });
   } catch (e: any) {
-    console.error("admin-health error:", e?.message || e, e?.stack || "");
-    res.status(500).json({ ok: false, error: e?.message || "admin-health-failed" });
+    res.status(500).json({ ok: false, error: e.message || String(e) });
   }
 }
