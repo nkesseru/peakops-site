@@ -1,38 +1,43 @@
-import * as admin from "firebase-admin";
+// lib/firebaseAdmin.ts
+import 'server-only';
+import { getApps, initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __FIREBASE_ADMIN_APP__: admin.app.App | undefined;
-}
+type ServiceAccount = {
+  project_id: string;
+  client_email: string;
+  private_key: string;
+  // allow any extra fields Google includes
+  [k: string]: unknown;
+};
 
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-}
-
-function getPem(): string {
-  const b64 = process.env.FIREBASE_PRIVATE_KEY_BASE64?.trim();
-  if (!b64) throw new Error("Missing FIREBASE_PRIVATE_KEY_BASE64");
-  const pem = Buffer.from(b64, "base64").toString("utf8").trim();
-  if (!pem.startsWith("-----BEGIN PRIVATE KEY-----") || !pem.endsWith("-----END PRIVATE KEY-----")) {
-    throw new Error("Invalid PEM decoded from FIREBASE_PRIVATE_KEY_BASE64");
+/**
+ * Loads Firebase Admin credentials.
+ * - On Vercel (Prod/Preview): use FIREBASE_SA_JSON_BASE64 (base64 of the full JSON key, one line).
+ * - Local dev: falls back to ./sa-peakops.json (keep that file out of git).
+ */
+function loadCred(): { sa: ServiceAccount; } & ReturnType<typeof cert> {
+  const b64 = process.env.FIREBASE_SA_JSON_BASE64;
+  if (b64) {
+    const json = Buffer.from(b64, 'base64').toString('utf8');
+    const sa = JSON.parse(json) as ServiceAccount;
+    return { sa, ...cert(sa) };
   }
-  return pem;
+
+  // Local fallback (do not commit this file)
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const sa = require('../sa-peakops.json') as ServiceAccount;
+  return { sa, ...cert(sa) };
 }
+
+const { sa, ...credential } = loadCred();
 
 const app =
-  globalThis.__FIREBASE_ADMIN_APP__ ??
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId:  requireEnv("FIREBASE_PROJECT_ID"),
-      clientEmail: requireEnv("FIREBASE_CLIENT_EMAIL"),
-      privateKey:  getPem(),
-    }),
+  getApps()[0] ??
+  initializeApp({
+    // @ts-expect-error firebase-admin types want a Credential object; cert(...) is compatible
+    credential,
+    projectId: sa.project_id,
   });
 
-if (!globalThis.__FIREBASE_ADMIN_APP__) globalThis.__FIREBASE_ADMIN_APP__ = app;
-
-export const adminApp = app;
-export const db = app.firestore();
-export function getAdminDb() { return db; }
+export const db = getFirestore(app);
