@@ -1,76 +1,85 @@
-// app/dashboard/page.tsx
-import { db } from '@/lib/firebaseAdmin';
+'use client';
 
-type JobCount = { status: string; count: number };
-type FlagDoc = { id: string; status?: string; severity?: string | number; message?: string; type?: string; createdAt?: any };
+import { useEffect, useState } from 'react';
+import { auth, db } from '@/lib/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import {
+  doc, getDoc, setDoc,
+  collection, query, where, getDocs
+} from 'firebase/firestore';
 
-const STATUSES = ['draft','scheduled','in_progress','closeout_ready','done'] as const;
+type Job = {
+  id: string;
+  title: string;
+  status: string;
+  site?: { name?: string };
+};
 
-export default async function DashboardPage() {
-  const orgId = process.env.NEXT_PUBLIC_TEST_ORG_ID; // TEMP until claims/session are wired
+export default function Dashboard() {
+  const [user, setUser] = useState<any>(null);
+  const [orgId, setOrgId] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  if (!orgId) {
-    return (
-      <main style={{ padding: 24 }}>
-        <h1>Mission Control</h1>
-        <p style={{ color: 'crimson', marginTop: 8 }}>
-          No orgId set. Configure <code>NEXT_PUBLIC_TEST_ORG_ID</code> in env, or finish the claims/session wiring.
-        </p>
-      </main>
-    );
-  }
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (!u) { location.href = '/login'; return; }
+      setUser(u);
 
-  // --- Jobs by status (run in parallel)
-  const jobCounts: JobCount[] = await Promise.all(
-    STATUSES.map(async (s) => {
-      const snap = await db
-        .collection('jobs')
-        .where('orgId', '==', orgId)
-        .where('status', '==', s)
-        .count()
-        .get();
-      return { status: s, count: snap.data().count };
-    })
-  );
+      // 1) Ensure the user doc exists; if missing, create with default org
+      const uref = doc(db, 'users', u.uid);
+      let usnap = await getDoc(uref);
+      if (!usnap.exists()) {
+        // TODO: replace 'demo-org' with a real org assignment later
+        await setDoc(uref, {
+          orgId: 'demo-org',
+          role: 'admin',
+          email: u.email ?? '',
+          name: u.displayName ?? '',
+          createdAt: new Date().toISOString(),
+        }, { merge: true });
+        usnap = await getDoc(uref);
+      }
 
-  // --- Latest flags
-  const flagsSnap = await db
-    .collection('flags')
-    .where('orgId', '==', orgId)
-    .orderBy('status')
-    .orderBy('severity', 'desc')
-    .orderBy('createdAt', 'desc')
-    .limit(10)
-    .get();
+      const uOrg = usnap.data()?.orgId as string | undefined;
+      if (!uOrg) { setLoading(false); return; }
+      setOrgId(uOrg);
 
-  const flags: FlagDoc[] = flagsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+      // 2) Query jobs for this org
+      const q = query(collection(db, 'jobs'), where('orgId', '==', uOrg));
+      const snap = await getDocs(q);
+      const rows = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as Job[];
+      setJobs(rows);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  if (!user) return null;
 
   return (
-    <main style={{ padding: 24 }}>
-      <h1>Mission Control</h1>
+    <main className="p-8">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold">Jobs {orgId ? `· ${orgId}` : ''}</h1>
+      </div>
 
-      <section style={{ marginTop: 16 }}>
-        <h2>Jobs by Stage</h2>
-        <ul>
-          {jobCounts.map((j) => (
-            <li key={j.status}>
-              {j.status}: {j.count}
+      {loading ? (
+        <div className="rounded-2xl border p-6 bg-white/70 backdrop-blur">Loading…</div>
+      ) : jobs.length === 0 ? (
+        <div className="rounded-2xl border p-6 bg-white/70 backdrop-blur">No jobs yet.</div>
+      ) : (
+        <ul className="space-y-3">
+          {jobs.map((j) => (
+            <li key={j.id} className="rounded-2xl border p-4 bg-white/70 backdrop-blur flex justify-between">
+              <div>
+                <div className="font-semibold">{j.title}</div>
+                <div className="text-sm text-gray-500">{j.site?.name}</div>
+              </div>
+              <div className="text-sm px-3 py-1 rounded-xl bg-gray-100">{j.status}</div>
             </li>
           ))}
         </ul>
-      </section>
-
-      <section style={{ marginTop: 24 }}>
-        <h2>Latest Flags</h2>
-        <ul>
-          {flags.length === 0 && <li>No flags</li>}
-          {flags.map((f) => (
-            <li key={f.id}>
-              [{f.status ?? '—'}/{f.severity ?? '—'}] {f.message ?? f.type ?? f.id}
-            </li>
-          ))}
-        </ul>
-      </section>
+      )}
     </main>
   );
 }

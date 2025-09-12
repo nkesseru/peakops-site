@@ -1,4 +1,13 @@
 import React from 'react';
-export function Container({children, className=""}:{children: React.ReactNode, className?: string}){
-  return <div className={`mx-auto w-full max-w-7xl px-4 md:px-6 ${className}`}>{children}</div>;
+
+export type SectionProps = {
+  children: React.ReactNode;
+  className?: string;
+};
+
+export function Section({ children, className = '' }: SectionProps) {
+  return <section className={`py-12 md:py-16 ${className}`}>{children}</section>;
 }
+
+// Also export default for flexibility
+export default Section;

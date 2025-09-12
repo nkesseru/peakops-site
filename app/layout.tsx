@@ -1,24 +1,10 @@
 import './globals.css';
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
-import { ThemeProvider } from 'next-themes';
-import { Navbar } from '@/components/Navbar';
 
-const inter = Inter({ subsets: ['latin'] });
-export const metadata: Metadata = {
-  title: 'PeakOps — Elegant field operations',
-  description: 'Glassy, fast, and reliable ops for service teams.'
-};
+export const metadata: Metadata = { title: 'PeakOps Portal', description: 'Customer portal' };
 
-export default function RootLayout({children}:{children: React.ReactNode}){
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={inter.className}>
-        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <Navbar/>
-          <main>{children}</main>
-        </ThemeProvider>
-      </body>
-    </html>
+    <html lang="en"><body className="bg-[#F5FAFF] text-[#0B0F14]">{children}</body></html>
   );
 }

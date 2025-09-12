@@ -1,20 +1,16 @@
-import { Hero } from '@/components/Hero';
-import { Features } from '@/components/Features';
-import { CTA } from '@/components/CTA';
-import { Footer } from '@/components/Footer';
-import { Section } from '@/components/Section';
+'use client';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { auth } from '@/lib/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 
-export default function Page(){
-  return (
-    <>
-      <Hero/>
-      <Section>
-        <Features/>
-      </Section>
-      <Section>
-        <CTA/>
-      </Section>
-      <Footer/>
-    </>
-  );
+export default function Page() {
+  const router = useRouter();
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      router.replace(u ? '/dashboard' : '/login');
+    });
+    return () => unsub();
+  }, [router]);
+  return null;
 }
