@@ -2,12 +2,9 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 export function middleware(req: NextRequest) {
-  const isLogin = req.nextUrl.pathname.startsWith('/[auth]/login');
-  // later: check a real session cookie here
-  if (!isLogin && req.nextUrl.pathname.startsWith('/dashboard')) {
-    // TODO: when session cookie is in place, only redirect if missing
-    return NextResponse.next();
+  const host = req.headers.get('host') ?? '';
+  if (host.startsWith('telecom.peakops.app') && req.nextUrl.pathname === '/') {
+    return NextResponse.redirect(new URL('/telecom', req.url));
   }
   return NextResponse.next();
 }
-export const config = { matcher: ['/dashboard/:path*'] };
