@@ -2,16 +2,23 @@
   "name": "my-app",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev --turbopack",
-    "build": "next build --turbopack",
-    "start": "next start",
-    "lint": "eslint",
-    "turbo": "next dev --turbo"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "eslint .",
+    "check": "tsc --noEmit",
+    "turbo": "next dev --turbo",
+    "seed": "node scripts/seed-firestore.mjs"
+  },
+  "engines": {
+    "node": ">=18.18 <23"
   },
   "dependencies": {
     "firebase": "^12.2.1",
-    "firebase-admin": "^13.5.0",
+    "firebase-admin": "^12.7.0",
+    "google-auth-library": "^10.3.0",
     "next": "15.5.1",
     "react": "19.1.0",
     "react-dom": "19.1.0"
@@ -22,6 +29,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^17.2.1",
     "eslint": "^9",
     "eslint-config-next": "15.5.1",
     "tailwindcss": "^4",

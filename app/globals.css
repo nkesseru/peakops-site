@@ -1,0 +1,37 @@
+:root {
+  /* LIGHT */
+  --ink: #0B0F14;
+  --graphite: #F5FAFF; /* page bg light */
+  --fog: rgba(0,0,0,0.05);
+  --teal: #10C4C4;
+  --gold: #E7B649;
+
+  --text-primary: #0B0F14;
+  --text-secondary: #556070;
+  --border: rgba(0,0,0,0.08);
+  --card: rgba(0,0,0,0.05);
+  --shadow: 0 8px 24px rgba(0,0,0,0.08);
+}
+
+.dark {
+  /* DARK */
+  --ink: #F5FAFF;
+  --graphite: #121820; /* page bg dark */
+  --fog: rgba(255,255,255,0.08);
+  --teal: #10C4C4;
+  --gold: #E7B649;
+
+  --text-primary: #F5FAFF;
+  --text-secondary: #B7C2CF;
+  --border: rgba(255,255,255,0.16);
+  --card: rgba(255,255,255,0.08);
+  --shadow: 0 10px 30px rgba(0,0,0,0.35);
+}
+
+html, body, :root {height: 100%;}
+body {
+  color: var(--text-primary);
+  background: radial-gradient(1200px 800px at 20% -10%, rgba(16,196,196,0.06), transparent),
+              radial-gradient(1000px 700px at 100% 0%, rgba(231,182,73,0.05), transparent),
+              var(--graphite);
+}

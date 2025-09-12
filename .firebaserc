@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "Production": "peakops-pilot"
+  },
+  "targets": {
+    "peakops-pilot": {
+      "storage": {
+        "rules": [
+          "peakops-pilot.appspot.com"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

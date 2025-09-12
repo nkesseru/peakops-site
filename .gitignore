@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Firebase Admin key
+sa-peakops.json
+.env*.local
+
+# firebase admin key
+sa.json

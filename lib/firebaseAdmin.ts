@@ -1,43 +1,51 @@
 // lib/firebaseAdmin.ts
 import 'server-only';
-import { getApps, initializeApp, cert } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getApps, initializeApp, cert, App, getApp } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 
-type ServiceAccount = {
+/**
+ * Supports either:
+ *  - FIREBASE_SERVICE_ACCOUNT_JSON  (plain JSON, single line)
+ *  - FIREBASE_SA_JSON_BASE64        (base64 of the same JSON)
+ */
+function loadServiceAccount(): {
   project_id: string;
   client_email: string;
   private_key: string;
-  // allow any extra fields Google includes
-  [k: string]: unknown;
-};
+} {
+  const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const b64  = process.env.FIREBASE_SA_JSON_BASE64;
 
-/**
- * Loads Firebase Admin credentials.
- * - On Vercel (Prod/Preview): use FIREBASE_SA_JSON_BASE64 (base64 of the full JSON key, one line).
- * - Local dev: falls back to ./sa-peakops.json (keep that file out of git).
- */
-function loadCred(): { sa: ServiceAccount; } & ReturnType<typeof cert> {
-  const b64 = process.env.FIREBASE_SA_JSON_BASE64;
-  if (b64) {
-    const json = Buffer.from(b64, 'base64').toString('utf8');
-    const sa = JSON.parse(json) as ServiceAccount;
-    return { sa, ...cert(sa) };
+  if (!json && !b64) {
+    throw new Error(
+      'Missing service account: set FIREBASE_SERVICE_ACCOUNT_JSON (plain JSON) or FIREBASE_SA_JSON_BASE64 (base64).'
+    );
   }
+  const raw = json ?? Buffer.from(b64!, 'base64').toString('utf8');
 
-  // Local fallback (do not commit this file)
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const sa = require('../sa-peakops.json') as ServiceAccount;
-  return { sa, ...cert(sa) };
+  // Some providers escape newlines in private keys. Normalize them.
+  const parsed = JSON.parse(raw);
+  if (parsed.private_key?.includes('\\n')) {
+    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+  }
+  return parsed;
 }
 
-const { sa, ...credential } = loadCred();
+const sa = loadServiceAccount();
 
-const app =
-  getApps()[0] ??
-  initializeApp({
-    // @ts-expect-error firebase-admin types want a Credential object; cert(...) is compatible
-    credential,
-    projectId: sa.project_id,
-  });
+const app: App =
+  getApps().length
+    ? getApp()
+    : initializeApp({
+        credential: cert({
+          projectId: sa.project_id,
+          clientEmail: sa.client_email,
+          privateKey: sa.private_key,
+        }),
+        projectId: sa.project_id,
+      });
 
+export const adminAuth = getAuth(app);
 export const db = getFirestore(app);
+export { FieldValue, Timestamp };

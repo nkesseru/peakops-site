@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function authed() { return request.auth != null; }
+    function org() { return request.auth.token.orgId; }
+    function sameOrg(orgId) { return org() == orgId; }
+    function canWrite(orgId) {
+      return sameOrg(orgId) &&
+        (request.auth.token.role in ['admin','dispatcher']);
+    }
+
+    match /organizations/{orgId}/jobs/{jobId} {
+      allow read: if authed() && sameOrg(orgId);
+      allow create, update: if authed() && canWrite(orgId);
+    }
+
+    match /organizations/{orgId}/job_events/{eventId} {
+      allow read: if authed() && sameOrg(orgId);
+      allow create: if authed() && sameOrg(orgId);
+    }
+  }
+}
+
