@@ -1,7 +1,8 @@
 // app/api/whoami/route.ts
 import { NextResponse } from 'next/server';
-import { getAuth } from 'firebase-admin/auth';
-import { db } from '@/lib/firebaseAdmin';
+import { adminAuth, adminDb } from '@/lib/firebaseAdmin';
+
+export const runtime = 'nodejs'; // IMPORTANT: Admin SDK needs Node runtime (not edge)
 
 export async function GET(request: Request) {
   try {
@@ -9,10 +10,16 @@ export async function GET(request: Request) {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
     if (!token) return NextResponse.json({ error: 'No bearer token' }, { status: 401 });
 
-    const decoded = await getAuth().verifyIdToken(token);
-    const { uid, orgId, role } = { uid: decoded.uid, orgId: (decoded as any).orgId, role: (decoded as any).role };
+    // Verify Firebase ID token
+    const decoded = await adminAuth.verifyIdToken(token);
 
-    return NextResponse.json({ uid, orgId, role });
+    // Optional: fetch user profile (orgId/role) from Firestore
+    const userSnap = await adminDb.doc(`users/${decoded.uid}`).get();
+    const userData = userSnap.exists ? userSnap.data() : {};
+    const orgId = (userData as any)?.orgId ?? (decoded as any)?.orgId ?? null;
+    const role  = (userData as any)?.role  ?? (decoded as any)?.role  ?? null;
+
+    return NextResponse.json({ uid: decoded.uid, orgId, role }, { status: 200 });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? 'verify failed' }, { status: 401 });
   }

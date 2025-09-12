@@ -1,51 +1,28 @@
 // lib/firebaseAdmin.ts
-import 'server-only';
-import { getApps, initializeApp, cert, App, getApp } from 'firebase-admin/app';
+// Node-only Firebase Admin bootstrap. Uses either GOOGLE_APPLICATION_CREDENTIALS
+// (path to service-account.json) or falls back to Application Default Credentials.
+
+import { getApps, initializeApp, applicationDefault, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { getFirestore } from 'firebase-admin/firestore';
+import fs from 'node:fs';
 
-/**
- * Supports either:
- *  - FIREBASE_SERVICE_ACCOUNT_JSON  (plain JSON, single line)
- *  - FIREBASE_SA_JSON_BASE64        (base64 of the same JSON)
- */
-function loadServiceAccount(): {
-  project_id: string;
-  client_email: string;
-  private_key: string;
-} {
-  const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  const b64  = process.env.FIREBASE_SA_JSON_BASE64;
+function adminInit() {
+  if (getApps().length) return;
 
-  if (!json && !b64) {
-    throw new Error(
-      'Missing service account: set FIREBASE_SERVICE_ACCOUNT_JSON (plain JSON) or FIREBASE_SA_JSON_BASE64 (base64).'
-    );
+  // Prefer explicit path via GOOGLE_APPLICATION_CREDENTIALS
+  const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (credPath && fs.existsSync(credPath)) {
+    const sa = JSON.parse(fs.readFileSync(credPath, 'utf8'));
+    initializeApp({ credential: cert(sa) });
+    return;
   }
-  const raw = json ?? Buffer.from(b64!, 'base64').toString('utf8');
 
-  // Some providers escape newlines in private keys. Normalize them.
-  const parsed = JSON.parse(raw);
-  if (parsed.private_key?.includes('\\n')) {
-    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
-  }
-  return parsed;
+  // Fallback to ADC (e.g., when running on Vercel with env-injected creds)
+  initializeApp({ credential: applicationDefault() });
 }
 
-const sa = loadServiceAccount();
+adminInit();
 
-const app: App =
-  getApps().length
-    ? getApp()
-    : initializeApp({
-        credential: cert({
-          projectId: sa.project_id,
-          clientEmail: sa.client_email,
-          privateKey: sa.private_key,
-        }),
-        projectId: sa.project_id,
-      });
-
-export const adminAuth = getAuth(app);
-export const db = getFirestore(app);
-export { FieldValue, Timestamp };
+export const adminAuth = getAuth();
+export const adminDb = getFirestore();

@@ -28,7 +28,7 @@ export default function Dashboard() {
       if (!u) { location.href = '/login'; return; }
       setUser(u);
 
-      // Ensure user profile exists; default org for now
+      // Ensure user profile exists; default org if missing
       const uref = doc(db, 'users', u.uid);
       let usnap = await getDoc(uref);
       if (!usnap.exists()) {
@@ -42,8 +42,8 @@ export default function Dashboard() {
         usnap = await getDoc(uref);
       }
 
-      const myOrg = usnap.data()?.orgId as string | undefined;
-      setOrgId(myOrg ?? null);
+      const myOrg = usnap.data()?.orgId;
+      setOrgId(myOrg);
 
       if (myOrg) {
         const snap = await getDocs(query(collection(db, 'jobs'), where('orgId', '==', myOrg)));
