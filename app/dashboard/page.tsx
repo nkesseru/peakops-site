@@ -1,6 +1,8 @@
+// app/dashboard/page.tsx
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { auth, db } from '@/lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import {
@@ -26,11 +28,10 @@ export default function Dashboard() {
       if (!u) { location.href = '/login'; return; }
       setUser(u);
 
-      // 1) Ensure the user doc exists; if missing, create with default org
+      // Ensure user profile exists; default org for now
       const uref = doc(db, 'users', u.uid);
       let usnap = await getDoc(uref);
       if (!usnap.exists()) {
-        // TODO: replace 'demo-org' with a real org assignment later
         await setDoc(uref, {
           orgId: 'demo-org',
           role: 'admin',
@@ -41,15 +42,13 @@ export default function Dashboard() {
         usnap = await getDoc(uref);
       }
 
-      const uOrg = usnap.data()?.orgId as string | undefined;
-      if (!uOrg) { setLoading(false); return; }
-      setOrgId(uOrg);
+      const myOrg = usnap.data()?.orgId as string | undefined;
+      setOrgId(myOrg ?? null);
 
-      // 2) Query jobs for this org
-      const q = query(collection(db, 'jobs'), where('orgId', '==', uOrg));
-      const snap = await getDocs(q);
-      const rows = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as Job[];
-      setJobs(rows);
+      if (myOrg) {
+        const snap = await getDocs(query(collection(db, 'jobs'), where('orgId', '==', myOrg)));
+        setJobs(snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })));
+      }
       setLoading(false);
     });
     return () => unsub();
@@ -59,9 +58,7 @@ export default function Dashboard() {
 
   return (
     <main className="p-8">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold">Jobs {orgId ? `· ${orgId}` : ''}</h1>
-      </div>
+      <h1 className="text-2xl font-semibold mb-6">Jobs {orgId ? `· ${orgId}` : ''}</h1>
 
       {loading ? (
         <div className="rounded-2xl border p-6 bg-white/70 backdrop-blur">Loading…</div>
@@ -70,12 +67,19 @@ export default function Dashboard() {
       ) : (
         <ul className="space-y-3">
           {jobs.map((j) => (
-            <li key={j.id} className="rounded-2xl border p-4 bg-white/70 backdrop-blur flex justify-between">
+            <li
+              key={j.id}
+              className="rounded-2xl border p-4 bg-white/70 backdrop-blur flex justify-between"
+            >
               <div>
-                <div className="font-semibold">{j.title}</div>
+                <div className="font-semibold">
+                  <Link href={`/jobs/${j.id}`}>{j.title}</Link>
+                </div>
                 <div className="text-sm text-gray-500">{j.site?.name}</div>
               </div>
-              <div className="text-sm px-3 py-1 rounded-xl bg-gray-100">{j.status}</div>
+              <div className="text-sm px-3 py-1 rounded-xl bg-gray-100">
+                {j.status}
+              </div>
             </li>
           ))}
         </ul>
