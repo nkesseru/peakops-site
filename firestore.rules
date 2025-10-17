@@ -1,23 +1,41 @@
 rules_version = '2';
 service cloud.firestore {
-  match /databases/{db}/documents {
-    function authed() { return request.auth != null; }
-    function org() { return request.auth.token.orgId; }
-    function sameOrg(orgId) { return org() == orgId; }
-    function canWrite(orgId) {
-      return sameOrg(orgId) &&
-        (request.auth.token.role in ['admin','dispatcher']);
+  match /databases/{database}/documents {
+
+    function isOrgUser(orgId) {
+      return request.auth != null && request.auth.token.orgId == orgId;
     }
 
-    match /organizations/{orgId}/jobs/{jobId} {
-      allow read: if authed() && sameOrg(orgId);
-      allow create, update: if authed() && canWrite(orgId);
-    }
+    match /orgs/{orgId} {
+      // Org users can read everything under their org
+      allow read: if isOrgUser(orgId);
 
-    match /organizations/{orgId}/job_events/{eventId} {
-      allow read: if authed() && sameOrg(orgId);
-      allow create: if authed() && sameOrg(orgId);
+      // 1️⃣ carbon_events: user-created input docs
+      match /carbon_events/{eventId} {
+        allow create, read: if isOrgUser(orgId);
+        allow update, delete: if false;
+      }
+
+      // 2️⃣ carbon_estimates: function-only writes
+      match /carbon_estimates/{id} {
+        allow read: if isOrgUser(orgId);
+        allow write: if false;
+      }
+
+      // 3️⃣ carbon_daily_summaries: function-only writes
+      match /carbon_daily_summaries/{day} {
+        allow read: if isOrgUser(orgId);
+        allow write: if false;
+      }
+
+      // 4️⃣ config: admin-only updates
+      match /config/{docId} {
+        allow read: if isOrgUser(orgId);
+        allow update, create: if isOrgUser(orgId) && (
+          request.auth.token.role == 'admin'
+        );
+        allow delete: if false;
+      }
     }
   }
 }
-
