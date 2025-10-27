@@ -1,6 +1,9 @@
 {
   "projects": {
-    "Production": "peakops-pilot"
+    "Production": "peakops-pilot",
+    "ingest": "peakops-pilot",
+    "pilot": "peakops-pilot",
+    "staging": "peakops-staging"
   },
   "targets": {
     "peakops-pilot": {

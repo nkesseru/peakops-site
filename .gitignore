@@ -46,3 +46,15 @@ sa-peakops.json
 
 # firebase admin key
 sa.json
+
+serviceAccount.json
+service-account.json
+*.pem
+*.p12
+
+
+serviceAccount.json
+service-account.json
+*.pem
+*.p12
+

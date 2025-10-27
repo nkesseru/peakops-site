@@ -8,9 +8,9 @@ import { loadRulePack, validatePayload } from '../../src/rules/loader.mjs';
 const api = express.Router();
 
 // ---- DOE OE-417 ----
-api.post('/prefile/oe417', handleOE417);
+api.post('/prefile/dirs', handleOE417);
 
-api.get('/prefile/oe417', async (_req, res, next) => {
+api.get('/prefile/dirs', async (_req, res, next) => {
   try {
     const db = getDb();
     const snap = await db.collection('submissions')

@@ -1,16 +1,12 @@
 import { NextResponse } from 'next/server';
-import { db, Timestamp, FieldValue } from '../../../lib/firebaseAdmin';
+import { db, Timestamp } from '@/lib/firebaseAdmin';
+
+export const runtime = 'nodejs';
 
 export async function GET() {
-  try {
-    const ref = db.doc('organizations/peakops-telecom-pilot/_admin_health/ping');
-    await ref.set({ last: Timestamp.now() }, { merge: true });
-    const snap = await ref.get();
-    return NextResponse.json({
-      ok: true,
-      lastWrite: snap.data()?.last?.toDate?.() ?? null,
-    });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
-  }
+  await db.collection('__admin_health').doc('ping').set(
+    { ts: Timestamp.now(), ok: true },
+    { merge: true }
+  );
+  return NextResponse.json({ ok: true });
 }
