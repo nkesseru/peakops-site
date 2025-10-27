@@ -18,7 +18,7 @@ export async function handleOE417(req, res) {
     }
 
     // Load rules and validate normalized payload
-    const pack = await loadRulePack('DOE_OE417', new Date(), orgId);
+    const pack = await loadRulePack('FCC_DIRS', new Date(), orgId);
     const pre = validatePayload(pack, norm, extras);
 
     if (!pre.passed) {
@@ -27,12 +27,12 @@ export async function handleOE417(req, res) {
 
     // Persist with stamped rules
     const submission = {
-      regulator: 'DOE_OE417',
+      regulator: 'FCC_DIRS',
       org_id: orgId || null,
       payload: norm,
       preflight: pre,
       rule_pack: {
-        regulator: 'DOE_OE417',
+        regulator: 'FCC_DIRS',
         version_id: pack.version_id,
         pack_hash: pack.pack_hash || null,
         cfr_refs: pack.cfr_refs || [],
@@ -48,3 +48,5 @@ export async function handleOE417(req, res) {
     return res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 }
+
+export const handleDirsPrefile = handleOE417;

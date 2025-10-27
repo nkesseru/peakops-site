@@ -69,6 +69,7 @@ app.use((req, res, next) => {
 
 // ---------- Health ----------
 app.get('/health', async (_req, res) => {
+app.get('/v1/meta/rules/:reg', metaRules);
 app.get('/v1/export/submission/:id.json', exportSubmissionJSON);
 app.get('/v1/export/submission/:id.pdf',  exportSubmissionPDF);
   // Basic Firestore ping: list one doc from rules_registry (safe/no-throw)
@@ -149,6 +150,7 @@ app.use((err, req, res, _next) => {
 // ---------- Start ----------
 const server = // ---------- Health endpoint ----------
 app.get('/health', (req, res) => {
+app.get('/v1/meta/rules/:reg', metaRules);
 app.get('/v1/export/submission/:id.json', exportSubmissionJSON);
 app.get('/v1/export/submission/:id.pdf',  exportSubmissionPDF);
   res.json({

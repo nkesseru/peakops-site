@@ -16,3 +16,4 @@ export async function getRulesMeta(req, res) {
     res.status(404).json({ ok:false, error:'rules_not_found', message:String(e.message || e) });
   }
 }
+export { getRulesMeta as metaRules };
