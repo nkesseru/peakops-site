@@ -49,4 +49,4 @@ export async function handleOE417(req, res) {
   }
 }
 
-export const handleBabaSarPrefile = handleBabaSar;
+export const handleBabaSarPrefile = handleOE417;
