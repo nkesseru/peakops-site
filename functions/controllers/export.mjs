@@ -2,7 +2,7 @@ import { getDb } from '../lib/admin.mjs';
 import PDFDocument from 'pdfkit';
 
 // Try these in order; stop on first hit
-const CANDIDATES = ['submissions','prefile_oe417','prefiles','oe417_prefile','oe417_submissions'];
+const CANDIDATES = ['submissions','prefile_oe417','prefiles','oe417_prefile','oe417_submissions','prefile_baba_sar'];
 
 async function getSnapById(id) {
   const db = getDb();
