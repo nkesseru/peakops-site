@@ -1,0 +1,302 @@
+import { onRequest } from "firebase-functions/v2/https";
+import type { Request, Response } from "express";
+import { initializeApp } from "firebase-admin/app";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { v4 as uuidv4 } from "uuid";
+import crypto from "crypto";
+
+/* ======================== Bootstrap ======================== */
+initializeApp();
+const db = getFirestore();
+
+/* ======================== Slack helper ======================== */
+async function postSlack(text: string) {
+  const url = process.env.SLACK_WEBHOOK_URL;
+  if (!url) return; // skip silently if not configured
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  } catch (e) {
+    console.error("[slack] post failed:", e);
+  }
+}
+
+/* ======================== Error helper ======================== */
+function sendError(res: Response, code: number, msg: string) {
+  res.status(code).json({ ok: false, error: msg });
+}
+
+/* ======================== HMAC helpers ======================== */
+function getRawBodyBuffer(req: any): Buffer {
+  if (req.rawBody) {
+    return Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(String(req.rawBody));
+  }
+  return Buffer.from(JSON.stringify(req.body || {}));
+}
+function hmacSha256Hex(secret: string, data: Buffer | string) {
+  return crypto.createHmac("sha256", secret).update(data).digest("hex");
+}
+/** Fail-closed verifier: returns false on any hiccup so callers see 401, not 500 */
+function verifySignature(req: Request): boolean {
+  try {
+    const secret = process.env.ZAPIER_SIGNING_SECRET || "";
+    const sigHeader = req.header("X-Signature") || req.header("x-signature") || "";
+    const [algo, sigHex] = (sigHeader || "").split("=");
+    if (!secret || !sigHex || algo !== "sha256") return false;
+
+    const provided = Buffer.from(sigHex, "hex");
+
+    // #1 raw bytes
+    const mac1 = Buffer.from(hmacSha256Hex(secret, getRawBodyBuffer(req)), "hex");
+    if (provided.length === mac1.length && crypto.timingSafeEqual(provided, mac1)) return true;
+
+    // #2 canonical JSON
+    const mac2 = Buffer.from(hmacSha256Hex(secret, JSON.stringify((req as any).body || {})), "hex");
+    return provided.length === mac2.length && crypto.timingSafeEqual(provided, mac2);
+  } catch {
+    return false;
+  }
+}
+
+/* ======================== Bearer helpers ======================== */
+function verifyBearer(req: Request): boolean {
+  const token = process.env.INGEST_BEARER_TOKEN || "";
+  const hdr = req.header("Authorization") || req.header("authorization") || "";
+  return !!token && hdr === `Bearer ${token}`;
+}
+function authorized(req: Request): boolean {
+  // Accept either Bearer (Zapier beta) OR HMAC (partners)
+  return verifyBearer(req) || verifySignature(req);
+}
+
+/* ---------- Notes helpers (parse subject/body safely) ---------- */
+function buildNotes(body: any) {
+  // Try common providers’ key names, fall back to empty strings
+  const subject = asString(body.subject ?? body.Subject ?? body.title ?? "");
+  const bodyPlain = asString(
+    body.bodyText ?? body.bodyPlain ?? body.plainText ?? body.text ?? ""
+  );
+  const from = asString(body.from ?? "");
+  const to = asArray(body.to ?? []);
+  // Optional: keep a preview of the raw payload for debugging (not the whole blob)
+  let rawPreview = "";
+  try { rawPreview = JSON.stringify(body).slice(0, 4000); } catch {}
+  return { subject, bodyPlain, from, to, rawPreview };
+}
+
+/* ======================== Sanitizers ======================== */
+function asString(v: any, fallback = ""): string {
+  if (v === null || v === undefined) return fallback;
+  return String(v);
+}
+function asNumber(v: any, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+function asArray<T = any>(v: any): T[] {
+  return Array.isArray(v) ? v : [];
+}
+function scrubAttachments(v: any): { filename: string; mime: string }[] {
+  return asArray(v).map((a: any) => ({
+    filename: asString(a?.filename ?? a?.name, ""),
+    mime: asString(a?.mime ?? a?.mimeType, "").toLowerCase(),
+  }));
+}
+
+/* ======================== Health ======================== */
+export const ping = onRequest(async (_req, res) => {
+  res.json({ ok: true, service: "peakops-ingest", time: new Date().toISOString() });
+});
+
+/* ======================== Ingest Email ======================== */
+export const ingestEmail = onRequest(
+  { secrets: ["INGEST_BEARER_TOKEN", "ZAPIER_SIGNING_SECRET", "SLACK_WEBHOOK_URL"] },
+  async (req: Request, res: Response) => {
+    try {
+      if (!authorized(req)) { sendError(res, 401, "AUTH_ERROR: Invalid signature"); try{await postSlack("❌ AUTH_ERROR ingestEmail");}catch{}; return; }
+
+      const bodyRaw = (req as any).body;
+      const body = (bodyRaw && typeof bodyRaw === "object") ? bodyRaw : {};
+      const ingestionId = asString(body.ingestionId, uuidv4());
+
+      // Idempotency
+      const docRef = db.collection("ingest_jobs").doc(ingestionId);
+      if ((await docRef.get()).exists) { res.json({ ok: true, ingestionId, dedup: true }); return; }
+
+const notesObj = buildNotes(body);
+const payload = {
+  ingestionId,
+  source: "email",
+  vendor: asString(body.vendor),
+  customerId: asString(body.customerId),
+  locationId: asString(body.locationId),
+  serviceDate: asString(body.serviceDate),
+  externalRef: asString(body.externalRef),
+  performedBy: asArray(body.performedBy),
+  // 👇 store structured, queryable notes
+  notes: notesObj,                  // {subject, bodyPlain, from, to, rawPreview}
+  status: asString(body.status || "closed"),
+  confidence: asNumber(body.confidence || 0.9),
+  attachments: [],                  // ingestEmail does not accept attachments
+  createdAt: FieldValue.serverTimestamp(),
+};
+
+      try { await docRef.set(payload, { merge: true }); }
+      catch (e:any) { console.error("[ingestEmail] Firestore set error:", e?.message || e); sendError(res, 500, "SERVER_ERROR"); try{await postSlack(`❌ ingestEmail ${ingestionId} Firestore error: ${e?.message||e}`);}catch{}; return; }
+
+      res.json({ ok: true, ingestionId });
+      try { await postSlack(`✅ ingestEmail ${ingestionId} vendor=${payload.vendor||"-"} ref=${payload.externalRef||"-"}`); } catch {}
+    } catch (e:any) {
+      console.error("[ingestEmail] unexpected:", e?.message || e, e?.stack);
+      sendError(res, 500, "SERVER_ERROR");
+      try { await postSlack(`❌ ingestEmail unexpected error: ${e?.message || e}`); } catch {}
+    }
+  }
+);
+
+/* ======================== Enqueue OCR Job ======================== */
+export const enqueueOcrJob = onRequest(
+  { secrets: ["INGEST_BEARER_TOKEN", "ZAPIER_SIGNING_SECRET", "SLACK_WEBHOOK_URL"] },
+  async (req: Request, res: Response) => {
+    try {
+      if (!authorized(req)) { sendError(res, 401, "AUTH_ERROR: Invalid signature"); try{await postSlack("❌ AUTH_ERROR enqueueOcrJob");}catch{}; return; }
+
+      const body = (req as any).body || {};
+      const ingestionId = asString(body.ingestionId, uuidv4());
+      const ocrRef = db.collection("ocr_jobs").doc(ingestionId);
+      if ((await ocrRef.get()).exists) { res.json({ ok: true, ingestionId, dedup: true }); return; }
+
+      const job = {
+        ingestionId,
+        gsUrl: asString(body.gsUrl || body.dataUrl, ""),
+        vendor: asString(body.vendor, ""),
+        status: "queued",
+        createdAt: FieldValue.serverTimestamp(),
+      };
+
+      try { await ocrRef.set(job, { merge: true }); }
+      catch (e:any) { console.error("[enqueueOcrJob] Firestore set error:", e?.message || e); sendError(res, 500, "SERVER_ERROR"); try{await postSlack(`❌ enqueueOcrJob ${ingestionId} Firestore error: ${e?.message||e}`);}catch{}; return; }
+
+      res.json({ ok: true, ingestionId });
+      try { await postSlack(`✅ enqueueOcrJob ${ingestionId} vendor=${job.vendor||"-"}`); } catch {}
+    } catch (e:any) {
+      console.error("[enqueueOcrJob] unexpected:", e?.message || e, e?.stack);
+      sendError(res, 500, "SERVER_ERROR");
+      try { await postSlack(`❌ enqueueOcrJob unexpected error: ${e?.message || e}`); } catch {}
+    }
+  }
+);
+
+/* ======================== Ingest Doc/Text ======================== */
+export const ingestDocText = onRequest(
+  { secrets: ["INGEST_BEARER_TOKEN", "ZAPIER_SIGNING_SECRET", "SLACK_WEBHOOK_URL"] },
+  async (req: Request, res: Response) => {
+    try {
+      if (!authorized(req)) { sendError(res, 401, "AUTH_ERROR: Invalid signature"); try{await postSlack("❌ AUTH_ERROR ingestDocText");}catch{}; return; }
+
+      const body = (req as any).body || {};
+      const ingestionId = asString(body.ingestionId, uuidv4());
+      const docRef = db.collection("ingest_jobs").doc(ingestionId);
+      if ((await docRef.get()).exists) { res.json({ ok: true, ingestionId, dedup: true }); return; }
+
+      const payload = {
+        ingestionId,
+        source: "doc_text",
+        vendor: asString(body.vendor),
+        customerId: asString(body.customerId),
+        locationId: asString(body.locationId),
+        serviceDate: asString(body.serviceDate),
+        externalRef: asString(body.externalRef),
+        notes: asString(body.notes),
+        status: asString(body.status || "closed"),
+        confidence: asNumber(body.confidence || 0.9),
+        attachments: scrubAttachments(body.attachments),
+        createdAt: FieldValue.serverTimestamp(),
+      };
+
+      try { await docRef.set(payload, { merge: true }); }
+      catch (e:any) { console.error("[ingestDocText] Firestore set error:", e?.message || e); sendError(res, 500, "SERVER_ERROR"); try{await postSlack(`❌ ingestDocText ${ingestionId} Firestore error: ${e?.message||e}`);}catch{}; return; }
+
+      res.json({ ok: true, ingestionId });
+      try { await postSlack(`✅ ingestDocText ${ingestionId}`); } catch {}
+    } catch (e:any) {
+      console.error("[ingestDocText] unexpected:", e?.message || e, e?.stack);
+      sendError(res, 500, "SERVER_ERROR");
+      try { await postSlack(`❌ ingestDocText unexpected error: ${e?.message || e}`); } catch {}
+    }
+  }
+);
+
+/* ======================== Gmail Webhook (routes PDFs to OCR) ======================== */
+export const gmailWebhook = onRequest(
+  { secrets: ["INGEST_BEARER_TOKEN", "ZAPIER_SIGNING_SECRET", "SLACK_WEBHOOK_URL"] },
+  async (req: Request, res: Response) => {
+    try {
+      if (!authorized(req)) { sendError(res, 401, "AUTH_ERROR: Invalid signature"); try{await postSlack("❌ AUTH_ERROR gmailWebhook");}catch{}; return; }
+
+      const body = (req as any).body || {};
+      const ingestionId = asString(body.ingestionId, uuidv4());
+      const attachments = scrubAttachments(body.attachments);
+      const hasPdf = attachments.some(a => a.mime === "application/pdf" || a.filename.toLowerCase().endsWith(".pdf"));
+
+      if (hasPdf) {
+        const ocrRef = db.collection("ocr_jobs").doc(ingestionId);
+        if ((await ocrRef.get()).exists) { res.json({ ok: true, ingestionId, routed: "ocr", dedup: true }); return; }
+
+        try {
+          await ocrRef.set(
+            {
+              ingestionId,
+              gsUrl: asString((body.attachments?.[0]?.dataUrl) || body.gsUrl || ""),
+              vendor: asString(body.vendor, ""),
+              status: "queued",
+              createdAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch (e:any) {
+          console.error("[gmailWebhook] Firestore OCR set error:", e?.message || e);
+          sendError(res, 500, "SERVER_ERROR");
+          try { await postSlack(`❌ gmailWebhook ${ingestionId} OCR Firestore error: ${e?.message || e}`); } catch {}
+          return;
+        }
+
+        res.json({ ok: true, routed: "ocr", ingestionId });
+        try { await postSlack(`✅ gmailWebhook ${ingestionId} routed=ocr`); } catch {}
+        return;
+      }
+
+      // Treat as structured email envelope
+      const docRef = db.collection("ingest_jobs").doc(ingestionId);
+      if ((await docRef.get()).exists) { res.json({ ok: true, ingestionId, routed: "email", dedup: true }); return; }
+
+const notesObj = buildNotes(body);
+const payload = {
+  ingestionId,
+  source: "webhook_gmail",
+  vendor: asString(body.vendor),
+  customerId: asString(body.customerId),
+  locationId: asString(body.locationId),
+  serviceDate: asString(body.serviceDate),
+  externalRef: asString(body.externalRef),
+  notes: notesObj,              // 👈 structured notes
+  status: asString(body.status || "closed"),
+  attachments,                  // already scrubbed to [{filename,mime}]
+  createdAt: FieldValue.serverTimestamp(),
+};
+
+      try { await docRef.set(payload, { merge: true }); }
+      catch (e:any) { console.error("[gmailWebhook] Firestore set error:", e?.message || e); sendError(res, 500, "SERVER_ERROR"); try{await postSlack(`❌ gmailWebhook ${ingestionId} Firestore error: ${e?.message||e}`);}catch{}; return; }
+
+      res.json({ ok: true, routed: "email", ingestionId });
+      try { await postSlack(`✅ gmailWebhook ${ingestionId} routed=email`); } catch {}
+    } catch (e:any) {
+      console.error("[gmailWebhook] unexpected:", e?.message || e, e?.stack);
+      sendError(res, 500, "SERVER_ERROR");
+      try { await postSlack(`❌ gmailWebhook unexpected error: ${e?.message || e}`); } catch {}
+    }
+  }
+);

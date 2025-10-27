@@ -1,41 +1,31 @@
+// Firestore Rules (MVP)
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isOrgUser(orgId) {
-      return request.auth != null && request.auth.token.orgId == orgId;
+    function isSignedIn() {
+      return request.auth != null;
     }
 
-    match /orgs/{orgId} {
-      // Org users can read everything under their org
-      allow read: if isOrgUser(orgId);
-
-      // 1️⃣ carbon_events: user-created input docs
-      match /carbon_events/{eventId} {
-        allow create, read: if isOrgUser(orgId);
-        allow update, delete: if false;
-      }
-
-      // 2️⃣ carbon_estimates: function-only writes
-      match /carbon_estimates/{id} {
-        allow read: if isOrgUser(orgId);
-        allow write: if false;
-      }
-
-      // 3️⃣ carbon_daily_summaries: function-only writes
-      match /carbon_daily_summaries/{day} {
-        allow read: if isOrgUser(orgId);
-        allow write: if false;
-      }
-
-      // 4️⃣ config: admin-only updates
-      match /config/{docId} {
-        allow read: if isOrgUser(orgId);
-        allow update, create: if isOrgUser(orgId) && (
-          request.auth.token.role == 'admin'
-        );
-        allow delete: if false;
-      }
+    function isOps() {
+      // Optional: add your emails here for write access during MVP
+      return isSignedIn() &&
+             request.auth.token.email in [
+               "nick@pioneer.example",
+               "eric@peakops.example"
+             ];
     }
+
+    match /customers/{cid} {
+      allow read: if isSignedIn();
+      allow write: if isOps();
+    }
+
+    match /submissions/{sid} {
+      allow read: if isSignedIn();
+      allow write: if isOps();
+    }
+
+    // Add others as you grow (rule_packs, evidence, etc.)
   }
 }

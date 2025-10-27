@@ -8,5 +8,9 @@
       "target": "rules",
       "rules": "storage.rules"
     }
-  ]
+  ],
+  "functions": {
+    "source": "ingest-fns",
+    "runtime": "nodejs20"
+  }
 }
