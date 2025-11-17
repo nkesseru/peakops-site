@@ -1,0 +1,31 @@
+// functions/controllers/evidence.mjs
+import crypto from 'crypto';
+import { getDb } from '../lib/admin.mjs';
+import { Storage } from '@google-cloud/storage';
+import { uploadEvidence, linkEvidence, listEvidence, verifyEvidence } from '../controllers/evidence.mjs';
+
+function getStorage() {
+  const bucket = process.env.BUCKET_NAME;
+  if (!bucket) return null;
+  const storage = new Storage(); // ADC or serviceAccount.json
+  return { storage, bucket };
+}
+
+function sha256(bufOrStr) {
+  const buf = Buffer.isBuffer(bufOrStr) ? bufOrStr : Buffer.from(String(bufOrStr));
+  return 'sha256:' + crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+/**
+ * POST /v1/evidence/upload
+ * Body: { submission_id, filename, content_type?, data_base64 }
+ * - Computes SHA-256, uploads to GCS if BUCKET_NAME set
+ * - Creates evidence doc and appends a short ref under submissions/{id}.evidence[]
+ */
+
+api.post('/evidence/upload',  uploadEvidence);
+api.post('/evidence/link',    linkEvidence);
+api.get('/evidence/:submission_id', listEvidence);
+api.post('/evidence/verify',  verifyEvidence);
+
+export default api;

@@ -1,11 +1,22 @@
 {
-  "name": "my-app",
+  "name": "peakops-api",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "stop": "pkill -f node || true",
-    "dev": "npm run stop && node --env-file=.env functions/server.mjs",
-    "seed": "node scripts/seedFirestore.mjs",
-    "deploy:db": "firebase deploy --only firestore:rules,firestore:indexes"
+    "start": "node functions/server.mjs"
+  },
+  "engines": {
+    "node": ">=18 <23"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.10.0",
+    "@google-cloud/storage": "^7.17.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.7.0",
+    "helmet": "^7.1.0",
+    "json-logic-js": "^2.0.5",
+    "pdfkit": "^0.15.0"
   }
 }

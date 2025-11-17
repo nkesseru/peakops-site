@@ -1,65 +1,130 @@
-// functions/routes/v1_fixed.mjs
 import express from 'express';
-import { getDb } from '../lib/admin.mjs';
-import { handleOE417 } from '../controllers/oe417.mjs';
-import { getRulesMeta } from '../controllers/meta.mjs';
-import { loadRulePack, validatePayload } from '../../src/rules/loader.mjs';
-
 const api = express.Router();
 
-// ---- DOE OE-417 ----
-api.post('/prefile/oe417', handleOE417);
-
-api.get('/prefile/oe417', async (_req, res, next) => {
-  try {
-    const db = getDb();
-    const snap = await db.collection('submissions')
-      .where('regulator', '==', 'DOE_OE417')
-      .orderBy('created_at', 'desc')
-      .limit(10).get();
-    const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    res.json({ ok: true, count: docs.length, docs });
-  } catch (e) { next(e); }
+/* ------------- _routes (introspection) ------------- */
+api.get('/_routes', (_req, res) => {
+  res.json({
+    ok: true,
+    routes: [
+      { path: '/_routes', methods: ['get'] },
+      { path: '/_env/slack', methods: ['get'] },
+      { path: '/alerts/ping', methods: ['post'] },
+      { path: '/alerts/scan', methods: ['post'] },
+      { path: '/alerts/digest', methods: ['post'] }
+    ]
+  });
 });
 
-// ---- FCC DIRS ----
-api.post('/prefile/dirs', async (req, res, next) => {
-  try {
-    const db = getDb();
-    const { orgId, payload, extras } = req.body || {};
-    const pack = await loadRulePack('FCC_DIRS', new Date(), orgId);
-    const pre = validatePayload(pack, payload || {}, extras || {});
-    if (!pre.passed) return res.status(422).json({ ok: false, issues: pre });
+/* ------------- Env check ------------- */
+api.get('/_env/slack', (req,res)=>{
+  const v = process.env.SLACK_WEBHOOK_URL;
+  res.json({ ok: !!v, len: v ? v.length : 0 });
+});
 
-    const doc = await db.collection('submissions').add({
-      regulator: 'FCC_DIRS',
-      payload, preflight: pre,
-      rule_pack: {
-        regulator: 'FCC_DIRS',
-        version_id: pack.version_id,
-        pack_hash: pack.pack_hash || null,
-        cfr_refs: pack.cfr_refs || [],
-        codelists: pack.codelist_refs || []
-      },
-      created_at: new Date().toISOString()
+/* ------------- Slack ping (container → Slack) ------------- */
+api.post('/alerts/ping', async (req,res)=>{
+  try{
+    const url = process.env.SLACK_WEBHOOK_URL;
+    if(!url) return res.status(200).json({ ok:false, reason:'missing SLACK_WEBHOOK_URL' });
+    const doFetch = (typeof fetch === 'function') ? fetch : (await import('node-fetch')).default;
+    const r = await doFetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text:`✅ PeakOps Slack ping @ ${new Date().toISOString()}`})
     });
-    res.json({ ok: true, id: doc.id });
-  } catch (e) { next(e); }
+    return res.json({ ok:r.ok, status:r.status });
+  }catch(e){
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
 });
 
-api.get('/prefile/dirs', async (_req, res, next) => {
-  try {
-    const db = getDb();
-    const snap = await db.collection('submissions')
-      .where('regulator', '==', 'FCC_DIRS')
-      .orderBy('created_at', 'desc')
-      .limit(10).get();
-    const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    res.json({ ok: true, count: docs.length, docs });
-  } catch (e) { next(e); }
+/* ------------- Alerts: scan / digest ------------- */
+api.post('/alerts/scan', async (req,res)=>{
+  try{
+    const { scanDeadlines } = await import('../controllers/alerts_scan.mjs');
+    return scanDeadlines(req,res);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({ ok:false, error:'internal_error', detail:String(e) });
+  }
 });
 
-// ---- Rules meta ----
-api.get('/meta/rules/:regulator', getRulesMeta);
+api.post('/alerts/digest', async (req,res)=>{
+  try{
+    const { dailyDigest } = await import('../controllers/alerts_digest.mjs');
+    return dailyDigest(req,res);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({ ok:false, error:'internal_error', detail:String(e) });
+  }
+});
+
+/* ------------- Env check (temp) ------------- */
+api.get('/_env/slack', (req,res)=>{
+  const v = process.env.SLACK_WEBHOOK_URL;
+  res.json({ ok: !!v, len: v ? v.length : 0 });
+});
+
+/* ------------- Alerts: ping (container → Slack) ------------- */
+api.post('/alerts/ping', async (req,res)=>{
+  try{
+    const url = process.env.SLACK_WEBHOOK_URL;
+    if(!url) return res.status(200).json({ ok:false, reason:'missing SLACK_WEBHOOK_URL' });
+    const doFetch = (typeof fetch === 'function') ? fetch : (await import('node-fetch')).default;
+    const r = await doFetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text:`✅ PeakOps Slack ping @ ${new Date().toISOString()}`})
+    });
+    return res.json({ ok:r.ok, status:r.status });
+  }catch(e){
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+/* ------------- Env check (temp) ------------- */
+api.get('/_env/slack', (req,res)=>{
+  const v = process.env.SLACK_WEBHOOK_URL;
+  res.json({ ok: !!v, len: v ? v.length : 0 });
+});
+
+/* ------------- Alerts: ping (container → Slack) ------------- */
+api.post('/alerts/ping', async (req,res)=>{
+  try{
+    const url = process.env.SLACK_WEBHOOK_URL;
+    if(!url) return res.status(200).json({ ok:false, reason:'missing SLACK_WEBHOOK_URL' });
+    const doFetch = (typeof fetch === 'function') ? fetch : (await import('node-fetch')).default;
+    const r = await doFetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text:`✅ PeakOps Slack ping @ ${new Date().toISOString()}`})
+    });
+    return res.json({ ok:r.ok, status:r.status });
+  }catch(e){
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+/* ------------- Alerts: Daily Digest (PDF) ------------- */
+api.get('/alerts/digest.pdf', async (req,res)=>{
+  try{
+    const { digestPDF } = await import('../controllers/alerts_digest_pdf.mjs');
+    return digestPDF(req,res);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({ ok:false, error:'internal_error', detail:String(e) });
+  }
+});
+
+/* ------------- Alerts: Daily Digest (PDF) ------------- */
+api.get('/alerts/digest.pdf', async (req,res)=>{
+  try{
+    const { digestPDF } = await import('../controllers/alerts_digest_pdf.mjs');
+    return digestPDF(req,res);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({ ok:false, error:'internal_error', detail:String(e) });
+  }
+});
 
 export default api;

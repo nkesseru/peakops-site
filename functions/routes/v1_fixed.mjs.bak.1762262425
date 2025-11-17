@@ -1,0 +1,26 @@
+import express from 'express';
+const api = express.Router();
+
+/* ------------- _routes (hardcoded) ------------- */
+api.get('/_routes', (_req, res) => {
+  res.json({
+    ok: true,
+    routes: [
+      { path: '/_routes', methods: ['get'] },
+      { path: '/alerts/scan', methods: ['post'] }
+    ]
+  });
+});
+
+/* ------------- Alerts (REAL) ------------- */
+api.post('/alerts/scan', async (req,res) => {
+  try{
+    const { scanDeadlines } = await import('../controllers/alerts_scan.mjs');
+    return scanDeadlines(req,res);
+  }catch(e){
+    console.error(e);
+    return res.status(500).json({ ok:false, error:'internal_error', detail:String(e) });
+  }
+});
+
+export default api;

@@ -1,0 +1,202 @@
+/* src/app/admin/stormwatch/stormwatch.module.css */
+
+/* ============================
+   PeakOps: StormWatch Theme
+   ============================ */
+
+/* Background + layout */
+.page {
+  min-height: 100vh;
+  background: radial-gradient(circle at 20% 30%, #0f172a, #0b0f19 70%);
+  color: #e2e8f0;
+  padding: 32px 24px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.wrapper {
+  max-width: 1250px;
+  margin: 0 auto;
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 28px;
+}
+
+.title {
+  font-size: 32px;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.subtitle {
+  font-size: 12px;
+  color: #64748b;
+  letter-spacing: 0.03em;
+}
+
+/* KPI cards */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 28px;
+}
+
+.card {
+  background: linear-gradient(145deg, #111826, #0f172a);
+  border: 1px solid #1e293b;
+  padding: 18px 20px;
+  border-radius: 12px;
+  box-shadow: 0 0 8px rgba(0,0,0,0.3);
+  transition: transform 0.12s ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+}
+
+.cardTitle {
+  font-size: 11px;
+  color: #94a3b8;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  letter-spacing: 0.08em;
+}
+
+.cardValue {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: #f8fafc;
+}
+
+.cardSub {
+  font-size: 13px;
+  color: #64748b;
+}
+
+/* Containers */
+.content {
+  display: grid;
+  grid-template-columns: 2fr 1.4fr;
+  gap: 18px;
+}
+
+.panel {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 20px;
+  backdrop-filter: blur(4px);
+}
+
+.panelTitle {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  color: #e2e8f0;
+}
+
+/* Table */
+.tableWrapper {
+  max-height: 350px;
+  overflow-y: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.th {
+  padding: 10px 8px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  color: #94a3b8;
+  font-weight: 500;
+  position: sticky;
+  top: 0;
+}
+
+.td {
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.row:hover {
+  background: rgba(255,255,255,0.04);
+}
+
+.emptyRow {
+  text-align: center;
+  padding: 16px;
+  color: #64748b;
+}
+
+/* Severity badges */
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.badgeInfo {
+  background: rgba(59, 130, 246, 0.2);
+  color: #3b82f6;
+}
+
+.badgeWarn {
+  background: rgba(250, 204, 21, 0.2);
+  color: #facc15;
+}
+
+.badgeError {
+  background: rgba(248, 113, 113, 0.2);
+  color: #f87171;
+}
+
+.badgeSuccess {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+/* Notifications */
+.notificationsList {
+  max-height: 350px;
+  overflow-y: auto;
+}
+
+.notification {
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  padding: 12px 4px;
+}
+
+.notification:last-child {
+  border-bottom: none;
+}
+
+.notificationTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin: 2px 0 4px;
+}
+
+.notificationBody {
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.notificationMeta {
+  font-size: 12px;
+  color: #64748b;
+}

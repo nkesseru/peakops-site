@@ -1,193 +1,234 @@
-import { getDb } from './lib/admin.mjs';
-getDb(); // initialize Firebase Admin singleton via ADC
-
 /**
- * PeakOps prefile server (v1)
- * - JSON health, structured errors, graceful shutdown
- * - Versioned routes (/v1/...)
+ * PeakOps API — middleware → routes → 404 → error → listener → export
  */
-
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import express from 'express';
-import crypto from 'crypto';
 import cors from 'cors';
 import helmet from 'helmet';
-import { metaRules, getRulesMeta } from './controllers/meta.mjs';
+import { Firestore, Timestamp } from '@google-cloud/firestore';
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const PORT = process.env.PORT || 8080;
+const GCLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
 
-import { handleOE417 } from './controllers/oe417.mjs';
-import v1FixedRouter from './routes/v1_fixed.mjs';
-import v1Router from './routes/v1.mjs';
-import { loadRulePack, validatePayload } from '../src/rules/loader.mjs'; // still used for DIRS demo
-import { exportSubmissionJSON, exportSubmissionPDF } from './controllers/export.mjs';
-import { ingestOutageEvent, ingestGIS, ingestCIS } from './controllers/ingest.mjs';
-
-// ---------- Env & paths ----------
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const NODE_ENV  = process.env.NODE_ENV || 'development';
-const PORT      = process.env.PORT || 8081;
-const PROJECT_ID = process.env.GCLOUD_PROJECT ||
-                   process.env.GOOGLE_CLOUD_PROJECT ||
-                   'peakops-pilot';
-
-
-// ---------- Express app ----------
 const app = express();
 
-// Trust reverse proxies if deployed behind one
-app.set('trust proxy', 1);
-
-// Security baseline (tune CSP later when UI attaches)
-app.use(helmet({
-  contentSecurityPolicy: false,
+/* ===== runtime diagnostics ===== */
+app.get("/__routes", (_req,res)=>{
+  const list=[]; const push=(layer,base="")=>{
+    if(layer.route?.path){
+      const methods=Object.keys(layer.route.methods||{}).map(m=>m.toUpperCase());
+      list.push({ path: base + layer.route.path, methods });
+    }else if(layer.name==="router" && layer.handle?.stack){
+      for(const l of layer.handle.stack) push(l, base);
+    }
+  };
+  if(app._router?.stack) for(const l of app._router.stack) push(l,"");
+  res.json({ ok:true, count:list.length, routes:list });
+});
+app.get("/__diag", (_req,res)=>res.json({
+  ok:true,
+  service:process.env.K_SERVICE||"local",
+  revision:process.env.K_REVISION||"dev",
+  project:process.env.GOOGLE_CLOUD_PROJECT||process.env.GCLOUD_PROJECT||"unknown",
+  now:new Date().toISOString()
 }));
+/* ===== end diagnostics ===== */
+const db = new Firestore({ projectId: GCLOUD_PROJECT });
 
-// CORS: open in dev, tighten in prod
-if (NODE_ENV !== 'production') {
-  app.use(cors());
-}
+// core middleware
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+app.use(helmet());
+app.use(cors());
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-// Parse JSON with sane limits
-app.use(express.json({ limit: '1mb', strict: true }));
-
-// Request ID + timing
-app.use((req, res, next) => {
-  const rid = req.headers['x-request-id'] || crypto.randomUUID();
-  res.locals.rid = rid;
-  res.setHeader('x-request-id', rid);
-  const start = Date.now();
-  res.on('finish', () => {
-    const ms = Date.now() - start;
-    const line = JSON.stringify({
-      ts: new Date().toISOString(),
-      rid, method: req.method, path: req.originalUrl,
-      status: res.statusCode, ms
-    });
-    console.log('prefile server on :' + PORT + ' env=' + NODE_ENV + ' project=' + PROJECT_ID);
-  });
-  next();
+/* ===== Diagnostics ===== */
+app.get('/__routes', (_req, res) => {
+  const list = [];
+  const push = (layer, base = '') => {
+    if (layer.route?.path) {
+      const methods = Object.keys(layer.route.methods || {}).map(m => m.toUpperCase());
+      list.push({ path: base + layer.route.path, methods });
+    } else if (layer.name === 'router' && layer.handle?.stack) {
+      for (const l of layer.handle.stack) push(l, base);
+    }
+  };
+  if (app._router?.stack) for (const l of app._router.stack) push(l, '');
+  res.json({ ok: true, count: list.length, routes: list });
 });
 
-// ---------- Health ----------
-app.get('/health', async (_req, res) => {
-  const db = getDb();
-
-  // Basic Firestore ping: list one doc from rules_registry (safe/no-throw)
-  let registryOk = false;
-  try {
-    const snap = await db.collection('rules_registry').limit(1).get();
-    registryOk = !snap.empty;
-  } catch { registryOk = false; }
-
+app.get('/__diag', (_req, res) => {
   res.json({
     ok: true,
-    env: NODE_ENV,
-    projectId: PROJECT_ID || null,
-    uptimeSec: Math.round(process.uptime()),
-    registryReady: registryOk,
+    service: process.env.K_SERVICE || 'local',
+    revision: process.env.K_REVISION || 'dev',
+    project: GCLOUD_PROJECT || 'unknown',
     now: new Date().toISOString()
   });
 });
+/* ===== End Diagnostics ===== */
 
+/* ===== Firestore: telecom_outages ===== */
 
-// ---------- API v1 ----------
-const api = express.Router();
-// DOE OE-417 prefile (controller)
-api.post('/prefile/oe417', handleOE417);
-
-// Rules meta endpoint (returns active rule pack info)
-api.get('/meta/rules/:regulator', getRulesMeta);
-api.get('/export/submission/:id.json', exportSubmissionJSON);
-api.get('/export/submission/:id.pdf',  exportSubmissionPDF);
-// Ingestion endpoints (utility)
-
-// FCC DIRS prefile (inline demo using shared loader/validator)
-// Ingestion endpoints (utility)
-api.post('/ingest/outage-event', ingestOutageEvent);
-api.post('/ingest/gis/location', ingestGIS);
-api.post('/ingest/cis/customers', ingestCIS);
-api.post('/prefile/dirs', async (req, res, next) => {
+// quick DB ping
+app.get('/__db', async (_req, res) => {
   try {
-    const db = getDb();
-const { orgId, payload, extras } = req.body || {};
-    const pack = await loadRulePack('FCC_DIRS', new Date(), orgId);
-    const pre = validatePayload(pack, payload || {}, extras || {});
-    if (!pre.passed) return res.status(422).json({ ok: false, issues: pre });
-
-    const doc = await db.collection('submissions').add({
-      regulator: 'FCC_DIRS',
-      payload, preflight: pre,
-      rule_pack: {
-        regulator: 'FCC_DIRS',
-        version_id: pack.version_id,
-        pack_hash: pack.pack_hash || null,
-        cfr_refs: pack.cfr_refs || [],
-        codelists: pack.codelist_refs || []
-      },
-      created_at: new Date().toISOString()
-    });
-    res.json({ ok: true, id: doc.id });
-  } catch (e) { next(e); }
-});
-
-
-app.use('/v1', v1FixedRouter);
-
-// Fallback 404 (JSON only)
-app.use((req, res) => {
-  res.status(404).json({ ok: false, error: 'not_found', path: req.originalUrl });
-});
-
-// Error handler (never leak stack in prod)
-app.use((err, req, res, _next) => {
-  const rid = res.locals.rid;
-  const status = err.status || 500;
-  const payload = {
-    ok: false,
-    error: err.code || 'internal',
-    message: NODE_ENV === 'production' ? 'Internal error' : String(err.message || err),
-    rid
-  };
-  console.error('[error]', { rid, status, err: String(err) });
-  res.status(status).json(payload);
-});
-
-// ---------- Start ----------
-const server = // ---------- Health endpoint ----------
-app.get('/health', (req, res) => {
-  const db = getDb();
-  const db = getDb();
-
-  res.json({
-    ok: true,
-    env: process.env.NODE_ENV || 'development',
-    project: process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT || 'peakops-pilot',
-    ts: new Date().toISOString()
-  });
-});
-
-// ---------- Routers ----------
-app.use('/v1_fixed', v1FixedRouter);
-
-app.use('/v1', v1Router);
-
-// ---- Single-start guard (prevents EADDRINUSE) ----
-if (!globalThis.__PEAKOPS_SERVER__) {
-  globalThis.__PEAKOPS_SERVER__ = app.listen(PORT, () => {
-    console.log(`prefile server on : env= project=`);
-  });
-}
-
-// ---------- DEBUG: direct read from 'submissions' by id ----------
-app.get('/v1/debug/submissions/:id', async (req, res) => {
-  try {
-    const { getDb } = await import('./lib/admin.mjs');
-    const db = getDb();
-    const snap = await db.collection('submissions').doc(req.params.id).get();
-    res.json({ ok: true, coll: 'submissions', id: req.params.id, exists: snap.exists, data: snap.data() || null });
+    const t0 = Date.now();
+    await db.listCollections();
+    res.json({ ok: true, project: GCLOUD_PROJECT || 'unknown', ms: Date.now() - t0 });
   } catch (e) {
+    console.error('DB ping error', e);
     res.status(500).json({ ok: false, error: String(e) });
   }
 });
+
+// POST /v1/telecom/outages:ingest  (seed / inbound)
+app.post('/v1/telecom/outages:ingest', async (req, res) => {
+  try {
+    const b = (req.body && typeof req.body === 'object') ? req.body : {};
+    const payload = {
+      title: (b.title || 'Test outage').toString(),
+      status: b.status || 'open',
+      region: b.region || 'unknown',
+      created_at: Timestamp.now(),
+      meta: b.meta || {}
+    };
+    if (!payload.title.trim()) return res.status(400).json({ ok:false, error:'title_required' });
+    if (!['open','closed'].includes(payload.status)) return res.status(400).json({ ok:false, error:'invalid_status' });
+
+    const ref = await db.collection('telecom_outages').add(payload);
+    res.json({ ok: true, id: ref.id, item: payload });
+  } catch (e) {
+    console.error('ingest error', e);
+    res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+// GET /v1/telecom/outages?limit=25&status=open&region=PNW&cursor=<docId>
+} catch (e) {
+    console.error('outages list error', e);
+    // If Firestore prints an index URL, create it once and retry
+    res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+// PATCH /v1/telecom/outages/:id  (update; auto-close sets closed_at)
+const allowed = ['status','region','title','meta'];
+    const update = {};
+    for (const k of allowed) if (k in b) update[k] = b[k];
+
+    if (update.title && !update.title.toString().trim()) return res.status(400).json({ ok:false, error:'title_required' });
+    if (update.status && !['open','closed'].includes(update.status)) return res.status(400).json({ ok:false, error:'invalid_status' });
+    if (update.status === 'closed') update.closed_at = Timestamp.now();
+    if (!Object.keys(update).length) return res.status(400).json({ ok:false, error:'no_valid_fields' });
+
+    await ref.set(update, { merge:true });
+    res.json({ ok:true, id, update });
+  } catch (e) {
+    console.error('patch error', e);
+    res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+/* ===== End Firestore: telecom_outages ===== */
+
+/* 404 LAST */
+app.use((req, res) => res.status(404).json({ ok:false, error:'not_found', path:req.originalUrl }));
+
+/* Error handler */
+app.use((err, _req, res, _next) => {
+  const status = err?.status || 500;
+  res.status(status).json({ ok:false, error:'internal', message: NODE_ENV === 'production' ? undefined : String(err) });
+});
+
+/* Cloud Run listener */
+if (!globalThis.__PEAKOPS_SERVER__) {
+  globalThis.__PEAKOPS_SERVER__ = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`peakops server on :${PORT} env=${NODE_ENV}`);
+  });
+}
+
+
+/* ===== Telecom outages ===== */
+// GET /v1/telecom/outages?limit=25&status=open&region=PNW&cursor=<docId>
+} catch (e) {
+    console.error('outages list error', e);
+    res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+// PATCH /v1/telecom/outages/:id
+const allowed = ['status','region','title','meta'];
+    const update = {}; for (const k of allowed) if (k in b) update[k]=b[k];
+
+    if (update.title && !update.title.toString().trim()) return res.status(400).json({ ok:false, error:'title_required' });
+    if (update.status && !['open','closed'].includes(update.status)) return res.status(400).json({ ok:false, error:'invalid_status' });
+    if (update.status === 'closed') update.closed_at = Timestamp.now();
+    if (!Object.keys(update).length) return res.status(400).json({ ok:false, error:'no_valid_fields' });
+
+    await ref.set(update, { merge:true });
+    res.json({ ok:true, id, update });
+  } catch (e) {
+    console.error('patch error', e);
+    res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+/* ===== End telecom outages ===== */
+
+
+/* ===== Telecom outages ===== */
+// GET /v1/telecom/outages?limit=25&status=open&region=PNW&cursor=<docId>
+app.get('/v1/telecom/outages', async (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit || '25', 10), 200);
+    const status = req.query.status;
+    const region = req.query.region;
+    const cursor = req.query.cursor;
+
+    let q = db.collection('telecom_outages');
+    if (status) q = q.where('status','==', status);
+    if (region) q = q.where('region','==', region);
+    q = q.orderBy('created_at','desc').limit(limit);
+
+    if (cursor) {
+      const cur = await db.collection('telecom_outages').doc(cursor).get();
+      if (cur.exists) q = q.startAfter(cur);
+    }
+
+    const snap = await q.get();
+    const items = []; snap.forEach(d => items.push({ id:d.id, ...d.data() }));
+    const nextCursor = items.length === limit ? items[items.length-1].id : null;
+
+    res.json({ ok:true, count: items.length, nextCursor, items });
+  } catch (e) {
+    console.error('outages list error', e);
+    res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+// PATCH /v1/telecom/outages/:id
+app.patch('/v1/telecom/outages/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const b = (req.body && typeof req.body === 'object') ? req.body : {};
+    const ref = db.collection('telecom_outages').doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ ok:false, error:'not_found', id });
+
+    const allowed = ['status','region','title','meta'];
+    const update = {}; for (const k of allowed) if (k in b) update[k]=b[k];
+
+    if (update.title && !update.title.toString().trim()) return res.status(400).json({ ok:false, error:'title_required' });
+    if (update.status && !['open','closed'].includes(update.status)) return res.status(400).json({ ok:false, error:'invalid_status' });
+    if (update.status === 'closed') update.closed_at = Timestamp.now();
+    if (!Object.keys(update).length) return res.status(400).json({ ok:false, error:'no_valid_fields' });
+
+    await ref.set(update, { merge:true });
+    res.json({ ok:true, id, update });
+  } catch (e) {
+    console.error('patch error', e);
+    res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+/* ===== End telecom outages ===== */
+
+export default app;

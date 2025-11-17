@@ -1,0 +1,147 @@
+// functions/controllers/evidence.mjs
+import crypto from 'crypto';
+import { getDb } from '../lib/admin.mjs';
+import { Storage } from '@google-cloud/storage';
+
+function getStorage() {
+  const bucket = process.env.BUCKET_NAME;
+  if (!bucket) return null;
+  const storage = new Storage(); // ADC or serviceAccount.json
+  return { storage, bucket };
+}
+
+function sha256(bufOrStr) {
+  const buf = Buffer.isBuffer(bufOrStr) ? bufOrStr : Buffer.from(String(bufOrStr));
+  return 'sha256:' + crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+/**
+ * POST /v1/evidence/upload
+ * Body: { submission_id, filename, content_type?, data_base64 }
+ * - Computes SHA-256, uploads to GCS if BUCKET_NAME set
+ * - Creates evidence doc and appends a short ref under submissions/{id}.evidence[]
+ */
+export async function uploadEvidence(req, res) {
+  try {
+    const db = getDb();
+    const { submission_id, filename, content_type, data_base64 } = req.body || {};
+    if (!submission_id || !filename || !data_base64) {
+      return res.status(400).json({ ok:false, error:'missing_fields', need:['submission_id','filename','data_base64'] });
+    }
+
+    const bin = Buffer.from(data_base64, 'base64');
+    const hash = sha256(bin);
+
+    let storageKey = null, bucket = null;
+    const io = getStorage();
+    if (io) {
+      bucket = io.bucket;
+      const safeName = String(filename).replace(/[^A-Za-z0-9._-]+/g, '_').slice(-128);
+      storageKey = `evidence/${submission_id}/${hash.slice(7,19)}_${safeName}`;
+      await io.storage.bucket(bucket).file(storageKey).save(bin, {
+        contentType: content_type || 'application/octet-stream',
+        resumable: false
+      });
+    }
+
+    const now = new Date().toISOString();
+    const ev = {
+      submission_id,
+      filename,
+      content_type: content_type || 'application/octet-stream',
+      size_bytes: bin.length,
+      hash,
+      storage_key: storageKey,
+      bucket,
+      created_at: now
+    };
+
+    const evRef = await db.collection('evidence').add(ev);
+
+    await db.collection('submissions').doc(submission_id).set({
+      evidence: [{ id: evRef.id, hash, filename, storage_key: storageKey, bucket, created_at: now }]
+    }, { merge: true });
+
+    return res.json({ ok:true, evidence_id: evRef.id, hash, storage_key: storageKey, bucket });
+  } catch (e) {
+    console.error('uploadEvidence error', e);
+    return res.status(500).json({ ok:false, error:'internal' });
+  }
+}
+
+/**
+ * POST /v1/evidence/link
+ * Body: { submission_id, filename, content_type?, storage_key, bucket, size_bytes?, hash? }
+ * - Attach an already-uploaded object (no binary in request)
+ */
+export async function linkEvidence(req, res) {
+  try {
+    const db = getDb();
+    const { submission_id, filename, content_type, storage_key, bucket, size_bytes, hash } = req.body || {};
+    if (!submission_id || !filename || !storage_key || !bucket) {
+      return res.status(400).json({ ok:false, error:'missing_fields', need:['submission_id','filename','storage_key','bucket'] });
+    }
+    const now = new Date().toISOString();
+    const ev = {
+      submission_id, filename,
+      content_type: content_type || 'application/octet-stream',
+      size_bytes: size_bytes ?? null,
+      hash: hash || null,
+      storage_key, bucket, created_at: now
+    };
+    const evRef = await db.collection('evidence').add(ev);
+    await db.collection('submissions').doc(submission_id).set({
+      evidence: [{ id: evRef.id, hash: hash || null, filename, storage_key, bucket, created_at: now }]
+    }, { merge: true });
+
+    return res.json({ ok:true, evidence_id: evRef.id, hash: hash || null, storage_key, bucket });
+  } catch (e) {
+    console.error('linkEvidence error', e);
+    return res.status(500).json({ ok:false, error:'internal' });
+  }
+}
+
+/**
+ * GET /v1/evidence/:submission_id
+ * - List evidence for a submission
+ */
+export async function listEvidence(req, res) {
+  try {
+    const db = getDb();
+    const { submission_id } = req.params;
+    const snap = await db.collection('evidence')
+      .where('submission_id','==',submission_id)
+      .orderBy('created_at','desc')
+      .get();
+    const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    return res.json({ ok:true, count: docs.length, evidence: docs });
+  } catch (e) {
+    console.error('listEvidence error', e);
+    return res.status(500).json({ ok:false, error:'internal' });
+  }
+}
+
+/**
+ * POST /v1/evidence/verify
+ * Body: { evidence_id, expected_hash }
+ * - Compares stored hash to expected (metadata-level verification).
+ *   (Future: stream & recompute from GCS to verify at-rest hash).
+ */
+export async function verifyEvidence(req, res) {
+  try {
+    const db = getDb();
+    const { evidence_id, expected_hash } = req.body || {};
+    if (!evidence_id || !expected_hash) return res.status(400).json({ ok:false, error:'missing_fields' });
+
+    const doc = await db.collection('evidence').doc(evidence_id).get();
+    if (!doc.exists) return res.status(404).json({ ok:false, error:'not_found' });
+
+    const ev = doc.data();
+    const match = ev.hash === expected_hash;
+    return res.json({ ok:true, match, stored_hash: ev.hash, expected_hash });
+  } catch (e) {
+    console.error('verifyEvidence error', e);
+    return res.status(500).json({ ok:false, error:'internal' });
+  }
+}
+

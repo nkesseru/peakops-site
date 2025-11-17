@@ -1,31 +1,8 @@
-// Firestore Rules (MVP)
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    function isSignedIn() {
-      return request.auth != null;
+    match /{document=**} {
+      allow read, write: if true;
     }
-
-    function isOps() {
-      // Optional: add your emails here for write access during MVP
-      return isSignedIn() &&
-             request.auth.token.email in [
-               "nick@pioneer.example",
-               "eric@peakops.example"
-             ];
-    }
-
-    match /customers/{cid} {
-      allow read: if isSignedIn();
-      allow write: if isOps();
-    }
-
-    match /submissions/{sid} {
-      allow read: if isSignedIn();
-      allow write: if isOps();
-    }
-
-    // Add others as you grow (rule_packs, evidence, etc.)
   }
 }
