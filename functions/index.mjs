@@ -4,7 +4,7 @@ import * as admin from "firebase-admin";
 if (!admin.apps.length) admin.initializeApp();
 
 export const hello = onRequest((req, res) => {
-  res.json({ ok: true, msg: "functions emulator is loading index.mjs" });
+  res.json({ ok: true, msg: "hello from index.mjs" });
 });
 
 export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
@@ -16,6 +16,7 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
     const orgId = body.orgId;
     const draftsByType = (body.draftsByType && typeof body.draftsByType === "object") ? body.draftsByType : {};
     const compliance = body.compliance ?? null;
+    const generatorVersion = body.generatorVersion ?? "v1";
 
     const filingTypes = Object.keys(draftsByType);
 
@@ -42,7 +43,7 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
         payload: draft.payload ?? {},
         complianceSnapshot: compliance,
         generatedAt: draft.generatedAt ?? now,
-        generatorVersion: body.generatorVersion ?? "v1",
+        generatorVersion,
         createdAt: now,
         updatedAt: now,
         createdBy: "system",
@@ -55,7 +56,7 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
       incidentId,
       level: "INFO",
       event: "filing.package.persisted",
-      message: "Persisted filing drafts (stable endpoint)",
+      message: "Persisted filing drafts (Step 2.75)",
       context: { filingTypes, complianceOk: compliance?.ok ?? null },
       actor: { type: "SYSTEM" },
       createdAt: now,
