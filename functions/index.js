@@ -1,42 +1,66 @@
-import * as functions from "firebase-functions";
-import admin from "firebase-admin";
+import { onRequest } from "firebase-functions/v2/https";
+import * as admin from "firebase-admin";
 
-export const onJobWrite = functions.firestore
-  .document("organizations/{orgId}/jobs/{jobId}")
-  .onWrite(async (change, ctx) => {
-    const { orgId, jobId } = ctx.params;
-    const before = change.before.exists ? change.before.data() : null;
-    const after  = change.after.exists ? change.after.data()  : null;
-    if (!after) return;
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
 
-    const batch = admin.firestore().batch();
-    const jobRef = change.after.ref;
+// Minimal endpoint to prove persistence path.
+// NOTE: For now we accept the already-generated package shape from the request body.
+// Next step: we wire in your local generator code via a proper build pipeline / shared package.
+export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
 
-    // Derive isReady from materials/prereqs
-    const derived = !!after.materialsReady && !!after.prerequisitesMet;
-    if (after.isReady !== derived) {
-      batch.update(jobRef, { isReady: derived });
+    const { incidentId, orgId, draftsByType, compliance, generatorVersion } = req.body ?? {};
+    if (!incidentId || !orgId || !draftsByType) {
+      return res.status(400).json({ ok: false, error: "Missing incidentId/orgId/draftsByType" });
     }
 
-    // Status history & events
-    if (!before || before.status !== after.status) {
-      const entry = {
-        key: after.status,
-        at: admin.firestore.FieldValue.serverTimestamp(),
-        by: after.updatedBy ?? after.createdBy ?? null
-      };
-      batch.update(jobRef, {
-        statusHistory: admin.firestore.FieldValue.arrayUnion(entry)
-      });
-      const eventsRef = admin.firestore()
-        .collection(`organizations/${orgId}/job_events`).doc();
-      batch.set(eventsRef, {
-        jobId, action: "status_change",
-        from: before ? before.status : null,
-        to: after.status,
-        at: admin.firestore.FieldValue.serverTimestamp()
-      });
+    const db = admin.firestore();
+    const now = new Date().toISOString();
+
+    const batch = db.batch();
+
+    // Write each filing doc under the incident
+    for (const [type, draft] of Object.entries(draftsByType)) {
+      const ref = db.collection("incidents").doc(incidentId).collection("filings").doc(type);
+      batch.set(ref, {
+        id: type,
+        orgId,
+        incidentId,
+        type,
+        status: "DRAFT",
+        payload: draft?.payload ?? {},
+        complianceSnapshot: compliance ?? null,
+        generatedAt: draft?.generatedAt ?? now,
+        generatorVersion: generatorVersion ?? "v1",
+        createdAt: now,
+        updatedAt: now,
+        createdBy: "system",
+      }, { merge: true });
     }
+
+    // system log
+    const logRef = db.collection("system_logs").doc();
+    batch.set(logRef, {
+      orgId,
+      incidentId,
+      level: "INFO",
+      event: "filing.package.persisted",
+      message: "Persisted filing drafts (minimal endpoint)",
+      context: {
+        filingTypes: Object.keys(draftsByType),
+        complianceOk: compliance?.ok ?? null,
+      },
+      actor: { type: "SYSTEM" },
+      createdAt: now,
+    });
 
     await batch.commit();
-  });
+
+    return res.json({ ok: true, persisted: Object.keys(draftsByType), systemLogId: logRef.id });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
