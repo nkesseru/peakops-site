@@ -1,6 +1,7 @@
 import { onRequest } from "firebase-functions/v2/https";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
+import { nowIso, requireStr, optionalStr, pick } from "./api.mjs";
 import { sha256OfObject } from "./audit.mjs";
 
 if (!getApps().length) initializeApp();

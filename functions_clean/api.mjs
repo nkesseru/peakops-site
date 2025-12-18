@@ -8,7 +8,7 @@ export function requireStr(v, name) {
 }
 
 export function optionalStr(v) {
-  return (typeof v === "string" && v.trim()) ? v : null;
+  return (typeof v === "string" && v.trim()) ? v.trim() : null;
 }
 
 export function pick(obj, keys) {
