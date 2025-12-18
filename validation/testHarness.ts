@@ -11,9 +11,16 @@ const sample = {
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
   createdBy: "user_001",
+
+  // intentionally missing:
+  // affectedCustomers (DIRS requires)
+  // location.state (OE-417 requires)
 };
 
 const incident = IncidentZ.parse(sample);
-const result = runComplianceCheck(incident);
 
+// Pretend only DOCUMENT evidence exists so DIRS LOG requirement triggers
+const evidenceTypesPresent = ["DOCUMENT"];
+
+const result = runComplianceCheck(incident, evidenceTypesPresent);
 console.log(JSON.stringify(result, null, 2));
