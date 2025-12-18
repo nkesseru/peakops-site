@@ -931,3 +931,108 @@ export const listUsageEvents = onRequest(async (req, res) => {
     return res.status(400).json({ ok:false, error:String(e) });
   }
 });
+
+// Filing status controls (Admin workflow)
+export const setFilingStatusV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Use POST" });
+
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    const orgId = body.orgId;
+    const incidentId = body.incidentId;
+    const filingType = body.filingType; // DIRS/OE_417/NORS/SAR/BABA
+    const toStatus = body.toStatus;     // READY/SUBMITTED/AMENDED/CANCELLED/DRAFT
+    const userId = body.userId || "admin_ui";
+    const message = body.message || "";
+    const submissionMethod = body.submissionMethod || "MANUAL";
+    const confirmationId = body.confirmationId || "";
+
+    if (!orgId || !incidentId || !filingType || !toStatus) {
+      return res.status(400).json({ ok:false, error:"Missing orgId/incidentId/filingType/toStatus" });
+    }
+
+    const now = nowIso();
+
+    const db = getFirestore();
+    const filingRef = db.collection("incidents").doc(incidentId).collection("filings").doc(filingType);
+    const snap = await filingRef.get();
+    if (!snap.exists) return res.status(404).json({ ok:false, error:"Filing not found" });
+
+    const prev = snap.data() || {};
+    const fromStatus = prev.status || "DRAFT";
+
+    // build patch
+    const patch = {
+      status: toStatus,
+      updatedAt: now,
+    };
+
+    if (toStatus === "SUBMITTED") {
+      if (!confirmationId) return res.status(400).json({ ok:false, error:"confirmationId required for SUBMITTED" });
+      patch.submittedAt = now;
+      patch.submittedBy = userId;
+      patch.external = {
+        ...(prev.external || {}),
+        confirmationId,
+        submissionMethod,
+      };
+    }
+
+    // write filing_action_logs
+    const actionRef = db.collection("filing_action_logs").doc();
+    const actionDoc = {
+      orgId,
+      incidentId,
+      filingType,
+      userId,
+      action: "status_changed",
+      from: fromStatus,
+      to: toStatus,
+      message,
+      context: {
+        confirmationId: confirmationId || null,
+        submissionMethod: submissionMethod || null,
+      },
+      createdAt: now,
+    };
+
+    // add timeline event
+    const tlRef = db.collection("incidents").doc(incidentId).collection("timelineEvents").doc();
+    const tlDoc = {
+      id: tlRef.id,
+      orgId,
+      incidentId,
+      type: (toStatus === "SUBMITTED") ? "FILING_SUBMITTED" : "SYSTEM_NOTE",
+      occurredAt: now,
+      title: (toStatus === "SUBMITTED")
+        ? `Filing submitted: ${filingType}`
+        : `Filing status changed: ${filingType}`,
+      message: (toStatus === "SUBMITTED")
+        ? `Submitted (${submissionMethod}) · Confirmation: ${confirmationId}`
+        : `${fromStatus} → ${toStatus}`,
+      links: { filingId: filingType, userId },
+      source: "SYSTEM",
+      createdAt: now,
+    };
+
+    const batch = db.batch();
+    batch.set(filingRef, patch, { merge: true });
+    batch.set(actionRef, actionDoc);
+    batch.set(tlRef, tlDoc);
+
+    await batch.commit();
+
+    return res.json({
+      ok: true,
+      orgId,
+      incidentId,
+      filingType,
+      fromStatus,
+      toStatus,
+      filingActionLogId: actionRef.id,
+      timelineEventId: tlRef.id,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
