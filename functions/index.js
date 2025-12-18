@@ -1,13 +1,8 @@
 import { onRequest } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
+if (!admin.apps.length) admin.initializeApp();
 
-// Minimal endpoint to prove persistence path.
-// NOTE: For now we accept the already-generated package shape from the request body.
-// Next step: we wire in your local generator code via a proper build pipeline / shared package.
 export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
   try {
     if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
@@ -19,29 +14,30 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
 
     const db = admin.firestore();
     const now = new Date().toISOString();
-
     const batch = db.batch();
 
-    // Write each filing doc under the incident
     for (const [type, draft] of Object.entries(draftsByType)) {
       const ref = db.collection("incidents").doc(incidentId).collection("filings").doc(type);
-      batch.set(ref, {
-        id: type,
-        orgId,
-        incidentId,
-        type,
-        status: "DRAFT",
-        payload: draft?.payload ?? {},
-        complianceSnapshot: compliance ?? null,
-        generatedAt: draft?.generatedAt ?? now,
-        generatorVersion: generatorVersion ?? "v1",
-        createdAt: now,
-        updatedAt: now,
-        createdBy: "system",
-      }, { merge: true });
+      batch.set(
+        ref,
+        {
+          id: type,
+          orgId,
+          incidentId,
+          type,
+          status: "DRAFT",
+          payload: draft?.payload ?? {},
+          complianceSnapshot: compliance ?? null,
+          generatedAt: draft?.generatedAt ?? now,
+          generatorVersion: generatorVersion ?? "v1",
+          createdAt: now,
+          updatedAt: now,
+          createdBy: "system",
+        },
+        { merge: true }
+      );
     }
 
-    // system log
     const logRef = db.collection("system_logs").doc();
     batch.set(logRef, {
       orgId,
@@ -58,7 +54,6 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
     });
 
     await batch.commit();
-
     return res.json({ ok: true, persisted: Object.keys(draftsByType), systemLogId: logRef.id });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e) });
