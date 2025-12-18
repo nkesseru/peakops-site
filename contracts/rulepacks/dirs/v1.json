@@ -1,4 +1,21 @@
 {
   "version": "v1",
-  "rules": []
+  "filingType": "DIRS",
+  "rules": [
+    {
+      "code": "dirs.affectedCustomers.required",
+      "when": { "statusIn": ["ACTIVE", "MITIGATED", "CLOSED"] },
+      "require": { "field": "affectedCustomers" },
+      "message": "DIRS requires affectedCustomers",
+      "severity": "ERROR"
+    }
+  ],
+  "evidenceRequirements": [
+    {
+      "code": "dirs.evidence.outageProof",
+      "type": "LOG",
+      "message": "DIRS requires outage proof evidence (LOG)",
+      "severity": "WARN"
+    }
+  ]
 }
