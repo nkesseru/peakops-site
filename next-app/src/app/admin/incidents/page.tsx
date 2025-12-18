@@ -1,101 +1,96 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
-type Incident = {
-  id: string;
-  orgId: string;
-  title: string;
-  status?: string;
-  updatedAt?: string;
-  startTime?: string;
-  timelineMeta?: any;
-};
-
-export default function IncidentsPage() {
+export default function AdminIncidentsPage() {
   const [orgId, setOrgId] = useState("org_001");
-  const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function refresh() {
-    setLoading(true);
     setErr(null);
-    try {
-      const r = await fetch(`/api/fn/listIncidents?orgId=${encodeURIComponent(orgId)}`);
-      const j = await r.json();
-      if (!j.ok) throw new Error(j.error || "Failed");
-      setIncidents(j.incidents || []);
-    } catch (e: any) {
-      setErr(e.message || String(e));
-    } finally {
-      setLoading(false);
-    }
+    const res = await fetch(`/api/fn/listIncidents?orgId=${encodeURIComponent(orgId)}`);
+    const j = await res.json();
+    setData(j);
   }
 
   useEffect(() => { refresh(); }, []);
 
+  async function createTest() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const incidentId = `inc_${Math.random().toString(36).slice(2, 8)}`;
+      const res = await fetch(`/api/fn/createIncident`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          incidentId,
+          orgId,
+          title: "Windstorm outage - South District",
+          filingTypesRequired: ["DIRS","OE_417","NORS","SAR","BABA"],
+          status: "ACTIVE",
+        }),
+      });
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error || "createIncident failed");
+      await refresh();
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const incidents = useMemo(() => data?.incidents ?? [], [data]);
+
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700 }}>Incidents</h1>
+      <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Admin · Incidents</h1>
 
-      <div style={{ display: "flex", gap: 12, marginTop: 12, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
         <label>Org:</label>
-        <input value={orgId} onChange={(e) => setOrgId(e.target.value)} style={{ padding: 8, width: 240 }} />
-        <button onClick={refresh} style={{ padding: "8px 12px" }}>
-          {loading ? "Loading..." : "Refresh"}
+        <input
+          value={orgId}
+          onChange={(e) => setOrgId(e.target.value)}
+          style={{ padding: 8, border: "1px solid #ccc", borderRadius: 8 }}
+        />
+        <button onClick={refresh} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
+          Refresh
+        </button>
+        <button disabled={busy} onClick={createTest} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
+          {busy ? "Creating..." : "Create test incident"}
         </button>
       </div>
 
-      {err && <p style={{ color: "crimson", marginTop: 12 }}>{err}</p>}
+      {err && <pre style={{ marginTop: 12, color: "crimson" }}>{err}</pre>}
 
       <div style={{ marginTop: 18 }}>
         {incidents.length === 0 ? (
-          <p>No incidents found.</p>
+          <div style={{ opacity: 0.7 }}>No incidents yet.</div>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ textAlign: "left" }}>
-                <th style={{ padding: 8, borderBottom: "1px solid #ddd" }}>ID</th>
-                <th style={{ padding: 8, borderBottom: "1px solid #ddd" }}>Title</th>
-                <th style={{ padding: 8, borderBottom: "1px solid #ddd" }}>Status</th>
-                <th style={{ padding: 8, borderBottom: "1px solid #ddd" }}>Updated</th>
-                <th style={{ padding: 8, borderBottom: "1px solid #ddd" }}>Timeline</th>
-                <th style={{ padding: 8, borderBottom: "1px solid #ddd" }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {incidents.map((x) => (
-                <tr key={x.id}>
-                  <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{x.id}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>
-                    <a href={`/admin/incidents/${encodeURIComponent(x.id)}?orgId=${encodeURIComponent(orgId)}`}>
-                      {x.title || "(untitled)"}
-                    </a>
-                  </td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{x.status || ""}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>{x.updatedAt || ""}</td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>
-                    {x.timelineMeta?.timelineHash ? "✅" : "—"}
-                  </td>
-                  <td style={{ padding: 8, borderBottom: "1px solid #eee" }}>
-                    <button
-                      onClick={async () => {
-                        await fetch("/api/fn/generateTimelineAndPersist", {
-                          method: "POST",
-                          body: JSON.stringify({ incidentId: x.id, orgId }),
-                        });
-                        refresh();
-                      }}
-                      style={{ padding: "6px 10px" }}
-                    >
-                      Generate Timeline
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ul style={{ display: "grid", gap: 10, padding: 0, listStyle: "none" }}>
+            {incidents.map((it: any) => (
+              <li key={it.id} style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                  <div>
+                    <div style={{ fontWeight: 800 }}>{it.title ?? it.id}</div>
+                    <div style={{ fontSize: 12, opacity: 0.7 }}>
+                      {it.id} · {it.status ?? "?"} · updatedAt: {it.updatedAt ?? "?"}
+                    </div>
+                  </div>
+                  <Link
+                    href={`/admin/incidents/${encodeURIComponent(it.id)}?orgId=${encodeURIComponent(orgId)}`}
+                    style={{ alignSelf: "center", textDecoration: "none" }}
+                  >
+                    View →
+                  </Link>
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </div>
