@@ -555,3 +555,70 @@ export const getIncidentBundle = onRequest(async (req, res) => {
     return res.status(400).json({ ok:false, error:String(e) });
   }
 });
+
+// Generate filings using existing incident doc (no client stub payload)
+export const generateFilingPackageFromIncident = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const incidentId = body.incidentId;
+    const orgId = body.orgId;
+    if (!incidentId || !orgId) return res.status(400).json({ ok:false, error:"Missing incidentId/orgId" });
+
+    const db = getFirestore();
+    const incRef = db.collection("incidents").doc(incidentId);
+    const snap = await incRef.get();
+    if (!snap.exists) return res.status(404).json({ ok:false, error:"Incident not found" });
+
+    const inc = snap.data() || {};
+    const now = new Date().toISOString();
+
+    const filingTypes = Array.isArray(inc.filingTypesRequired) && inc.filingTypesRequired.length
+      ? inc.filingTypesRequired
+      : ["DIRS","OE_417","NORS","SAR","BABA"];
+
+    // Build drafts from incident fields (basic v1)
+    const draftsByType = {};
+    for (const t of filingTypes) {
+      draftsByType[t] = {
+        generatedAt: now,
+        payload: {
+          filingType: t,
+          incidentId,
+          orgId,
+          title: inc.title || "",
+          description: inc.description || "",
+          startTime: inc.startTime || inc.createdAt || now,
+          detectedTime: inc.detectedTime || null,
+          resolvedTime: inc.resolvedTime || null,
+          location: inc.location || null,
+          affectedCustomers: inc.affectedCustomers ?? null,
+          meta: { source: "peakops", schemaVersion: `${String(t).toLowerCase()}.v1` }
+        }
+      };
+    }
+
+    // Call the existing persist endpoint logic by reusing the same code path:
+    // (We just invoke generateFilingPackageAndPersist via fetch to local function URL)
+    const fnBase = "http://127.0.0.1:5001/peakops-pilot/us-central1";
+    const r = await fetch(`${fnBase}/generateFilingPackageAndPersist`, {
+      method: "POST",
+      headers: { "Content-Type":"application/json" },
+      body: JSON.stringify({
+        incidentId,
+        orgId,
+        title: inc.title || "",
+        startTime: inc.startTime || now,
+        draftsByType,
+        compliance: null,
+        generatorVersion: "v1"
+      })
+    });
+
+    const out = await r.json();
+    return res.json({ ok:true, incidentId, result: out });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
