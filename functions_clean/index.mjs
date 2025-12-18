@@ -155,10 +155,19 @@ export const generateTimelineAndPersist = onRequest(async (req, res) => {
         message: x.message || "",
         createdAt: x.createdAt || now,
       };
-    }).reverse(); // oldest -> newest
+    }).reverse(); 
+
+    const [userSnap, filingSnap] = await Promise.all([
+      db.collection("user_action_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(200).get(),
+      db.collection("filing_action_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(200).get(),
+    ]);
+
+    const userLogs = userSnap.docs.map(d => ({ id: d.id, ...((d.data())||{}) })).reverse();
+    const filingLogs = filingSnap.docs.map(d => ({ id: d.id, ...((d.data())||{}) })).reverse();
+// oldest -> newest
 
     // 4) Generate timeline + hash
-    const { events, timelineHash, generatedAt } = generateTimelineLevel1({ incident, filings, systemLogs });
+    const { events, timelineHash, generatedAt } = generateTimelineLevel1({ incident, filings, systemLogs, userLogs, filingLogs });
 
     // 5) Persist events (batch). (Safe under 500; if you exceed later, we chunk.)
     const batch = db.batch();
