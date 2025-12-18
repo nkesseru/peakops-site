@@ -13,12 +13,11 @@ export default function AdminIncidentDetail() {
   const [bundle, setBundle] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
 
   async function load() {
     setErr(null);
-    const res = await fetch(
-      `/api/fn/getIncidentBundle?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`
-    );
+    const res = await fetch(`/api/fn/getIncidentBundle?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
     const j = await res.json();
     if (!j.ok) {
       setBundle(null);
@@ -28,10 +27,7 @@ export default function AdminIncidentDetail() {
     setBundle(j);
   }
 
-  useEffect(() => {
-    if (incidentId) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incidentId]);
+  useEffect(() => { if (incidentId) load(); }, [incidentId]);
 
   async function postFn(path: string, body: any) {
     const r = await fetch(`/api/fn/${path}`, {
@@ -42,46 +38,47 @@ export default function AdminIncidentDetail() {
     return r.json();
   }
 
-  async function generateFilingsOnly() {
-    setBusy("filings");
-    setErr(null);
+  async function runFilings() {
+    setBusy("filings"); setErr(null); setBanner(null);
     try {
-      const out = await postFn("generateFilingPackageFromIncident", { incidentId, orgId });
-      if (!out.ok) throw new Error(out.error || "generateFilingPackageFromIncident failed");
+      const out = await postFn("generateFilingsV2", { incidentId, orgId, requestedBy: "admin_ui" });
+      if (!out.ok) throw new Error(out.error || "generateFilingsV2 failed");
+      setBanner(`Filings: updated ${out.changed.length}, unchanged ${out.skipped.length}`);
       await load();
-    } catch (e: any) {
+    } catch (e:any) {
       setErr(e.message || String(e));
     } finally {
       setBusy(null);
     }
   }
 
-  async function generateTimelineOnly() {
-    setBusy("timeline");
-    setErr(null);
+  async function runTimeline() {
+    setBusy("timeline"); setErr(null); setBanner(null);
     try {
-      const out = await postFn("generateTimelineAndPersist", { incidentId, orgId });
-      if (!out.ok) throw new Error(out.error || "generateTimelineAndPersist failed");
+      const out = await postFn("generateTimelineV2", { incidentId, orgId, requestedBy: "admin_ui" });
+      if (!out.ok) throw new Error(out.error || "generateTimelineV2 failed");
+      if (out.skipped) setBanner(`Timeline: unchanged (hash match). No update needed.`);
+      else setBanner(`Timeline: generated ${out.eventCount} events`);
       await load();
-    } catch (e: any) {
+    } catch (e:any) {
       setErr(e.message || String(e));
     } finally {
       setBusy(null);
     }
   }
 
-  async function generateBoth() {
-    setBusy("both");
-    setErr(null);
+  async function runBoth() {
+    setBusy("both"); setErr(null); setBanner(null);
     try {
-      const a = await postFn("generateFilingPackageFromIncident", { incidentId, orgId });
-      if (!a.ok) throw new Error(a.error || "generateFilingPackageFromIncident failed");
-
-      const b = await postFn("generateTimelineAndPersist", { incidentId, orgId });
-      if (!b.ok) throw new Error(b.error || "generateTimelineAndPersist failed");
-
+      const out = await postFn("generateBothV2", { incidentId, orgId, requestedBy: "admin_ui" });
+      if (!out.ok) throw new Error(out.error || "generateBothV2 failed");
+      const f = out.filings;
+      const t = out.timeline;
+      const fMsg = `Filings: updated ${(f.changed||[]).length}, unchanged ${(f.skipped||[]).length}`;
+      const tMsg = t.skipped ? `Timeline: unchanged` : `Timeline: ${t.eventCount} events`;
+      setBanner(`${fMsg} · ${tMsg}`);
       await load();
-    } catch (e: any) {
+    } catch (e:any) {
       setErr(e.message || String(e));
     } finally {
       setBusy(null);
@@ -93,35 +90,32 @@ export default function AdminIncidentDetail() {
   const timelineMeta = bundle?.timelineMeta ?? null;
   const logs = bundle?.logs ?? null;
 
+  const filingsMeta = incident?.filingsMeta ?? null;
+
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Admin · Incident {incidentId}</h1>
-        <a href={`/admin/incidents?orgId=${encodeURIComponent(orgId)}`} style={{ textDecoration: "none" }}>
-          ← Back
-        </a>
+        <a href={`/admin/incidents?orgId=${encodeURIComponent(orgId)}`} style={{ textDecoration: "none" }}>← Back</a>
       </div>
 
       <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Org: {orgId}</div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-        <button disabled={!!busy} onClick={load} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          Refresh
-        </button>
-
-        <button disabled={!!busy} onClick={generateFilingsOnly} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {busy === "filings" ? "Working…" : "Generate Filings"}
-        </button>
-
-        <button disabled={!!busy} onClick={generateTimelineOnly} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {busy === "timeline" ? "Working…" : "Generate Timeline"}
-        </button>
-
-        <button disabled={!!busy} onClick={generateBoth} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {busy === "both" ? "Working…" : "Generate Both"}
-        </button>
+        <button disabled={!!busy} onClick={load}>Refresh</button>
+        <button disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</button>
+        <button disabled={!!busy} onClick={runTimeline}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</button>
+        <button disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</button>
       </div>
 
+      {(filingsMeta || timelineMeta) && (
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
+          {filingsMeta && <div>Filings last run: {filingsMeta.generatedAt} · updated {filingsMeta.changedCount} · unchanged {filingsMeta.skippedCount}</div>}
+          {timelineMeta && <div>Timeline last run: {timelineMeta.generatedAt} · events {timelineMeta.eventCount} · hash {timelineMeta.timelineHash?.slice?.(0, 12)}…</div>}
+        </div>
+      )}
+
+      {banner && <div style={{ marginTop: 10, padding: 10, border: "1px solid #ddd", borderRadius: 10 }}>{banner}</div>}
       {err && <pre style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</pre>}
 
       <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
