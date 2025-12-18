@@ -27,7 +27,7 @@ export default function AdminIncidentDetail() {
     setBundle(j);
   }
 
-  useEffect(() => { if (incidentId) load(); }, [incidentId]);
+  useEffect(() => { if (incidentId) { load(); loadTimeline(); } }, [incidentId]);
 
   async function postFn(path: string, body: any) {
     const r = await fetch(`/api/fn/${path}`, {
@@ -45,6 +45,7 @@ export default function AdminIncidentDetail() {
       if (!out.ok) throw new Error(out.error || "generateFilingsV2 failed");
       setBanner(`Filings: updated ${out.changed.length}, unchanged ${out.skipped.length}`);
       await load();
+      await loadTimeline();
     } catch (e:any) {
       setErr(e.message || String(e));
     } finally {
