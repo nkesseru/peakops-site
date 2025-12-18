@@ -488,3 +488,25 @@ export const attachEvidenceStub = onRequest(async (req, res) => {
     return res.status(400).json({ ok:false, error:String(e) });
   }
 });
+
+// LIST INCIDENTS (admin/supervisor UI)
+export const listIncidents = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).json({ ok:false, error:"Use GET" });
+
+    const orgId = req.query.orgId;
+    if (typeof orgId !== "string") return res.status(400).json({ ok:false, error:"Missing orgId" });
+
+    const db = getFirestore();
+    const snap = await db.collection("incidents")
+      .where("orgId","==",orgId)
+      .orderBy("updatedAt","desc")
+      .limit(50)
+      .get();
+
+    const incidents = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    return res.json({ ok:true, orgId, incidents });
+  } catch (e) {
+    return res.status(400).json({ ok:false, error:String(e) });
+  }
+});
