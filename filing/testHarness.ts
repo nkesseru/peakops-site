@@ -1,5 +1,5 @@
 import { IncidentZ } from "../contracts/validators/incident.zod";
-import { generateFilingDraft } from "./generateDraft";
+import { generateFilingPackage } from "./generatePackage";
 
 const sample = {
   id: "inc_001",
@@ -11,11 +11,12 @@ const sample = {
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
   createdBy: "user_001",
-
-  // intentionally missing some stuff; generator should still produce drafts
 };
 
 const incident = IncidentZ.parse(sample);
 
-const drafts = incident.filingTypesRequired.map((t) => generateFilingDraft(incident, t));
-console.log(JSON.stringify(drafts, null, 2));
+// Pretend only DOCUMENT evidence exists so DIRS LOG requirement triggers
+const evidenceTypesPresent = ["DOCUMENT"];
+
+const pkg = generateFilingPackage(incident, evidenceTypesPresent);
+console.log(JSON.stringify(pkg, null, 2));
