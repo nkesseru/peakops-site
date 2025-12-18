@@ -20,19 +20,14 @@ async function forward(req: NextRequest) {
   headers.delete("host");
 
   const init: RequestInit = { method: req.method, headers };
-
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = await req.text();
-  }
+  if (req.method !== "GET" && req.method !== "HEAD") init.body = await req.text();
 
   const res = await fetch(target.toString(), init);
   const text = await res.text();
 
   return new NextResponse(text, {
     status: res.status,
-    headers: {
-      "content-type": res.headers.get("content-type") || "application/json",
-    },
+    headers: { "content-type": res.headers.get("content-type") || "application/json" },
   });
 }
 
