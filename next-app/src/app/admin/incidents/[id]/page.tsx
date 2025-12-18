@@ -3,44 +3,26 @@
 import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 
-export default function IncidentDetail() {
+export default function IncidentDetailBundle() {
   const params = useParams<{ id: string }>();
   const sp = useSearchParams();
 
   const incidentId = params.id;
   const orgId = sp.get("orgId") || "org_001";
 
-  const [incident, setIncident] = useState<any>(null);
-  const [logs, setLogs] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [bundle, setBundle] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [resp, setResp] = useState<any>(null);
+  const [busy, setBusy] = useState<string | null>(null);
 
   async function load() {
-    setLoading(true);
     setErr(null);
-    try {
-      const a = await fetch(`/api/fn/getIncident?incidentId=${encodeURIComponent(incidentId)}`);
-      const aj = await a.json();
-      if (!aj.ok) throw new Error(aj.error || "getIncident failed");
-      setIncident(aj.incident);
-
-      const b = await fetch(`/api/fn/getIncidentLogs?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
-      const bj = await b.json();
-      if (!bj.ok) throw new Error(bj.error || "getIncidentLogs failed");
-      setLogs(bj);
-    } catch (e: any) {
-      setErr(e.message || String(e));
-    } finally {
-      setLoading(false);
-    }
+    const res = await fetch(`/api/fn/getIncidentBundle?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || "getIncidentBundle failed");
+    setBundle(j);
   }
 
-  useEffect(() => {
-    if (incidentId) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incidentId]);
+  useEffect(() => { if (incidentId) load().catch(e => setErr(e.message)); }, [incidentId]);
 
   async function postFn(path: string, body: any) {
     const r = await fetch(`/api/fn/${path}`, {
@@ -48,15 +30,28 @@ export default function IncidentDetail() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return r.json();
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || `${path} failed`);
+    return j;
+  }
+
+  async function generateTimeline() {
+    setBusy("timeline"); setErr(null);
+    try {
+      await postFn("generateTimelineAndPersist", { incidentId, orgId });
+      await load();
+    } catch (e: any) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function persistDirsStub() {
-    setBusy("filings");
-    setResp(null);
-    setErr(null);
+    setBusy("filings"); setErr(null);
     try {
-      const out = await postFn("generateFilingPackageAndPersist", {
+      const incident = bundle?.incident;
+      await postFn("generateFilingPackageAndPersist", {
         incidentId,
         orgId,
         title: incident?.title ?? "",
@@ -67,8 +62,6 @@ export default function IncidentDetail() {
         compliance: null,
         generatorVersion: "v1"
       });
-      if (!out.ok) throw new Error(out.error || "generateFilingPackageAndPersist failed");
-      setResp(out);
       await load();
     } catch (e: any) {
       setErr(e.message || String(e));
@@ -77,21 +70,10 @@ export default function IncidentDetail() {
     }
   }
 
-  async function generateTimeline() {
-    setBusy("timeline");
-    setResp(null);
-    setErr(null);
-    try {
-      const out = await postFn("generateTimelineAndPersist", { incidentId, orgId });
-      if (!out.ok) throw new Error(out.error || "generateTimelineAndPersist failed");
-      setResp(out);
-      await load();
-    } catch (e: any) {
-      setErr(e.message || String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
+  const incident = bundle?.incident;
+  const filings = bundle?.filings ?? [];
+  const timelineMeta = bundle?.timelineMeta ?? incident?.timelineMeta ?? null;
+  const logs = bundle?.logs ?? null;
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
@@ -103,31 +85,33 @@ export default function IncidentDetail() {
       <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Org: {orgId}</div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-        <button onClick={load} disabled={loading || !!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {loading ? "Loading..." : "Refresh"}
+        <button onClick={() => load().catch(e => setErr(e.message))} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
+          Refresh
         </button>
-
-        <button onClick={persistDirsStub} disabled={loading || !!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
+        <button disabled={!!busy} onClick={persistDirsStub} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
           {busy === "filings" ? "Working..." : "Persist DIRS draft (stub)"}
         </button>
-
-        <button onClick={generateTimeline} disabled={loading || !!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
+        <button disabled={!!busy} onClick={generateTimeline} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
           {busy === "timeline" ? "Working..." : "Generate timeline"}
         </button>
       </div>
 
       {err && <pre style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</pre>}
 
-      {resp && (
-        <pre style={{ marginTop: 12, background: "#f7f7f7", padding: 12, borderRadius: 12, whiteSpace: "pre-wrap" }}>
-          {JSON.stringify(resp, null, 2)}
-        </pre>
-      )}
-
       <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
         <section style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
           <h2 style={{ fontSize: 14, fontWeight: 800, margin: 0, marginBottom: 10 }}>Incident</h2>
           <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{incident ? JSON.stringify(incident, null, 2) : "—"}</pre>
+        </section>
+
+        <section style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 800, margin: 0, marginBottom: 10 }}>Filings</h2>
+          <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{JSON.stringify(filings, null, 2)}</pre>
+        </section>
+
+        <section style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 800, margin: 0, marginBottom: 10 }}>Timeline Meta</h2>
+          <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{timelineMeta ? JSON.stringify(timelineMeta, null, 2) : "—"}</pre>
         </section>
 
         <section style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
