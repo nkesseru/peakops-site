@@ -8,7 +8,6 @@ export function generateTimelineLevel1({ incident, filings, systemLogs, userLogs
   const now = new Date().toISOString();
   const events = [];
 
-  // Incident anchors
   events.push({
     id: mkId("evt", "incident_start"),
     orgId: incident.orgId,
@@ -45,12 +44,10 @@ export function generateTimelineLevel1({ incident, filings, systemLogs, userLogs
       title: "Incident resolved",
       message: "Resolved time recorded",
       source: "SYSTEM",
-      createdAtk: now,
       createdAt: now,
     });
   }
 
-  // Filing draft events
   for (const f of filings) {
     const t = f.generatedAt || f.updatedAt || f.createdAt || now;
     events.push({
@@ -67,22 +64,20 @@ export function generateTimelineLevel1({ incident, filings, systemLogs, userLogs
     });
   }
 
-  // System logs as timeline notes
   for (const log of systemLogs) {
     events.push({
       id: mkId("evt", `syslog_${log.id}`),
       orgId: incident.orgId,
       incidentId: incident.id,
       type: "SYSTEM_NOTE",
-      occurredAt: log.createdAt,
-      title: log.event,
+      occurredAt: log.createdAt || now,
+      title: log.event || "system.log",
       message: log.message || "",
       source: "SYSTEM",
       createdAt: now,
     });
   }
 
-  // User action logs -> timeline notes
   for (const u of userLogs) {
     events.push({
       id: mkId("evt", `user_${u.id}`),
@@ -98,21 +93,14 @@ export function generateTimelineLevel1({ incident, filings, systemLogs, userLogs
     });
   }
 
-  // Filing action logs -> timeline events
   for (const f of filingLogs) {
     const filingType = f.filingType || "UNKNOWN";
     const action = f.action || "action";
-    const mappedType =
-      action === "submitted" ? "FILING_SUBMITTED" :
-      action === "accepted" ? "FILING_SUBMITTED" :
-      action === "rejected" ? "FILING_SUBMITTED" :
-      "FILING_SUBMITTED";
-
     events.push({
       id: mkId("evt", `filingaction_${f.id}`),
       orgId: f.orgId || incident.orgId,
       incidentId: incident.id,
-      type: mappedType,
+      type: "FILING_SUBMITTED",
       occurredAt: f.createdAt || now,
       title: `Filing ${filingType}: ${action}`,
       message: f.message || "",
@@ -122,11 +110,8 @@ export function generateTimelineLevel1({ incident, filings, systemLogs, userLogs
     });
   }
 
-  // Deterministic ordering
   events.sort((a, b) => (a.occurredAt || "").localeCompare(b.occurredAt || "") || a.id.localeCompare(b.id));
 
-  // Timeline hash (3D)
   const timelineHash = sha256OfObject(events).hash;
-
   return { events, timelineHash, generatedAt: now };
 }
