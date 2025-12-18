@@ -7,15 +7,11 @@ function fmtTs(iso?: string) {
   if (!iso) return "—";
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
-
 function shortHash(h?: string) {
   if (!h) return "—";
   return h.length > 14 ? `${h.slice(0, 12)}…${h.slice(-4)}` : h;
 }
-
-async function copyText(txt: string) {
-  try { await navigator.clipboard.writeText(txt); } catch {}
-}
+async function copyText(txt: string) { try { await navigator.clipboard.writeText(txt); } catch {} }
 
 export default function AdminIncidentDetail() {
   const params = useParams<{ id: string }>();
@@ -43,22 +39,37 @@ export default function AdminIncidentDetail() {
     background: "color-mix(in oklab, CanvasText 6%, transparent)",
     cursor: "pointer",
   };
+  const pill: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "8px 12px",
+    borderRadius: 12,
+    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
+    background: "color-mix(in oklab, CanvasText 4%, transparent)",
+    fontSize: 13,
+    fontWeight: 700,
+  };
 
+  async function jfetch(url: string) {
+    const r = await fetch(url);
+    return r.json();
+  }
+
+  // retry small (handles “functions not loaded yet” at startup)
   async function loadBundle() {
     setErr(null);
-    const res = await fetch(
-      `/api/fn/getIncidentBundle?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`
-    );
-    const j = await res.json();
-    if (!j.ok) { setBundle(null); setErr(j.error || "getIncidentBundle failed"); return; }
-    setBundle(j);
+    for (let i = 0; i < 4; i++) {
+      const j = await jfetch(`/api/fn/getIncidentBundle?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
+      if (j.ok) { setBundle(j); return; }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    setBundle(null);
+    setErr("getIncidentBundle failed");
   }
 
   async function loadTimeline() {
-    const res = await fetch(
-      `/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`
-    );
-    const j = await res.json();
+    const j = await jfetch(`/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
     if (j.ok) setTimelineEvents(j.events || []);
   }
 
@@ -78,23 +89,30 @@ export default function AdminIncidentDetail() {
     return r.json();
   }
 
+  function noChargeIf(cond: boolean) {
+    return cond ? " · No changes — no charge" : "";
+  }
+
   async function runFilings() {
     setBusy("filings"); setErr(null); setBanner(null);
     try {
       const out = await postFn("generateFilingsV2", { incidentId, orgId, requestedBy: "admin_ui" });
       if (!out.ok) throw new Error(out.error || "generateFilingsV2 failed");
-      setBanner(`Filings: updated ${out.changed.length}, unchanged ${out.skipped.length}`);
+      const updated = (out.changed || []).length;
+      const unchanged = (out.skipped || []).length;
+      setBanner(`Filings: updated ${updated}, unchanged ${unchanged}${noChargeIf(updated === 0)}`);
       await loadBundle(); await loadTimeline();
     } catch (e:any) { setErr(e.message || String(e)); }
     finally { setBusy(null); }
   }
 
-  async function runTimeline() {
+  async function runTimelineGen() {
     setBusy("timeline"); setErr(null); setBanner(null);
     try {
       const out = await postFn("generateTimelineV2", { incidentId, orgId, requestedBy: "admin_ui" });
       if (!out.ok) throw new Error(out.error || "generateTimelineV2 failed");
-      setBanner(out.skipped ? "Timeline: unchanged (hash match)" : `Timeline: generated ${out.eventCount} events`);
+      if (out.skipped) setBanner(`Timeline: unchanged (hash match) · No changes — no charge`);
+      else setBanner(`Timeline: generated ${out.eventCount} events`);
       await loadBundle(); await loadTimeline();
     } catch (e:any) { setErr(e.message || String(e)); }
     finally { setBusy(null); }
@@ -105,10 +123,12 @@ export default function AdminIncidentDetail() {
     try {
       const out = await postFn("generateBothV2", { incidentId, orgId, requestedBy: "admin_ui" });
       if (!out.ok) throw new Error(out.error || "generateBothV2 failed");
-      const f = out.filings;
-      const t = out.timeline;
-      const fMsg = `Filings: updated ${(f.changed||[]).length}, unchanged ${(f.skipped||[]).length}`;
-      const tMsg = t.skipped ? "Timeline: unchanged" : `Timeline: ${t.eventCount} events`;
+      const f = out.filings || {};
+      const t = out.timeline || {};
+      const fu = (f.changed || []).length;
+      const fs = (f.skipped || []).length;
+      const fMsg = `Filings: updated ${fu}, unchanged ${fs}${noChargeIf(fu === 0)}`;
+      const tMsg = t.skipped ? `Timeline: unchanged · No changes — no charge` : `Timeline: ${t.eventCount} events`;
       setBanner(`${fMsg} · ${tMsg}`);
       await loadBundle(); await loadTimeline();
     } catch (e:any) { setErr(e.message || String(e)); }
@@ -135,11 +155,9 @@ export default function AdminIncidentDetail() {
       <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
         <button style={btn} disabled={!!busy} onClick={() => { loadBundle(); loadTimeline(); }}>Refresh</button>
         <button style={btn} disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</button>
-        <button style={btn} disabled={!!busy} onClick={runTimeline}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</button>
+        <button style={btn} disabled={!!busy} onClick={runTimelineGen}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</button>
         <button style={btn} disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</button>
-        <a style={{ ...btn, textDecoration: "none", color: "CanvasText", opacity: 0.9 }} href={`/admin/usage?orgId=${encodeURIComponent(orgId)}`}>
-          Usage →
-        </a>
+        <a style={{ ...btn, textDecoration: "none", color: "CanvasText", opacity: 0.9 }} href={`/admin/usage?orgId=${encodeURIComponent(orgId)}`}>Usage →</a>
       </div>
 
       {(filingsMeta || timelineMeta) && (
@@ -149,7 +167,7 @@ export default function AdminIncidentDetail() {
         </div>
       )}
 
-      {banner && <div style={{ marginTop: 10, padding: 10, border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)", borderRadius: 12 }}>{banner}</div>}
+      {banner && <div style={{ marginTop: 10, ...pill }}>{banner}</div>}
       {err && <pre style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</pre>}
 
       <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
@@ -190,13 +208,7 @@ export default function AdminIncidentDetail() {
                     </td>
                     <td style={{ padding: "10px 8px", opacity: 0.85 }}>{fmtTs(f.generatedAt)}</td>
                     <td style={{ padding: "10px 8px" }}>
-                      <button
-                        style={btn}
-                        onClick={() => copyText(String(f?.payloadHash?.value || ""))}
-                        disabled={!f?.payloadHash?.value}
-                      >
-                        Copy hash
-                      </button>
+                      <button style={btn} onClick={() => copyText(String(f?.payloadHash?.value || ""))} disabled={!f?.payloadHash?.value}>Copy hash</button>
                     </td>
                   </tr>
                 ))}
