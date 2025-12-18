@@ -141,6 +141,194 @@ function LogPanel({ logs }: any) {
   );
 }
 
+
+function FilingActionsPanel({ logs }: any) {
+  const [q, setQ] = useState("");
+  const [type, setType] = useState("ALL");
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+
+  const items = useMemo(() => {
+    const arr: any[] = [];
+    if (logs?.filing) for (const x of logs.filing) arr.push(x);
+    return arr.sort((a,b) => String(b.createdAt||"").localeCompare(String(a.createdAt||"")));
+  }, [logs]);
+
+  const filingTypes = useMemo(() => {
+    const set = new Set<string>();
+    for (const x of items) if (x.filingType) set.add(String(x.filingType));
+    return ["ALL", ...Array.from(set).sort()];
+  }, [items]);
+
+  const filtered = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return items.filter(x => {
+      if (type !== "ALL" && String(x.filingType) !== type) return false;
+      if (!t) return true;
+      return (
+        String(x.filingType||"").toLowerCase().includes(t) ||
+        String(x.action||"").toLowerCase().includes(t) ||
+        String(x.message||"").toLowerCase().includes(t) ||
+        String(x.from||"").toLowerCase().includes(t) ||
+        String(x.to||"").toLowerCase().includes(t)
+      );
+    });
+  }, [items, q, type]);
+
+  const inputStyle: React.CSSProperties = {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+    background: "Canvas",
+    color: "CanvasText",
+  };
+
+  return (
+    <div>
+      <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:10, flexWrap:"wrap" }}>
+        <input value={q} onChange={(e)=>setQ(e.target.value)} placeholder="Search filing actions…" style={{ ...inputStyle, flex: 1, minWidth: 240 }} />
+        <select value={type} onChange={(e)=>setType(e.target.value)} style={inputStyle}>
+          {filingTypes.map(ft => <option key={ft} value={ft}>{ft}</option>)}
+        </select>
+        <div style={{ fontSize:12, opacity:0.7 }}>{filtered.length} shown</div>
+      </div>
+
+      <div style={{ display:"grid", gap:8 }}>
+        {filtered.map((x:any) => {
+          const id = x.id || Math.random().toString(36).slice(2);
+          const isOpen = !!open[id];
+          return (
+            <div key={id} style={{
+              border: "1px solid color-mix(in oklab, CanvasText 12%, transparent)",
+              borderRadius: 12,
+              padding: 10,
+              background: "color-mix(in oklab, CanvasText 3%, transparent)"
+            }}>
+              <div style={{ display:"flex", justifyContent:"space-between", gap:12 }}>
+                <div>
+                  <div style={{ fontSize:12, opacity:0.7 }}>
+                    {fmtTs(x.createdAt)} · {x.filingType || "—"} · {x.action || "—"}
+                  </div>
+                  <div style={{ fontWeight:900 }}>
+                    {x.from ? `${x.from} → ${x.to}` : (x.to ? String(x.to) : "Action")}
+                  </div>
+                  <div style={{ opacity:0.9 }}>{x.message || ""}</div>
+                </div>
+
+                <button
+                  style={{
+                    padding:"6px 10px",
+                    borderRadius: 10,
+                    border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+                    background:"transparent",
+                    color:"CanvasText",
+                    cursor:"pointer",
+                    height: 34,
+                    alignSelf:"center"
+                  }}
+                  onClick={()=>setOpen(o=>({ ...o, [id]: !o[id] }))}
+                >
+                  {isOpen ? "Hide" : "Show"}
+                </button>
+              </div>
+
+              {isOpen && (
+                <pre style={{ marginTop:10, whiteSpace:"pre-wrap", fontSize:12, opacity:0.9 }}>
+{JSON.stringify(x, null, 2)}
+                </pre>
+              )}
+            </div>
+          );
+        })}
+        {filtered.length === 0 && <div style={{ opacity:0.7 }}>No filing actions yet. Use READY/SUBMITTED to create them.</div>}
+      </div>
+    </div>
+  );
+}
+
+function SystemUserLogsPanel({ logs }: any) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+
+  const items = useMemo(() => {
+    const all: any[] = [];
+    if (logs?.system) for (const x of logs.system) all.push({ bucket: "system", ...x });
+    if (logs?.user) for (const x of logs.user) all.push({ bucket: "user", ...x });
+    return all.sort((a,b) => String(b.createdAt||"").localeCompare(String(a.createdAt||"")));
+  }, [logs]);
+
+  const filtered = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return items;
+    return items.filter(x =>
+      String(x.event||"").toLowerCase().includes(t) ||
+      String(x.message||"").toLowerCase().includes(t) ||
+      String(x.bucket||"").toLowerCase().includes(t)
+    );
+  }, [items, q]);
+
+  const inputStyle: React.CSSProperties = {
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+    background: "Canvas",
+    color: "CanvasText",
+  };
+
+  return (
+    <div>
+      <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:10 }}>
+        <input value={q} onChange={(e)=>setQ(e.target.value)} placeholder="Search system/user logs…" style={{ ...inputStyle, flex: 1 }} />
+        <div style={{ fontSize:12, opacity:0.7 }}>{filtered.length} shown</div>
+      </div>
+
+      <div style={{ display:"grid", gap:8 }}>
+        {filtered.map((x:any) => {
+          const id = x.id || Math.random().toString(36).slice(2);
+          const isOpen = !!open[id];
+          return (
+            <div key={id} style={{
+              border: "1px solid color-mix(in oklab, CanvasText 12%, transparent)",
+              borderRadius: 12,
+              padding: 10,
+              background: "color-mix(in oklab, CanvasText 3%, transparent)"
+            }}>
+              <div style={{ display:"flex", justifyContent:"space-between", gap:12 }}>
+                <div>
+                  <div style={{ fontSize:12, opacity:0.7 }}>{fmtTs(x.createdAt)} · {x.bucket}</div>
+                  <div style={{ fontWeight:900 }}>{x.event || "—"}</div>
+                  <div style={{ opacity:0.9 }}>{x.message || ""}</div>
+                </div>
+                <button
+                  style={{
+                    padding:"6px 10px",
+                    borderRadius: 10,
+                    border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+                    background:"transparent",
+                    color:"CanvasText",
+                    cursor:"pointer",
+                    height: 34,
+                    alignSelf:"center"
+                  }}
+                  onClick={()=>setOpen(o=>({ ...o, [id]: !o[id] }))}
+                >
+                  {isOpen ? "Hide" : "Show"}
+                </button>
+              </div>
+
+              {isOpen && (
+                <pre style={{ marginTop:10, whiteSpace:"pre-wrap", fontSize:12, opacity:0.9 }}>
+{JSON.stringify(x.context || x, null, 2)}
+                </pre>
+              )}
+            </div>
+          );
+        })}
+        {filtered.length === 0 && <div style={{ opacity:0.7 }}>No system/user logs yet.</div>}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminIncidentDetail() {
   const params = useParams<{ id: string }>();
   const sp = useSearchParams();
