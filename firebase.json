@@ -21,13 +21,13 @@
       "port": 8081
     },
     "ui": {
-      "port": 4001
+      "enabled": false
     },
     "hub": {
-      "port": 4401
+      "enabled": false
     },
     "logging": {
-      "port": 4501
+      "enabled": false
     }
   }
 }
