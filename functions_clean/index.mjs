@@ -11,29 +11,37 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
   try {
     if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
 
-    const body = (typeof req.body === "object" && req.body) ? req.body : {};
-    const incidentId = body.incidentId;
-    const orgId = body.orgId;
-    const draftsByType = (body.draftsByType && typeof body.draftsByType === "object") ? body.draftsByType : {};
-    const compliance = body.compliance ?? null;
-    const generatorVersion = body.generatorVersion ?? "v1";
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
 
-    const filingTypes = Object.keys(draftsByType);
+    const incidentId = body.incidentId ?? null;
+    const orgId = body.orgId ?? null;
+    const draftsByType = (body.draftsByType && typeof body.draftsByType === "object") ? body.draftsByType : null;
 
     if (!incidentId || !orgId) {
       return res.status(400).json({ ok: false, error: "Missing incidentId/orgId", gotKeys: Object.keys(body) });
     }
-    if (filingTypes.length === 0) {
-      return res.status(400).json({ ok: false, error: "draftsByType missing/empty", gotKeys: Object.keys(body) });
+    if (!draftsByType) {
+      return res.status(400).json({ ok: false, error: "Missing draftsByType", gotKeys: Object.keys(body) });
     }
+
+    const filingTypes = Object.keys(draftsByType);
+
+    // NOTE: no `.length` access anywhere except on a guaranteed array
+    if (filingTypes.length === 0) {
+      return res.status(400).json({ ok: false, error: "draftsByType is empty" });
+    }
+
+    const compliance = body.compliance ?? null;
+    const generatorVersion = body.generatorVersion ?? "v1";
 
     const db = admin.firestore();
     const now = new Date().toISOString();
     const batch = db.batch();
 
     for (const type of filingTypes) {
-      const draft = draftsByType[type] || {};
+      const draft = draftsByType[type] ?? {};
       const ref = db.collection("incidents").doc(incidentId).collection("filings").doc(type);
+
       batch.set(ref, {
         id: type,
         orgId,
@@ -56,7 +64,7 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
       incidentId,
       level: "INFO",
       event: "filing.package.persisted",
-      message: "Persisted filing drafts (Step 2.75 via functions_clean)",
+      message: "Persisted filing drafts (functions_clean Step 2.75)",
       context: { filingTypes, complianceOk: compliance?.ok ?? null },
       actor: { type: "SYSTEM" },
       createdAt: now,
