@@ -13,6 +13,7 @@ export default function SupervisorIncidentDetail() {
   const [bundle, setBundle] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
 
   async function load() {
     setErr(null);
@@ -26,7 +27,7 @@ export default function SupervisorIncidentDetail() {
     setBundle(j);
   }
 
-  useEffect(() => { load(); }, [incidentId]);
+  useEffect(() => { if (incidentId) load(); }, [incidentId]);
 
   async function postFn(path: string, body: any) {
     const r = await fetch(`/api/fn/${path}`, {
@@ -37,28 +38,47 @@ export default function SupervisorIncidentDetail() {
     return r.json();
   }
 
-  async function generateFilingsFull() {
-    setBusy("filings");
-    setErr(null);
+  async function runFilings() {
+    setBusy("filings"); setErr(null); setBanner(null);
     try {
-      const out = await postFn("generateFilingPackageFromIncident", { incidentId, orgId });
-      if (!out.ok) throw new Error(out.error || "generateFilingPackageFromIncident failed");
+      const out = await postFn("generateFilingsV2", { incidentId, orgId, requestedBy: "supervisor_ui" });
+      if (!out.ok) throw new Error(out.error || "generateFilingsV2 failed");
+      setBanner(`Filings: updated ${out.changed.length}, unchanged ${out.skipped.length}`);
       await load();
-    } catch (e: any) {
+    } catch (e:any) {
       setErr(e.message || String(e));
     } finally {
       setBusy(null);
     }
   }
 
-  async function generateTimeline() {
-    setBusy("timeline");
-    setErr(null);
+  async function runTimeline() {
+    setBusy("timeline"); setErr(null); setBanner(null);
     try {
-      const out = await postFn("generateTimelineAndPersist", { incidentId, orgId });
-      if (!out.ok) throw new Error(out.error || "generateTimelineAndPersist failed");
+      const out = await postFn("generateTimelineV2", { incidentId, orgId, requestedBy: "supervisor_ui" });
+      if (!out.ok) throw new Error(out.error || "generateTimelineV2 failed");
+      if (out.skipped) setBanner(`Timeline: unchanged (hash match).`);
+      else setBanner(`Timeline: generated ${out.eventCount} events`);
       await load();
-    } catch (e: any) {
+    } catch (e:any) {
+      setErr(e.message || String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runBoth() {
+    setBusy("both"); setErr(null); setBanner(null);
+    try {
+      const out = await postFn("generateBothV2", { incidentId, orgId, requestedBy: "supervisor_ui" });
+      if (!out.ok) throw new Error(out.error || "generateBothV2 failed");
+      const f = out.filings;
+      const t = out.timeline;
+      const fMsg = `Filings: updated ${(f.changed||[]).length}, unchanged ${(f.skipped||[]).length}`;
+      const tMsg = t.skipped ? `Timeline: unchanged` : `Timeline: ${t.eventCount} events`;
+      setBanner(`${fMsg} · ${tMsg}`);
+      await load();
+    } catch (e:any) {
       setErr(e.message || String(e));
     } finally {
       setBusy(null);
@@ -69,6 +89,7 @@ export default function SupervisorIncidentDetail() {
   const filings = bundle?.filings ?? [];
   const timelineMeta = bundle?.timelineMeta ?? null;
   const logs = bundle?.logs ?? null;
+  const filingsMeta = incident?.filingsMeta ?? null;
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
@@ -80,17 +101,20 @@ export default function SupervisorIncidentDetail() {
       <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Org: {orgId}</div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-        <button onClick={load} disabled={!!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          Refresh
-        </button>
-        <button onClick={generateFilingsFull} disabled={!!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {busy === "filings" ? "Working..." : "Generate full filings"}
-        </button>
-        <button onClick={generateTimeline} disabled={!!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {busy === "timeline" ? "Working..." : "Generate timeline"}
-        </button>
+        <button disabled={!!busy} onClick={load}>Refresh</button>
+        <button disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</button>
+        <button disabled={!!busy} onClick={runTimeline}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</button>
+        <button disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</button>
       </div>
 
+      {(filingsMeta || timelineMeta) && (
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
+          {filingsMeta && <div>Filings last run: {filingsMeta.generatedAt} · updated {filingsMeta.changedCount} · unchanged {filingsMeta.skippedCount}</div>}
+          {timelineMeta && <div>Timeline last run: {timelineMeta.generatedAt} · events {timelineMeta.eventCount} · hash {timelineMeta.timelineHash?.slice?.(0, 12)}…</div>}
+        </div>
+      )}
+
+      {banner && <div style={{ marginTop: 10, padding: 10, border: "1px solid #ddd", borderRadius: 10 }}>{banner}</div>}
       {err && <pre style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</pre>}
 
       <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
