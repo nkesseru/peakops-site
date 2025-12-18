@@ -4,7 +4,7 @@ function mkId(prefix, key) {
   return `${prefix}_${key}`.replace(/[^a-zA-Z0-9_\-]/g, "_");
 }
 
-export function generateTimelineLevel1({ incident, filings, systemLogs }) {
+export function generateTimelineLevel1({ incident, filings, systemLogs, userLogs = [], filingLogs = [] }) {
   const now = new Date().toISOString();
   const events = [];
 
@@ -45,6 +45,7 @@ export function generateTimelineLevel1({ incident, filings, systemLogs }) {
       title: "Incident resolved",
       message: "Resolved time recorded",
       source: "SYSTEM",
+      createdAtk: now,
       createdAt: now,
     });
   }
@@ -69,7 +70,7 @@ export function generateTimelineLevel1({ incident, filings, systemLogs }) {
   // System logs as timeline notes
   for (const log of systemLogs) {
     events.push({
-      id: mkId("evt", `log_${log.id}`),
+      id: mkId("evt", `syslog_${log.id}`),
       orgId: incident.orgId,
       incidentId: incident.id,
       type: "SYSTEM_NOTE",
@@ -77,6 +78,46 @@ export function generateTimelineLevel1({ incident, filings, systemLogs }) {
       title: log.event,
       message: log.message || "",
       source: "SYSTEM",
+      createdAt: now,
+    });
+  }
+
+  // User action logs -> timeline notes
+  for (const u of userLogs) {
+    events.push({
+      id: mkId("evt", `user_${u.id}`),
+      orgId: u.orgId || incident.orgId,
+      incidentId: incident.id,
+      type: "USER_NOTE",
+      occurredAt: u.createdAt || now,
+      title: u.action || "user.action",
+      message: u.message || "",
+      links: { userId: u.userId || "" },
+      source: "USER",
+      createdAt: now,
+    });
+  }
+
+  // Filing action logs -> timeline events
+  for (const f of filingLogs) {
+    const filingType = f.filingType || "UNKNOWN";
+    const action = f.action || "action";
+    const mappedType =
+      action === "submitted" ? "FILING_SUBMITTED" :
+      action === "accepted" ? "FILING_SUBMITTED" :
+      action === "rejected" ? "FILING_SUBMITTED" :
+      "FILING_SUBMITTED";
+
+    events.push({
+      id: mkId("evt", `filingaction_${f.id}`),
+      orgId: f.orgId || incident.orgId,
+      incidentId: incident.id,
+      type: mappedType,
+      occurredAt: f.createdAt || now,
+      title: `Filing ${filingType}: ${action}`,
+      message: f.message || "",
+      links: { filingId: filingType, userId: f.userId || "" },
+      source: (f.userId && f.userId !== "system") ? "USER" : "SYSTEM",
       createdAt: now,
     });
   }
