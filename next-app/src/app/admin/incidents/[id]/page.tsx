@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 
-export default function IncidentDetail({ params, searchParams }: any) {
-  const incidentId = params.id as string;
-  const orgId = (searchParams?.orgId as string) || "org_001";
+export default function IncidentDetail() {
+  const params = useParams<{ id: string }>();
+  const sp = useSearchParams();
+
+  const incidentId = params.id;
+  const orgId = sp.get("orgId") || "org_001";
 
   const [incident, setIncident] = useState<any>(null);
   const [logs, setLogs] = useState<any>(null);
@@ -22,9 +26,7 @@ export default function IncidentDetail({ params, searchParams }: any) {
       if (!aj.ok) throw new Error(aj.error || "getIncident failed");
       setIncident(aj.incident);
 
-      const b = await fetch(
-        `/api/fn/getIncidentLogs?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`
-      );
+      const b = await fetch(`/api/fn/getIncidentLogs?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
       const bj = await b.json();
       if (!bj.ok) throw new Error(bj.error || "getIncidentLogs failed");
       setLogs(bj);
@@ -35,7 +37,10 @@ export default function IncidentDetail({ params, searchParams }: any) {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (incidentId) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentId]);
 
   async function postFn(path: string, body: any) {
     const r = await fetch(`/api/fn/${path}`, {
@@ -57,13 +62,10 @@ export default function IncidentDetail({ params, searchParams }: any) {
         title: incident?.title ?? "",
         startTime: incident?.startTime ?? new Date().toISOString(),
         draftsByType: {
-          DIRS: {
-            payload: { filingType: "DIRS", incidentId, orgId },
-            generatedAt: new Date().toISOString(),
-          },
+          DIRS: { payload: { filingType: "DIRS", incidentId, orgId }, generatedAt: new Date().toISOString() }
         },
         compliance: null,
-        generatorVersion: "v1",
+        generatorVersion: "v1"
       });
       if (!out.ok) throw new Error(out.error || "generateFilingPackageAndPersist failed");
       setResp(out);
