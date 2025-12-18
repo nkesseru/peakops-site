@@ -624,7 +624,6 @@ export const generateFilingPackageFromIncident = onRequest(async (req, res) => {
 });
 
 import { writeUsageEvent, nowIso as nowIsoUsage } from "./usage.mjs";
-import { generateTimelineLevel1 } from "./timeline.mjs";
 
 // =========================
 // 8A/8C V2: Guardrails + Usage
