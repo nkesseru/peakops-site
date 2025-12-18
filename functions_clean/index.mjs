@@ -623,7 +623,6 @@ export const generateFilingPackageFromIncident = onRequest(async (req, res) => {
   }
 });
 
-import { sha256OfObject } from "./audit.mjs";
 import { writeUsageEvent, nowIso as nowIsoUsage } from "./usage.mjs";
 import { generateTimelineLevel1 } from "./timeline.mjs";
 
