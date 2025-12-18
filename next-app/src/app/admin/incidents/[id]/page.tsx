@@ -39,7 +39,7 @@ export default function AdminIncidentDetail() {
   }
 
   async function generateFullFilingsAndTimeline() {
-    setBusy("ultimate");
+    setBusy("PeakOps");
     setResp(null);
     setErr(null);
     try {
@@ -57,6 +57,38 @@ export default function AdminIncidentDetail() {
       setBusy(null);
     }
   }
+
+async function generateFilingsOnly() {
+  setBusy("filings");
+  setResp(null);
+  setErr(null);
+  try {
+    const a = await postFn("generateFilingPackageFromIncident", { incidentId, orgId });
+    if (!a.ok) throw new Error(a.error || "generateFilingPackageFromIncident failed");
+    setResp(a);
+    await load();
+  } catch (e: any) {
+    setErr(e.message || String(e));
+  } finally {
+    setBusy(null);
+  }
+}
+
+async function generateTimelineOnly() {
+  setBusy("timeline");
+  setResp(null);
+  setErr(null);
+  try {
+    const b = await postFn("generateTimelineAndPersist", { incidentId, orgId });
+    if (!b.ok) throw new Error(b.error || "generateTimelineAndPersist failed");
+    setResp(b);
+    await load();
+  } catch (e: any) {
+    setErr(e.message || String(e));
+  } finally {
+    setBusy(null);
+  }
+}
 
   const incident = bundle?.incident ?? null;
   const filings = bundle?.filings ?? [];
@@ -81,6 +113,15 @@ export default function AdminIncidentDetail() {
           {busy === "ultimate" ? "Autopilot..." : "Ultimate: Full Filings + Timeline"}
         </button>
       </div>
+
+
+	<button onClick={generateTimelineOnly} disabled={!!busy} ...>
+  	{busy === "timeline" ? "Working..." : "Generate Timeline"}
+	</button>
+
+	<button onClick={generateFilingsAndTimeline} disabled={!!busy} ...>
+  	{busy === "both" ? "Working..." : "Generate Both"}
+	</button>
 
       {err && <pre style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</pre>}
       {resp && <pre style={{ marginTop: 12, background: "#f7f7f7", padding: 12, borderRadius: 12, whiteSpace: "pre-wrap" }}>{JSON.stringify(resp, null, 2)}</pre>}
