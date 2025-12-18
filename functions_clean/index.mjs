@@ -200,3 +200,107 @@ export const generateTimelineAndPersist = onRequest(async (req, res) => {
     return res.status(500).json({ ok: false, error: String(e) });
   }
 });
+
+import { nowIso, requireStr } from "./logging.mjs";
+
+// USER ACTION LOG
+export const logUserAction = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const orgId = requireStr(body.orgId, "orgId");
+    const incidentId = body.incidentId ? requireStr(body.incidentId, "incidentId") : null;
+    const userId = requireStr(body.userId, "userId");
+    const action = requireStr(body.action, "action"); // e.g. "incident.viewed"
+    const message = typeof body.message === "string" ? body.message : "";
+    const context = (body.context && typeof body.context === "object") ? body.context : {};
+
+    const db = getFirestore();
+    const createdAt = nowIso();
+
+    const ref = db.collection("user_action_logs").doc();
+    await ref.set({
+      orgId,
+      incidentId,
+      userId,
+      action,
+      message,
+      context,
+      createdAt,
+    });
+
+    return res.json({ ok: true, id: ref.id });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: String(e) });
+  }
+});
+
+// FILING ACTION LOG
+export const logFilingAction = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const orgId = requireStr(body.orgId, "orgId");
+    const incidentId = requireStr(body.incidentId, "incidentId");
+    const filingType = requireStr(body.filingType, "filingType"); // "DIRS" etc
+    const userId = body.userId ? requireStr(body.userId, "userId") : "system";
+    const action = requireStr(body.action, "action"); // "submitted" | "amended" | "accepted" | "rejected" | "status_changed"
+    const message = typeof body.message === "string" ? body.message : "";
+    const context = (body.context && typeof body.context === "object") ? body.context : {};
+
+    const db = getFirestore();
+    const createdAt = nowIso();
+
+    const ref = db.collection("filing_action_logs").doc();
+    await ref.set({
+      orgId,
+      incidentId,
+      filingType,
+      userId,
+      action,
+      message,
+      context,
+      createdAt,
+    });
+
+    return res.json({ ok: true, id: ref.id });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: String(e) });
+  }
+});
+
+// ADMIN VIEWER: fetch recent logs for an incident
+export const getIncidentLogs = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Use GET" });
+
+    const incidentId = req.query.incidentId;
+    const orgId = req.query.orgId;
+    if (typeof incidentId !== "string" || typeof orgId !== "string") {
+      return res.status(400).json({ ok: false, error: "Missing orgId/incidentId query params" });
+    }
+
+    const db = getFirestore();
+
+    const [sysSnap, userSnap, filingSnap] = await Promise.all([
+      db.collection("system_logs").where("incidentId", "==", incidentId).orderBy("createdAt", "desc").limit(50).get(),
+      db.collection("user_action_logs").where("incidentId", "==", incidentId).orderBy("createdAt", "desc").limit(50).get(),
+      db.collection("filing_action_logs").where("incidentId", "==", incidentId).orderBy("createdAt", "desc").limit(50).get(),
+    ]);
+
+    const toList = (snap) => snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    return res.json({
+      ok: true,
+      incidentId,
+      orgId,
+      system: toList(sysSnap),
+      user: toList(userSnap),
+      filing: toList(filingSnap),
+    });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: String(e) });
+  }
+});
