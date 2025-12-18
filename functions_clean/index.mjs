@@ -313,3 +313,179 @@ export const getIncidentLogs = onRequest(async (req, res) => {
     return res.status(400).json({ ok: false, error: String(e) });
   }
 });
+
+// TEMP ADMIN HELPER (REMOVE BEFORE PROD)
+export const setUserRole = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const uid = body.uid;
+    const orgId = body.orgId;
+    const role = body.role;
+
+    if (!uid || !orgId || !role) return res.status(400).json({ ok:false, error:"Need uid, orgId, role" });
+
+    const db = getFirestore();
+    await db.collection("users").doc(uid).set({
+      orgRoles: { [orgId]: role },
+      updatedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    }, { merge: true });
+
+    return res.json({ ok:true, uid, orgId, role });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+import { nowIso, requireStr, optionalStr, pick } from "./api.mjs";
+
+// CREATE INCIDENT (canonical entrypoint)
+export const createIncident = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const orgId = requireStr(body.orgId, "orgId");
+    const title = requireStr(body.title, "title");
+    const startTime = optionalStr(body.startTime) || nowIso();
+
+    const incidentId = optionalStr(body.incidentId) || `inc_${Math.random().toString(36).slice(2, 10)}`;
+    const createdAt = nowIso();
+
+    const db = getFirestore();
+    const ref = db.collection("incidents").doc(incidentId);
+
+    await ref.set({
+      id: incidentId,
+      orgId,
+      title,
+      description: optionalStr(body.description) || "",
+      status: body.status || "ACTIVE",
+      startTime,
+      detectedTime: optionalStr(body.detectedTime),
+      resolvedTime: optionalStr(body.resolvedTime),
+      location: (body.location && typeof body.location === "object") ? body.location : null,
+      affectedCustomers: (typeof body.affectedCustomers === "number") ? body.affectedCustomers : null,
+      filingTypesRequired: Array.isArray(body.filingTypesRequired) ? body.filingTypesRequired : ["DIRS","OE_417"],
+      createdAt,
+      updatedAt: createdAt,
+      createdBy: body.createdBy || "system",
+    }, { merge: true });
+
+    // system log
+    await getFirestore().collection("system_logs").doc().set({
+      orgId,
+      incidentId,
+      level: "INFO",
+      event: "incident.created",
+      message: "Incident created via API",
+      context: { title },
+      actor: { type: "SYSTEM" },
+      createdAt
+    });
+
+    return res.json({ ok: true, incidentId });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: String(e) });
+  }
+});
+
+// UPDATE INCIDENT (safe patch)
+export const updateIncident = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const incidentId = requireStr(body.incidentId, "incidentId");
+    const orgId = requireStr(body.orgId, "orgId");
+
+    const db = getFirestore();
+    const ref = db.collection("incidents").doc(incidentId);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ ok:false, error:"Incident not found" });
+
+    const patch = pick(body, [
+      "title","description","status","detectedTime","resolvedTime","location","affectedCustomers","filingTypesRequired"
+    ]);
+    patch.updatedAt = nowIso();
+
+    await ref.set(patch, { merge: true });
+
+    await db.collection("system_logs").doc().set({
+      orgId,
+      incidentId,
+      level: "INFO",
+      event: "incident.updated",
+      message: "Incident updated via API",
+      context: { changedKeys: Object.keys(patch) },
+      actor: { type: "SYSTEM" },
+      createdAt: patch.updatedAt
+    });
+
+    return res.json({ ok:true, incidentId });
+  } catch (e) {
+    return res.status(400).json({ ok:false, error: String(e) });
+  }
+});
+
+// GET INCIDENT (for UI)
+export const getIncident = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).json({ ok:false, error:"Use GET" });
+
+    const incidentId = req.query.incidentId;
+    if (typeof incidentId !== "string") return res.status(400).json({ ok:false, error:"Missing incidentId" });
+
+    const db = getFirestore();
+    const snap = await db.collection("incidents").doc(incidentId).get();
+    if (!snap.exists) return res.status(404).json({ ok:false, error:"Incident not found" });
+
+    return res.json({ ok:true, incident: { id: snap.id, ...snap.data() } });
+  } catch (e) {
+    return res.status(400).json({ ok:false, error:String(e) });
+  }
+});
+
+// ATTACH EVIDENCE (stub)
+export const attachEvidenceStub = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const incidentId = requireStr(body.incidentId, "incidentId");
+    const orgId = requireStr(body.orgId, "orgId");
+
+    const evidenceId = optionalStr(body.evidenceId) || `ev_${Math.random().toString(36).slice(2, 10)}`;
+    const createdAt = nowIso();
+
+    const db = getFirestore();
+    await db.collection("incidents").doc(incidentId).collection("evidence").doc(evidenceId).set({
+      id: evidenceId,
+      orgId,
+      incidentId,
+      type: body.type || "OTHER",
+      status: body.status || "PENDING",
+      title: optionalStr(body.title),
+      description: optionalStr(body.description),
+      createdAt,
+      updatedAt: createdAt
+    }, { merge: true });
+
+    await db.collection("system_logs").doc().set({
+      orgId,
+      incidentId,
+      level: "INFO",
+      event: "evidence.attached",
+      message: "Evidence attached (stub)",
+      context: { evidenceId },
+      actor: { type: "SYSTEM" },
+      createdAt
+    });
+
+    return res.json({ ok:true, evidenceId });
+  } catch (e) {
+    return res.status(400).json({ ok:false, error:String(e) });
+  }
+});
