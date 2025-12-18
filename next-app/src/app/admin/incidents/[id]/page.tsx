@@ -47,21 +47,14 @@ export default function IncidentDetailBundle() {
     }
   }
 
-  async function persistDirsStub() {
-    setBusy("filings"); setErr(null);
+  async function generateFilingsFull() {
+    setBusy("filings");
+    setResp(null);
+    setErr(null);
     try {
-      const incident = bundle?.incident;
-      await postFn("generateFilingPackageAndPersist", {
-        incidentId,
-        orgId,
-        title: incident?.title ?? "",
-        startTime: incident?.startTime ?? new Date().toISOString(),
-        draftsByType: {
-          DIRS: { payload: { filingType: "DIRS", incidentId, orgId }, generatedAt: new Date().toISOString() }
-        },
-        compliance: null,
-        generatorVersion: "v1"
-      });
+      const out = await postFn("generateFilingPackageFromIncident", { incidentId, orgId });
+      if (!out.ok) throw new Error(out.error || "generateFilingPackageFromIncident failed");
+      setResp(out);
       await load();
     } catch (e: any) {
       setErr(e.message || String(e));
@@ -88,8 +81,8 @@ export default function IncidentDetailBundle() {
         <button onClick={() => load().catch(e => setErr(e.message))} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
           Refresh
         </button>
-        <button disabled={!!busy} onClick={persistDirsStub} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {busy === "filings" ? "Working..." : "Persist DIRS draft (stub)"}
+        <button disabled={!!busy} onClick={generateFilingsFull} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
+          {busy === "filings" ? "Working..." : "Generate full filings"}
         </button>
         <button disabled={!!busy} onClick={generateTimeline} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
           {busy === "timeline" ? "Working..." : "Generate timeline"}
