@@ -622,3 +622,255 @@ export const generateFilingPackageFromIncident = onRequest(async (req, res) => {
     return res.status(500).json({ ok:false, error:String(e) });
   }
 });
+
+import { sha256OfObject } from "./audit.mjs";
+import { writeUsageEvent, nowIso as nowIsoUsage } from "./usage.mjs";
+import { generateTimelineLevel1 } from "./timeline.mjs";
+
+// =========================
+// 8A/8C V2: Guardrails + Usage
+// =========================
+
+// Generate filings from incident doc with skip logic based on payloadHash comparison
+export const generateFilingsV2 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const incidentId = body.incidentId;
+    const orgId = body.orgId;
+    const requestedBy = body.requestedBy || "system";
+
+    if (!incidentId || !orgId) return res.status(400).json({ ok: false, error: "Missing incidentId/orgId" });
+
+    const db = getFirestore();
+    const incRef = db.collection("incidents").doc(incidentId);
+    const incSnap = await incRef.get();
+    if (!incSnap.exists) return res.status(404).json({ ok: false, error: "Incident not found" });
+
+    const inc = incSnap.data() || {};
+    const now = new Date().toISOString();
+
+    const filingTypes = Array.isArray(inc.filingTypesRequired) && inc.filingTypesRequired.length
+      ? inc.filingTypesRequired
+      : ["DIRS","OE_417","NORS","SAR","BABA"];
+
+    // Pull existing filings once
+    const existingSnap = await incRef.collection("filings").get();
+    const existingByType = {};
+    for (const d of existingSnap.docs) existingByType[d.id] = d.data() || {};
+
+    const changed = [];
+    const skipped = [];
+
+    const batch = db.batch();
+
+    for (const t of filingTypes) {
+      const payload = {
+        filingType: t,
+        incidentId,
+        orgId,
+        title: inc.title || "",
+        description: inc.description || "",
+        startTime: inc.startTime || inc.createdAt || now,
+        detectedTime: inc.detectedTime || null,
+        resolvedTime: inc.resolvedTime || null,
+        location: inc.location || null,
+        affectedCustomers: (inc.affectedCustomers ?? null),
+        meta: { source: "peakops", schemaVersion: `${String(t).toLowerCase()}.v1` }
+      };
+
+      const newHash = sha256OfObject(payload).hash;
+
+      const old = existingByType[t];
+      const oldHash = old?.payloadHash?.value || old?.payloadHash?.mapValue?.fields?.value?.stringValue || null;
+
+      if (oldHash && oldHash === newHash) {
+        skipped.push(t);
+        continue;
+      }
+
+      changed.push(t);
+
+      const ref = incRef.collection("filings").doc(t);
+      batch.set(ref, {
+        id: t,
+        orgId,
+        incidentId,
+        type: t,
+        status: old?.status || "DRAFT",
+        payload,
+        payloadHash: { algo: "SHA256", value: newHash },
+        complianceSnapshot: old?.complianceSnapshot ?? null,
+        complianceHash: old?.complianceHash ?? null,
+        generatorVersion: "v1",
+        generatedAt: now,
+        updatedAt: now,
+        createdAt: old?.createdAt || now,
+        createdBy: old?.createdBy || requestedBy
+      }, { merge: true });
+    }
+
+    // Update incident meta
+    batch.set(incRef, {
+      filingsMeta: {
+        generatedAt: now,
+        changedCount: changed.length,
+        skippedCount: skipped.length,
+        requestedBy,
+      },
+      updatedAt: now,
+    }, { merge: true });
+
+    // System log
+    const logRef = db.collection("system_logs").doc();
+    batch.set(logRef, {
+      orgId,
+      incidentId,
+      level: "INFO",
+      event: "filings.generated",
+      message: "Generated filings with guardrails (V2)",
+      context: { changed, skipped, count: changed.length, skippedCount: skipped.length },
+      actor: { type: "SYSTEM" },
+      createdAt: now
+    });
+
+    await batch.commit();
+
+    // Usage event
+    const usageId = await writeUsageEvent(db, {
+      orgId,
+      incidentId,
+      action: "filings",
+      requestedBy,
+      changedCount: changed.length,
+      skippedCount: skipped.length,
+      status: "ok"
+    });
+
+    return res.json({ ok: true, incidentId, changed, skipped, usageId, systemLogId: logRef.id });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// Generate timeline with guardrail: if hash unchanged, skip writes
+export const generateTimelineV2 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const incidentId = body.incidentId;
+    const orgId = body.orgId;
+    const requestedBy = body.requestedBy || "system";
+
+    if (!incidentId || !orgId) return res.status(400).json({ ok: false, error: "Missing incidentId/orgId" });
+
+    const db = getFirestore();
+    const incRef = db.collection("incidents").doc(incidentId);
+    const incSnap = await incRef.get();
+    if (!incSnap.exists) return res.status(404).json({ ok: false, error: "Incident not found" });
+
+    const inc = incSnap.data() || {};
+    const now = new Date().toISOString();
+
+    const incident = {
+      id: incidentId,
+      orgId,
+      title: inc.title || "(untitled)",
+      startTime: inc.startTime || inc.createdAt || now,
+      detectedTime: inc.detectedTime || null,
+      resolvedTime: inc.resolvedTime || null,
+    };
+
+    // filings
+    const filingsSnap = await incRef.collection("filings").get();
+    const filings = filingsSnap.docs.map(d => {
+      const x = d.data() || {};
+      return { id: d.id, type: x.type || d.id, status: x.status || "DRAFT", generatedAt: x.generatedAt || null, createdAt: x.createdAt || null, updatedAt: x.updatedAt || null };
+    });
+
+    // logs
+    const [sysSnap, userSnap, filingSnap] = await Promise.all([
+      db.collection("system_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(200).get(),
+      db.collection("user_action_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(200).get(),
+      db.collection("filing_action_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(200).get(),
+    ]);
+
+    const systemLogs = sysSnap.docs.map(d => ({ id: d.id, ...(d.data()||{}) })).reverse();
+    const userLogs = userSnap.docs.map(d => ({ id: d.id, ...(d.data()||{}) })).reverse();
+    const filingLogs = filingSnap.docs.map(d => ({ id: d.id, ...(d.data()||{}) })).reverse();
+
+    const { events, timelineHash, generatedAt } = generateTimelineLevel1({ incident, filings, systemLogs, userLogs, filingLogs });
+
+    const existingHash = inc?.timelineMeta?.timelineHash || null;
+    if (existingHash && existingHash === timelineHash) {
+      const usageId = await writeUsageEvent(db, { orgId, incidentId, action: "timeline", requestedBy, changedCount: 0, skippedCount: events.length, status: "skipped_same_hash" });
+      return res.json({ ok: true, incidentId, skipped: true, reason: "hash_unchanged", eventCount: events.length, timelineHash, usageId });
+    }
+
+    const batch = db.batch();
+    const tlCol = incRef.collection("timelineEvents");
+
+    for (const ev of events) batch.set(tlCol.doc(ev.id), ev, { merge: true });
+
+    batch.set(incRef, {
+      timelineMeta: { algo: "SHA256", timelineHash, generatedAt, eventCount: events.length, source: "system" },
+      updatedAt: now
+    }, { merge: true });
+
+    const logRef = db.collection("system_logs").doc();
+    batch.set(logRef, {
+      orgId, incidentId, level: "INFO", event: "timeline.generated",
+      message: "Generated and persisted timeline (V2)",
+      context: { eventCount: events.length, timelineHash },
+      actor: { type: "SYSTEM" }, createdAt: now
+    });
+
+    await batch.commit();
+
+    const usageId = await writeUsageEvent(db, { orgId, incidentId, action: "timeline", requestedBy, changedCount: events.length, skippedCount: 0, status: "ok" });
+
+    return res.json({ ok: true, incidentId, eventCount: events.length, timelineHash, usageId, systemLogId: logRef.id });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// Combined (single usage event for “both”)
+export const generateBothV2 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const incidentId = body.incidentId;
+    const orgId = body.orgId;
+    const requestedBy = body.requestedBy || "system";
+    if (!incidentId || !orgId) return res.status(400).json({ ok:false, error:"Missing incidentId/orgId" });
+
+    // call internal V2 endpoints by direct function invoke via fetch through the same local host
+    const fnBase = "http://127.0.0.1:5001/peakops-pilot/us-central1";
+    const [aRes, bRes] = await Promise.all([
+      fetch(`${fnBase}/generateFilingsV2`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ incidentId, orgId, requestedBy }) }),
+      fetch(`${fnBase}/generateTimelineV2`, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ incidentId, orgId, requestedBy }) }),
+    ]);
+
+    const a = await aRes.json();
+    const b = await bRes.json();
+
+    const db = getFirestore();
+    const usageId = await writeUsageEvent(db, {
+      orgId,
+      incidentId,
+      action: "both",
+      requestedBy,
+      changedCount: (a?.changed?.length || 0) + (b?.eventCount || 0),
+      skippedCount: (a?.skipped?.length || 0) + (b?.skipped ? (b?.eventCount || 0) : 0),
+      status: "ok"
+    });
+
+    return res.json({ ok:true, incidentId, filings: a, timeline: b, usageId });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
