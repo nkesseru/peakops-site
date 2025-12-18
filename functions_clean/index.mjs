@@ -946,6 +946,7 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
     const message = body.message || "";
     const submissionMethod = body.submissionMethod || "MANUAL";
     const confirmationId = body.confirmationId || "";
+    const override = !!body.override;
 
     if (!orgId || !incidentId || !filingType || !toStatus) {
       return res.status(400).json({ ok:false, error:"Missing orgId/incidentId/filingType/toStatus" });
@@ -968,6 +969,10 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
     };
 
     if (toStatus === "SUBMITTED") {
+      // Guardrail: require READY unless override
+      if (!override && fromStatus !== "READY") {
+        return res.status(400).json({ ok:false, error:`Must be READY before SUBMITTED (current: ${fromStatus})` });
+      }
       if (!confirmationId) return res.status(400).json({ ok:false, error:"confirmationId required for SUBMITTED" });
       patch.submittedAt = now;
       patch.submittedBy = userId;
