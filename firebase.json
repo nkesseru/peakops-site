@@ -10,7 +10,7 @@
     }
   ],
   "functions": {
-    "source": "ingest-fns",
+    "source": "functions",
     "runtime": "nodejs20"
   }
 }
