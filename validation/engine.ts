@@ -3,6 +3,7 @@ import { ValidationIssue, ValidationResult } from "./types";
 import { getRulepack } from "./rulepacks";
 import { executeRulepack } from "./rulepacks/executor";
 import { detectMissingEvidence } from "./evidence";
+import { validateCrossFieldDependencies } from "./crossField";
 
 export function validateIncidentRequiredFields(
   incident: IncidentValidated
@@ -30,13 +31,13 @@ export function validateIncidentRequiredFields(
   return issues;
 }
 
-// For now, evidence types are passed in; later we pull from Firestore
 export function runComplianceCheck(
   incident: IncidentValidated,
   evidenceTypesPresent: string[] = []
 ): ValidationResult {
   const issues: ValidationIssue[] = [
     ...validateIncidentRequiredFields(incident),
+    ...validateCrossFieldDependencies(incident),
   ];
 
   for (const filingType of incident.filingTypesRequired) {
