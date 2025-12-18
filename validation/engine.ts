@@ -1,6 +1,8 @@
 import { IncidentValidated } from "../contracts/validators/incident.zod";
 import { ValidationIssue, ValidationResult } from "./types";
-import { validateForFiling } from "./filingRules";
+import { getRulepack } from "./rulepacks";
+import { executeRulepack } from "./rulepacks/executor";
+import { detectMissingEvidence } from "./evidence";
 
 export function validateIncidentRequiredFields(
   incident: IncidentValidated
@@ -28,15 +30,21 @@ export function validateIncidentRequiredFields(
   return issues;
 }
 
+// For now, evidence types are passed in; later we pull from Firestore
 export function runComplianceCheck(
-  incident: IncidentValidated
+  incident: IncidentValidated,
+  evidenceTypesPresent: string[] = []
 ): ValidationResult {
   const issues: ValidationIssue[] = [
     ...validateIncidentRequiredFields(incident),
   ];
 
   for (const filingType of incident.filingTypesRequired) {
-    issues.push(...validateForFiling(incident, filingType));
+    const pack = getRulepack(filingType);
+    if (!pack) continue;
+
+    issues.push(...executeRulepack(incident, pack));
+    issues.push(...detectMissingEvidence(pack, evidenceTypesPresent));
   }
 
   return {
