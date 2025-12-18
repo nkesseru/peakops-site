@@ -37,22 +37,12 @@ export default function SupervisorIncidentDetail() {
     return r.json();
   }
 
-  async function generateFilings() {
+  async function generateFilingsFull() {
     setBusy("filings");
     setErr(null);
     try {
-      const out = await postFn("generateFilingPackageAndPersist", {
-        incidentId,
-        orgId,
-        title: bundle?.incident?.title ?? "",
-        startTime: bundle?.incident?.startTime ?? new Date().toISOString(),
-        draftsByType: {
-          DIRS: { payload: { filingType: "DIRS", incidentId, orgId }, generatedAt: new Date().toISOString() }
-        },
-        compliance: null,
-        generatorVersion: "v1"
-      });
-      if (!out.ok) throw new Error(out.error || "generateFilingPackageAndPersist failed");
+      const out = await postFn("generateFilingPackageFromIncident", { incidentId, orgId });
+      if (!out.ok) throw new Error(out.error || "generateFilingPackageFromIncident failed");
       await load();
     } catch (e: any) {
       setErr(e.message || String(e));
@@ -93,8 +83,8 @@ export default function SupervisorIncidentDetail() {
         <button onClick={load} disabled={!!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
           Refresh
         </button>
-        <button onClick={generateFilings} disabled={!!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {busy === "filings" ? "Working..." : "Generate filings"}
+        <button onClick={generateFilingsFull} disabled={!!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
+          {busy === "filings" ? "Working..." : "Generate full filings"}
         </button>
         <button onClick={generateTimeline} disabled={!!busy} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
           {busy === "timeline" ? "Working..." : "Generate timeline"}
