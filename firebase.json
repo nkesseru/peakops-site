@@ -10,7 +10,7 @@
     }
   ],
   "functions": {
-    "source": "functions",
+    "source": "functions_clean",
     "runtime": "nodejs20"
   },
   "emulators": {
