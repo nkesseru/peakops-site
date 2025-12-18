@@ -14,6 +14,44 @@ function shortHash(h?: string) {
 async function copyText(txt: string) { try { await navigator.clipboard.writeText(txt); } catch {} }
 
 
+async function setFilingStatusUI(opts: {
+  orgId: string;
+  incidentId: string;
+  filingType: string;
+  toStatus: string;
+}) {
+  const { orgId, incidentId, filingType, toStatus } = opts;
+
+  let confirmationId = "";
+  let submissionMethod = "MANUAL";
+
+  if (toStatus === "SUBMITTED") {
+    confirmationId = prompt("Confirmation ID (required):", "") || "";
+    if (!confirmationId.trim()) throw new Error("confirmationId is required");
+    submissionMethod = prompt("Submission method (MANUAL/API/UPLOAD):", "MANUAL") || "MANUAL";
+  }
+
+  const r = await fetch("/api/fn/setFilingStatusV1", {
+    method: "POST",
+    headers: { "Content-Type":"application/json" },
+    body: JSON.stringify({
+      orgId,
+      incidentId,
+      filingType,
+      toStatus,
+      confirmationId,
+      submissionMethod,
+      userId: "admin_ui",
+      message: "",
+    })
+  });
+
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || "setFilingStatusV1 failed");
+  return j;
+}
+
+
 function LogPanel({ logs }: any) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -286,6 +324,7 @@ export default function AdminIncidentDetail() {
                   <th style={{ padding: "10px 8px" }}>Payload Hash</th>
                   <th style={{ padding: "10px 8px" }}>Generated</th>
                   <th style={{ padding: "10px 8px" }}>Copy</th>
+                  <th style={{ padding: "10px 8px" }}>Workflow</th>
                 </tr>
               </thead>
               <tbody>
@@ -300,10 +339,46 @@ export default function AdminIncidentDetail() {
                     <td style={{ padding: "10px 8px" }}>
                       <button style={btn} onClick={() => copyText(String(f?.payloadHash?.value || ""))} disabled={!f?.payloadHash?.value}>Copy hash</button>
                     </td>
+                    <td style={{ padding: "10px 8px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        style={btn}
+                        disabled={!!busy}
+                        onClick={async () => {
+                          try {
+                            setBanner(null);
+                            await setFilingStatusUI({ orgId, incidentId, filingType: (f.type || f.id), toStatus: "READY" });
+                            setBanner(`✅ ${f.type || f.id} marked READY`);
+                            await loadBundle(); await loadTimeline();
+                          } catch (e:any) {
+                            setErr(e.message || String(e));
+                          }
+                        }}
+                      >
+                        READY
+                      </button>
+
+                      <button
+                        style={btn}
+                        disabled={!!busy}
+                        onClick={async () => {
+                          try {
+                            setBanner(null);
+                            await setFilingStatusUI({ orgId, incidentId, filingType: (f.type || f.id), toStatus: "SUBMITTED" });
+                            setBanner(`📨 ${f.type || f.id} marked SUBMITTED`);
+                            await loadBundle(); await loadTimeline();
+                          } catch (e:any) {
+                            setErr(e.message || String(e));
+                          }
+                        }}
+                      >
+                        SUBMITTED
+                      </button>
+                    </td>
+
                   </tr>
                 ))}
                 {filings.length === 0 && (
-                  <tr><td colSpan={5} style={{ padding: 12, opacity: 0.7 }}>No filings yet. Click “Generate Filings”.</td></tr>
+                  <tr><td colSpan={6} style={{ padding: 12, opacity: 0.7 }}>No filings yet. Click “Generate Filings”.</td></tr>
                 )}
               </tbody>
             </table>
