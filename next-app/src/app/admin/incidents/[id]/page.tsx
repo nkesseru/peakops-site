@@ -11,6 +11,25 @@ function shortHash(h?: string) {
   if (!h) return "—";
   return h.length > 14 ? `${h.slice(0, 12)}…${h.slice(-4)}` : h;
 }
+async function copyText
+function statusPill(status?: string) {
+  const v = String(status || "DRAFT").toUpperCase();
+  const base = {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "3px 10px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 800,
+    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
+  } as any;
+
+  if (v === "READY") return { ...base, background: "color-mix(in oklab, lime 18%, transparent)" };
+  if (v === "SUBMITTED") return { ...base, background: "color-mix(in oklab, deepskyblue 16%, transparent)" };
+  if (v === "AMENDED") return { ...base, background: "color-mix(in oklab, orange 18%, transparent)" };
+  if (v === "CANCELLED") return { ...base, background: "color-mix(in oklab, red 14%, transparent)" };
+  return { ...base, background: "color-mix(in oklab, CanvasText 6%, transparent)" };
+}
 async function copyText(txt: string) { try { await navigator.clipboard.writeText(txt); } catch {} }
 
 
