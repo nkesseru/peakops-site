@@ -11,13 +11,16 @@ export default function AdminIncidentDetail() {
   const orgId = sp.get("orgId") || "org_001";
 
   const [bundle, setBundle] = useState<any>(null);
+  const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
 
-  async function load() {
+  async function loadBundle() {
     setErr(null);
-    const res = await fetch(`/api/fn/getIncidentBundle?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
+    const res = await fetch(
+      `/api/fn/getIncidentBundle?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`
+    );
     const j = await res.json();
     if (!j.ok) {
       setBundle(null);
@@ -27,7 +30,20 @@ export default function AdminIncidentDetail() {
     setBundle(j);
   }
 
-  useEffect(() => { if (incidentId) { load(); loadTimeline(); } }, [incidentId]);
+  async function loadTimeline() {
+    const res = await fetch(
+      `/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`
+    );
+    const j = await res.json();
+    if (j.ok) setTimelineEvents(j.events || []);
+  }
+
+  useEffect(() => {
+    if (!incidentId) return;
+    loadBundle();
+    loadTimeline();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentId]);
 
   async function postFn(path: string, body: any) {
     const r = await fetch(`/api/fn/${path}`, {
@@ -44,7 +60,7 @@ export default function AdminIncidentDetail() {
       const out = await postFn("generateFilingsV2", { incidentId, orgId, requestedBy: "admin_ui" });
       if (!out.ok) throw new Error(out.error || "generateFilingsV2 failed");
       setBanner(`Filings: updated ${out.changed.length}, unchanged ${out.skipped.length}`);
-      await load();
+      await loadBundle();
       await loadTimeline();
     } catch (e:any) {
       setErr(e.message || String(e));
@@ -58,9 +74,9 @@ export default function AdminIncidentDetail() {
     try {
       const out = await postFn("generateTimelineV2", { incidentId, orgId, requestedBy: "admin_ui" });
       if (!out.ok) throw new Error(out.error || "generateTimelineV2 failed");
-      if (out.skipped) setBanner(`Timeline: unchanged (hash match). No update needed.`);
-      else setBanner(`Timeline: generated ${out.eventCount} events`);
-      await load();
+      setBanner(out.skipped ? "Timeline: unchanged (hash match)" : `Timeline: generated ${out.eventCount} events`);
+      await loadBundle();
+      await loadTimeline();
     } catch (e:any) {
       setErr(e.message || String(e));
     } finally {
@@ -76,9 +92,10 @@ export default function AdminIncidentDetail() {
       const f = out.filings;
       const t = out.timeline;
       const fMsg = `Filings: updated ${(f.changed||[]).length}, unchanged ${(f.skipped||[]).length}`;
-      const tMsg = t.skipped ? `Timeline: unchanged` : `Timeline: ${t.eventCount} events`;
+      const tMsg = t.skipped ? "Timeline: unchanged" : `Timeline: ${t.eventCount} events`;
       setBanner(`${fMsg} · ${tMsg}`);
-      await load();
+      await loadBundle();
+      await loadTimeline();
     } catch (e:any) {
       setErr(e.message || String(e));
     } finally {
@@ -103,7 +120,7 @@ export default function AdminIncidentDetail() {
       <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Org: {orgId}</div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-        <button disabled={!!busy} onClick={load}>Refresh</button>
+        <button disabled={!!busy} onClick={() => { loadBundle(); loadTimeline(); }}>Refresh</button>
         <button disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</button>
         <button disabled={!!busy} onClick={runTimeline}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</button>
         <button disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</button>
@@ -112,7 +129,7 @@ export default function AdminIncidentDetail() {
       {(filingsMeta || timelineMeta) && (
         <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
           {filingsMeta && <div>Filings last run: {filingsMeta.generatedAt} · updated {filingsMeta.changedCount} · unchanged {filingsMeta.skippedCount}</div>}
-          {timelineMeta && <div>Timeline last run: {timelineMeta.generatedAt} · events {timelineMeta.eventCount} · hash {timelineMeta.timelineHash?.slice?.(0, 12)}…</div>}
+          {timelineMeta && <div>Timeline last run: {timelineMeta.generatedAt} · events {timelineMeta.eventCount} · hash {String(timelineMeta.timelineHash||"").slice(0, 12)}…</div>}
         </div>
       )}
 
@@ -120,6 +137,19 @@ export default function AdminIncidentDetail() {
       {err && <pre style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</pre>}
 
       <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
+        <section style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 800, margin: 0, marginBottom: 10 }}>Timeline</h2>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {timelineEvents.map((e:any) => (
+              <li key={e.id} style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>{e.occurredAt} · {e.type}</div>
+                <div style={{ fontWeight: 700 }}>{e.title || ""}</div>
+                <div style={{ opacity: 0.85 }}>{e.message || ""}</div>
+              </li>
+            ))}
+          </ul>
+        </section>
+
         <section style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
           <h2 style={{ fontSize: 14, fontWeight: 800, margin: 0, marginBottom: 10 }}>Incident</h2>
           <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{incident ? JSON.stringify(incident, null, 2) : "—"}</pre>
