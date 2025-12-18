@@ -93,3 +93,110 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
     return res.status(500).json({ ok: false, error: String(e) });
   }
 });
+
+import { generateTimelineLevel1 } from "./timeline.mjs";
+
+export const generateTimelineAndPersist = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
+
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    const incidentId = body.incidentId;
+    const orgId = body.orgId;
+
+    if (!incidentId || !orgId) {
+      return res.status(400).json({ ok: false, error: "Missing incidentId/orgId", gotKeys: Object.keys(body) });
+    }
+
+    const db = getFirestore();
+    const now = new Date().toISOString();
+
+    // 1) Load incident
+    const incRef = db.collection("incidents").doc(incidentId);
+    const incSnap = await incRef.get();
+    if (!incSnap.exists) return res.status(404).json({ ok: false, error: "Incident not found" });
+
+    const inc = incSnap.data() || {};
+    const incident = {
+      id: incidentId,
+      orgId,
+      title: inc.title || "(untitled)",
+      startTime: inc.startTime || inc.createdAt || now,
+      detectedTime: inc.detectedTime || null,
+      resolvedTime: inc.resolvedTime || null,
+    };
+
+    // 2) Load filings subcollection
+    const filingsSnap = await incRef.collection("filings").get();
+    const filings = filingsSnap.docs.map(d => {
+      const x = d.data() || {};
+      return {
+        id: d.id,
+        type: x.type || d.id,
+        status: x.status || "UNKNOWN",
+        generatedAt: x.generatedAt || null,
+        createdAt: x.createdAt || null,
+        updatedAt: x.updatedAt || null,
+      };
+    });
+
+    // 3) Load system logs for this incident (limit to recent 200)
+    const logsSnap = await db.collection("system_logs")
+      .where("incidentId", "==", incidentId)
+      .orderBy("createdAt", "desc")
+      .limit(200)
+      .get();
+
+    const systemLogs = logsSnap.docs.map(d => {
+      const x = d.data() || {};
+      return {
+        id: d.id,
+        event: x.event || "",
+        message: x.message || "",
+        createdAt: x.createdAt || now,
+      };
+    }).reverse(); // oldest -> newest
+
+    // 4) Generate timeline + hash
+    const { events, timelineHash, generatedAt } = generateTimelineLevel1({ incident, filings, systemLogs });
+
+    // 5) Persist events (batch). (Safe under 500; if you exceed later, we chunk.)
+    const batch = db.batch();
+    const tlCol = incRef.collection("timelineEvents");
+
+    for (const ev of events) {
+      batch.set(tlCol.doc(ev.id), ev, { merge: true });
+    }
+
+    // 6) Persist timeline meta + hash on incident
+    batch.set(incRef, {
+      timelineMeta: {
+        algo: "SHA256",
+        timelineHash,
+        generatedAt,
+        eventCount: events.length,
+        source: "system",
+      },
+      updatedAt: now,
+    }, { merge: true });
+
+    // 7) System log entry
+    const logRef = db.collection("system_logs").doc();
+    batch.set(logRef, {
+      orgId,
+      incidentId,
+      level: "INFO",
+      event: "timeline.generated",
+      message: "Generated and persisted timelineEvents + timelineHash (Step 3C/3D)",
+      context: { eventCount: events.length, timelineHash },
+      actor: { type: "SYSTEM" },
+      createdAt: now,
+    });
+
+    await batch.commit();
+
+    return res.json({ ok: true, incidentId, eventCount: events.length, timelineHash, generatedAt, systemLogId: logRef.id });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
