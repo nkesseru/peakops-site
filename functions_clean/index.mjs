@@ -973,6 +973,17 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
       if (!override && fromStatus !== "READY") {
         return res.status(400).json({ ok:false, error:`Must be READY before SUBMITTED (current: ${fromStatus})` });
       }
+
+    if (toStatus === "AMENDED") {
+      patch.amendedAt = now;
+      patch.amendedBy = userId;
+    }
+
+    if (toStatus === "CANCELLED") {
+      patch.cancelledAt = now;
+      patch.cancelledBy = userId;
+    }
+
       if (!confirmationId) return res.status(400).json({ ok:false, error:"confirmationId required for SUBMITTED" });
       patch.submittedAt = now;
       patch.submittedBy = userId;
