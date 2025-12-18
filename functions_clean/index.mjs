@@ -874,3 +874,28 @@ export const generateBothV2 = onRequest(async (req, res) => {
     return res.status(500).json({ ok:false, error:String(e) });
   }
 });
+
+// Timeline events (for UI)
+export const getTimelineEvents = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).json({ ok:false, error:"Use GET" });
+
+    const incidentId = req.query.incidentId;
+    const orgId = req.query.orgId;
+    if (typeof incidentId !== "string" || typeof orgId !== "string") {
+      return res.status(400).json({ ok:false, error:"Missing orgId/incidentId" });
+    }
+
+    const db = getFirestore();
+    const snap = await db.collection("incidents").doc(incidentId)
+      .collection("timelineEvents")
+      .orderBy("occurredAt","asc")
+      .limit(200)
+      .get();
+
+    const events = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    return res.json({ ok:true, orgId, incidentId, events });
+  } catch (e) {
+    return res.status(400).json({ ok:false, error:String(e) });
+  }
+});
