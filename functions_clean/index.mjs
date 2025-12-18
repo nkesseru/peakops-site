@@ -510,3 +510,48 @@ export const listIncidents = onRequest(async (req, res) => {
     return res.status(400).json({ ok:false, error:String(e) });
   }
 });
+
+// INCIDENT BUNDLE (one call for admin detail page)
+export const getIncidentBundle = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).json({ ok:false, error:"Use GET" });
+
+    const incidentId = req.query.incidentId;
+    const orgId = req.query.orgId;
+
+    if (typeof incidentId !== "string" || typeof orgId !== "string") {
+      return res.status(400).json({ ok:false, error:"Missing orgId/incidentId" });
+    }
+
+    const db = getFirestore();
+
+    const incSnap = await db.collection("incidents").doc(incidentId).get();
+    if (!incSnap.exists) return res.status(404).json({ ok:false, error:"Incident not found" });
+
+    const filingsSnap = await db.collection("incidents").doc(incidentId).collection("filings").get();
+    const filings = filingsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    const timelineMeta = (incSnap.data() || {}).timelineMeta || null;
+
+    const [sysSnap, userSnap, filingSnap] = await Promise.all([
+      db.collection("system_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(50).get(),
+      db.collection("user_action_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(50).get(),
+      db.collection("filing_action_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(50).get(),
+    ]);
+
+    const system = sysSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const user = userSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const filing = filingSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    return res.json({
+      ok: true,
+      orgId,
+      incident: { id: incSnap.id, ...incSnap.data() },
+      filings,
+      timelineMeta,
+      logs: { system, user, filing }
+    });
+  } catch (e) {
+    return res.status(400).json({ ok:false, error:String(e) });
+  }
+});
