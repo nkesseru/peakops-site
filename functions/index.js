@@ -3,49 +3,33 @@ import * as admin from "firebase-admin";
 
 if (!admin.apps.length) admin.initializeApp();
 
-function safeJsonParse(body) {
-  if (!body) return {};
-  if (typeof body === "object") return body;
-  try { return JSON.parse(body); } catch { return {}; }
-}
-
 export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
   try {
     if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Use POST" });
 
-    // Body might be object or string depending on middleware/emulator
-    const parsed = safeJsonParse(req.body);
+    const body = (typeof req.body === "object" && req.body) ? req.body : {};
+    const incidentId = body.incidentId;
+    const orgId = body.orgId;
 
-    const incidentId = parsed.incidentId;
-    const orgId = parsed.orgId;
-    const draftsByType = parsed.draftsByType && typeof parsed.draftsByType === "object"
-      ? parsed.draftsByType
-      : {};
-    const compliance = parsed.compliance ?? null;
-    const generatorVersion = parsed.generatorVersion ?? "v1";
-
-    if (!incidentId || !orgId) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing incidentId or orgId",
-        gotKeys: Object.keys(parsed || {}),
-      });
-    }
+    // IMPORTANT: never assume draftsByType exists
+    const draftsByType = (body.draftsByType && typeof body.draftsByType === "object") ? body.draftsByType : {};
+    const compliance = body.compliance ?? null;
 
     const filingTypes = Object.keys(draftsByType);
+
+    if (!incidentId || !orgId) {
+      return res.status(400).json({ ok: false, error: "Missing incidentId/orgId", gotKeys: Object.keys(body) });
+    }
     if (filingTypes.length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "draftsByType is empty or missing",
-        gotKeys: Object.keys(parsed || {}),
-      });
+      return res.status(400).json({ ok: false, error: "draftsByType missing/empty", gotKeys: Object.keys(body) });
     }
 
     const db = admin.firestore();
     const now = new Date().toISOString();
     const batch = db.batch();
 
-    for (const [type, draft] of Object.entries(draftsByType)) {
+    for (const type of filingTypes) {
+      const draft = draftsByType[type] || {};
       const ref = db.collection("incidents").doc(incidentId).collection("filings").doc(type);
       batch.set(ref, {
         id: type,
@@ -53,10 +37,10 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
         incidentId,
         type,
         status: "DRAFT",
-        payload: draft?.payload ?? {},
+        payload: draft.payload ?? {},
         complianceSnapshot: compliance,
-        generatedAt: draft?.generatedAt ?? now,
-        generatorVersion,
+        generatedAt: draft.generatedAt ?? now,
+        generatorVersion: body.generatorVersion ?? "v1",
         createdAt: now,
         updatedAt: now,
         createdBy: "system",
@@ -69,11 +53,8 @@ export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
       incidentId,
       level: "INFO",
       event: "filing.package.persisted",
-      message: "Persisted filing drafts (hardened endpoint)",
-      context: {
-        filingTypes,
-        complianceOk: compliance?.ok ?? null,
-      },
+      message: "Persisted filing drafts (stable endpoint)",
+      context: { filingTypes, complianceOk: compliance?.ok ?? null },
       actor: { type: "SYSTEM" },
       createdAt: now,
     });
