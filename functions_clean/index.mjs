@@ -899,3 +899,37 @@ export const getTimelineEvents = onRequest(async (req, res) => {
     return res.status(400).json({ ok:false, error:String(e) });
   }
 });
+
+// Usage events list (admin)
+export const listUsageEvents = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).json({ ok:false, error:"Use GET" });
+
+    const orgId = req.query.orgId;
+    if (typeof orgId !== "string") return res.status(400).json({ ok:false, error:"Missing orgId" });
+
+    const db = getFirestore();
+    const snap = await db.collection("usage_events")
+      .where("orgId","==",orgId)
+      .orderBy("createdAt","desc")
+      .limit(200)
+      .get();
+
+    const events = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // quick rollups
+    const totals = { filings: 0, timeline: 0, both: 0, changed: 0, skipped: 0 };
+    for (const e of events) {
+      const a = e.action;
+      if (a === "filings") totals.filings++;
+      if (a === "timeline") totals.timeline++;
+      if (a === "both") totals.both++;
+      totals.changed += Number(e.changedCount || 0);
+      totals.skipped += Number(e.skippedCount || 0);
+    }
+
+    return res.json({ ok:true, orgId, totals, events });
+  } catch (e) {
+    return res.status(400).json({ ok:false, error:String(e) });
+  }
+});
