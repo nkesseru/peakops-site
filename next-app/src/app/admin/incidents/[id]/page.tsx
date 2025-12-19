@@ -132,6 +132,64 @@ function TimelineMetaCard({ timelineMeta }: any) {
   );
 }
 
+
+function computeExportBlockers({ incident, filings, timelineMeta, logs }: any) {
+  const blockers: string[] = [];
+
+  if (!incident?.id) blockers.push("Incident is missing or not loaded.");
+  if (!timelineMeta?.timelineHash) blockers.push("Timeline has not been generated yet.");
+  if (!Array.isArray(filings) || filings.length === 0) blockers.push("No filings generated yet. Click Generate Filings.");
+
+  const required = Array.isArray(incident?.filingTypesRequired) ? incident.filingTypesRequired : [];
+  if (required.length) {
+    const byType = new Set((filings || []).map((f:any) => String(f.type || f.id)));
+    for (const t of required) {
+      if (!byType.has(String(t))) blockers.push(`Missing filing doc: ${t}`);
+    }
+  }
+
+  // If a filing is SUBMITTED, ensure it has confirmationId
+  for (const f of filings || []) {
+    const st = String(f.status || "DRAFT").toUpperCase();
+    if (st === "SUBMITTED") {
+      const cid = f?.external?.confirmationId || f?.external?.mapValue?.fields?.confirmationId?.stringValue;
+      if (!cid) blockers.push(`Filing ${f.type || f.id} is SUBMITTED but missing confirmationId`);
+    }
+  }
+
+  // Guardrail: if any filing is READY, it's not "blocking" export, but it is attention-worthy.
+  // We'll treat READY as a warning in the attention panel, not a hard blocker.
+  return blockers;
+}
+
+function computeAttention({ incident, filings, timelineMeta }: any) {
+  const items: { level: "BLOCK"|"WARN"; text: string }[] = [];
+
+  const required = Array.isArray(incident?.filingTypesRequired) ? incident.filingTypesRequired : [];
+  const byType = new Map((filings || []).map((f:any) => [String(f.type || f.id), f]));
+
+  if (!timelineMeta?.timelineHash) items.push({ level:"BLOCK", text:"Timeline not generated yet." });
+
+  if (!filings?.length) items.push({ level:"BLOCK", text:"No filings generated yet." });
+
+  for (const t of required) {
+    if (!byType.has(String(t))) items.push({ level:"BLOCK", text:`Missing filing: ${t}` });
+  }
+
+  for (const f of filings || []) {
+    const t = String(f.type || f.id);
+    const st = String(f.status || "DRAFT").toUpperCase();
+    if (st === "DRAFT") items.push({ level:"WARN", text:`${t} is still DRAFT` });
+    if (st === "READY") items.push({ level:"WARN", text:`${t} is READY but not submitted` });
+    if (st === "SUBMITTED") {
+      const cid = f?.external?.confirmationId;
+      if (!cid) items.push({ level:"BLOCK", text:`${t} is SUBMITTED but missing confirmationId` });
+    }
+  }
+
+  return items;
+}
+
 function IncidentSummaryCard({ incident }: any) {
   if (!incident) return <div style={{ opacity:0.7 }}>—</div>;
   const filings = Array.isArray(incident.filingTypesRequired) ? incident.filingTypesRequired : [];
@@ -386,6 +444,10 @@ export default function AdminIncidentDetail() {
   const [cancelReason, setCancelReason] = useState("");
   const [cancelOverride, setCancelOverride] = useState(false);
 
+  // export modal
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportPurpose, setExportPurpose] = useState("REGULATORY");
+
   async function jfetch(url: string) {
     const r = await fetch(url);
     return r.json();
@@ -555,6 +617,7 @@ async function loadRil() {
         <Button disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</Button>
         <Button disabled={!!busy} onClick={runTimelineGen}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</Button>
         <Button disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</Button>
+        <Button disabled={!!busy} onClick={() => setExportOpen(true)}>Export Packet</Button>
         <a style={{ textDecoration:"none", color:"CanvasText" }} href={`/admin/usage?orgId=${encodeURIComponent(orgId)}`}>
           <Button disabled={false}>Usage →</Button>
         </a>
@@ -563,6 +626,22 @@ async function loadRil() {
       <div style={{ marginTop: 16, display:"grid", gap:16, gridTemplateColumns:"repeat(auto-fit, minmax(320px, 1fr))" }}>
         <PanelCard title="Filing Meta"><FilingsMetaCard filingsMeta={filingsMeta} /></PanelCard>
         <PanelCard title="Timeline Meta"><TimelineMetaCard timelineMeta={timelineMeta} /></PanelCard>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <PanelCard title="What Needs Attention">
+          {attention.length === 0 ? (
+            <div style={{ opacity: 0.75 }}>✅ All clear. No blockers detected.</div>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+              {attention.map((a:any, i:number) => (
+                <li key={i} style={{ color: a.level === "BLOCK" ? "crimson" : "CanvasText" }}>
+                  <b>{a.level === "BLOCK" ? "BLOCK:" : "WARN:"}</b> {a.text}
+                </li>
+              ))}
+            </ul>
+          )}
+        </PanelCard>
       </div>
 
       {banner && (
@@ -662,6 +741,66 @@ async function loadRil() {
           <pre style={{ margin:0, whiteSpace:"pre-wrap", opacity:0.9 }}>{incident ? JSON.stringify(incident, null, 2) : "—"}</pre>
         </PanelCard>
       </div>
+
+      <Modal open={exportOpen} title={"Export Incident Packet"} onClose={() => setExportOpen(false)}>
+        <div style={{ display:"grid", gap:10 }}>
+          <div style={{ opacity: 0.85 }}>
+            Export will include: Incident summary, Timeline, Filings, Logs, Hashes.
+          </div>
+
+          <label style={{ fontSize: 12, opacity: 0.8 }}>Purpose</label>
+          <select
+            value={exportPurpose}
+            onChange={(e)=>setExportPurpose(e.target.value)}
+            style={{
+              padding: 10,
+              borderRadius: 12,
+              border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+              background: "Canvas",
+              color: "CanvasText",
+              fontSize: 14
+            }}
+          >
+            <option value="REGULATORY">REGULATORY</option>
+            <option value="AUDIT">AUDIT</option>
+            <option value="INTERNAL">INTERNAL</option>
+          </select>
+
+          {exportBlockers.length > 0 && (
+            <div style={{ border: "1px solid color-mix(in oklab, red 25%, transparent)", borderRadius: 12, padding: 12 }}>
+              <div style={{ fontWeight: 900, marginBottom: 6, color: "crimson" }}>Blocking issues:</div>
+              <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+                {exportBlockers.map((b:string, i:number) => (
+                  <li key={i} style={{ color: "crimson" }}>{b}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop: 10 }}>
+            <Button disabled={false} onClick={() => setExportOpen(false)}>Close</Button>
+            <Button
+              disabled={!!busy || exportBlockers.length > 0}
+              onClick={async () => {
+                try {
+                  setBusy("export");
+                  const out = await postFn("exportIncidentPacketV1", { orgId, incidentId, requestedBy: "admin_ui", purpose: exportPurpose });
+                  if (!out.ok) throw new Error(out.error || "exportIncidentPacketV1 failed");
+                  setBanner("✅ Export queued. ZIP/PDF generation will be wired next.");
+                  setExportOpen(false);
+                  await loadBundle(); await loadTimeline();
+                } catch (e:any) {
+                  setErr(e.message || String(e));
+                } finally {
+                  setBusy(null);
+                }
+              }}
+            >
+              {busy==="export" ? "Queuing…" : "Queue Export"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal open={submitOpen} title={`Mark SUBMITTED · ${submitType}`} onClose={() => setSubmitOpen(false)}>
         <div style={{ display:"grid", gap:10 }}>
