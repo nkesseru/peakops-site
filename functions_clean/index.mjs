@@ -944,6 +944,8 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
     const toStatus = body.toStatus;     // READY/SUBMITTED/AMENDED/CANCELLED/DRAFT
     const userId = body.userId || "admin_ui";
     const message = body.message || "";
+    const cancelReason = body.cancelReason || "";
+    const cancelOverride = !!body.cancelOverride;
     const submissionMethod = body.submissionMethod || "MANUAL";
     const confirmationId = body.confirmationId || "";
     const override = !!body.override;
@@ -980,6 +982,9 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
     }
 
     if (toStatus === "CANCELLED") {
+      if (!cancelOverride && !String(cancelReason || "").trim()) {
+        return res.status(400).json({ ok:false, error:"cancelReason required for CANCELLED" });
+      }
       patch.cancelledAt = now;
       patch.cancelledBy = userId;
     }
@@ -1008,6 +1013,7 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
       context: {
         confirmationId: confirmationId || null,
         submissionMethod: submissionMethod || null,
+        cancelReason: cancelReason ? String(cancelReason) : null,
       },
       createdAt: now,
     };
