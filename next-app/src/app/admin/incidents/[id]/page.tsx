@@ -11,8 +11,28 @@ function shortHash(h?: string) {
   if (!h) return "—";
   return h.length > 18 ? `${h.slice(0, 12)}…${h.slice(-4)}` : h;
 }
+
+function attentionLine(x: any) {
+  if (x == null) return "";
+  if (typeof x === "string") return x;
+  const lvl = String(x.level || x.severity || "WARN").toUpperCase();
+  const msg = x.msg || x.message || x.text || x.code || JSON.stringify(x);
+  return `${lvl}: ${msg}`;
+}
 async function copyText(txt: string) {
   try { await navigator.clipboard.writeText(txt); } catch {}
+
+function renderAttentionItem(x: any) {
+  if (!x) return "—";
+  if (typeof x === "string") return x;
+  if (typeof x === "number" || typeof x === "boolean") return String(x);
+  // common shapes
+  if (x.text) return String(x.text);
+  if (x.message) return String(x.message);
+  if (x.code && x.path) return ` ()`;
+  if (x.code) return String(x.code);
+  try { return JSON.stringify(x); } catch { return String(x); }
+}
 }
 
 function statusPillStyle(status?: string) {
@@ -814,8 +834,8 @@ async function loadRil() {
         <div style={{ fontWeight: 900, marginBottom: 6 }}>Warnings (export allowed):</div>
         <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
           {attentionWarns.map((x:any, i:number) => (
-            <li key={i} style={{ opacity: 0.9, fontWeight:700 }}>{String(x)}</li>
-          ))}
+  <li key={i} style={{ opacity: 0.9, fontWeight: 700 }}>{renderAttentionItem(x)}</li>
+))}
         </ul>
       </div>
     )}
