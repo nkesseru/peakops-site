@@ -109,7 +109,7 @@ function MetaRow({ label, value }: any) {
 }
 
 function FilingsMetaCard({ filingsMeta }: any) {
-  if (!filingsMeta) return <div style={{ opacity:0.7 }}>—</div>;
+  if (!filingsMeta) return <div style={{ opacity:0.75 }}>Not generated yet. Click <b>Generate Filings</b>.</div>;
   return (
     <div style={{ display:"grid", gap:6 }}>
       <MetaRow label="Generated" value={fmtTs(filingsMeta.generatedAt)} />
@@ -121,7 +121,7 @@ function FilingsMetaCard({ filingsMeta }: any) {
 }
 
 function TimelineMetaCard({ timelineMeta }: any) {
-  if (!timelineMeta) return <div style={{ opacity:0.7 }}>—</div>;
+  if (!timelineMeta) return <div style={{ opacity:0.75 }}>Not generated yet. Click <b>Generate Timeline</b>.</div>;
   return (
     <div style={{ display:"grid", gap:6 }}>
       <MetaRow label="Generated" value={fmtTs(timelineMeta.generatedAt)} />
