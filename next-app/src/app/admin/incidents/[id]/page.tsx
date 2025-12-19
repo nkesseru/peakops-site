@@ -630,11 +630,13 @@ async function loadRil() {
 
       <div style={{ marginTop: 16 }}>
         <PanelCard title="What Needs Attention">
-          {attention.length === 0 ? (
+          {const safeAttention = (typeof attention !== "undefined" && attention) ? attention : [];
+          }
+          {safeAttention.length === 0 ? (
             <div style={{ opacity: 0.75 }}>✅ All clear. No blockers detected.</div>
           ) : (
             <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-              {attention.map((a:any, i:number) => (
+              {safeAttention.map((a:any, i:number) => (
                 <li key={i} style={{ color: a.level === "BLOCK" ? "crimson" : "CanvasText" }}>
                   <b>{a.level === "BLOCK" ? "BLOCK:" : "WARN:"}</b> {a.text}
                 </li>
