@@ -302,6 +302,12 @@ export default function AdminIncidentDetail() {
   const [method, setMethod] = useState("MANUAL");
   const [override, setOverride] = useState(false);
 
+  // cancel modal
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelType, setCancelType] = useState<string>("");
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelOverride, setCancelOverride] = useState(false);
+
   async function jfetch(url: string) {
     const r = await fetch(url);
     return r.json();
@@ -406,6 +412,26 @@ export default function AdminIncidentDetail() {
     setSubmitOpen(true);
   }
 
+  function openCancelModal(filingType: string) {
+    setCancelType(filingType);
+    setCancelReason("");
+    setCancelOverride(false);
+    setCancelOpen(true);
+  }
+
+  async function confirmCancel() {
+    if (!cancelOverride && !cancelReason.trim()) {
+      setErr("cancelReason is required to CANCELLED");
+      return;
+    }
+    await setStatus("CANCELLED", cancelType, {
+      cancelReason: cancelReason.trim(),
+      cancelOverride,
+    });
+    setCancelOpen(false);
+  }
+
+
   async function confirmSubmit() {
     if (!confirmationId.trim()) { setErr("confirmationId is required"); return; }
     await setStatus("SUBMITTED", submitType, {
@@ -501,7 +527,7 @@ export default function AdminIncidentDetail() {
                         <Button disabled={!!busy} onClick={() => setStatus("READY", (f.type || f.id))}>READY</Button>
                         <Button disabled={!!busy || st !== "READY"} onClick={() => openSubmitModal((f.type || f.id))}>SUBMITTED</Button>
                         <Button disabled={!!busy} onClick={() => setStatus("AMENDED", (f.type || f.id))}>AMENDED</Button>
-                        <Button disabled={!!busy} onClick={() => setStatus("CANCELLED", (f.type || f.id))}>CANCELLED</Button>
+                        <Button disabled={!!busy} onClick={() => openCancelModal((f.type || f.id))}>CANCELLED</Button>
                       </td>
                     </tr>
                   );
