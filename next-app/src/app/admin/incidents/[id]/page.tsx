@@ -446,6 +446,18 @@ export default function AdminIncidentDetail() {
   const filings = useMemo(() => (bundle?.filings ?? []), [bundle]);
   const logs = bundle?.logs ?? null;
 
+  const filingActionStats = useMemo(() => {
+    const stats: Record<string, { count: number; last?: any }> = {};
+    const arr = (logs?.filing || []) as any[];
+    for (const x of arr) {
+      const t = String(x.filingType || "UNKNOWN");
+      stats[t] = stats[t] || { count: 0, last: null };
+      stats[t].count += 1;
+      if (!stats[t].last || String(x.createdAt||"") > String(stats[t].last.createdAt||"")) stats[t].last = x;
+    }
+    return stats;
+  }, [logs]);
+
   const filingsMeta = incident?.filingsMeta ?? null;
   const timelineMeta = bundle?.timelineMeta ?? null;
 
@@ -509,6 +521,7 @@ export default function AdminIncidentDetail() {
                   <th style={{ padding:"10px 8px" }}>Generated</th>
                   <th style={{ padding:"10px 8px" }}>Copy</th>
                   <th style={{ padding:"10px 8px" }}>Workflow</th>
+                  <th style={{ padding:"10px 8px" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -529,11 +542,26 @@ export default function AdminIncidentDetail() {
                         <Button disabled={!!busy} onClick={() => setStatus("AMENDED", (f.type || f.id))}>AMENDED</Button>
                         <Button disabled={!!busy} onClick={() => openCancelModal((f.type || f.id))}>CANCELLED</Button>
                       </td>
-                    </tr>
+                    <td style={{ padding:"10px 8px", fontSize: 12, opacity: 0.85 }}>
+                      {(() => {
+                        const key = String(f.type || f.id);
+                        const st = filingActionStats[key];
+                        if (!st || !st.count) return "—";
+                        const last = st.last;
+                        const label = last?.from ? `${last.from}→${last.to}` : (last?.action || "action");
+                        return (
+                          <div style={{ display:"grid", gap: 2 }}>
+                            <div><b>{st.count}</b> actions</div>
+                            <div style={{ opacity: 0.8 }}>{label} · {fmtTs(last?.createdAt)}</div>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                  </tr>
                   );
                 })}
                 {filings.length === 0 && (
-                  <tr><td colSpan={6} style={{ padding:12, opacity:0.7 }}>No filings yet. Click “Generate Filings”.</td></tr>
+                  <tr><td colSpan={7} style={{ padding:12, opacity:0.7 }}>No filings yet. Click “Generate Filings”.</td></tr>
                 )}
               </tbody>
             </table>
