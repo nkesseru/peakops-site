@@ -793,91 +793,84 @@ async function loadRil() {
         </PanelCard>
       </div>
 
-      <Modal open={exportOpen} title={"Export Incident Packet"} onClose={() =>
-          <div style={{ marginTop: 10 }}>
-            {attentionBlocks.length > 0 && (
-              <div style={{ border: "1px solid color-mix(in oklab, red 25%, transparent)", borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                <div style={{ fontWeight: 900, marginBottom: 6, color: "crimson" }}>Blocking issues (export):</div>
-                <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-                  {attentionBlocks.map((x:any, i:number) => <li key={i} style={{ color:"crimson", fontWeight:800 }}>{String(x)}</li>)}
-                </ul>
-                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-                  Fix blockers above (Generate Filings/Timeline) before exporting.
-                </div>
-              </div>
-            )}
-
-            {attentionWarns.length > 0 && (
-              <div style={{ border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)", borderRadius: 12, padding: 12 }}>
-                <div style={{ fontWeight: 900, marginBottom: 6 }}>Warnings (export allowed):</div>
-                <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-                  {attentionWarns.map((x:any, i:number) => <li key={i} style={{ opacity: 0.9, fontWeight:700 }}>{String(x)}</li>)}
-                </ul>
-              </div>
-            )}
-
-            {(attentionBlocks.length === 0 && attentionWarns.length === 0) && (
-              <div style={{ opacity: 0.75 }}>✅ Export preflight: clean.</div>
-            )}
-          </div>
-        <div style={{ display:"grid", gap:10 }}>
-  <div style={{ opacity: 0.85 }}>
-    Export will include: Incident summary, Timeline, Filings, Logs, Hashes.
-  </div>
-
-  <label style={{ fontSize: 12, opacity: 0.8 }}>Purpose</label>
-  <select
-    value={exportPurpose}
-    onChange={(e)=>setExportPurpose(e.target.value)}
-    style={{
-      padding: 10,
-      borderRadius: 12,
-      border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-      background: "Canvas",
-      color: "CanvasText",
-      fontSize: 14
-    }}
-  >
-    <option value="OPS">OPS (internal)</option>
-    <option value="REGULATORY">REGULATORY (audit-ready)</option>
-    <option value="CUSTOMER">CUSTOMER (shareable)</option>
-  </select>
-</div>
-
-          {exportBlockers.length > 0 && (
-            <div style={{ border: "1px solid color-mix(in oklab, red 25%, transparent)", borderRadius: 12, padding: 12 }}>
-              <div style={{ fontWeight: 900, marginBottom: 6, color: "crimson" }}>Blocking issues:</div>
-              <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-                {exportBlockers.map((b:string, i:number) => (
-                  <li key={i} style={{ color: "crimson" }}>{b}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop: 10 }}>
-            <Button disabled={false} onClick={() => setExportOpen(false)}>Close</Button>
-            <Button
-              disabled={!!busy || exportBlockers.length > 0}
-              onClick={async () => {
-                try {
-                  setBusy("export");
-                  const out = await postFn("exportIncidentPacketV1", { orgId, incidentId, requestedBy: "admin_ui", purpose: exportPurpose });
-                  if (!out.ok) throw new Error(out.error || "exportIncidentPacketV1 failed");
-                  setBanner("✅ Export queued. ZIP/PDF generation will be wired next.");
-                  await loadBundle(); await loadTimeline();
-                } catch (e:any) {
-                  setErr(e.message || String(e));
-                } finally {
-                  setBusy(null);
-                }
-              }}
-            >
-              {busy==="export" ? "Queuing…" : "Queue Export"}
-            </Button>
-          </div>
+      <Modal open={exportOpen} title={"Export Incident Packet"} onClose={() => setExportOpen(false)}>
+  <div style={{ marginTop: 10, display:"grid", gap:12 }}>
+    {attentionBlocks.length > 0 && (
+      <div style={{ border: "1px solid color-mix(in oklab, red 25%, transparent)", borderRadius: 12, padding: 12 }}>
+        <div style={{ fontWeight: 900, marginBottom: 6, color: "crimson" }}>Blocking issues (export):</div>
+        <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+          {attentionBlocks.map((x:any, i:number) => (
+            <li key={i} style={{ color:"crimson", fontWeight:800 }}>{String(x)}</li>
+          ))}
+        </ul>
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+          Fix blockers above (Generate Filings/Timeline) before exporting.
         </div>
-      </Modal>
+      </div>
+    )}
+
+    {attentionWarns.length > 0 && (
+      <div style={{ border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)", borderRadius: 12, padding: 12 }}>
+        <div style={{ fontWeight: 900, marginBottom: 6 }}>Warnings (export allowed):</div>
+        <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+          {attentionWarns.map((x:any, i:number) => (
+            <li key={i} style={{ opacity: 0.9, fontWeight:700 }}>{String(x)}</li>
+          ))}
+        </ul>
+      </div>
+    )}
+
+    {(attentionBlocks.length === 0 && attentionWarns.length === 0) && (
+      <div style={{ opacity: 0.75 }}>✅ Export preflight: clean.</div>
+    )}
+
+    <div style={{ display:"grid", gap:10 }}>
+      <div style={{ opacity: 0.85 }}>
+        Export will include: Incident summary, Timeline, Filings, Logs, Hashes.
+      </div>
+
+      <label style={{ fontSize: 12, opacity: 0.8 }}>Purpose</label>
+      <select
+        value={exportPurpose}
+        onChange={(e)=>setExportPurpose(e.target.value)}
+        style={{
+          padding: 10,
+          borderRadius: 12,
+          border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+          background: "Canvas",
+          color: "CanvasText",
+          fontSize: 14
+        }}
+      >
+        <option value="OPS">OPS (internal)</option>
+        <option value="REGULATORY">REGULATORY (audit-ready)</option>
+        <option value="CUSTOMER">CUSTOMER (shareable)</option>
+      </select>
+    </div>
+
+    <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+      <Button disabled={!!busy} onClick={() => setExportOpen(false)}>Close</Button>
+      <Button
+        disabled={!!busy || attentionBlocks.length > 0}
+        onClick={async () => {
+          setBusy("export"); setErr(null); setBanner(null);
+          try {
+            const out = await postFn("exportIncidentPacketV1", { incidentId, orgId, purpose: exportPurpose, requestedBy: "admin_ui" });
+            if (!out.ok) throw new Error(out.error || "exportIncidentPacketV1 failed");
+            setBanner("✅ Export packet generated");
+            if (out.downloadUrl) await copyText(out.downloadUrl);
+          } catch (e:any) {
+            setErr(e.message || String(e));
+          } finally {
+            setBusy(null);
+          }
+        }}
+      >
+        Export Packet
+      </Button>
+    </div>
+  </div>
+</Modal>
 
       <Modal open={submitOpen} title={`Mark SUBMITTED · ${submitType}`} onClose={() => setSubmitOpen(false)}>
         <div style={{ display:"grid", gap:10 }}>
