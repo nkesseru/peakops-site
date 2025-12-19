@@ -396,6 +396,10 @@ export default function AdminIncidentDetail() {
     if (j.ok) setTimelineEvents(j.events || []);
   }
 
+async function loadRil() {
+  return loadTimeline();
+}
+
   async function loadBundle() {
     setErr(null);
     for (let i = 0; i < 4; i++) {
