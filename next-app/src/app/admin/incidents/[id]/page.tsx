@@ -157,8 +157,8 @@ function computeExportBlockers({ incident, filings, timelineMeta, logs }: any) {
     }
   }
 
-  // Guardrail: if any filing is READY, it's not "blocking" export, but it is attention-worthy.
-  // We'll treat READY as a warning in the attention panel, not a hard blocker.
+  // Guardrail: if any filing is READY, it's not "blocking" export, but it is safeAttention-worthy.
+  // We'll treat READY as a warning in the safeAttention panel, not a hard blocker.
   return blockers;
 }
 
@@ -591,6 +591,8 @@ async function loadRil() {
   const logs = bundle?.logs ?? null;
   const filingsMeta = incident?.filingsMeta ?? null;
   const timelineMeta = bundle?.timelineMeta ?? null;
+
+  const safeAttention = useMemo(() => computeAttention({ incident, filings, timelineMeta }), [incident, filings, timelineMeta]);
 
   const filingActionStats = useMemo(() => {
     const stats: Record<string, { count: number; last?: any }> = {};
