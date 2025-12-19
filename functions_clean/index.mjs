@@ -1058,3 +1058,56 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
     return res.status(500).json({ ok:false, error:String(e) });
   }
 });
+
+// Export packet stub (ZIP/PDF will come next). Logs + usage for now.
+export const exportIncidentPacketV1 = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+
+    const orgId = body.orgId;
+    const incidentId = body.incidentId;
+    const requestedBy = body.requestedBy || "ui";
+    const purpose = body.purpose || "REGULATORY";
+
+    if (!orgId || !incidentId) return res.status(400).json({ ok:false, error:"Missing orgId/incidentId" });
+
+    const db = getFirestore();
+    const now = new Date().toISOString();
+
+    // log system event
+    await db.collection("system_logs").doc().set({
+      orgId,
+      incidentId,
+      level: "INFO",
+      event: "export.queued",
+      message: "Export packet queued (stub v1)",
+      context: { purpose },
+      actor: { type: "SYSTEM" },
+      createdAt: now
+    });
+
+    // usage event (future billing hook)
+    await db.collection("usage_events").doc().set({
+      id: db.collection("usage_events").doc().id,
+      orgId,
+      incidentId,
+      action: "export",
+      requestedBy,
+      changedCount: 1,
+      skippedCount: 0,
+      status: "queued",
+      createdAt: now
+    });
+
+    // return placeholder
+    return res.json({
+      ok: true,
+      incidentId,
+      queuedAt: now,
+      message: "Export queued (stub). ZIP/PDF generation will be wired next."
+    });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
