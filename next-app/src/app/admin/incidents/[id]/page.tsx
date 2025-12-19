@@ -592,7 +592,16 @@ async function loadRil() {
   const filingsMeta = incident?.filingsMeta ?? null;
   const timelineMeta = bundle?.timelineMeta ?? null;
 
-  const safeAttention = useMemo(() => computeAttention({ incident, filings, timelineMeta }), [incident, filings, timelineMeta]);
+  // --- Derived UI helpers (canonical) ---
+  const safeAttention = useMemo(
+    () => computeAttention({ incident, filings, timelineMeta }),
+    [incident, filings, timelineMeta]
+  );
+
+  const exportBlockers = useMemo(
+    () => computeExportBlockers({ incident, filings, timelineMeta, logs }),
+    [incident, filings, timelineMeta, logs]
+  );
 
   const filingActionStats = useMemo(() => {
     const stats: Record<string, { count: number; last?: any }> = {};
