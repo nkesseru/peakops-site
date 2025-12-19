@@ -11,10 +11,12 @@ function shortHash(h?: string) {
   if (!h) return "—";
   return h.length > 14 ? `${h.slice(0, 12)}…${h.slice(-4)}` : h;
 }
-async function copyText
+async function copyText(txt: string) {
+  try { await navigator.clipboard.writeText(txt); } catch {}
+}
 function statusPill(status?: string) {
   const v = String(status || "DRAFT").toUpperCase();
-  const base = {
+  const base: any = {
     display: "inline-flex",
     alignItems: "center",
     padding: "3px 10px",
@@ -22,144 +24,78 @@ function statusPill(status?: string) {
     fontSize: 12,
     fontWeight: 800,
     border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-  } as any;
-
+    background: "color-mix(in oklab, CanvasText 6%, transparent)",
+  };
   if (v === "READY") return { ...base, background: "color-mix(in oklab, lime 18%, transparent)" };
   if (v === "SUBMITTED") return { ...base, background: "color-mix(in oklab, deepskyblue 16%, transparent)" };
   if (v === "AMENDED") return { ...base, background: "color-mix(in oklab, orange 18%, transparent)" };
   if (v === "CANCELLED") return { ...base, background: "color-mix(in oklab, red 14%, transparent)" };
-  return { ...base, background: "color-mix(in oklab, CanvasText 6%, transparent)" };
-}
-async function copyText(txt: string) { try { await navigator.clipboard.writeText(txt); } catch {} }
-
-
-async function setFilingStatusUI(opts: {
-  orgId: string;
-  incidentId: string;
-  filingType: string;
-  toStatus: string;
-}) {
-  const { orgId, incidentId, filingType, toStatus } = opts;
-
-  let confirmationId = "";
-  let submissionMethod = "MANUAL";
-
-  if (toStatus === "SUBMITTED") {
-    confirmationId = prompt("Confirmation ID (required):", "") || "";
-    if (!confirmationId.trim()) throw new Error("confirmationId is required");
-    submissionMethod = prompt("Submission method (MANUAL/API/UPLOAD):", "MANUAL") || "MANUAL";
-  }
-
-  const r = await fetch("/api/fn/setFilingStatusV1", {
-    method: "POST",
-    headers: { "Content-Type":"application/json" },
-    body: JSON.stringify({
-      orgId,
-      incidentId,
-      filingType,
-      toStatus,
-      confirmationId,
-      submissionMethod,
-      userId: "admin_ui",
-      message: "",
-    })
-  });
-
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.error || "setFilingStatusV1 failed");
-  return j;
+  return base;
 }
 
-
-function LogPanel({ logs }: any) {
-  const [q, setQ] = useState("");
-  const [open, setOpen] = useState<Record<string, boolean>>({});
-
-  const items = useMemo(() => {
-    const all: any[] = [];
-    if (logs?.system) for (const x of logs.system) all.push({ bucket: "system", ...x });
-    if (logs?.user) for (const x of logs.user) all.push({ bucket: "user", ...x });
-    if (logs?.filing) for (const x of logs.filing) all.push({ bucket: "filing", ...x });
-    return all.sort((a,b) => String(b.createdAt||"").localeCompare(String(a.createdAt||"")));
-  }, [logs]);
-
-  const filtered = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    if (!t) return items;
-    return items.filter(x =>
-      String(x.event||"").toLowerCase().includes(t) ||
-      String(x.message||"").toLowerCase().includes(t) ||
-      String(x.bucket||"").toLowerCase().includes(t)
-    );
-  }, [items, q]);
-
+function PanelCard({ title, children }: any) {
+  const card: React.CSSProperties = {
+    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
+    borderRadius: 14,
+    padding: 14,
+    background: "color-mix(in oklab, Canvas 92%, CanvasText 2%)",
+  };
   return (
-    <div>
-      <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:10 }}>
-        <input
-          value={q}
-          onChange={(e)=>setQ(e.target.value)}
-          placeholder="Search logs (event/message)…"
-          style={{
-            flex: 1,
-            padding: 10,
-            borderRadius: 12,
-            border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-            background: "Canvas",
-            color: "CanvasText"
-          }}
-        />
-        <div style={{ fontSize:12, opacity:0.7 }}>{filtered.length} shown</div>
-      </div>
+    <section style={card}>
+      <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>{title}</h2>
+      {children}
+    </section>
+  );
+}
 
-      <div style={{ display:"grid", gap:8 }}>
-        {filtered.map((x:any) => {
-          const id = x.id || Math.random().toString(36).slice(2);
-          const isOpen = !!open[id];
-          return (
-            <div key={id} style={{
-              border: "1px solid color-mix(in oklab, CanvasText 12%, transparent)",
-              borderRadius: 12,
-              padding: 10,
-              background: "color-mix(in oklab, CanvasText 3%, transparent)"
-            }}>
-              <div style={{ display:"flex", justifyContent:"space-between", gap:12 }}>
-                <div>
-                  <div style={{ fontSize:12, opacity:0.7 }}>{fmtTs(x.createdAt)} · {x.bucket}</div>
-                  <div style={{ fontWeight:900 }}>{x.event || "—"}</div>
-                  <div style={{ opacity:0.9 }}>{x.message || ""}</div>
-                </div>
-                <button
-                  style={{
-                    padding:"6px 10px",
-                    borderRadius: 10,
-                    border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-                    background:"transparent",
-                    color:"CanvasText",
-                    cursor:"pointer",
-                    height: 34,
-                    alignSelf:"center"
-                  }}
-                  onClick={()=>setOpen(o=>({ ...o, [id]: !o[id] }))}
-                >
-                  {isOpen ? "Hide" : "Show"}
-                </button>
-              </div>
+function Button({ children, onClick, disabled }: any) {
+  const btn: React.CSSProperties = {
+    padding: "8px 12px",
+    borderRadius: 12,
+    border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+    background: "color-mix(in oklab, CanvasText 6%, transparent)",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.6 : 1,
+  };
+  return <button style={btn} disabled={disabled} onClick={onClick}>{children}</button>;
+}
 
-              {isOpen && (
-                <pre style={{ marginTop:10, whiteSpace:"pre-wrap", fontSize:12, opacity:0.9 }}>
-{JSON.stringify(x.context || x, null, 2)}
-                </pre>
-              )}
-            </div>
-          );
-        })}
-        {filtered.length === 0 && <div style={{ opacity:0.7 }}>No logs match that search.</div>}
+function Modal({ open, title, children, onClose }: any) {
+  if (!open) return null;
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 9999, padding: 16
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          width: "min(680px, 100%)",
+          borderRadius: 16,
+          border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
+          background: "Canvas",
+          color: "CanvasText",
+          padding: 16
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>{title}</div>
+          <button
+            style={{ border: "none", background: "transparent", color: "CanvasText", cursor: "pointer", fontSize: 18 }}
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </div>
+        <div style={{ marginTop: 12 }}>{children}</div>
       </div>
     </div>
   );
 }
-
 
 function FilingActionsPanel({ logs }: any) {
   const [q, setQ] = useState("");
@@ -258,7 +194,7 @@ function FilingActionsPanel({ logs }: any) {
             </div>
           );
         })}
-        {filtered.length === 0 && <div style={{ opacity:0.7 }}>No filing actions yet. Use READY/SUBMITTED to create them.</div>}
+        {filtered.length === 0 && <div style={{ opacity:0.7 }}>No filing actions yet.</div>}
       </div>
     </div>
   );
@@ -351,7 +287,6 @@ function SystemUserLogsPanel({ logs }: any) {
 export default function AdminIncidentDetail() {
   const params = useParams<{ id: string }>();
   const sp = useSearchParams();
-
   const incidentId = params.id;
   const orgId = sp.get("orgId") || "org_001";
 
@@ -361,37 +296,17 @@ export default function AdminIncidentDetail() {
   const [busy, setBusy] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
 
-  const card: React.CSSProperties = {
-    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-    borderRadius: 14,
-    padding: 14,
-    background: "color-mix(in oklab, Canvas 92%, CanvasText 2%)",
-  };
-  const btn: React.CSSProperties = {
-    padding: "8px 12px",
-    borderRadius: 12,
-    border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-    background: "color-mix(in oklab, CanvasText 6%, transparent)",
-    cursor: "pointer",
-  };
-  const pill: React.CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "8px 12px",
-    borderRadius: 12,
-    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-    background: "color-mix(in oklab, CanvasText 4%, transparent)",
-    fontSize: 13,
-    fontWeight: 700,
-  };
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const [submitType, setSubmitType] = useState<string>("");
+  const [confirmationId, setConfirmationId] = useState("");
+  const [method, setMethod] = useState("MANUAL");
+  const [override, setOverride] = useState(false);
 
   async function jfetch(url: string) {
     const r = await fetch(url);
     return r.json();
   }
 
-  // retry small (handles “functions not loaded yet” at startup)
   async function loadBundle() {
     setErr(null);
     for (let i = 0; i < 4; i++) {
@@ -410,22 +325,17 @@ export default function AdminIncidentDetail() {
 
   useEffect(() => {
     if (!incidentId) return;
-    loadBundle();
-    loadTimeline();
+    loadBundle(); loadTimeline();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incidentId]);
 
   async function postFn(path: string, body: any) {
     const r = await fetch(`/api/fn/${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type":"application/json" },
       body: JSON.stringify(body),
     });
     return r.json();
-  }
-
-  function noChargeIf(cond: boolean) {
-    return cond ? " · No changes — no charge" : "";
   }
 
   async function runFilings() {
@@ -435,7 +345,7 @@ export default function AdminIncidentDetail() {
       if (!out.ok) throw new Error(out.error || "generateFilingsV2 failed");
       const updated = (out.changed || []).length;
       const unchanged = (out.skipped || []).length;
-      setBanner(`Filings: updated ${updated}, unchanged ${unchanged}${noChargeIf(updated === 0)}`);
+      setBanner(updated === 0 ? `Filings unchanged (${unchanged}) · No changes — no charge` : `Filings updated ${updated} · unchanged ${unchanged}`);
       await loadBundle(); await loadTimeline();
     } catch (e:any) { setErr(e.message || String(e)); }
     finally { setBusy(null); }
@@ -446,8 +356,7 @@ export default function AdminIncidentDetail() {
     try {
       const out = await postFn("generateTimelineV2", { incidentId, orgId, requestedBy: "admin_ui" });
       if (!out.ok) throw new Error(out.error || "generateTimelineV2 failed");
-      if (out.skipped) setBanner(`Timeline: unchanged (hash match) · No changes — no charge`);
-      else setBanner(`Timeline: generated ${out.eventCount} events`);
+      setBanner(out.skipped ? `Timeline unchanged · No changes — no charge` : `Timeline generated ${out.eventCount} events`);
       await loadBundle(); await loadTimeline();
     } catch (e:any) { setErr(e.message || String(e)); }
     finally { setBusy(null); }
@@ -462,37 +371,72 @@ export default function AdminIncidentDetail() {
       const t = out.timeline || {};
       const fu = (f.changed || []).length;
       const fs = (f.skipped || []).length;
-      const fMsg = `Filings: updated ${fu}, unchanged ${fs}${noChargeIf(fu === 0)}`;
-      const tMsg = t.skipped ? `Timeline: unchanged · No changes — no charge` : `Timeline: ${t.eventCount} events`;
+      const fMsg = fu === 0 ? `Filings unchanged (${fs}) · No changes — no charge` : `Filings updated ${fu} · unchanged ${fs}`;
+      const tMsg = t.skipped ? `Timeline unchanged · No changes — no charge` : `Timeline ${t.eventCount} events`;
       setBanner(`${fMsg} · ${tMsg}`);
       await loadBundle(); await loadTimeline();
     } catch (e:any) { setErr(e.message || String(e)); }
     finally { setBusy(null); }
   }
 
+  async function setStatus(toStatus: string, filingType: string, extra: any = {}) {
+    setBusy("status"); setErr(null); setBanner(null);
+    try {
+      const out = await postFn("setFilingStatusV1", {
+        orgId,
+        incidentId,
+        filingType,
+        toStatus,
+        userId: "admin_ui",
+        message: "",
+        ...extra,
+      });
+      if (!out.ok) throw new Error(out.error || "setFilingStatusV1 failed");
+      setBanner(`✅ ${filingType} ${toStatus}`);
+      await loadBundle(); await loadTimeline();
+    } catch (e:any) { setErr(e.message || String(e)); }
+    finally { setBusy(null); }
+  }
+
+  function openSubmitModal(filingType: string) {
+    setSubmitType(filingType);
+    setConfirmationId("");
+    setMethod("MANUAL");
+    setOverride(false);
+    setSubmitOpen(true);
+  }
+
+  async function confirmSubmit() {
+    if (!confirmationId.trim()) { setErr("confirmationId is required"); return; }
+    await setStatus("SUBMITTED", submitType, {
+      confirmationId: confirmationId.trim(),
+      submissionMethod: method,
+      override,
+    });
+    setSubmitOpen(false);
+  }
+
   const incident = bundle?.incident ?? null;
   const filings = useMemo(() => (bundle?.filings ?? []), [bundle]);
-  const timelineMeta = bundle?.timelineMeta ?? null;
   const logs = bundle?.logs ?? null;
 
   const filingsMeta = incident?.filingsMeta ?? null;
+  const timelineMeta = bundle?.timelineMeta ?? null;
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
         <h1 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>Admin · Incident {incidentId}</h1>
-        <a href={`/admin/incidents?orgId=${encodeURIComponent(orgId)}`} style={{ textDecoration: "none", color: "CanvasText", opacity: 0.8 }}>
-          ← Back
-        </a>
+        <a href={`/admin/incidents?orgId=${encodeURIComponent(orgId)}`} style={{ textDecoration: "none", color: "CanvasText", opacity: 0.8 }}>← Back</a>
       </div>
       <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Org: {orgId}</div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-        <button style={btn} disabled={!!busy} onClick={() => { loadBundle(); loadTimeline(); }}>Refresh</button>
-        <button style={btn} disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</button>
-        <button style={btn} disabled={!!busy} onClick={runTimelineGen}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</button>
-        <button style={btn} disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</button>
-        <a style={{ ...btn, textDecoration: "none", color: "CanvasText", opacity: 0.9 }} href={`/admin/usage?orgId=${encodeURIComponent(orgId)}`}>Usage →</a>
+        <Button disabled={!!busy} onClick={() => { loadBundle(); loadTimeline(); }}>Refresh</Button>
+        <Button disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</Button>
+        <Button disabled={!!busy} onClick={runTimelineGen}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</Button>
+        <Button disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</Button>
+        <a style={{ textDecoration:"none", color:"CanvasText" }} href={`/admin/usage?orgId=${encodeURIComponent(orgId)}`}><Button disabled={false}>Usage →</Button></a>
       </div>
 
       {(filingsMeta || timelineMeta) && (
@@ -502,107 +446,133 @@ export default function AdminIncidentDetail() {
         </div>
       )}
 
-      {banner && <div style={{ marginTop: 10, ...pill }}>{banner}</div>}
+      {banner && (
+        <div style={{
+          marginTop: 10,
+          padding: "10px 12px",
+          borderRadius: 12,
+          border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
+          background: "color-mix(in oklab, CanvasText 4%, transparent)",
+          fontWeight: 800
+        }}>{banner}</div>
+      )}
       {err && <pre style={{ marginTop: 12, color: "crimson", whiteSpace: "pre-wrap" }}>{err}</pre>}
 
       <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
-        <section style={card}>
-          <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>Timeline</h2>
+        <PanelCard title="Timeline">
           <ul style={{ margin: 0, paddingLeft: 18 }}>
             {timelineEvents.map((e:any) => (
               <li key={e.id} style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12, opacity: 0.7 }}>{fmtTs(e.occurredAt)} · {e.type}</div>
-                <div style={{ fontWeight: 800 }}>{e.title || ""}</div>
-                <div style={{ opacity: 0.9 }}>{e.message || ""}</div>
+                <div style={{ fontSize:12, opacity:0.7 }}>{fmtTs(e.occurredAt)} · {e.type}</div>
+                <div style={{ fontWeight:800 }}>{e.title || ""}</div>
+                <div style={{ opacity:0.9 }}>{e.message || ""}</div>
               </li>
             ))}
-            {timelineEvents.length === 0 && <li style={{ opacity: 0.7 }}>No timeline events yet.</li>}
+            {timelineEvents.length === 0 && <li style={{ opacity:0.7 }}>No timeline events yet.</li>}
           </ul>
-        </section>
+        </PanelCard>
 
-        <section style={card}>
-          <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>Filings</h2>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <PanelCard title="Filings">
+          <div style={{ overflowX:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
               <thead>
-                <tr style={{ textAlign: "left", borderBottom: "1px solid color-mix(in oklab, CanvasText 18%, transparent)" }}>
-                  <th style={{ padding: "10px 8px" }}>Type</th>
-                  <th style={{ padding: "10px 8px" }}>Status</th>
-                  <th style={{ padding: "10px 8px" }}>Payload Hash</th>
-                  <th style={{ padding: "10px 8px" }}>Generated</th>
-                  <th style={{ padding: "10px 8px" }}>Copy</th>
-                  <th style={{ padding: "10px 8px" }}>Workflow</th>
+                <tr style={{ textAlign:"left", borderBottom:"1px solid color-mix(in oklab, CanvasText 18%, transparent)" }}>
+                  <th style={{ padding:"10px 8px" }}>Type</th>
+                  <th style={{ padding:"10px 8px" }}>Status</th>
+                  <th style={{ padding:"10px 8px" }}>Payload Hash</th>
+                  <th style={{ padding:"10px 8px" }}>Generated</th>
+                  <th style={{ padding:"10px 8px" }}>Copy</th>
+                  <th style={{ padding:"10px 8px" }}>Workflow</th>
                 </tr>
               </thead>
               <tbody>
-                {filings.map((f: any) => (
-                  <tr key={f.id} style={{ borderBottom: "1px solid color-mix(in oklab, CanvasText 10%, transparent)" }}>
-                    <td style={{ padding: "10px 8px", fontWeight: 900 }}>{f.type || f.id}</td>
-                    <td style={{ padding: "10px 8px", opacity: 0.9 }}>{f.status || "—"}</td>
-                    <td style={{ padding: "10px 8px", fontFamily: "ui-monospace, Menlo, monospace", opacity: 0.85 }}>
-                      {shortHash(f?.payloadHash?.value)}
-                    </td>
-                    <td style={{ padding: "10px 8px", opacity: 0.85 }}>{fmtTs(f.generatedAt)}</td>
-                    <td style={{ padding: "10px 8px" }}>
-                      <button style={btn} onClick={() => copyText(String(f?.payloadHash?.value || ""))} disabled={!f?.payloadHash?.value}>Copy hash</button>
-                    </td>
-                    <td style={{ padding: "10px 8px", display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <button
-                        style={btn}
-                        disabled={!!busy}
-                        onClick={async () => {
-                          try {
-                            setBanner(null);
-                            await setFilingStatusUI({ orgId, incidentId, filingType: (f.type || f.id), toStatus: "READY" });
-                            setBanner(`✅ ${f.type || f.id} marked READY`);
-                            await loadBundle(); await loadTimeline();
-                          } catch (e:any) {
-                            setErr(e.message || String(e));
-                          }
-                        }}
-                      >
-                        READY
-                      </button>
-
-                      <button
-                        style={btn}
-                        disabled={!!busy}
-                        onClick={async () => {
-                          try {
-                            setBanner(null);
-                            await setFilingStatusUI({ orgId, incidentId, filingType: (f.type || f.id), toStatus: "SUBMITTED" });
-                            setBanner(`📨 ${f.type || f.id} marked SUBMITTED`);
-                            await loadBundle(); await loadTimeline();
-                          } catch (e:any) {
-                            setErr(e.message || String(e));
-                          }
-                        }}
-                      >
-                        SUBMITTED
-                      </button>
-                    </td>
-
-                  </tr>
-                ))}
+                {filings.map((f:any) => {
+                  const st = String(f.status || "DRAFT").toUpperCase();
+                  return (
+                    <tr key={f.id} style={{ borderBottom:"1px solid color-mix(in oklab, CanvasText 10%, transparent)" }}>
+                      <td style={{ padding:"10px 8px", fontWeight:900 }}>{f.type || f.id}</td>
+                      <td style={{ padding:"10px 8px" }}><span style={statusPill(st)}>{st}</span></td>
+                      <td style={{ padding:"10px 8px", fontFamily:"ui-monospace, Menlo, monospace", opacity:0.85 }}>{shortHash(f?.payloadHash?.value)}</td>
+                      <td style={{ padding:"10px 8px", opacity:0.85 }}>{fmtTs(f.generatedAt)}</td>
+                      <td style={{ padding:"10px 8px" }}>
+                        <Button disabled={!f?.payloadHash?.value} onClick={() => copyText(String(f?.payloadHash?.value || ""))}>Copy hash</Button>
+                      </td>
+                      <td style={{ padding:"10px 8px", display:"flex", gap:8, flexWrap:"wrap" }}>
+                        <Button disabled={!!busy} onClick={() => setStatus("READY", (f.type || f.id))}>READY</Button>
+                        <Button disabled={!!busy || st !== "READY"} onClick={() => openSubmitModal((f.type || f.id))}>SUBMITTED</Button>
+                        <Button disabled={!!busy} onClick={() => setStatus("AMENDED", (f.type || f.id))}>AMENDED</Button>
+                        <Button disabled={!!busy} onClick={() => setStatus("CANCELLED", (f.type || f.id))}>CANCELLED</Button>
+                      </td>
+                    </tr>
+                  );
+                })}
                 {filings.length === 0 && (
-                  <tr><td colSpan={6} style={{ padding: 12, opacity: 0.7 }}>No filings yet. Click “Generate Filings”.</td></tr>
+                  <tr><td colSpan={6} style={{ padding:12, opacity:0.7 }}>No filings yet. Click “Generate Filings”.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
-        </section>
+        </PanelCard>
 
-        <section style={card}>
-          <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>Incident</h2>
-          <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{incident ? JSON.stringify(incident, null, 2) : "—"}</pre>
-        </section>
+        <PanelCard title="Filing Actions">
+          <FilingActionsPanel logs={logs} />
+        </PanelCard>
 
-        <section style={card}>
-          <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>Logs</h2>
+        <PanelCard title="System & User Logs">
+          <SystemUserLogsPanel logs={logs} />
+        </PanelCard>
 
-          <LogPanel logs={logs} />
-        </section>
+        <PanelCard title="Incident">
+          <pre style={{ margin:0, whiteSpace:"pre-wrap" }}>{incident ? JSON.stringify(incident, null, 2) : "—"}</pre>
+        </PanelCard>
       </div>
+
+      <Modal open={submitOpen} title={`Mark SUBMITTED · ${submitType}`} onClose={() => setSubmitOpen(false)}>
+        <div style={{ display:"grid", gap:10 }}>
+          <label style={{ fontSize: 12, opacity: 0.8 }}>Confirmation ID (required)</label>
+          <input
+            value={confirmationId}
+            onChange={(e)=>setConfirmationId(e.target.value)}
+            style={{
+              padding: 10,
+              borderRadius: 12,
+              border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+              background: "Canvas",
+              color: "CanvasText",
+              fontSize: 14
+            }}
+            placeholder="e.g. FCC-123456"
+          />
+
+          <label style={{ fontSize: 12, opacity: 0.8 }}>Submission Method</label>
+          <select
+            value={method}
+            onChange={(e)=>setMethod(e.target.value)}
+            style={{
+              padding: 10,
+              borderRadius: 12,
+              border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+              background: "Canvas",
+              color: "CanvasText",
+              fontSize: 14
+            }}
+          >
+            <option value="MANUAL">MANUAL</option>
+            <option value="UPLOAD">UPLOAD</option>
+            <option value="API">API</option>
+          </select>
+
+          <label style={{ display:"flex", gap:10, alignItems:"center", marginTop: 6 }}>
+            <input type="checkbox" checked={override} onChange={(e)=>setOverride(e.target.checked)} />
+            <span style={{ fontSize: 13, opacity: 0.85 }}>Override READY requirement (admin only)</span>
+          </label>
+
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop: 10 }}>
+            <Button disabled={false} onClick={() => setSubmitOpen(false)}>Cancel</Button>
+            <Button disabled={!!busy} onClick={confirmSubmit}>{busy ? "Working…" : "Confirm Submitted"}</Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
