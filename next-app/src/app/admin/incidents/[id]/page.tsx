@@ -630,8 +630,6 @@ async function loadRil() {
 
       <div style={{ marginTop: 16 }}>
         <PanelCard title="What Needs Attention">
-          {const safeAttention = (typeof attention !== "undefined" && attention) ? attention : [];
-          }
           {safeAttention.length === 0 ? (
             <div style={{ opacity: 0.75 }}>✅ All clear. No blockers detected.</div>
           ) : (
