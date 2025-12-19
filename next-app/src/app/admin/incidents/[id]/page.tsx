@@ -413,7 +413,7 @@ async function loadRil() {
 
   useEffect(() => {
     if (!incidentId) return;
-    loadBundle(); loadTimeline();
+    loadBundle(); loadRil();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incidentId]);
 
@@ -551,7 +551,7 @@ async function loadRil() {
       <div style={{ fontSize:12, opacity:0.7, marginTop:6 }}>Org: {orgId}</div>
 
       <div style={{ display:"flex", gap:10, marginTop:14, flexWrap:"wrap" }}>
-        <Button disabled={!!busy} onClick={() => { loadBundle(); loadTimeline(); }}>Refresh</Button>
+        <Button disabled={!!busy} onClick={() => { loadBundle(); loadRil(); }}>Refresh</Button>
         <Button disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</Button>
         <Button disabled={!!busy} onClick={runTimelineGen}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</Button>
         <Button disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</Button>
