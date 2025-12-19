@@ -821,27 +821,28 @@ async function loadRil() {
             )}
           </div>
         <div style={{ display:"grid", gap:10 }}>
-          <div style={{ opacity: 0.85 }}>
-            Export will include: Incident summary, Timeline, Filings, Logs, Hashes.
-          </div>
+  <div style={{ opacity: 0.85 }}>
+    Export will include: Incident summary, Timeline, Filings, Logs, Hashes.
+  </div>
 
-          <label style={{ fontSize: 12, opacity: 0.8 }}>Purpose</label>
-          <select
-            value={exportPurpose}
-            onChange={(e)=>setExportPurpose(e.target.value)}
-            style={{
-              padding: 10,
-              borderRadius: 12,
-              border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-              background: "Canvas",
-              color: "CanvasText",
-              fontSize: 14
-            }}
-          >
-            <option value="REGULATORY">REGULATORY</option>
-            <option value="AUDIT">AUDIT</option>
-            <option value="INTERNAL">INTERNAL</option>
-          </select>
+  <label style={{ fontSize: 12, opacity: 0.8 }}>Purpose</label>
+  <select
+    value={exportPurpose}
+    onChange={(e)=>setExportPurpose(e.target.value)}
+    style={{
+      padding: 10,
+      borderRadius: 12,
+      border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+      background: "Canvas",
+      color: "CanvasText",
+      fontSize: 14
+    }}
+  >
+    <option value="OPS">OPS (internal)</option>
+    <option value="REGULATORY">REGULATORY (audit-ready)</option>
+    <option value="CUSTOMER">CUSTOMER (shareable)</option>
+  </select>
+</div>
 
           {exportBlockers.length > 0 && (
             <div style={{ border: "1px solid color-mix(in oklab, red 25%, transparent)", borderRadius: 12, padding: 12 }}>
