@@ -603,6 +603,25 @@ async function loadRil() {
     [incident, filings, timelineMeta, logs]
   );
 
+  const attentionBlocks = useMemo(
+    () => (Array.isArray(safeAttention) ? safeAttention : []).filter((x:any) => String(x||"").startsWith("BLOCK:")),
+    [safeAttention]
+  );
+  const attentionWarns = useMemo(
+    () => (Array.isArray(safeAttention) ? safeAttention : []).filter((x:any) => String(x||"").startsWith("WARN:")),
+    [safeAttention]
+  );
+
+  const canFixTimeline = useMemo(
+    () => attentionBlocks.some((x:any) => String(x).toLowerCase().includes("timeline")),
+    [attentionBlocks]
+  );
+  const canFixFilings = useMemo(
+    () => attentionBlocks.some((x:any) => String(x).toLowerCase().includes("filing")),
+    [attentionBlocks]
+  );
+  const canFixBoth = useMemo(() => canFixTimeline && canFixFilings, [canFixTimeline, canFixFilings]);
+
   const filingActionStats = useMemo(() => {
     const stats: Record<string, { count: number; last?: any }> = {};
     const arr = (logs?.filing || []) as any[];
@@ -641,15 +660,36 @@ async function loadRil() {
 
       <div style={{ marginTop: 16 }}>
         <PanelCard title="What Needs Attention">
+          <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
+            {canFixBoth && (
+              <Button disabled={!!busy} onClick={() => runBoth()}>Fix All (Generate Both)</Button>
+            )}
+            {!canFixBoth && canFixFilings && (
+              <Button disabled={!!busy} onClick={() => runFilings()}>Fix Filings</Button>
+            )}
+            {!canFixBoth && canFixTimeline && (
+              <Button disabled={!!busy} onClick={() => runTimelineGen()}>Fix Timeline</Button>
+            )}
+            {(attentionBlocks.length > 0 || attentionWarns.length > 0) && (
+              <div style={{ fontSize:12, opacity:0.75, alignSelf:"center" }}>
+                {attentionBlocks.length > 0 ? "🚫 blockers" : "⚠ warnings"} detected
+              </div>
+            )}
+          </div>
+
           {safeAttention.length === 0 ? (
-            <div style={{ opacity: 0.75 }}>✅ All clear. No blockers detected.</div>
+            <div style={{ opacity:0.75 }}>✅ All clear. No blockers detected.</div>
           ) : (
             <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-              {safeAttention.map((a:any, i:number) => (
-                <li key={i} style={{ color: a.level === "BLOCK" ? "crimson" : "CanvasText" }}>
-                  <b>{a.level === "BLOCK" ? "BLOCK:" : "WARN:"}</b> {a.text}
-                </li>
-              ))}
+              {safeAttention.map((x:any, idx:number) => {
+                const txt = String(x||"");
+                const isBlock = txt.startsWith("BLOCK:");
+                return (
+                  <li key={idx} style={{ color: isBlock ? "crimson" : "inherit", fontWeight: isBlock ? 900 : 700 }}>
+                    {txt}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </PanelCard>
@@ -753,7 +793,34 @@ async function loadRil() {
         </PanelCard>
       </div>
 
-      <Modal open={exportOpen} title={"Export Incident Packet"} onClose={() => setExportOpen(false)}>
+      <Modal open={exportOpen} title={"Export Incident Packet"} onClose={() =>
+          <div style={{ marginTop: 10 }}>
+            {attentionBlocks.length > 0 && (
+              <div style={{ border: "1px solid color-mix(in oklab, red 25%, transparent)", borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                <div style={{ fontWeight: 900, marginBottom: 6, color: "crimson" }}>Blocking issues (export):</div>
+                <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+                  {attentionBlocks.map((x:any, i:number) => <li key={i} style={{ color:"crimson", fontWeight:800 }}>{String(x)}</li>)}
+                </ul>
+                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+                  Fix blockers above (Generate Filings/Timeline) before exporting.
+                </div>
+              </div>
+            )}
+
+            {attentionWarns.length > 0 && (
+              <div style={{ border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)", borderRadius: 12, padding: 12 }}>
+                <div style={{ fontWeight: 900, marginBottom: 6 }}>Warnings (export allowed):</div>
+                <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+                  {attentionWarns.map((x:any, i:number) => <li key={i} style={{ opacity: 0.9, fontWeight:700 }}>{String(x)}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {(attentionBlocks.length === 0 && attentionWarns.length === 0) && (
+              <div style={{ opacity: 0.75 }}>✅ Export preflight: clean.</div>
+            )}
+          </div>
+ setExportOpen(false)}>
         <div style={{ display:"grid", gap:10 }}>
           <div style={{ opacity: 0.85 }}>
             Export will include: Incident summary, Timeline, Filings, Logs, Hashes.
