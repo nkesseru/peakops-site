@@ -820,7 +820,6 @@ async function loadRil() {
               <div style={{ opacity: 0.75 }}>✅ Export preflight: clean.</div>
             )}
           </div>
- setExportOpen(false)}>
         <div style={{ display:"grid", gap:10 }}>
           <div style={{ opacity: 0.85 }}>
             Export will include: Incident summary, Timeline, Filings, Logs, Hashes.
@@ -865,7 +864,6 @@ async function loadRil() {
                   const out = await postFn("exportIncidentPacketV1", { orgId, incidentId, requestedBy: "admin_ui", purpose: exportPurpose });
                   if (!out.ok) throw new Error(out.error || "exportIncidentPacketV1 failed");
                   setBanner("✅ Export queued. ZIP/PDF generation will be wired next.");
-                  setExportOpen(false);
                   await loadBundle(); await loadTimeline();
                 } catch (e:any) {
                   setErr(e.message || String(e));
