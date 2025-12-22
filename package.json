@@ -17,6 +17,10 @@
     "firebase-admin": "^12.7.0",
     "helmet": "^7.1.0",
     "json-logic-js": "^2.0.5",
-    "pdfkit": "^0.15.0"
+    "pdfkit": "^0.15.0",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   }
 }

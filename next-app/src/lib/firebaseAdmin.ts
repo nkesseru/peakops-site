@@ -19,7 +19,7 @@ export function getAdminDb() {
       credential: cert({
         projectId: serviceAccount.project_id,
         clientEmail: serviceAccount.client_email,
-        privateKey: serviceAccount.private_key,
+        privateKey: serviceAccount.private_key.replace(/\\n/g, "\n"),
       }),
     });
   }

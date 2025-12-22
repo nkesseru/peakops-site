@@ -22,7 +22,7 @@ function attentionLine(x: any) {
 async function copyText(txt: string) {
   try { await navigator.clipboard.writeText(txt); } catch {}
 
-function renderAttentionItem(x: any) {
+function renderAttentionItemLocal(x: any) {
   if (!x) return "—";
   if (typeof x === "string") return x;
   if (typeof x === "number" || typeof x === "boolean") return String(x);
@@ -442,7 +442,22 @@ function SystemUserLogsPanel({ logs }: any) {
 }
 
 export default function AdminIncidentDetail() {
-  const params = useParams<{ id: string }>();
+  
+  // --- Local helper (keeps Turbopack from losing the symbol) ---
+  const renderAttentionItemLocal = (x: any) => {
+    try {
+      if (!x) return "WARN: Unknown issue";
+      if (typeof x === "string") return x;
+      const lvl = String(x.level || x.severity || "WARN").toUpperCase();
+      const msg = (x.message ?? x.text ?? x.reason ?? x.code ?? "");
+      if (msg) return `${lvl}: ${msg}`;
+      try { return `${lvl}: ${JSON.stringify(x)}`; } catch { return `${lvl}: ${String(x)}`; }
+    } catch {
+      return "WARN: Unknown issue";
+    }
+  };
+
+const params = useParams<{ id: string }>();
   const sp = useSearchParams();
   const incidentId = params.id;
   const orgId = sp.get("orgId") || "org_001";
@@ -612,6 +627,59 @@ async function loadRil() {
   const filingsMeta = incident?.filingsMeta ?? null;
   const timelineMeta = bundle?.timelineMeta ?? null;
 
+  // --- Needs Attention (derived) ---
+  const showAttention = useMemo(() => {
+    const hasMeta = !!(bundle?.timelineMeta || bundle?.incident?.filingsMeta);
+    const hasFilings = Array.isArray(bundle?.filings) && bundle.filings.length > 0;
+    const hasTimeline = Array.isArray(timelineEvents) && timelineEvents.length > 0;
+    const lg = bundle?.logs || {};
+    const hasLogs = ((lg?.system?.length || 0) + (lg?.user?.length || 0) + (lg?.filing?.length || 0)) > 0;
+    return hasMeta || hasFilings || hasTimeline || hasLogs;
+  }, [bundle, timelineEvents]);
+
+  const attentionItems = useMemo(() => {
+    try {
+      if (typeof computeAttention === "function") {
+        const incident = bundle?.incident;
+        const filings = Array.isArray(bundle?.filings) ? bundle.filings : [];
+        const timelineMeta = bundle?.timelineMeta || incident?.timelineMeta;
+        return computeAttention({ incident, filings, timelineMeta }) || [];
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  }, [bundle]);
+
+  const attentionLine = (x: any) => {
+    if (!x) return "WARN: Unknown issue";
+    if (typeof x === "string") return x;
+    const level = String(x.level || x.severity || "WARN").toUpperCase();
+    let msg = x.message || x.text || x.reason;
+    if (!msg) {
+      try { msg = JSON.stringify(x); } catch { msg = String(x); }
+    }
+    return `${level}: ${msg}`;
+  };
+
+  const attentionBlocks = useMemo(
+    () =>
+      (showAttention ? attentionItems : [])
+        .filter((x: any) => String(x?.level || x?.severity || "").toUpperCase() === "BLOCK")
+        .map(attentionLine),
+    [attentionItems, showAttention]
+  );
+
+  const attentionWarns = useMemo(
+    () =>
+      (showAttention ? attentionItems : [])
+        .filter((x: any) => String(x?.level || x?.severity || "").toUpperCase() === "WARN")
+        .map(attentionLine),
+    [attentionItems, showAttention]
+  );
+  // --- end Needs Attention (derived) ---
+
+
   // --- Derived UI helpers (canonical) ---
   const safeAttention = useMemo(
     () => computeAttention({ incident, filings, timelineMeta }),
@@ -623,16 +691,7 @@ async function loadRil() {
     [incident, filings, timelineMeta, logs]
   );
 
-  const attentionBlocks = useMemo(
-    () => (Array.isArray(safeAttention) ? safeAttention : []).filter((x:any) => String(x||"").startsWith("BLOCK:")),
-    [safeAttention]
-  );
-  const attentionWarns = useMemo(
-    () => (Array.isArray(safeAttention) ? safeAttention : []).filter((x:any) => String(x||"").startsWith("WARN:")),
-    [safeAttention]
-  );
-
-  const canFixTimeline = useMemo(
+      const canFixTimeline = useMemo(
     () => attentionBlocks.some((x:any) => String(x).toLowerCase().includes("timeline")),
     [attentionBlocks]
   );
@@ -679,40 +738,22 @@ async function loadRil() {
       </div>
 
       <div style={{ marginTop: 16 }}>
-        <PanelCard title="What Needs Attention">
-          <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:10 }}>
-            {canFixBoth && (
-              <Button disabled={!!busy} onClick={() => runBoth()}>Fix All (Generate Both)</Button>
-            )}
-            {!canFixBoth && canFixFilings && (
-              <Button disabled={!!busy} onClick={() => runFilings()}>Fix Filings</Button>
-            )}
-            {!canFixBoth && canFixTimeline && (
-              <Button disabled={!!busy} onClick={() => runTimelineGen()}>Fix Timeline</Button>
-            )}
-            {(attentionBlocks.length > 0 || attentionWarns.length > 0) && (
-              <div style={{ fontSize:12, opacity:0.75, alignSelf:"center" }}>
-                {attentionBlocks.length > 0 ? "🚫 blockers" : "⚠ warnings"} detected
-              </div>
-            )}
-          </div>
-
-          {safeAttention.length === 0 ? (
-            <div style={{ opacity:0.75 }}>✅ All clear. No blockers detected.</div>
-          ) : (
-            <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-              {safeAttention.map((x:any, idx:number) => {
-                const txt = String(x||"");
-                const isBlock = txt.startsWith("BLOCK:");
-                return (
-                  <li key={idx} style={{ color: isBlock ? "crimson" : "inherit", fontWeight: isBlock ? 900 : 700 }}>
-                    {txt}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </PanelCard>
+        {showAttention && (
+<PanelCard title="What Needs Attention">
+  {(attentionBlocks.length === 0 && attentionWarns.length === 0) ? (
+    <div style={{ opacity: 0.75 }}>✅ All clear. No blockers detected.</div>
+  ) : (
+    <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+      {attentionBlocks.map((t, i) => (
+        <li key={"b"+i} style={{ color: "crimson", fontWeight: 800 }}>{t}</li>
+      ))}
+      {attentionWarns.map((t, i) => (
+        <li key={"w"+i} style={{ opacity: 0.9, fontWeight: 700 }}>{t}</li>
+      ))}
+    </ul>
+  )}
+</PanelCard>
+)}
       </div>
 
       {banner && (
@@ -820,7 +861,7 @@ async function loadRil() {
         <div style={{ fontWeight: 900, marginBottom: 6, color: "crimson" }}>Blocking issues (export):</div>
         <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
           {attentionBlocks.map((x:any, i:number) => (
-            <li key={i} style={{ color:"crimson", fontWeight:800 }}>{String(x)}</li>
+            <li key={i} style={{ color:"crimson", fontWeight:800 }}>{renderAttentionItemLocal(x)}</li>
           ))}
         </ul>
         <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
@@ -834,7 +875,7 @@ async function loadRil() {
         <div style={{ fontWeight: 900, marginBottom: 6 }}>Warnings (export allowed):</div>
         <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
           {attentionWarns.map((x:any, i:number) => (
-  <li key={i} style={{ opacity: 0.9, fontWeight: 700 }}>{renderAttentionItem(x)}</li>
+  <li key={i} style={{ opacity: 0.9, fontWeight: 700 }}>{renderAttentionItemLocal(x)}</li>
 ))}
         </ul>
       </div>
