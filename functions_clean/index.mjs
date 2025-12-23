@@ -1,10 +1,13 @@
 import { onRequest } from "firebase-functions/v2/https";
 import { initializeApp, getApps } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { nowIso, requireStr, optionalStr, pick } from "./api.mjs";
 import { sha256OfObject } from "./audit.mjs";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 
 import { writeUsageEvent } from "./usage.mjs";
+
+const nowIsoLocal = nowIso;
 if (!getApps().length) initializeApp();
 
 export const hello = onRequest((req, res) => {
@@ -645,8 +648,6 @@ function sha256Hex(bufOrStr) {
   const b = (typeof bufOrStr === "string") ? Buffer.from(bufOrStr, "utf8") : Buffer.from(bufOrStr);
   return crypto.createHash("sha256").update(b).digest("hex");
 }
-function nowIsoLocal() { return new Date().toISOString(); }
-
 function exportPreflight({ incident, filings, timelineMeta }) {
   const blockers = [];
   const warnings = [];
@@ -1239,17 +1240,24 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
     const prev = snap.data() || {};
     const fromStatus = prev.status || "DRAFT";
 
-    // build patch
-    const patch = {
-      status: toStatus,
-      updatedAt: now,
-    };
+    const patch = { status: toStatus, updatedAt: now };
 
+    // --- status-specific rules ---
     if (toStatus === "SUBMITTED") {
-      // Guardrail: require READY unless override
       if (!override && fromStatus !== "READY") {
         return res.status(400).json({ ok:false, error:`Must be READY before SUBMITTED (current: ${fromStatus})` });
       }
+      if (!String(confirmationId || "").trim()) {
+        return res.status(400).json({ ok:false, error:"confirmationId required for SUBMITTED" });
+      }
+      patch.submittedAt = now;
+      patch.submittedBy = userId;
+      patch.external = {
+        ...(prev.external || {}),
+        confirmationId: String(confirmationId).trim(),
+        submissionMethod,
+      };
+    }
 
     if (toStatus === "AMENDED") {
       patch.amendedAt = now;
@@ -1262,19 +1270,10 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
       }
       patch.cancelledAt = now;
       patch.cancelledBy = userId;
+      patch.cancelReason = String(cancelReason || "").trim() || null;
     }
 
-      if (!confirmationId) return res.status(400).json({ ok:false, error:"confirmationId required for SUBMITTED" });
-      patch.submittedAt = now;
-      patch.submittedBy = userId;
-      patch.external = {
-        ...(prev.external || {}),
-        confirmationId,
-        submissionMethod,
-      };
-    }
-
-    // write filing_action_logs
+    // --- logs ---
     const actionRef = db.collection("filing_action_logs").doc();
     const actionDoc = {
       orgId,
@@ -1286,14 +1285,14 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
       to: toStatus,
       message,
       context: {
-        confirmationId: confirmationId || null,
-        submissionMethod: submissionMethod || null,
-        cancelReason: cancelReason ? String(cancelReason) : null,
+        confirmationId: (toStatus === "SUBMITTED") ? (String(confirmationId || "").trim() || null) : null,
+        submissionMethod: (toStatus === "SUBMITTED") ? submissionMethod : null,
+        cancelReason: (toStatus === "CANCELLED") ? (String(cancelReason || "").trim() || null) : null,
+        cancelOverride: (toStatus === "CANCELLED") ? cancelOverride : null,
       },
       createdAt: now,
     };
 
-    // add timeline event
     const tlRef = db.collection("incidents").doc(incidentId).collection("timelineEvents").doc();
     const tlDoc = {
       id: tlRef.id,
@@ -1305,7 +1304,7 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
         ? `Filing submitted: ${filingType}`
         : `Filing status changed: ${filingType}`,
       message: (toStatus === "SUBMITTED")
-        ? `Submitted (${submissionMethod}) · Confirmation: ${confirmationId}`
+        ? `Submitted (${submissionMethod}) · Confirmation: ${String(confirmationId || "").trim()}`
         : `${fromStatus} → ${toStatus}`,
       links: { filingId: filingType, userId },
       source: "SYSTEM",
@@ -1316,7 +1315,6 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
     batch.set(filingRef, patch, { merge: true });
     batch.set(actionRef, actionDoc);
     batch.set(tlRef, tlDoc);
-
     await batch.commit();
 
     return res.json({
@@ -1335,3 +1333,127 @@ export const setFilingStatusV1 = onRequest(async (req, res) => {
 });
 
 // Export packet stub (ZIP/PDF will come next). Logs + usage for now.
+
+// ===============================
+// ===============================
+// SubmitQueue Worker (Phase 2)
+// ===============================
+import { runSubmitQueueTick } from "./queue.mjs";
+
+// HTTP (dev/manual kick)
+export const submitQueueTick = onRequest(async (req, res) => {
+  try {
+    const dryRun = String(req.query.dryRun || "").toLowerCase() === "true";
+    const out = await runSubmitQueueTick({ dryRun });
+    return res.json(out);
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// Scheduled (prod shape)
+export const submitQueueTickScheduled = onSchedule(
+  {
+    schedule: "every 1 minute",
+    timeZone: "America/Los_Angeles",
+    region: "us-central1",
+  },
+  async () => {
+    await runSubmitQueueTick({ dryRun: false });
+  }
+);
+
+// Debug: show submit_queue candidates (emulator sanity)
+export const debugSubmitQueue = onRequest(async (req, res) => {
+  try {
+    const db = getFirestore();
+    const now = Timestamp.now();
+
+    const snap = await db.collection("submit_queue")
+      .where("status", "==", "QUEUED")
+      .where("nextAttemptAt", "<=", now)
+      .orderBy("nextAttemptAt", "asc")
+      .limit(10)
+      .get();
+
+    const sample = snap.docs.map(d => {
+      const x = d.data() || {};
+      return {
+        id: d.id,
+        status: x.status,
+        nextAttemptAt: x.nextAttemptAt?.toDate?.() || null,
+        lockedBy: x.lockedBy || "",
+        lockExpiresAt: x.lockExpiresAt?.toDate?.() || null,
+        attempts: x.attempts || 0,
+        maxAttempts: x.maxAttempts || 0,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      FIRESTORE_EMULATOR_HOST: process.env.FIRESTORE_EMULATOR_HOST || null,
+      candidates: snap.size,
+      sample,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error: String(e) });
+  }
+});
+
+
+// SubmitQueue API helpers
+import { enqueueReadyFilings, listQueueJobs, requeueJob, cancelJob } from "./queue.mjs";
+
+
+export const enqueueSubmitAll = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    const orgId = body.orgId;
+    const incidentId = body.incidentId;
+    if (!orgId || !incidentId) return res.status(400).json({ ok:false, error:"Missing orgId/incidentId" });
+    const out = await enqueueReadyFilings({ orgId, incidentId, createdBy: body.createdBy || "admin_ui" });
+    return res.json(out);
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+
+export const listSubmitQueue = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "GET") return res.status(405).json({ ok:false, error:"Use GET" });
+    const orgId = req.query.orgId;
+    if (typeof orgId !== "string") return res.status(400).json({ ok:false, error:"Missing orgId" });
+    const jobs = await listQueueJobs({ orgId, limit: 50 });
+    return res.json({ ok:true, orgId, jobs });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+
+export const requeueSubmitJob = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    if (!body.jobId) return res.status(400).json({ ok:false, error:"Missing jobId" });
+    const out = await requeueJob({ jobId: body.jobId, reason: body.reason || "manual_requeue" });
+    return res.json(out);
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
+
+export const cancelSubmitJob = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") return res.status(405).json({ ok:false, error:"Use POST" });
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    if (!body.jobId) return res.status(400).json({ ok:false, error:"Missing jobId" });
+    const out = await cancelJob({ jobId: body.jobId, reason: body.reason || "manual_cancel" });
+    return res.json(out);
+  } catch (e) {
+    return res.status(500).json({ ok:false, error:String(e) });
+  }
+});
