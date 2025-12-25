@@ -1,5 +1,7 @@
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
+import { writeEvidenceLocker } from "./evidence_locker.mjs";
 import { submitDIRS } from "./adapters/fcc_dirs.mjs";
+import { submitNORS } from "./adapters/fcc_nors.mjs";
 import { submitOE417 } from "./adapters/doe_oe417.mjs";
 import { writeEvidenceLocker } from "./evidenceLocker.mjs";
 
@@ -64,6 +66,8 @@ async function markDone(db, jobId, patch = {}) {
     lockedBy: "",
     lockedAt: null,
     lockExpiresAt: null,
+    lastError: "",
+    lastErrorCode: "",
     updatedAt: now,
     ...patch,
   }, { merge: true });
@@ -284,13 +288,13 @@ export async function runSubmitQueueTick({ dryRun = false } = {}) {
 	await writeEvidenceLocker(db, {
 	  orgId, incidentId, filingType, jobId: job.id,
 	  kind: "SUBMISSION_REQUEST",
-	  payload: submitRes.rawRequest || { incidentId, orgId, filingType, payload }
+	  payload: submitRes.rawRequest || { incidentId, orgId, filingType, payload, traceId: submitRes.traceId || "", adapterVersion: submitRes.adapterVersion || "" }
 	});
 
 	await writeEvidenceLocker(db, {
 	  orgId, incidentId, filingType, jobId: job.id,
 	  kind: "SUBMISSION_RESPONSE",
-	  payload: submitRes.rawResponse || submitRes
+	  payload: submitRes.rawResponse || { ...submitRes, traceId: submitRes.traceId || "", adapterVersion: submitRes.adapterVersion || "" }
 	});
 
 	// --- Mark filing SUBMITTED (source of truth for UI) ---
@@ -327,7 +331,7 @@ export async function runSubmitQueueTick({ dryRun = false } = {}) {
 	const evReq = await writeEvidenceLocker(db, {
 	  orgId, incidentId, filingType, jobId,
 	  kind: "SUBMISSION_REQUEST",
-	  payload: submitRes.rawRequest || { incidentId, orgId, filingType, payload }
+	  payload: submitRes.rawRequest || { incidentId, orgId, filingType, payload, traceId: submitRes.traceId || "", adapterVersion: submitRes.adapterVersion || "" }
 	});
 
 	const evRes = await writeEvidenceLocker(db, {
@@ -424,6 +428,9 @@ export async function listQueueJobs({ orgId, limit = 50, status = null, incident
 
 export async function requeueJob({ jobId, reason = "manual_requeue" } = {}) {
   const db = getFirestore();
+  const ref = db.collection("submit_queue").doc(jobId);
+  const snap = await ref.get();
+  if (!snap.exists) return { ok: false, error: "JOB_NOT_FOUND", jobId };
   const now = tsNow();
   await db.collection("submit_queue").doc(jobId).set({
     status: "QUEUED",
@@ -440,6 +447,9 @@ export async function requeueJob({ jobId, reason = "manual_requeue" } = {}) {
 
 export async function cancelJob({ jobId, reason = "manual_cancel" } = {}) {
   const db = getFirestore();
+  const ref = db.collection("submit_queue").doc(jobId);
+  const snap = await ref.get();
+  if (!snap.exists) return { ok: false, error: "JOB_NOT_FOUND", jobId };
   const now = tsNow();
   await db.collection("submit_queue").doc(jobId).set({
     status: "CANCELLED",
