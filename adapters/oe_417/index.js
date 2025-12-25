@@ -8,6 +8,7 @@ const VERSION = "v1";
 const PROVIDER = "DOE";
 const SYSTEM = "OE_417";
 
+// Optional bearer token (same behavior as DIRS)
 const TOKEN = (process.env.OE417_ADAPTER_TOKEN || "").trim();
 function authOk(req) {
   if (!TOKEN) return true;
@@ -45,7 +46,7 @@ app.post("/submit", async (req, res) => {
       });
     }
 
-    // STUB for now — replace later with real DOE OE-417 integration
+    // STUB for now — replace later with real DOE OE-417 submission
     const seed = (idempotencyKey || `${incidentId}-${filingType}-${Date.now()}`).toString();
     const suffix = Buffer.from(seed).toString("base64").slice(0, 10).replace(/[^A-Za-z0-9]/g, "");
     const confirmationId = `OE417-STUB-${suffix}`.toUpperCase();
