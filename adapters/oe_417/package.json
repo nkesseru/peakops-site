@@ -1,19 +1,13 @@
 {
-  "name": "dirs",
+  "name": "oe417-adapter",
   "version": "1.0.0",
-  "description": "",
+  "private": true,
+  "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.22.0",
   "dependencies": {
-    "express": "^5.2.1",
-    "node-fetch": "^3.3.2"
-  },
-  "type": "module"
+    "express": "^4.19.2"
+  }
 }

@@ -1,9 +1,8 @@
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
-import { writeEvidenceLocker } from "./evidence_locker.mjs";
 import { submitDIRS } from "./adapters/fcc_dirs.mjs";
 import { submitNORS } from "./adapters/fcc_nors.mjs";
 import { submitOE417 } from "./adapters/doe_oe417.mjs";
-import { writeEvidenceLocker } from "./evidenceLocker.mjs";
+import { writeEvidenceLocker } from "./evidence_locker.mjs";
 
 const LOCK_SECONDS = 120;
 const MAX_PER_TICK = 25;
