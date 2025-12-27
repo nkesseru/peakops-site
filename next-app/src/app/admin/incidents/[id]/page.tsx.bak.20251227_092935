@@ -61,38 +61,6 @@ function PanelCard({ title, children }: any) {
     padding: 14,
     background: "color-mix(in oklab, Canvas 92%, CanvasText 2%)",
   };
-  async function loadEvidenceLocker() {
-    try {
-      // If you already have a global busy setter, keep it. Otherwise this no-ops.
-      if (typeof setBusy === "function") setBusy(true);
-
-      const base = (process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE || "http://127.0.0.1:5001/peakops-pilot/us-central1");
-      const qs = new URLSearchParams({
-        orgId: String(orgId || "org_001"),
-        incidentId: String(incidentId || ""),
-        limit: "25",
-      });
-
-      const url = `${base}/listEvidenceLocker?${qs.toString()}`;
-      const r = await fetch(url);
-      const j = await r.json();
-
-      if (!j || j.ok !== true) {
-        throw new Error(j?.error || "listEvidenceLocker failed");
-      }
-
-      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : []);
-      setEvidenceCount(Number(j.count || 0));
-    } catch (e:any) {
-      console.error("loadEvidenceLocker error:", e);
-      // If you have setErr, use it; otherwise ignore.
-      if (typeof setErr === "function") setErr(String(e?.message || e));
-    } finally {
-      if (typeof setBusy === "function") setBusy(false);
-    }
-  }
-
-
   return (
     <section style={card}>
       <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>{title}</h2>
@@ -288,8 +256,6 @@ function IncidentSummaryCard({ incident }: any) {
 
 function FilingActionsPanel({ logs }: any) {
   const [q, setQ] = useState("");
-const [evidenceDocs, setEvidenceDocs] = useState<any[]>([]);
-const [evidenceCount, setEvidenceCount] = useState<number>(0);
   const [type, setType] = useState("ALL");
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
@@ -497,8 +463,6 @@ const params = useParams<{ id: string }>();
   const orgId = sp.get("orgId") || "org_001";
 
   const [bundle, setBundle] = useState<any>(null);
-  const [evidenceDocs, setEvidenceDocs] = useState<any[]>([]);
-  const [evidenceCount, setEvidenceCount] = useState<number>(0);
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -748,37 +712,6 @@ async function loadRil() {
     }
     return stats;
   }, [logs]);
-  const loadEvidenceLocker = async () => {
-    try {
-      // use existing busy if present; otherwise ignore
-      try { if (typeof setBusy === "function") setBusy(true); } catch {}
-
-      const base =
-        (process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE ||
-         "http://127.0.0.1:5001/peakops-pilot/us-central1");
-
-      const qs = new URLSearchParams({
-        orgId: String(orgId || "org_001"),
-        incidentId: String(incidentId || ""),
-        limit: "25",
-      });
-
-      const r = await fetch(`${base}/listEvidenceLocker?${qs.toString()}`);
-      const j = await r.json();
-
-      if (!j || j.ok !== true) throw new Error(j?.error || "listEvidenceLocker failed");
-
-      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : []);
-      setEvidenceCount(Number(j.count || 0));
-    } catch (e: any) {
-      console.error("loadEvidenceLocker error:", e);
-      try { if (typeof setErr === "function") setErr(String(e?.message || e)); } catch {}
-    } finally {
-      try { if (typeof setBusy === "function") setBusy(false); } catch {}
-    }
-  };
-
-
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>

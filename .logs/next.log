@@ -1,0 +1,27 @@
+
+> next-app@0.1.0 dev /Users/kesserumini/peakops/my-app/next-app
+> next dev --port 3000
+
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+ ⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
+ We detected multiple lockfiles and selected the directory of /Users/kesserumini/peakops/my-app/pnpm-lock.yaml as the root directory.
+ To silence this warning, set `turbopack.root` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
+   See https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopack#root-directory for more information.
+ Detected additional lockfiles: 
+   * /Users/kesserumini/peakops/my-app/next-app/package-lock.json
+
+   ▲ Next.js 16.0.3 (Turbopack)
+   - Local:         http://localhost:3000
+   - Network:       http://10.0.0.157:3000
+   - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 595ms
+ GET / 200 in 1123ms (compile: 1036ms, render: 87ms)
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+ GET /admin/incidents/inc_z0ebm9?orgId=org_001 200 in 1122ms (compile: 1077ms, render: 45ms)
+ GET /api/fn/getTimelineEvents?orgId=org_001&incidentId=inc_z0ebm9 200 in 1213ms (compile: 530ms, render: 683ms)
+ GET /api/fn/getIncidentBundle?orgId=org_001&incidentId=inc_z0ebm9 404 in 1216ms (compile: 531ms, render: 685ms)
+ GET /api/fn/getIncidentBundle?orgId=org_001&incidentId=inc_z0ebm9 404 in 25ms (compile: 8ms, render: 16ms)
+ GET /api/fn/getIncidentBundle?orgId=org_001&incidentId=inc_z0ebm9 404 in 17ms (compile: 1867µs, render: 15ms)
+ GET /api/fn/getIncidentBundle?orgId=org_001&incidentId=inc_z0ebm9 404 in 21ms (compile: 5ms, render: 16ms)

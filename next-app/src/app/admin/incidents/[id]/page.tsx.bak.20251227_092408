@@ -61,38 +61,6 @@ function PanelCard({ title, children }: any) {
     padding: 14,
     background: "color-mix(in oklab, Canvas 92%, CanvasText 2%)",
   };
-  async function loadEvidenceLocker() {
-    try {
-      // If you already have a global busy setter, keep it. Otherwise this no-ops.
-      if (typeof setBusy === "function") setBusy(true);
-
-      const base = (process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE || "http://127.0.0.1:5001/peakops-pilot/us-central1");
-      const qs = new URLSearchParams({
-        orgId: String(orgId || "org_001"),
-        incidentId: String(incidentId || ""),
-        limit: "25",
-      });
-
-      const url = `${base}/listEvidenceLocker?${qs.toString()}`;
-      const r = await fetch(url);
-      const j = await r.json();
-
-      if (!j || j.ok !== true) {
-        throw new Error(j?.error || "listEvidenceLocker failed");
-      }
-
-      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : []);
-      setEvidenceCount(Number(j.count || 0));
-    } catch (e:any) {
-      console.error("loadEvidenceLocker error:", e);
-      // If you have setErr, use it; otherwise ignore.
-      if (typeof setErr === "function") setErr(String(e?.message || e));
-    } finally {
-      if (typeof setBusy === "function") setBusy(false);
-    }
-  }
-
-
   return (
     <section style={card}>
       <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>{title}</h2>
@@ -117,16 +85,14 @@ function Button({ children, onClick, disabled }: any) {
 function Modal({ open, title, children, onClose }: any) {
   if (!open) return null;
   return (
-    <div
-      style={{
+    <div style={{
         position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
         display: "flex", alignItems: "center", justifyContent: "center",
         zIndex: 9999, padding: 16
       }}
       onClick={onClose}
     >
-      <div
-        style={{
+      <div style={{
           width: "min(680px, 100%)",
           borderRadius: 16,
           border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
@@ -288,8 +254,6 @@ function IncidentSummaryCard({ incident }: any) {
 
 function FilingActionsPanel({ logs }: any) {
   const [q, setQ] = useState("");
-const [evidenceDocs, setEvidenceDocs] = useState<any[]>([]);
-const [evidenceCount, setEvidenceCount] = useState<number>(0);
   const [type, setType] = useState("ALL");
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
@@ -498,7 +462,8 @@ const params = useParams<{ id: string }>();
 
   const [bundle, setBundle] = useState<any>(null);
   const [evidenceDocs, setEvidenceDocs] = useState<any[]>([]);
-  const [evidenceCount, setEvidenceCount] = useState<number>(0);
+  const [evidenceErr, setEvidenceErr] = useState<string | null>(null);
+  const [evidenceOpen, setEvidenceOpen] = useState<Record<string, boolean>>({});
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -524,6 +489,18 @@ const params = useParams<{ id: string }>();
     return r.json();
   }
 
+
+  async function loadEvidenceLocker() {
+    try {
+      setEvidenceErr(null);
+      const j = await jfetch(`/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=25`);
+      if (!j || j.ok !== true) throw new Error(j?.error || "listEvidenceLocker failed");
+      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : (Array.isArray(j.items) ? j.items : []));
+    } catch (e: any) {
+      setEvidenceErr(e?.message || String(e));
+      setEvidenceDocs([]);
+    }
+  }
   async function loadTimeline() {
     const j = await jfetch(`/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
     if (j.ok) setTimelineEvents(j.events || []);
@@ -748,37 +725,6 @@ async function loadRil() {
     }
     return stats;
   }, [logs]);
-  const loadEvidenceLocker = async () => {
-    try {
-      // use existing busy if present; otherwise ignore
-      try { if (typeof setBusy === "function") setBusy(true); } catch {}
-
-      const base =
-        (process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE ||
-         "http://127.0.0.1:5001/peakops-pilot/us-central1");
-
-      const qs = new URLSearchParams({
-        orgId: String(orgId || "org_001"),
-        incidentId: String(incidentId || ""),
-        limit: "25",
-      });
-
-      const r = await fetch(`${base}/listEvidenceLocker?${qs.toString()}`);
-      const j = await r.json();
-
-      if (!j || j.ok !== true) throw new Error(j?.error || "listEvidenceLocker failed");
-
-      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : []);
-      setEvidenceCount(Number(j.count || 0));
-    } catch (e: any) {
-      console.error("loadEvidenceLocker error:", e);
-      try { if (typeof setErr === "function") setErr(String(e?.message || e)); } catch {}
-    } finally {
-      try { if (typeof setBusy === "function") setBusy(false); } catch {}
-    }
-  };
-
-
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
@@ -803,322 +749,67 @@ async function loadRil() {
         <PanelCard title="Filing Meta"><FilingsMetaCard filingsMeta={filingsMeta} /></PanelCard>
         <PanelCard title="Timeline Meta"><TimelineMetaCard timelineMeta={timelineMeta} /></PanelCard>
       </div>
-
       <div style={{ marginTop: 16 }}>
         {showAttention && (
-<PanelCard title="What Needs Attention">
-  {(attentionBlocks.length === 0 && attentionWarns.length === 0) ? (
-    <div style={{ opacity: 0.75 }}>✅ All clear. No blockers detected.</div>
-  ) : (
-    <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-      {attentionBlocks.map((t, i) => (
-        <li key={"b"+i} style={{ color: "crimson", fontWeight: 800 }}>{t}</li>
-      ))}
-      {attentionWarns.map((t, i) => (
-        <li key={"w"+i} style={{ opacity: 0.9, fontWeight: 700 }}>{t}</li>
-      ))}
-    </ul>
-  )}
-</PanelCard>
-)}
-      </div>
+          <PanelCard title="What Needs Attention">
+            {(attentionBlocks.length === 0 && attentionWarns.length === 0) ? (
+              <div style={{ opacity: 0.75 }}>✅ All clear. No blockers detected.</div>
+            ) : (
+              <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+                {attentionBlocks.map((t, i) => (
+                  <li key={"b"+i} style={{ color: "crimson", fontWeight: 800 }}>{t}</li>
+                ))}
+                {attentionWarns.map((t, i) => (
+                  <li key={"w"+i} style={{ opacity: 0.9, fontWeight: 700 }}>{t}</li>
+                ))}
+              </ul>
+            )}
+          </PanelCard>
+        )}
 
-      
-      <div style={{ marginTop: 16 }}>
-        <PanelCard title="Evidence Locker">
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-            <Button disabled={!!busy} onClick={loadEvidenceLocker}>Refresh Evidence</Button>
-          </div>
+        <div style={{ marginTop: 16 }}>
+          <PanelCard title="Evidence Locker">
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+              <Button disabled={!!busy} onClick={loadEvidenceLocker}>Refresh Evidence</Button>
+            </div>
 
-          {(!evidenceDocs || evidenceDocs.length === 0) ? (
-            <div style={{ opacity: 0.75 }}>No evidence yet.</div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {evidenceDocs.map((x:any) => {
-                const id = x?.id || Math.random().toString(36).slice(2);
-                const ts = x?.storedAt?._seconds ? new Date(x.storedAt._seconds*1000).toISOString() : (x?.storedAt || "—");
-                const hv = x?.hash?.value || "";
-                const hshort = hv ? hv.slice(0, 12) : "—";
-                return (
-                  <div key={id} style={{
-                    border:"1px solid color-mix(in oklab, CanvasText 12%, transparent)",
-                    borderRadius:12,
-                    padding:10,
-                    background:"color-mix(in oklab, CanvasText 3%, transparent)"
-                  }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"flex-start" }}>
-                      <div>
-                        <div style={{ fontSize:12, opacity:0.7 }}>
-                          {ts} · {x?.filingType || "—"} · {x?.kind || "—"}
-                        </div>
-                        <div style={{ fontWeight:900 }}>
-                          {x?.jobId ? <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{x.jobId}</span> : "—"}
-                        </div>
-                        <div style={{ fontSize:12, opacity:0.85, marginTop:4 }}>
-                          Hash: <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{hshort}</span>
+            {(!evidenceDocs || evidenceDocs.length === 0) ? (
+              <div style={{ opacity: 0.75 }}>No evidence yet.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {evidenceDocs.map((x:any) => {
+                  const id = x?.id || Math.random().toString(36).slice(2);
+                  const ts = x?.storedAt?._seconds ? new Date(x.storedAt._seconds*1000).toISOString() : (x?.storedAt || "—");
+                  const hv = x?.hash?.value || "";
+                  const hshort = hv ? hv.slice(0, 12) : "—";
+                  return (
+                    <div key={id} style={{
+                      border:"1px solid color-mix(in oklab, CanvasText 12%, transparent)",
+                      borderRadius:12,
+                      padding:10,
+                      background:"color-mix(in oklab, CanvasText 3%, transparent)"
+                    }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"flex-start" }}>
+                        <div>
+                          <div style={{ fontSize:12, opacity:0.7 }}>
+                            {ts} · {x?.filingType || "—"} · {x?.kind || "—"}
+                          </div>
+                          <div style={{ fontWeight:900 }}>
+                            {x?.jobId ? <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{x.jobId}</span> : "—"}
+                          </div>
+                          <div style={{ fontSize:12, opacity:0.85, marginTop:4 }}>
+                            Hash: <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{hshort}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </PanelCard>
-      </div>
-
-      {banner && (
-        <div style={{
-          marginTop: 10,
-          padding:"10px 12px",
-          borderRadius:12,
-          border:"1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-          background:"color-mix(in oklab, CanvasText 4%, transparent)",
-          fontWeight:800
-        }}>{banner}</div>
-      )}
-      {err && <pre style={{ marginTop: 12, color:"crimson", whiteSpace:"pre-wrap" }}>{err}</pre>}
-
-      <div style={{ marginTop: 18, display:"grid", gap:16 }}>
-        <PanelCard title="Timeline">
-          <ul style={{ margin:0, paddingLeft:18 }}>
-            {timelineEvents.map((e:any) => (
-              <li key={e.id} style={{ marginBottom:10 }}>
-                <div style={{ fontSize:12, opacity:0.7 }}>{fmtTs(e.occurredAt)} · {e.type}</div>
-                <div style={{ fontWeight:800 }}>{e.title || ""}</div>
-                <div style={{ opacity:0.9 }}>{e.message || ""}</div>
-              </li>
-            ))}
-            {timelineEvents.length === 0 && <li style={{ opacity:0.7 }}>No timeline events yet.</li>}
-          </ul>
-        </PanelCard>
-
-        <PanelCard title="Filings">
-          <div style={{ overflowX:"auto" }}>
-            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
-              <thead>
-                <tr style={{ textAlign:"left", borderBottom:"1px solid color-mix(in oklab, CanvasText 18%, transparent)" }}>
-                  <th style={{ padding:"10px 8px" }}>Type</th>
-                  <th style={{ padding:"10px 8px" }}>Status</th>
-                  <th style={{ padding:"10px 8px" }}>Payload Hash</th>
-                  <th style={{ padding:"10px 8px" }}>Generated</th>
-                  <th style={{ padding:"10px 8px" }}>Copy</th>
-                  <th style={{ padding:"10px 8px" }}>Workflow</th>
-                  <th style={{ padding:"10px 8px" }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filings.map((f:any) => {
-                  const st = String(f.status || "DRAFT").toUpperCase();
-                  const key = String(f.type || f.id);
-                  const stInfo = filingActionStats[key];
-                  const last = stInfo?.last;
-                  const label = last?.from ? `${last.from}→${last.to}` : (last?.action || "—");
-                  return (
-                    <tr key={f.id} style={{ borderBottom:"1px solid color-mix(in oklab, CanvasText 10%, transparent)" }}>
-                      <td style={{ padding:"10px 8px", fontWeight:900 }}>{f.type || f.id}</td>
-                      <td style={{ padding:"10px 8px" }}><span style={statusPillStyle(st)}>{st}</span></td>
-                      <td style={{ padding:"10px 8px", fontFamily:"ui-monospace, Menlo, monospace", opacity:0.85 }}>{shortHash(f?.payloadHash?.value)}</td>
-                      <td style={{ padding:"10px 8px", opacity:0.85 }}>{fmtTs(f.generatedAt)}</td>
-                      <td style={{ padding:"10px 8px" }}>
-                        <Button disabled={!f?.payloadHash?.value} onClick={() => copyText(String(f?.payloadHash?.value || ""))}>Copy hash</Button>
-                      </td>
-                      <td style={{ padding:"10px 8px", display:"flex", gap:8, flexWrap:"wrap" }}>
-                        <Button disabled={!!busy} onClick={() => setStatus("READY", (f.type || f.id))}>READY</Button>
-                        <Button disabled={!!busy || st !== "READY"} onClick={() => openSubmitModal((f.type || f.id))}>SUBMITTED</Button>
-                        <Button disabled={!!busy} onClick={() => setStatus("AMENDED", (f.type || f.id))}>AMENDED</Button>
-                        <Button disabled={!!busy} onClick={() => openCancelModal((f.type || f.id))}>CANCELLED</Button>
-                      </td>
-                      <td style={{ padding:"10px 8px", fontSize:12, opacity:0.85 }}>
-                        {!stInfo?.count ? "—" : (
-                          <div style={{ display:"grid", gap:2 }}>
-                            <div><b>{stInfo.count}</b> actions</div>
-                            <div style={{ opacity:0.8 }}>{label} · {fmtTs(last?.createdAt)}</div>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
                   );
                 })}
-                {filings.length === 0 && (
-                  <tr><td colSpan={7} style={{ padding:12, opacity:0.7 }}>No filings yet. Click “Generate Filings”.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </PanelCard>
-
-        <PanelCard title="Incident Summary">
-          <IncidentSummaryCard incident={incident} />
-        </PanelCard>
-
-        <PanelCard title="Filing Actions">
-          <FilingActionsPanel logs={logs} />
-        </PanelCard>
-
-        <PanelCard title="System & User Logs">
-          <SystemUserLogsPanel logs={logs} />
-        </PanelCard>
-
-        <PanelCard title="Incident JSON (debug)">
-          <pre style={{ margin:0, whiteSpace:"pre-wrap", opacity:0.9 }}>{incident ? JSON.stringify(incident, null, 2) : "—"}</pre>
-        </PanelCard>
-      </div>
-
-      <Modal open={exportOpen} title={"Export Incident Packet"} onClose={() => setExportOpen(false)}>
-  <div style={{ marginTop: 10, display:"grid", gap:12 }}>
-    {attentionBlocks.length > 0 && (
-      <div style={{ border: "1px solid color-mix(in oklab, red 25%, transparent)", borderRadius: 12, padding: 12 }}>
-        <div style={{ fontWeight: 900, marginBottom: 6, color: "crimson" }}>Blocking issues (export):</div>
-        <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-          {attentionBlocks.map((x:any, i:number) => (
-            <li key={i} style={{ color:"crimson", fontWeight:800 }}>{renderAttentionItemLocal(x)}</li>
-          ))}
-        </ul>
-        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-          Fix blockers above (Generate Filings/Timeline) before exporting.
+              </div>
+            )}
+          </PanelCard>
         </div>
       </div>
-    )}
 
-    {attentionWarns.length > 0 && (
-      <div style={{ border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)", borderRadius: 12, padding: 12 }}>
-        <div style={{ fontWeight: 900, marginBottom: 6 }}>Warnings (export allowed):</div>
-        <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
-          {attentionWarns.map((x:any, i:number) => (
-  <li key={i} style={{ opacity: 0.9, fontWeight: 700 }}>{renderAttentionItemLocal(x)}</li>
-))}
-        </ul>
-      </div>
-    )}
 
-    {(attentionBlocks.length === 0 && attentionWarns.length === 0) && (
-      <div style={{ opacity: 0.75 }}>✅ Export preflight: clean.</div>
-    )}
-
-    <div style={{ display:"grid", gap:10 }}>
-      <div style={{ opacity: 0.85 }}>
-        Export will include: Incident summary, Timeline, Filings, Logs, Hashes.
-      </div>
-
-      <label style={{ fontSize: 12, opacity: 0.8 }}>Purpose</label>
-      <select
-        value={exportPurpose}
-        onChange={(e)=>setExportPurpose(e.target.value)}
-        style={{
-          padding: 10,
-          borderRadius: 12,
-          border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-          background: "Canvas",
-          color: "CanvasText",
-          fontSize: 14
-        }}
-      >
-        <option value="OPS">OPS (internal)</option>
-        <option value="REGULATORY">REGULATORY (audit-ready)</option>
-        <option value="CUSTOMER">CUSTOMER (shareable)</option>
-      </select>
-    </div>
-
-    <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-      <Button disabled={!!busy} onClick={() => setExportOpen(false)}>Close</Button>
-      <Button
-        disabled={!!busy || attentionBlocks.length > 0}
-        onClick={async () => {
-          setBusy("export"); setErr(null); setBanner(null);
-          try {
-            const out = await postFn("exportIncidentPacketV1", { incidentId, orgId, purpose: exportPurpose, requestedBy: "admin_ui" });
-            if (!out.ok) throw new Error(out.error || "exportIncidentPacketV1 failed");
-            setBanner("✅ Export packet generated");
-            if (out.downloadUrl) await copyText(out.downloadUrl);
-          } catch (e:any) {
-            setErr(e.message || String(e));
-          } finally {
-            setBusy(null);
-          }
-        }}
-      >
-        Export Packet
-      </Button>
-    </div>
-  </div>
-</Modal>
-
-      <Modal open={submitOpen} title={`Mark SUBMITTED · ${submitType}`} onClose={() => setSubmitOpen(false)}>
-        <div style={{ display:"grid", gap:10 }}>
-          <label style={{ fontSize: 12, opacity: 0.8 }}>Confirmation ID (required)</label>
-          <input
-            value={confirmationId}
-            onChange={(e)=>setConfirmationId(e.target.value)}
-            style={{
-              padding: 10,
-              borderRadius: 12,
-              border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-              background: "Canvas",
-              color: "CanvasText",
-              fontSize: 14
-            }}
-            placeholder="e.g. FCC-123456"
-          />
-
-          <label style={{ fontSize: 12, opacity: 0.8 }}>Submission Method</label>
-          <select
-            value={method}
-            onChange={(e)=>setMethod(e.target.value)}
-            style={{
-              padding: 10,
-              borderRadius: 12,
-              border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-              background: "Canvas",
-              color: "CanvasText",
-              fontSize: 14
-            }}
-          >
-            <option value="MANUAL">MANUAL</option>
-            <option value="UPLOAD">UPLOAD</option>
-            <option value="API">API</option>
-          </select>
-
-          <label style={{ display:"flex", gap:10, alignItems:"center", marginTop: 6 }}>
-            <input type="checkbox" checked={override} onChange={(e)=>setOverride(e.target.checked)} />
-            <span style={{ fontSize: 13, opacity: 0.85 }}>Override READY requirement (admin only)</span>
-          </label>
-
-          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop: 10 }}>
-            <Button disabled={false} onClick={() => setSubmitOpen(false)}>Cancel</Button>
-            <Button disabled={!!busy} onClick={confirmSubmit}>{busy ? "Working…" : "Confirm Submitted"}</Button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal open={cancelOpen} title={`Cancel Filing · ${cancelType}`} onClose={() => setCancelOpen(false)}>
-        <div style={{ display:"grid", gap:10 }}>
-          <label style={{ fontSize: 12, opacity: 0.8 }}>Reason (required)</label>
-          <input
-            value={cancelReason}
-            onChange={(e)=>setCancelReason(e.target.value)}
-            style={{
-              padding: 10,
-              borderRadius: 12,
-              border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-              background: "Canvas",
-              color: "CanvasText",
-              fontSize: 14
-            }}
-            placeholder="e.g. duplicate incident / false alarm / filed elsewhere"
-          />
-
-          <label style={{ display:"flex", gap:10, alignItems:"center", marginTop: 6 }}>
-            <input type="checkbox" checked={cancelOverride} onChange={(e)=>setCancelOverride(e.target.checked)} />
-            <span style={{ fontSize: 13, opacity: 0.85 }}>Override reason requirement (admin only)</span>
-          </label>
-
-          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop: 10 }}>
-            <Button disabled={false} onClick={() => setCancelOpen(false)}>Back</Button>
-            <Button disabled={!!busy} onClick={confirmCancel}>{busy ? "Working…" : "Confirm Cancelled"}</Button>
-          </div>
-        </div>
-      </Modal>
-    </div>
-  );
-}
+      {banner && (

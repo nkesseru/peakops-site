@@ -61,38 +61,6 @@ function PanelCard({ title, children }: any) {
     padding: 14,
     background: "color-mix(in oklab, Canvas 92%, CanvasText 2%)",
   };
-  async function loadEvidenceLocker() {
-    try {
-      // If you already have a global busy setter, keep it. Otherwise this no-ops.
-      if (typeof setBusy === "function") setBusy(true);
-
-      const base = (process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE || "http://127.0.0.1:5001/peakops-pilot/us-central1");
-      const qs = new URLSearchParams({
-        orgId: String(orgId || "org_001"),
-        incidentId: String(incidentId || ""),
-        limit: "25",
-      });
-
-      const url = `${base}/listEvidenceLocker?${qs.toString()}`;
-      const r = await fetch(url);
-      const j = await r.json();
-
-      if (!j || j.ok !== true) {
-        throw new Error(j?.error || "listEvidenceLocker failed");
-      }
-
-      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : []);
-      setEvidenceCount(Number(j.count || 0));
-    } catch (e:any) {
-      console.error("loadEvidenceLocker error:", e);
-      // If you have setErr, use it; otherwise ignore.
-      if (typeof setErr === "function") setErr(String(e?.message || e));
-    } finally {
-      if (typeof setBusy === "function") setBusy(false);
-    }
-  }
-
-
   return (
     <section style={card}>
       <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>{title}</h2>
@@ -117,16 +85,14 @@ function Button({ children, onClick, disabled }: any) {
 function Modal({ open, title, children, onClose }: any) {
   if (!open) return null;
   return (
-    <div
-      style={{
+    <div style={{
         position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
         display: "flex", alignItems: "center", justifyContent: "center",
         zIndex: 9999, padding: 16
       }}
       onClick={onClose}
     >
-      <div
-        style={{
+      <div style={{
           width: "min(680px, 100%)",
           borderRadius: 16,
           border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
@@ -288,8 +254,6 @@ function IncidentSummaryCard({ incident }: any) {
 
 function FilingActionsPanel({ logs }: any) {
   const [q, setQ] = useState("");
-const [evidenceDocs, setEvidenceDocs] = useState<any[]>([]);
-const [evidenceCount, setEvidenceCount] = useState<number>(0);
   const [type, setType] = useState("ALL");
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
@@ -498,7 +462,8 @@ const params = useParams<{ id: string }>();
 
   const [bundle, setBundle] = useState<any>(null);
   const [evidenceDocs, setEvidenceDocs] = useState<any[]>([]);
-  const [evidenceCount, setEvidenceCount] = useState<number>(0);
+  const [evidenceErr, setEvidenceErr] = useState<string | null>(null);
+  const [evidenceOpen, setEvidenceOpen] = useState<Record<string, boolean>>({});
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -524,6 +489,18 @@ const params = useParams<{ id: string }>();
     return r.json();
   }
 
+
+  async function loadEvidenceLocker() {
+    try {
+      setEvidenceErr(null);
+      const j = await jfetch(`/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=25`);
+      if (!j || j.ok !== true) throw new Error(j?.error || "listEvidenceLocker failed");
+      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : (Array.isArray(j.items) ? j.items : []));
+    } catch (e: any) {
+      setEvidenceErr(e?.message || String(e));
+      setEvidenceDocs([]);
+    }
+  }
   async function loadTimeline() {
     const j = await jfetch(`/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
     if (j.ok) setTimelineEvents(j.events || []);
@@ -748,37 +725,6 @@ async function loadRil() {
     }
     return stats;
   }, [logs]);
-  const loadEvidenceLocker = async () => {
-    try {
-      // use existing busy if present; otherwise ignore
-      try { if (typeof setBusy === "function") setBusy(true); } catch {}
-
-      const base =
-        (process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE ||
-         "http://127.0.0.1:5001/peakops-pilot/us-central1");
-
-      const qs = new URLSearchParams({
-        orgId: String(orgId || "org_001"),
-        incidentId: String(incidentId || ""),
-        limit: "25",
-      });
-
-      const r = await fetch(`${base}/listEvidenceLocker?${qs.toString()}`);
-      const j = await r.json();
-
-      if (!j || j.ok !== true) throw new Error(j?.error || "listEvidenceLocker failed");
-
-      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : []);
-      setEvidenceCount(Number(j.count || 0));
-    } catch (e: any) {
-      console.error("loadEvidenceLocker error:", e);
-      try { if (typeof setErr === "function") setErr(String(e?.message || e)); } catch {}
-    } finally {
-      try { if (typeof setBusy === "function") setBusy(false); } catch {}
-    }
-  };
-
-
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
@@ -820,25 +766,29 @@ async function loadRil() {
     </ul>
   )}
 </PanelCard>
-)}
-      </div>
 
-      
       <div style={{ marginTop: 16 }}>
         <PanelCard title="Evidence Locker">
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"center", marginBottom:10 }}>
             <Button disabled={!!busy} onClick={loadEvidenceLocker}>Refresh Evidence</Button>
+            <div style={{ fontSize:12, opacity:0.7 }}>
+              {evidenceDocs.length} entries{evidenceErr ? " · error" : ""}
+            </div>
+            {evidenceErr && <div style={{ fontSize:12, color:"crimson", fontWeight:800 }}>{evidenceErr}</div>}
           </div>
 
-          {(!evidenceDocs || evidenceDocs.length === 0) ? (
-            <div style={{ opacity: 0.75 }}>No evidence yet.</div>
+          {evidenceDocs.length === 0 ? (
+            <div style={{ opacity:0.75 }}>No evidence entries yet for this incident.</div>
           ) : (
-            <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display:"grid", gap:8 }}>
               {evidenceDocs.map((x:any) => {
-                const id = x?.id || Math.random().toString(36).slice(2);
-                const ts = x?.storedAt?._seconds ? new Date(x.storedAt._seconds*1000).toISOString() : (x?.storedAt || "—");
-                const hv = x?.hash?.value || "";
-                const hshort = hv ? hv.slice(0, 12) : "—";
+                const id = String(x.id || "");
+                const open = !!evidenceOpen[id];
+                const ts = (x.storedAt && x.storedAt._seconds)
+                  ? new Date(x.storedAt._seconds * 1000).toLocaleString()
+                  : (x.storedAt ? String(x.storedAt) : "—");
+                const hv = x.hash?.value ? String(x.hash.value) : "";
+                const hshort = hv ? (hv.length > 18 ? `${hv.slice(0,12)}…${hv.slice(-4)}` : hv) : "—";
                 return (
                   <div key={id} style={{
                     border:"1px solid color-mix(in oklab, CanvasText 12%, transparent)",
@@ -849,22 +799,37 @@ async function loadRil() {
                     <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"flex-start" }}>
                       <div>
                         <div style={{ fontSize:12, opacity:0.7 }}>
-                          {ts} · {x?.filingType || "—"} · {x?.kind || "—"}
+                          {ts} · {x.filingType || "—"} · {x.kind || "—"}
                         </div>
                         <div style={{ fontWeight:900 }}>
-                          {x?.jobId ? <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{x.jobId}</span> : "—"}
+                          {x.jobId ? <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{x.jobId}</span> : "—"}
                         </div>
                         <div style={{ fontSize:12, opacity:0.85, marginTop:4 }}>
                           Hash: <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{hshort}</span>
                         </div>
                       </div>
+
+                      <div style={{ display:"flex", gap:8 }}>
+                        <Button disabled={!hv} onClick={() => hv && navigator.clipboard?.writeText(hv)}>Copy hash</Button>
+                        <Button onClick={() => setEvidenceOpen(o => ({ ...o, [id]: !o[id] }))}>
+                          {open ? "Hide" : "Show"}
+                        </Button>
+                      </div>
                     </div>
+
+                    {open && (
+                      <pre style={{ marginTop:10, whiteSpace:"pre-wrap", fontSize:12, opacity:0.92 }}>
+{(x.payloadPreview || (x.payload ? JSON.stringify(x.payload, null, 2) : JSON.stringify(x, null, 2)))}
+                      </pre>
+                    )}
                   </div>
                 );
               })}
             </div>
           )}
         </PanelCard>
+      </div>
+)}
       </div>
 
       {banner && (

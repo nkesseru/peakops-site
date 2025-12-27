@@ -1,5 +1,4 @@
 import { onRequest } from "firebase-functions/v2/https";
-import { handleExportEvidenceLockerZip } from "./evidenceExport.mjs";
 import { handleListEvidenceLockerRequest } from "./evidenceLockerApi.mjs";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
@@ -1460,11 +1459,3 @@ export const cancelSubmitJob = onRequest(async (req, res) => {
   }
 });
 export const listEvidenceLocker = onRequest(handleListEvidenceLockerRequest);
-
-export const exportEvidenceLockerZip = onRequest(async (req, res) => {
-  // Inject db into handler via req to avoid circular imports
-  const db = getFirestore();
-  req.__db = db;
-  return handleExportEvidenceLockerZip(req, res);
-});
-
