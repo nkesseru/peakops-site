@@ -1,4 +1,5 @@
 import { onRequest } from "firebase-functions/v2/https";
+import { handleListEvidenceLockerRequest } from "./evidenceLockerApi.mjs";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { nowIso, requireStr, optionalStr, pick } from "./api.mjs";
@@ -1457,3 +1458,4 @@ export const cancelSubmitJob = onRequest(async (req, res) => {
     return res.status(500).json({ ok:false, error:String(e) });
   }
 });
+export const listEvidenceLocker = onRequest(handleListEvidenceLockerRequest);

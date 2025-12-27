@@ -24,44 +24,61 @@ export async function writeEvidenceLocker(db, {
   incidentId,
   filingType,
   jobId,
-  kind,              // SUBMISSION_REQUEST | SUBMISSION_RESPONSE | WORKER_EVENT
-  payload,           // object (request/response/etc)
-  adapter,           // { provider, system, adapterVersion }
+  kind,           // SUBMISSION_REQUEST | SUBMISSION_RESPONSE | WORKER_EVENT | ...
+  payload,        // object (request/response/etc)
+  adapter,        // { provider, system, adapterVersion }
   traceId,
   correlationId,
   idempotencyKey,
+  meta,
+  source,         // "submitQueueWorker@local" etc
 } = {}) {
-  if (!orgId || !incidentId || !filingType || !kind) {
-    throw new Error("EvidenceLocker: missing orgId/incidentId/filingType/kind");
-  }
+  if (!db) throw new Error("writeEvidenceLocker: missing db");
+  if (!orgId) throw new Error("writeEvidenceLocker: missing orgId");
+  if (!incidentId) throw new Error("writeEvidenceLocker: missing incidentId");
+  if (!kind) throw new Error("writeEvidenceLocker: missing kind");
 
-  const now = Timestamp.now();
-  const payloadJson = stableStringify(payload ?? {});
-  const payloadHash = sha256Hex(payloadJson);
+  const storedAt = Timestamp.now();
+
+  // Canonical payload + hash
+  const canon = stableStringify(payload ?? null);
+  const hash = sha256Hex(canon);
+  const bytes = Buffer.byteLength(canon, "utf8");
+
+  // Keep Firestore doc lean (preview + optional inline payload)
+  const preview = canon.length > 4000 ? canon.slice(0, 4000) + "\n…(truncated)" : canon;
+  const payloadTooBig = bytes > 25_000; // conservative; you can tune this
+
+  const ref = db.collection("incidents").doc(String(incidentId))
+    .collection("evidence_locker").doc();
 
   const doc = {
+    id: ref.id,
     orgId,
     incidentId,
-    filingType,
+    filingType: filingType || "",
     jobId: jobId || "",
     kind,
+    storedAt,
+
+    hash: { algo: "SHA256", value: hash },
+    payloadBytes: bytes,
+
+    payloadPreview: preview,
+    payloadTruncated: payloadTooBig || canon.length > 4000,
+
+    // store inline only if small enough
+    payload: payloadTooBig ? null : (payload ?? null),
+
+    adapter: (adapter && typeof adapter === "object") ? adapter : {},
     traceId: traceId || "",
     correlationId: correlationId || "",
     idempotencyKey: idempotencyKey || "",
 
-    adapter: {
-      provider: adapter?.provider || "",
-      system: adapter?.system || filingType,
-      adapterVersion: adapter?.adapterVersion || "v1",
-    },
-
-    payloadHash: { algo: "SHA256", value: payloadHash },
-    payload, // keep raw object for now (later: can store in GCS if huge)
-
-    createdAt: now,
+    source: source || "system",
+    meta: (meta && typeof meta === "object") ? meta : {},
   };
 
-  const ref = db.collection("incidents").doc(incidentId).collection("evidence_locker").doc();
-  await ref.set({ id: ref.id, ...doc }, { merge: true });
-  return { ok: true, evidenceId: ref.id, payloadHash };
+  await ref.set(doc, { merge: false });
+  return { id: ref.id, hash };
 }

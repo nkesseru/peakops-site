@@ -284,17 +284,7 @@ export async function runSubmitQueueTick({ dryRun = false } = {}) {
 	}
 
 	// --- Evidence locker: request + response ---
-	await writeEvidenceLocker(db, {
-	  orgId, incidentId, filingType, jobId: job.id,
-	  kind: "SUBMISSION_REQUEST",
-	  payload: submitRes.rawRequest || { incidentId, orgId, filingType, payload, traceId: submitRes.traceId || "", adapterVersion: submitRes.adapterVersion || "" }
-	});
 
-	await writeEvidenceLocker(db, {
-	  orgId, incidentId, filingType, jobId: job.id,
-	  kind: "SUBMISSION_RESPONSE",
-	  payload: submitRes.rawResponse || { ...submitRes, traceId: submitRes.traceId || "", adapterVersion: submitRes.adapterVersion || "" }
-	});
 
 	// --- Mark filing SUBMITTED (source of truth for UI) ---
 	const now = Timestamp.now();
