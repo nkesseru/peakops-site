@@ -77,3 +77,10 @@ yarn-error.log*
 .logs/
 firebase-debug.log
 firestore-debug.log
+
+# local logs/debug
+.logs/
+firebase-debug.log
+firestore-debug.log
+unzipped_*/
+resp_inc_*.json
