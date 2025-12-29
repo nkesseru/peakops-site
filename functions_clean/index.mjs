@@ -12,6 +12,54 @@ import { writeUsageEvent } from "./usage.mjs";
 const nowIsoLocal = nowIso;
 if (!getApps().length) initializeApp();
 
+
+async function handleGetIncidentBundle(req, res) {
+  try {
+    const orgId = String(req.query.orgId || "").trim();
+    const incidentId = String(req.query.incidentId || "").trim();
+    if (!orgId || !incidentId) {
+      return res.status(400).json({ ok: false, error: "Missing orgId/incidentId" });
+    }
+
+    const db = getFirestore();
+
+    const incRef = db.collection("incidents").doc(incidentId);
+    const incSnap = await incRef.get();
+
+    // Always return an incident object (even if missing)
+    const incident = incSnap.exists ? (incSnap.data() || {}) : { id: incidentId, orgId };
+
+    const filingsSnap = await incRef.collection("filings").get();
+    const filings = filingsSnap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
+
+    let timelineEvents = [];
+    try {
+      const tSnap = await incRef.collection("timeline_events").orderBy("createdAt", "asc").limit(200).get();
+      timelineEvents = tSnap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
+    } catch (_e) {}
+
+    const filingsMeta = incident?.filingsMeta ?? null;
+    const timelineMeta = incident?.timelineMeta ?? null;
+
+    // Safe defaults (you can later hydrate from Firestore if you standardize storage)
+    const logs = { system: [], user: [], filing: [] };
+
+    return res.json({
+      ok: true,
+      orgId,
+      incidentId,
+      incident,
+      filings,
+      logs,
+      filingsMeta,
+      timelineMeta,
+      timelineEvents,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+}
+
 export const hello = onRequest((req, res) => {
   res.json({ ok: true, msg: "hello from functions_clean" });
 });

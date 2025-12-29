@@ -73,3 +73,7 @@ ingest-fns/service-account.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+.logs/
+firebase-debug.log
+firestore-debug.log
