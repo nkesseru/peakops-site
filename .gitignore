@@ -84,3 +84,24 @@ firebase-debug.log
 firestore-debug.log
 unzipped_*/
 resp_inc_*.json
+
+# --- Local logs / emulator junk ---
+.logs/
+firebase-debug.log
+firestore-debug.log
+*-debug.log
+
+# --- Evidence ZIP artifacts ---
+peakops_evidence_*.zip
+unzipped_*/
+
+# --- Temp scratch / dumps ---
+.tmp_*.json
+list_inc_*.json
+resp_*.json
+
+# --- Next app backups created during patching ---
+next-app/src/app/admin/incidents/[id]/page.tsx.bak*
+next-app/src/app/admin/incidents/[id]/page.tsx.bak.*
+next-app/src/app/admin/incidents/[id]/page.tsx.bak_*
+
