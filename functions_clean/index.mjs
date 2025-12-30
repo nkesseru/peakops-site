@@ -1540,3 +1540,5 @@ export const exportEvidenceLockerZip = onRequest(async (req, res) => {
   return handleExportEvidenceLockerZip(req, res);
 });
 
+
+export { exportRegPacketV1 } from "./exportRegPacketV1.mjs";
