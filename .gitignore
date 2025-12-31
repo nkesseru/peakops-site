@@ -105,3 +105,6 @@ next-app/src/app/admin/incidents/[id]/page.tsx.bak*
 next-app/src/app/admin/incidents/[id]/page.tsx.bak.*
 next-app/src/app/admin/incidents/[id]/page.tsx.bak_*
 
+.logs/
+firebase-debug.log
+firestore-debug.log

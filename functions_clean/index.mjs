@@ -1,8 +1,4 @@
 import { onRequest } from "firebase-functions/v2/https";
-import { handleExportEvidenceLockerZipRequest } from "./exportEvidenceLockerZip.mjs";
-
-import { handleExportEvidenceLockerZip } from "./evidenceExport.mjs";
-import { handleListEvidenceLockerRequest } from "./evidenceLockerApi.mjs";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { nowIso, requireStr, optionalStr, pick } from "./api.mjs";
@@ -14,75 +10,8 @@ import { writeUsageEvent } from "./usage.mjs";
 const nowIsoLocal = nowIso;
 if (!getApps().length) initializeApp();
 
-
-async function handleGetIncidentBundle(req, res) {
-  try {
-    const orgId = String(req.query.orgId || "").trim();
-    const incidentId = String(req.query.incidentId || "").trim();
-    if (!orgId || !incidentId) {
-      return res.status(400).json({ ok: false, error: "Missing orgId/incidentId" });
-    }
-
-    const db = getFirestore();
-
-    const incRef = db.collection("incidents").doc(incidentId);
-    const incSnap = await incRef.get();
-
-    // Always return an incident object (even if missing)
-    const incident = incSnap.exists ? (incSnap.data() || {}) : { id: incidentId, orgId };
-
-    const filingsSnap = await incRef.collection("filings").get();
-    const filings = filingsSnap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
-
-    let timelineEvents = [];
-    try {
-      const tSnap = await incRef.collection("timeline_events").orderBy("createdAt", "asc").limit(200).get();
-      timelineEvents = tSnap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
-    } catch (_e) {}
-
-    const filingsMeta = incident?.filingsMeta ?? null;
-    const timelineMeta = incident?.timelineMeta ?? null;
-
-    // Safe defaults (you can later hydrate from Firestore if you standardize storage)
-    const logs = { system: [], user: [], filing: [] };
-
-    return res.json({
-      ok: true,
-      orgId,
-      incidentId,
-      incident,
-      filings,
-      logs,
-      filingsMeta,
-      timelineMeta,
-      timelineEvents,
-    });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e) });
-  }
-}
-
 export const hello = onRequest((req, res) => {
   res.json({ ok: true, msg: "hello from functions_clean" });
-
-
-
-function _stableSortKeys(obj) {
-  if (obj === null || obj === undefined) return obj;
-  if (Array.isArray(obj)) return obj.map(_stableSortKeys);
-  if (typeof obj === "object") {
-    const out = {};
-    for (const k of Object.keys(obj).sort()) out[k] = _stableSortKeys(obj[k]);
-    return out;
-  }
-  return obj;
-}
-function _stableStringify(obj) { return JSON.stringify(_stableSortKeys(obj), null, 2); }
-function _sha256Hex(bufOrStr) {
-  const b = (typeof bufOrStr === "string") ? Buffer.from(bufOrStr, "utf8") : Buffer.from(bufOrStr);
-  return crypto.createHash("sha256").update(b).digest("hex");
-}
-
 });
 
 export const generateFilingPackageAndPersist = onRequest(async (req, res) => {
@@ -587,52 +516,49 @@ export const listIncidents = onRequest(async (req, res) => {
 });
 
 // INCIDENT BUNDLE (one call for admin detail page)
-
 export const getIncidentBundle = onRequest(async (req, res) => {
   try {
     if (req.method !== "GET") return res.status(405).json({ ok:false, error:"Use GET" });
 
-    const orgId = String(req.query.orgId || "").trim();
-    const incidentId = String(req.query.incidentId || "").trim();
-    if (!orgId || !incidentId) return res.status(400).json({ ok:false, error:"Missing orgId/incidentId" });
+    const incidentId = req.query.incidentId;
+    const orgId = req.query.orgId;
+
+    if (typeof incidentId !== "string" || typeof orgId !== "string") {
+      return res.status(400).json({ ok:false, error:"Missing orgId/incidentId" });
+    }
 
     const db = getFirestore();
-    const incRef = db.collection("incidents").doc(incidentId);
-    const incSnap = await incRef.get();
 
-    const incident = incSnap.exists ? ({ id: incSnap.id, ...(incSnap.data() || {}) }) : ({ id: incidentId, orgId });
-    const filingsMeta = incident?.filingsMeta ?? null;
-    const timelineMeta = incident?.timelineMeta ?? null;
+    const incSnap = await db.collection("incidents").doc(incidentId).get();
+    if (!incSnap.exists) return res.status(404).json({ ok:false, error:"Incident not found" });
 
-    const filingsSnap = await incRef.collection("filings").get().catch(() => ({ docs: [] }));
-    const filings = (filingsSnap.docs || []).map(d => ({ id: d.id, ...(d.data() || {}) }));
+    const filingsSnap = await db.collection("incidents").doc(incidentId).collection("filings").get();
+    const filings = filingsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
-    // timeline events (optional)
-    let timelineEvents = [];
-    try {
-      const tSnap = await incRef.collection("timeline_events").orderBy("createdAt","asc").limit(200).get();
-      timelineEvents = tSnap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
-    } catch {}
+    const timelineMeta = (incSnap.data() || {}).timelineMeta || null;
 
-    // logs (optional). Keep safe defaults.
-    const logs = { system: [], user: [], filing: [] };
+    const [sysSnap, userSnap, filingSnap] = await Promise.all([
+      db.collection("system_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(50).get(),
+      db.collection("user_action_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(50).get(),
+      db.collection("filing_action_logs").where("incidentId","==",incidentId).orderBy("createdAt","desc").limit(50).get(),
+    ]);
+
+    const system = sysSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const user = userSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const filing = filingSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
     return res.json({
       ok: true,
       orgId,
-      incidentId,
-      incident,
+      incident: { id: incSnap.id, ...incSnap.data() },
       filings,
-      filingsMeta,
       timelineMeta,
-      timelineEvents,
-      logs,
+      logs: { system, user, filing }
     });
   } catch (e) {
-    return res.status(500).json({ ok:false, error:String(e) });
+    return res.status(400).json({ ok:false, error:String(e) });
   }
 });
-
 
 // Generate filings using existing incident doc (no client stub payload)
 export const generateFilingPackageFromIncident = onRequest(async (req, res) => {
@@ -1531,14 +1457,3 @@ export const cancelSubmitJob = onRequest(async (req, res) => {
     return res.status(500).json({ ok:false, error:String(e) });
   }
 });
-export const listEvidenceLocker = onRequest(handleListEvidenceLockerRequest);
-
-export const exportEvidenceLockerZip = onRequest(async (req, res) => {
-  // Inject db into handler via req to avoid circular imports
-  const db = getFirestore();
-  req.__db = db;
-  return handleExportEvidenceLockerZip(req, res);
-});
-
-
-export { exportRegPacketV1 } from "./exportRegPacketV1.mjs";
