@@ -108,3 +108,11 @@ next-app/src/app/admin/incidents/[id]/page.tsx.bak_*
 .logs/
 firebase-debug.log
 firestore-debug.log
+
+# local dev noise
+.logs/
+**/*.bak_*
+**/*.bak.*
+peakops_*packet_*.zip
+peakops_regpacket_*.zip
+next-app/package-lock.json
