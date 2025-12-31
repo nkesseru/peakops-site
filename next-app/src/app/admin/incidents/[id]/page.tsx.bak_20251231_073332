@@ -61,6 +61,37 @@ function PanelCard({ title, children }: any) {
     padding: 14,
     background: "color-mix(in oklab, Canvas 92%, CanvasText 2%)",
   };
+  async function loadEvidenceLocker() {
+    try {
+      // If you already have a global busy setter, keep it. Otherwise this no-ops.
+      if (typeof setBusy === "function") setBusy(true);
+
+      const base = (process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE || "http://127.0.0.1:5001/peakops-pilot/us-central1");
+      const qs = new URLSearchParams({
+        orgId: String(orgId || "org_001"),
+        incidentId: String(incidentId || ""),
+        limit: "25",
+      });
+
+      const url = `${base}/listEvidenceLocker?${qs.toString()}`;
+      const r = await fetch(url);
+      const j = await r.json();
+
+      if (!j || j.ok !== true) {
+        throw new Error(j?.error || "listEvidenceLocker failed");
+      }
+
+      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : []);
+      setEvidenceCount(Number(j.count || 0));
+    } catch (e:any) {
+      console.error("loadEvidenceLocker error:", e);
+      // If you have setErr, use it; otherwise ignore.
+      if (typeof setErr === "function") setErr(String(e?.message || e));
+    } finally {
+      if (typeof setBusy === "function") setBusy(false);
+    }
+  }
+
   return (
     <section style={card}>
       <h2 style={{ fontSize: 14, fontWeight: 900, margin: 0, marginBottom: 10 }}>{title}</h2>
@@ -151,7 +182,6 @@ function TimelineMetaCard({ timelineMeta }: any) {
     </div>
   );
 }
-
 
 function computeExportBlockers({ incident, filings, timelineMeta, logs }: any) {
   const blockers: string[] = [];
@@ -256,6 +286,7 @@ function IncidentSummaryCard({ incident }: any) {
 
 function FilingActionsPanel({ logs }: any) {
   const [q, setQ] = useState("");
+
   const [type, setType] = useState("ALL");
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
@@ -463,6 +494,13 @@ const params = useParams<{ id: string }>();
   const orgId = sp.get("orgId") || "org_001";
 
   const [bundle, setBundle] = useState<any>(null);
+
+  // Evidence Locker (UI state)
+  const [evidenceDocs, setEvidenceDocs] = useState<any[]>([]);
+  const [evidenceCount, setEvidenceCount] = useState<number>(0);
+  const [busyEvidence, setBusyEvidence] = useState<boolean>(false);
+  const [evidenceErr, setEvidenceErr] = useState<string>("");
+
   const [timelineEvents, setTimelineEvents] = useState<any[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -507,11 +545,52 @@ async function loadRil() {
     setBundle(null);
     setErr("getIncidentBundle failed");
   }
+  const loadEvidenceLocker = async () => {
+    if (!orgId || !incidentId) { setEvidenceErr("Missing orgId/incidentId"); return; }
+    setBusyEvidence(true);
+    setEvidenceErr("");
+    try {
+      const j = await jfetch(`/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=25`);
+      if (!j?.ok) throw new Error(j?.error || "listEvidenceLocker failed");
+      setEvidenceDocs(Array.isArray(j.docs) ? j.docs : []);
+      setEvidenceCount(Number(j.count || 0));
+    } catch (e: any) {
+      console.error("loadEvidenceLocker error:", e);
+      setEvidenceErr(String(e?.message || e));
+    } finally {
+      setBusyEvidence(false);
+    }
+  };
 
-  useEffect(() => {
+  
+
+  const downloadEvidenceZip = async () => {
+    try {
+      if (!orgId || !incidentId) return;
+      const r = await fetch(`/api/fn/exportEvidenceLockerZip?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`);
+      const j = await r.json();
+      if (!j?.ok) throw new Error(j?.error || "exportEvidenceLockerZip failed");
+
+      const b64 = String(j.zipBase64 || "");
+      const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: "application/zip" });
+
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = j.filename || `evidence_${incidentId}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setBanner(`✅ Evidence ZIP downloaded (${j.count || 0} items)`);
+    } catch (e:any) {
+      console.error(e);
+      setBanner(`❌ Evidence ZIP export failed: ${String(e?.message || e)}`);
+    }
+  };
+useEffect(() => {
     if (!incidentId) return;
     loadBundle(); loadRil();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+   loadEvidenceLocker(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incidentId]);
 
   async function postFn(path: string, body: any) {
@@ -679,7 +758,6 @@ async function loadRil() {
   );
   // --- end Needs Attention (derived) ---
 
-
   // --- Derived UI helpers (canonical) ---
   const safeAttention = useMemo(
     () => computeAttention({ incident, filings, timelineMeta }),
@@ -712,7 +790,6 @@ async function loadRil() {
     }
     return stats;
   }, [logs]);
-
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:12 }}>
@@ -722,7 +799,7 @@ async function loadRil() {
       <div style={{ fontSize:12, opacity:0.7, marginTop:6 }}>Org: {orgId}</div>
 
       <div style={{ display:"flex", gap:10, marginTop:14, flexWrap:"wrap" }}>
-        <Button disabled={!!busy} onClick={() => { loadBundle(); loadRil(); }}>Refresh</Button>
+        <Button disabled={!!busy} onClick={() => { loadBundle(); loadRil();loadEvidenceLocker(); }}>Refresh</Button>
         <Button disabled={!!busy} onClick={runFilings}>{busy==="filings" ? "Working…" : "Generate Filings"}</Button>
         <Button disabled={!!busy} onClick={runTimelineGen}>{busy==="timeline" ? "Working…" : "Generate Timeline"}</Button>
         <Button disabled={!!busy} onClick={runBoth}>{busy==="both" ? "Working…" : "Generate Both"}</Button>
@@ -757,47 +834,64 @@ async function loadRil() {
       </div>
 
       
+      
+
       <div style={{ marginTop: 16 }}>
         <PanelCard title="Evidence Locker">
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-            <Button disabled={!!busy} onClick={loadEvidenceLocker}>Refresh Evidence</Button>
+  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+    <Button disabled={busyEvidence} onClick={loadEvidenceLocker}>
+      {busyEvidence ? "Loading…" : "Refresh Evidence"}
+    </Button>
+
+    <Button
+      disabled={busyEvidence || evidenceCount === 0}
+      onClick={downloadEvidenceZip}
+    >
+      Download ZIP
+    </Button>
+
+    <div style={{ opacity: 0.75 }}>
+      Count: <b>{evidenceCount}</b>
+    </div>
+
+    {!!evidenceErr && (
+      <div style={{ color: "#ff6b6b" }}>{evidenceErr}</div>
+    )}
+  </div>
+
+  {(!evidenceDocs || evidenceDocs.length === 0) ? (
+    <div style={{ opacity: 0.75 }}>No evidence yet.</div>
+  ) : (
+    <div style={{ display: "grid", gap: 10 }}>
+      {evidenceDocs.map((d: any) => (
+        <div
+          key={d.id}
+          style={{
+            padding: 10,
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 10
+          }}
+        >
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", opacity: 0.9 }}>
+            <b>{d.kind}</b>
+            <span>{d.filingType}</span>
+            <span style={{ opacity: 0.7 }}>job: {d.jobId}</span>
+            <span style={{ opacity: 0.7 }}>bytes: {d.payloadBytes}</span>
           </div>
 
-          {(!evidenceDocs || evidenceDocs.length === 0) ? (
-            <div style={{ opacity: 0.75 }}>No evidence yet.</div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {evidenceDocs.map((x:any) => {
-                const id = x?.id || Math.random().toString(36).slice(2);
-                const ts = x?.storedAt?._seconds ? new Date(x.storedAt._seconds*1000).toISOString() : (x?.storedAt || "—");
-                const hv = x?.hash?.value || "";
-                const hshort = hv ? hv.slice(0, 12) : "—";
-                return (
-                  <div key={id} style={{
-                    border:"1px solid color-mix(in oklab, CanvasText 12%, transparent)",
-                    borderRadius:12,
-                    padding:10,
-                    background:"color-mix(in oklab, CanvasText 3%, transparent)"
-                  }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"flex-start" }}>
-                      <div>
-                        <div style={{ fontSize:12, opacity:0.7 }}>
-                          {ts} · {x?.filingType || "—"} · {x?.kind || "—"}
-                        </div>
-                        <div style={{ fontWeight:900 }}>
-                          {x?.jobId ? <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{x.jobId}</span> : "—"}
-                        </div>
-                        <div style={{ fontSize:12, opacity:0.85, marginTop:4 }}>
-                          Hash: <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{hshort}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          {!!d.payloadPreview && (
+            <pre style={{ marginTop: 10, whiteSpace: "pre-wrap", opacity: 0.9 }}>
+              {d.payloadPreview}
+            </pre>
           )}
-        </PanelCard>
+        </div>
+      ))}
+    </div>
+  )}
+</PanelCard>
+      </div>
+<div style={{ marginTop: 16 }}>
+        
       </div>
 
       {banner && (

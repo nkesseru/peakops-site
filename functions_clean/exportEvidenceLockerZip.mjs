@@ -78,3 +78,9 @@ export async function handleExportEvidenceLockerZipRequest(req, res) {
     return res.status(400).json({ ok: false, error: String(e?.message || e) });
   }
 }
+
+
+// Minimal core stub (unblock). Replace with real implementation.
+export async function exportEvidenceLockerZipCore(_db, { orgId, incidentId, limit=200 } = {}) {
+  return { ok:false, error:'NO_EVIDENCE', orgId, incidentId, count:0 };
+}

@@ -1,20 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-
-wait_fn() {
-  local url="$1"
-  local tries="${2:-40}"
-  local sleep_s="${3:-0.25}"
-  for i in $(seq 1 "$tries"); do
-    if curl -fsS "$url" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep "$sleep_s"
-  done
-  return 1
-}
-
 ROOT="$HOME/peakops/my-app"
 cd "$ROOT"
 mkdir -p .logs
@@ -64,7 +50,6 @@ EMU_PID=$!
 echo "$EMU_PID" > .logs/emu.pid
 
 echo "==> wait for functions /hello"
-wait_fn "$FN_BASE/hello" 80 0.25 || { echo "❌ hello never came up"; exit 1; }
 for i in {1..120}; do
   if curl -sSf "$FN_BASE/hello" >/dev/null 2>&1; then
     echo "✅ functions hello OK"

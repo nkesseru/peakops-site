@@ -1,3 +1,4 @@
+import { onRequest } from "firebase-functions/v2/https";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import JSZip from "jszip";
 import crypto from "crypto";
@@ -305,3 +306,16 @@ export async function exportRegPacketV1Handler(req) {
   const db = getFirestore();
   return exportRegPacketV1Core(db, { orgId, incidentId, purpose, requestedBy });
 }
+
+
+// ------------------------------------------------------------
+// HTTP export (so index.mjs can re-export exportRegPacketV1)
+// ------------------------------------------------------------
+export const exportRegPacketV1 = onRequest(async (req, res) => {
+  try {
+    const out = await exportRegPacketV1Handler(req);
+    return res.status(200).json(out);
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});

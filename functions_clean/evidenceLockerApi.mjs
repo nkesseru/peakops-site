@@ -26,3 +26,19 @@ export async function handleListEvidenceLockerRequest(req, res) {
     return res.status(500).json({ ok:false, error:String(e) });
   }
 }
+
+
+// ---- Compatibility exports (for exportRegPacketV1) ----
+
+export async function listEvidenceLockerCore(db, { orgId, incidentId, limit=25 } = {}) {
+  if (!orgId || !incidentId) return { ok:false, error:"Missing orgId/incidentId", orgId, incidentId, count:0, docs:[] };
+  const snap = await db.collection("incidents").doc(String(incidentId))
+    .collection("evidence_locker")
+    .orderBy("storedAt","desc")
+    .limit(Math.min(Number(limit||25), 500))
+    .get()
+    .catch(() => null);
+
+  const docs = snap ? snap.docs.map(d => ({ id:d.id, ...(d.data()||{}) })) : [];
+  return { ok:true, orgId, incidentId, count: docs.length, docs };
+}
