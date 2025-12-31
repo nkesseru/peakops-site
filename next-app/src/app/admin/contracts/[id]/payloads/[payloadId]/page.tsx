@@ -1,3 +1,7 @@
+// CONTRACTS V1 — FROZEN
+// Do not modify behavior or schema without a version bump (v2).
+// Safe edits: UI cosmetics, copy, logging.
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";

@@ -1,6 +1,11 @@
 import { getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
+// CONTRACTS V1 — FROZEN
+// Do not modify behavior or schema without a version bump (v2).
+// Safe edits: UI cosmetics, copy, logging.
+
+
 if (!getApps().length) initializeApp();
 const db = getFirestore();
 

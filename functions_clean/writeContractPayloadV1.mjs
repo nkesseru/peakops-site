@@ -3,6 +3,11 @@ import { onRequest } from "firebase-functions/v2/https";
 import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 
+// CONTRACTS V1 — FROZEN
+// Do not modify behavior or schema without a version bump (v2).
+// Safe edits: UI cosmetics, copy, logging.
+
+
 function stableSort(x) {
   if (x === null || x === undefined) return x;
   if (Array.isArray(x)) return x.map(stableSort);
