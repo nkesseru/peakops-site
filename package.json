@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node functions/server.mjs"
+    "start": "node functions/server.mjs",
+    "test:contracts": "bash scripts/dev/contracts_stack_up_fixed.sh car_abc123 cust_acme_001 v1"
   },
   "engines": {
     "node": ">=18 <23"
