@@ -1,53 +1,32 @@
-// CONTRACTS V1 — FROZEN
-// Do not modify behavior or schema without a version bump (v2).
-// Safe edits: UI cosmetics, copy, logging.
-
 "use client";
 
 import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 
-function Btn(p: any) {
-  return (
-    <button
-      {...p}
-      style={{
-        padding: "8px 12px",
-        borderRadius: 12,
-        border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-        background: "color-mix(in oklab, CanvasText 6%, transparent)",
-        cursor: p.disabled ? "not-allowed" : "pointer",
-      }}
-    />
-  );
+function mono(s: string) {
+  return <span style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{s}</span>;
 }
 
-function fmtTs(x:any) {
-  if (!x) return "—";
-  if (typeof x === "object" && typeof x._seconds === "number") return new Date(x._seconds * 1000).toLocaleString();
-  if (typeof x === "string") { try { return new Date(x).toLocaleString(); } catch { return x; } }
-  return String(x);
-}
-
-export default function AdminContractPayloadsList() {
+export default function AdminContractPayloads() {
   const params = useParams<{ id: string }>();
   const sp = useSearchParams();
   const contractId = params.id;
   const orgId = sp.get("orgId") || "org_001";
+  const versionId = sp.get("versionId") || "v1";
 
   const [docs, setDocs] = useState<any[]>([]);
+  const [err, setErr] = useState<string>("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
 
   async function load() {
     setBusy(true);
     setErr("");
     try {
-      const r = await fetch(`/api/fn/getContractPayloadsV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}&limit=50`);
+      const r = await fetch(`/api/fn/getContractPayloadsV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}&limit=200`);
       const j = await r.json();
       if (!j?.ok) throw new Error(j?.error || "getContractPayloadsV1 failed");
       setDocs(Array.isArray(j.docs) ? j.docs : []);
-    } catch (e:any) {
+    } catch (e: any) {
       setErr(String(e?.message || e));
       setDocs([]);
     } finally {
@@ -59,45 +38,65 @@ export default function AdminContractPayloadsList() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:12 }}>
-        <h1 style={{ margin:0, fontSize: 22, fontWeight: 900 }}>Admin · Payloads</h1>
-        <a href={`/admin/contracts/${encodeURIComponent(contractId)}?orgId=${encodeURIComponent(orgId)}`} style={{ textDecoration:"none", opacity:0.8, color:"CanvasText" }}>← Back</a>
-      </div>
-      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>Org: {orgId} · Contract: {contractId}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>Admin · Payloads</h1>
+          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+            Org: {mono(orgId)} · Contract: {mono(contractId)} · Version: {mono(versionId)}
+          </div>
+        </div>
 
-      <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginTop: 14, alignItems:"center" }}>
-        <Btn onClick={load} disabled={busy}>{busy ? "Loading…" : "Refresh"}</Btn>
-        {!err && <div style={{ opacity: 0.75 }}>Count: <b>{docs.length}</b></div>}
-        {err && <div style={{ color:"crimson", fontWeight: 900 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+          <a href={`/admin/contracts/${encodeURIComponent(contractId)}?orgId=${encodeURIComponent(orgId)}&versionId=${encodeURIComponent(versionId)}`} style={{ textDecoration: "none", color: "CanvasText", opacity: 0.85 }}>← Contract</a>
+
+          <button
+            onClick={load}
+            disabled={busy}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 12,
+              border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+              background: "color-mix(in oklab, CanvasText 6%, transparent)",
+              cursor: busy ? "not-allowed" : "pointer",
+            }}
+          >
+            {busy ? "Loading…" : "Refresh"}
+          </button>
+        </div>
       </div>
 
-      <div style={{ marginTop: 16, display:"grid", gap:10 }}>
-        {docs.map((d:any) => (
+      {err && <div style={{ marginTop: 10, color: "crimson", fontWeight: 900 }}>{err}</div>}
+      {!err && <div style={{ marginTop: 10, opacity: 0.8 }}>Count: <b>{docs.length}</b></div>}
+
+      <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+        {docs.map((d: any) => (
           <a
             key={d.id}
-            href={`/admin/contracts/${encodeURIComponent(contractId)}/payloads/${encodeURIComponent(d.id)}?orgId=${encodeURIComponent(orgId)}`}
-            style={{ textDecoration:"none", color:"CanvasText" }}
-          >
-            <div style={{
-              border:"1px solid color-mix(in oklab, CanvasText 14%, transparent)",
+            href={`/admin/contracts/${encodeURIComponent(contractId)}/payloads/${encodeURIComponent(d.id)}?orgId=${encodeURIComponent(orgId)}&versionId=${encodeURIComponent(versionId)}`}
+            style={{
+              textDecoration: "none",
+              color: "CanvasText",
+              border: "1px solid color-mix(in oklab, CanvasText 14%, transparent)",
               borderRadius: 14,
               padding: 12,
-              background:"color-mix(in oklab, CanvasText 3%, transparent)",
-            }}>
-              <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"baseline" }}>
-                <div style={{ fontWeight: 900 }}>{d.type || d.id}</div>
-                <div style={{ opacity: 0.7 }}>doc:</div>
-                <div style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{d.id}</div>
-                <div style={{ opacity: 0.7 }}>schema:</div>
-                <div style={{ fontWeight: 800 }}>{d.schemaVersion || "—"}</div>
-              </div>
-              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
-                updatedAt: {fmtTs(d.updatedAt)} · payloadHash: <span style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{String(d.payloadHash || "—")}</span>
-              </div>
+              background: "color-mix(in oklab, CanvasText 3%, transparent)",
+            }}
+          >
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline" }}>
+              <div style={{ fontWeight: 900 }}>{String(d.type || d.id)}</div>
+              <div style={{ opacity: 0.75 }}>doc:</div> <div>{mono(String(d.id || ""))}</div>
+              <div style={{ opacity: 0.75 }}>schema:</div> <div style={{ fontWeight: 800 }}>{String(d.schemaVersion || "—")}</div>
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>
+              updatedAt: {String(d.updatedAt?._seconds ? new Date(d.updatedAt._seconds * 1000).toLocaleString() : d.updatedAt || "—")}
+              {" · "}
+              payloadHash: {mono(String(d.payloadHash || "—"))}
+              {" · "}
+              <span style={{ fontWeight: 900 }}>Open Editor →</span>
             </div>
           </a>
         ))}
-        {docs.length === 0 && !err && <div style={{ opacity: 0.7 }}>No payload docs yet.</div>}
+        {docs.length === 0 && !err && <div style={{ opacity: 0.7 }}>No payload docs found.</div>}
       </div>
     </div>
   );

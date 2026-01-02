@@ -231,6 +231,7 @@ echo "  http://localhost:3000/admin/contracts?orgId=$ORG_ID"
 echo "  http://localhost:3000/admin/contracts/$CONTRACT_ID?orgId=$ORG_ID"
 echo "  http://localhost:3000/admin/contracts/$CONTRACT_ID/payloads?orgId=$ORG_ID"
 echo "  http://localhost:3000/admin/contracts/$CONTRACT_ID/payloads/v1_dirs?orgId=$ORG_ID"
+echo "  http://localhost:3000/api/fn/exportContractPacketV1?orgId=$ORG_ID&contractId=$CONTRACT_ID&versionId=$VERSION_ID&limit=200"
 echo
 echo "Logs:"
 echo "  tail -n 120 .logs/emulators.log"
@@ -238,3 +239,5 @@ echo "  tail -n 120 .logs/next.log"
 echo
 echo "Stop:"
 echo "  kill $EMU_PID $NEXT_PID"
+
+exports.exportContractPacketV1 = onRequest(exportContractPacketV1);

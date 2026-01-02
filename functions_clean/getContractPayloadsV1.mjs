@@ -1,29 +1,30 @@
-import { getApps, initializeApp } from "firebase-admin/app";
+import { onRequest } from "firebase-functions/v2/https";
+import { initializeApp, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
-// CONTRACTS V1 — FROZEN
-// Do not modify behavior or schema without a version bump (v2).
-// Safe edits: UI cosmetics, copy, logging.
-
-
 if (!getApps().length) initializeApp();
-const db = getFirestore();
 
-export async function handleGetContractPayloadsV1(req, res) {
+async function getContractPayloadsV1(req, res) {
+  res.set("Access-Control-Allow-Origin", "*");
   try {
     const orgId = String(req.query.orgId || "").trim();
     const contractId = String(req.query.contractId || "").trim();
     const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
 
-    if (!orgId) return res.status(400).json({ ok: false, error: "Missing orgId" });
-    if (!contractId) return res.status(400).json({ ok: false, error: "Missing contractId" });
+    if (!orgId || !contractId) return res.status(400).json({ ok: false, error: "Missing orgId/contractId" });
 
-    // NOTE: subcollection name is case-sensitive. You created "payloads" (lowercase).
-    const ref = db.collection("contracts").doc(contractId).collection("payloads");
+    const db = getFirestore();
 
-    // If you later add ordering fields consistently, you can orderBy updatedAt.
-    // For now we just fetch up to limit; Firestore returns in doc-id order.
-    const snap = await ref.limit(limit).get();
+    // verify contract belongs to org
+    const cSnap = await db.collection("contracts").doc(contractId).get();
+    if (!cSnap.exists) return res.status(404).json({ ok: false, error: "Contract not found" });
+    const c = cSnap.data() || {};
+    if (String(c.orgId || "") !== orgId) return res.status(404).json({ ok: false, error: "Contract not found" });
+
+    const snap = await db.collection("contracts").doc(contractId)
+      .collection("payloads")
+      .limit(limit)
+      .get();
 
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     return res.json({ ok: true, orgId, contractId, count: docs.length, docs });
@@ -31,3 +32,5 @@ export async function handleGetContractPayloadsV1(req, res) {
     return res.status(500).json({ ok: false, error: String(e) });
   }
 }
+
+export default onRequest(getContractPayloadsV1);

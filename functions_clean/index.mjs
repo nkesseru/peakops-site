@@ -1,4 +1,7 @@
 import { onRequest } from "firebase-functions/v2/https";
+import { exportContractPacketV2 } from "./exportContractPacketV2.mjs";
+import { handleExportContractPacketV1 } from "./exportContractPacketV1.mjs";
+import getContractsV1 from "./getContractsV1.mjs";
 import { handleGetContractPayloadsV1 } from "./getContractPayloadsV1.mjs";
 import { handleGetContractsV1 } from "./getContractsV1.mjs";
 import { handleGetContractV1 } from "./getContractV1.mjs";
@@ -13,8 +16,23 @@ import { writeUsageEvent } from "./usage.mjs";
 const nowIsoLocal = nowIso;
 if (!getApps().length) initializeApp();
 
+export const exportContractPacketV2 = onRequest(exportContractPacketV2);
+
 export const hello = onRequest((req, res) => {
   res.json({ ok: true, msg: "hello from functions_clean" });
+export const exportContractPacketV1 = onRequest(handleExportContractPacketV1);
+
+
+
+export const getContractsV1 = onRequest(getContractsV1);
+
+// --- contracts v1 exports ---
+export { getContractsV1 } from "./getContractsV1.mjs";
+export { getContractV1 } from "./getContractV1.mjs";
+export { getContractPayloadsV1 } from "./getContractPayloadsV1.mjs";
+export { writeContractPayloadV1 } from "./writeContractPayloadV1.mjs";
+// --- end contracts v1 exports ---
+
 });
 
 export const generateFilingPackageAndPersist = onRequest(async (req, res) => {

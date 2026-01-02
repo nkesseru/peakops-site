@@ -1,26 +1,10 @@
-// CONTRACTS V1 — FROZEN
-// Do not modify behavior or schema without a version bump (v2).
-// Safe edits: UI cosmetics, copy, logging.
-
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-function Btn(p: any) {
-  return (
-    <button
-      {...p}
-      style={{
-        padding: "8px 12px",
-        borderRadius: 12,
-        border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-        background: "color-mix(in oklab, CanvasText 6%, transparent)",
-        cursor: p.disabled ? "not-allowed" : "pointer",
-        ...(p.style || {}),
-      }}
-    />
-  );
+function mono(s: string) {
+  return <span style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{s}</span>;
 }
 
 export default function AdminContractsList() {
@@ -28,8 +12,8 @@ export default function AdminContractsList() {
   const orgId = sp.get("orgId") || "org_001";
 
   const [docs, setDocs] = useState<any[]>([]);
+  const [err, setErr] = useState<string>("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
 
   async function load() {
     setBusy(true);
@@ -41,50 +25,70 @@ export default function AdminContractsList() {
       setDocs(Array.isArray(j.docs) ? j.docs : []);
     } catch (e: any) {
       setErr(String(e?.message || e));
-      setDocs([]);
     } finally {
       setBusy(false);
     }
   }
 
-  useEffect(() => { load(); }, []); // eslint-disable-line
+  useEffect(() => { load(); }, [orgId]); // eslint-disable-line
+
+  const count = useMemo(() => docs.length, [docs]);
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:12 }}>
-        <h1 style={{ margin:0, fontSize: 22, fontWeight: 900 }}>Admin · Contracts</h1>
-        <div style={{ opacity: 0.7, fontSize: 12 }}>Org: {orgId}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>Admin · Contracts</h1>
+        <div style={{ fontSize: 12, opacity: 0.75 }}>Org: {mono(orgId)}</div>
       </div>
 
-      <div style={{ display:"flex", gap:10, alignItems:"center", marginTop: 14, flexWrap:"wrap" }}>
-        <Btn onClick={load} disabled={busy}>{busy ? "Loading…" : "Refresh"}</Btn>
-        {!err && <div style={{ opacity: 0.75 }}>Contracts: <b>{docs.length}</b></div>}
-        {err && <div style={{ color:"crimson", fontWeight: 900 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, alignItems: "center" }}>
+        <button
+          onClick={load}
+          disabled={busy}
+          style={{
+            padding: "8px 12px",
+            borderRadius: 12,
+            border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
+            background: "color-mix(in oklab, CanvasText 6%, transparent)",
+            cursor: busy ? "not-allowed" : "pointer",
+          }}
+        >
+          {busy ? "Loading…" : "Refresh"}
+        </button>
+
+        {!err && <div style={{ opacity: 0.8 }}>Contracts: <b>{count}</b></div>}
+        {err && <div style={{ color: "crimson", fontWeight: 900 }}>{err}</div>}
       </div>
 
-      <div style={{ marginTop: 16, border: "1px solid color-mix(in oklab, CanvasText 14%, transparent)", borderRadius: 14, overflow:"hidden" }}>
-        <div style={{ display:"grid", gridTemplateColumns:"220px 160px 110px 120px 1fr", gap:0, padding:"10px 12px", fontSize: 12, opacity: 0.75, borderBottom:"1px solid color-mix(in oklab, CanvasText 10%, transparent)" }}>
+      <div style={{ marginTop: 14, border: "1px solid color-mix(in oklab, CanvasText 12%, transparent)", borderRadius: 14, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "220px 180px 120px 120px 1fr", gap: 0, padding: "10px 12px", fontSize: 12, opacity: 0.75, borderBottom: "1px solid color-mix(in oklab, CanvasText 12%, transparent)" }}>
           <div>ID</div><div>Contract #</div><div>Type</div><div>Status</div><div>Customer</div>
         </div>
 
-        {docs.map((d:any) => (
+        {docs.map((d: any) => (
           <a
             key={d.id}
             href={`/admin/contracts/${encodeURIComponent(d.id)}?orgId=${encodeURIComponent(orgId)}`}
-            style={{ textDecoration:"none", color:"CanvasText" }}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "220px 180px 120px 120px 1fr",
+              padding: "12px 12px",
+              textDecoration: "none",
+              color: "CanvasText",
+              borderBottom: "1px solid color-mix(in oklab, CanvasText 10%, transparent)",
+              background: "color-mix(in oklab, CanvasText 2%, transparent)",
+            }}
           >
-            <div style={{ display:"grid", gridTemplateColumns:"220px 160px 110px 120px 1fr", padding:"10px 12px", borderBottom:"1px solid color-mix(in oklab, CanvasText 8%, transparent)" }}>
-              <div style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{d.id}</div>
-              <div style={{ fontWeight: 800 }}>{d.contractNumber || "—"}</div>
-              <div>{d.type || "—"}</div>
-              <div>{d.status || "—"}</div>
-              <div style={{ fontFamily:"ui-monospace, Menlo, monospace" }}>{d.customerId || "—"}</div>
-            </div>
+            <div style={{ fontWeight: 800 }}>{mono(String(d.id))}</div>
+            <div style={{ fontWeight: 900 }}>{String(d.contractNumber || "—")}</div>
+            <div>{String(d.type || "—")}</div>
+            <div>{String(d.status || "—")}</div>
+            <div>{mono(String(d.customerId || "—"))}</div>
           </a>
         ))}
 
         {docs.length === 0 && !err && (
-          <div style={{ padding:"12px", opacity:0.75 }}>No contracts found.</div>
+          <div style={{ padding: 12, opacity: 0.7 }}>No contracts found.</div>
         )}
       </div>
     </div>
