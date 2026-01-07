@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd ~/peakops/my-app
+
+FILE='next-app/src/app/admin/contracts/[id]/page.tsx'
+TS="$(date +%Y%m%d_%H%M%S)"
+mkdir -p scripts/dev/_bak
+cp "$FILE" "scripts/dev/_bak/contracts_id_page.${TS}.bak"
+echo "✅ backup: scripts/dev/_bak/contracts_id_page.${TS}.bak"
+
+cat > "$FILE" <<'TSX'
+"use client";
+import React, { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
+import AdminNav from "../../_components/AdminNav";
+import PrettyJson from "../../_components/PrettyJson";
+
+function pill(): React.CSSProperties {
+  return {
+    padding: "8px 12px",
+    borderRadius: 999,
+    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
+    background: "color-mix(in oklab, CanvasText 6%, transparent)",
+    cursor: "pointer",
+    color: "CanvasText",
+    fontSize: 12,
+    fontWeight: 800,
+    textDecoration: "none",
+  };
+}
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      border: "1px solid color-mix(in oklab, CanvasText 14%, transparent)",
+      borderRadius: 18,
+      background: "color-mix(in oklab, CanvasText 3%, transparent)",
+      padding: 14,
+    }}>
+      <div style={{ fontWeight: 950, marginBottom: 10 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function b64ToBlob(b64: string, mime = "application/zip") {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+export default function AdminContractDetail() {
+  const params = useParams<{ id: string }>();
+  const sp = useSearchParams();
+  const contractId = params.id;
+  const orgId = sp.get("orgId") || "org_001";
+  const versionId = sp.get("versionId") || "v1";
+
+  const [doc, setDoc] = useState<any>(null);
+  const [err, setErr] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    setBusy(true);
+    setErr("");
+    try {
+      const url = `/api/fn/getContractV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}`;
+      const r = await fetch(url);
+      const j = await r.json();
+      if (!j?.ok) throw new Error(j?.error || "getContractV1 failed");
+      setDoc(j.doc || null);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+      setDoc(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [orgId, contractId]);
+
+  const packetHref = useMemo(() => {
+    const q = new URLSearchParams({ orgId, versionId }).toString();
+    return `/admin/contracts/${encodeURIComponent(contractId)}/packet?${q}`;
+  }, [orgId, versionId, contractId]);
+
+  const payloadsHref = useMemo(() => {
+    const q = new URLSearchParams({ orgId }).toString();
+    return `/admin/contracts/${encodeURIComponent(contractId)}/payloads?${q}`;
+  }, [orgId, contractId]);
+
+  async function downloadZip() {
+    setBusy(true);
+    setErr("");
+    try {
+      const url = `/api/fn/exportContractPacketV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}&versionId=${encodeURIComponent(versionId)}&limit=200`;
+      const r = await fetch(url);
+      const j = await r.json();
+      if (!j?.ok) throw new Error(j?.error || "exportContractPacketV1 failed");
+      const blob = b64ToBlob(String(j.zipBase64 || ""), "application/zip");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = j.filename || `contract_packet_${contractId}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
+      <AdminNav orgId={orgId} contractId={contractId} versionId={versionId} />
+
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 950 }}>Admin · Contract</div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>
+            Org: <b>{orgId}</b> · Contract: <b>{contractId}</b>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Link style={pill()} href={`/admin/contracts?orgId=${encodeURIComponent(orgId)}`}>← Contracts</Link>
+          <a style={pill()} href={payloadsHref}>Payloads →</a>
+          <a style={pill()} href={packetHref}>Preview Packet</a>
+          <button style={pill()} onClick={downloadZip} disabled={busy}>Download ZIP</button>
+          <button style={pill()} onClick={load} disabled={busy}>{busy ? "Loading…" : "Refresh"}</button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+        <Panel title="Overview">
+          {err ? <div style={{ color: "crimson", fontWeight: 900 }}>{err}</div> : null}
+          <PrettyJson value={doc} />
+        </Panel>
+        <div style={{ opacity: 0.65, fontSize: 12 }}>
+          Tip: keep Contract Packet export as the canonical “shareable artifact” for audits + evidence.
+        </div>
+      </div>
+    </div>
+  );
+}
+TSX
+
+echo "==> restart next"
+pkill -f "next dev" 2>/dev/null || true
+mkdir -p .logs
+( cd next-app && pnpm dev --port 3000 > ../.logs/next.log 2>&1 ) &
+sleep 2
+
+echo "==> smoke"
+curl -fsS "http://127.0.0.1:3000/admin/contracts/car_abc123?orgId=org_001" >/dev/null \
+  && echo "✅ contracts/[id] compiles now" \
+  || { echo "❌ still failing"; tail -n 120 .logs/next.log; exit 1; }
+
+echo "OPEN:"
+echo "  http://localhost:3000/admin/contracts/car_abc123?orgId=org_001"

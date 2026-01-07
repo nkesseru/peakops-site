@@ -1,10 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="$HOME/peakops/my-app"
+NEXT="$REPO/next-app"
+FILE="$NEXT/src/app/admin/contracts/[id]/payloads/[payloadId]/page.tsx"
+
+mkdir -p "$(dirname "$FILE")"
+
+cat > "$FILE" <<'TSX'
 "use client";
-import AdminNav from "../../../../_components/AdminNav";
-import JsonViewer from "../../../../_components/JsonViewer";
 
 import { useEffect, useMemo, useState } from "react";
-import {useParams, useSearchParams, useRouter} from "next/navigation";
-import PrettyJson from "../../../../_components/PrettyJson";
+import { useParams, useSearchParams } from "next/navigation";
+import AdminNav from "../../../_components/AdminNav";
+
 function tryParseJson(s: string) {
   try { return { ok: true as const, value: JSON.parse(s) }; }
   catch (e: any) { return { ok: false as const, error: String(e?.message || e) }; }
@@ -37,13 +46,6 @@ export default function PayloadEditor() {
   const sp = useSearchParams();
 
   const orgId = sp.get("orgId") || "org_001";
-  const router = useRouter();
-  // Normalize URL: always keep orgId in query (prevents orgId=undefined calls)
-  useEffect(() => {
-    const cur = sp.get("orgId");
-    if (!cur) router.replace(`${location.pathname}?orgId=${encodeURIComponent(orgId)}`);
-  }, [orgId]); // eslint-disable-line
-
   const contractId = params.id;
   const payloadIdRaw = params.payloadId || "";
   const payloadId = decodeURIComponent(payloadIdRaw);
@@ -161,20 +163,20 @@ export default function PayloadEditor() {
         <AdminNav orgId={orgId} contractId={contractId} />
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <button onClick={load} disabled={busy} style={{ btn() }}>
+          <button onClick={load} disabled={busy} style={btn()}>
             {busy ? "Loading…" : "Refresh"}
           </button>
-          <button onClick={formatJson} disabled={busy} style={{ btn() }}>
+          <button onClick={formatJson} disabled={busy} style={btn()}>
             Format JSON
           </button>
-          <button onClick={save} disabled={busy || !parsed.ok} style={{ btn(true) }}>
+          <button onClick={save} disabled={busy || !parsed.ok} style={btn(true)}>
             Save
           </button>
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.9fr", gap: 14, marginTop: 14 }}>
-        <div style={{ panel() }}>
+        <div style={panel()}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: border() }}>
             <div style={{ fontWeight: 900 }}>JSON</div>
             <div style={{ fontSize: 12, opacity: 0.75 }}>Tip: paste valid JSON only</div>
@@ -203,14 +205,14 @@ export default function PayloadEditor() {
         </div>
 
         <div style={{ display: "grid", gap: 14 }}>
-          <div style={{ panel() }}>
+          <div style={panel()}>
             <div style={{ padding: "10px 12px", borderBottom: border(), fontWeight: 900 }}>Metadata</div>
-            <pre style={{ pre() }}>{prettyJson(meta)}</pre>
+            <pre style={pre()}>{prettyJson(meta)}</pre>
           </div>
 
-          <div style={{ panel() }}>
+          <div style={panel()}>
             <div style={{ padding: "10px 12px", borderBottom: border(), fontWeight: 900 }}>Parsed Payload (read-only)</div>
-            <pre style={{ pre() }}>{parsed.ok ? prettyJson(parsed.value) : "{}"}</pre>
+            <pre style={pre()}>{parsed.ok ? prettyJson(parsed.value) : "{}"}</pre>
           </div>
         </div>
       </div>
@@ -251,3 +253,21 @@ function btn(primary = false) {
     cursor: "pointer",
   } as const;
 }
+TSX
+
+echo "✅ wrote: $FILE"
+
+echo "==> Restart Next"
+pkill -f "next dev" 2>/dev/null || true
+mkdir -p "$REPO/.logs"
+( cd "$NEXT" && pnpm dev --port 3000 > "$REPO/.logs/next.log" 2>&1 ) &
+
+# wait for Next
+for i in $(seq 1 80); do
+  curl -fsS "http://127.0.0.1:3000" >/dev/null 2>&1 && break
+  sleep 0.25
+done
+
+echo "✅ Next is up"
+echo "OPEN:"
+echo "  http://localhost:3000/admin/contracts/car_abc123/payloads/v1_dirs?orgId=org_001"

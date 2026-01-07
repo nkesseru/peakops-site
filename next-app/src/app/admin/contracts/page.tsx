@@ -1,7 +1,7 @@
 "use client";
-
+import AdminNav from "../_components/AdminNav";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 function mono(s: string) {
   return <span style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{s}</span>;
@@ -10,6 +10,14 @@ function mono(s: string) {
 export default function AdminContractsList() {
   const sp = useSearchParams();
   const orgId = sp.get("orgId") || "org_001";
+  const router = useRouter();
+
+  // Normalize URL: always keep orgId in query (prevents orgId=undefined calls)
+  useEffect(() => {
+    const cur = sp.get("orgId");
+    if (!cur) router.replace(`/admin/contracts?orgId=${encodeURIComponent(orgId)}`);
+  }, [orgId]); // eslint-disable-line
+
 
   const [docs, setDocs] = useState<any[]>([]);
   const [err, setErr] = useState<string>("");
@@ -36,6 +44,7 @@ export default function AdminContractsList() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
+      <AdminNav orgId={orgId} />
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>Admin · Contracts</h1>
         <div style={{ fontSize: 12, opacity: 0.75 }}>Org: {mono(orgId)}</div>

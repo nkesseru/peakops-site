@@ -1,7 +1,9 @@
 "use client";
+import AdminNav from "../../../_components/AdminNav";
+import JsonViewer from "../../../_components/JsonViewer";
 
 import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import {useParams, useSearchParams, useRouter} from "next/navigation";
 
 function mono(s: string) {
   return <span style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{s}</span>;
@@ -12,6 +14,13 @@ export default function AdminContractPayloads() {
   const sp = useSearchParams();
   const contractId = params.id;
   const orgId = sp.get("orgId") || "org_001";
+  const router = useRouter();
+  // Normalize URL: always keep orgId in query (prevents orgId=undefined calls)
+  useEffect(() => {
+    const cur = sp.get("orgId");
+    if (!cur) router.replace(`${location.pathname}?orgId=${encodeURIComponent(orgId)}`);
+  }, [orgId]); // eslint-disable-line
+
   const versionId = sp.get("versionId") || "v1";
 
   const [docs, setDocs] = useState<any[]>([]);
@@ -38,6 +47,11 @@ export default function AdminContractPayloads() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
+      {/*__ADMIN_NAV__*/}
+      <div style={{ marginTop: 10 }}>
+        <AdminNav orgId={orgId} contractId={contractId} payloadId={typeof payloadId !== "undefined" ? payloadId : undefined} versionId={"v1"} />
+      </div>
+
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>Admin · Payloads</h1>

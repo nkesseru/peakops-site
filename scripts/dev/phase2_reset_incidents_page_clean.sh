@@ -1,8 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd ~/peakops/my-app
+
+FILE="next-app/src/app/admin/incidents/[id]/page.tsx"
+TS="$(date +%Y%m%d_%H%M%S)"
+mkdir -p scripts/dev/_bak
+cp "$FILE" "scripts/dev/_bak/incidents_id_page.${TS}.bak"
+echo "✅ backup: scripts/dev/_bak/incidents_id_page.${TS}.bak"
+
+cat > "$FILE" <<'TSX'
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import AdminNav from "../../_components/AdminNav";
+
 function pill(active: boolean) {
   return {
     padding: "6px 10px",
@@ -152,3 +164,19 @@ export default function AdminIncidentDetail() {
     </div>
   );
 }
+TSX
+
+echo "==> restart next"
+pkill -f "next dev" 2>/dev/null || true
+mkdir -p .logs
+( cd next-app && pnpm dev --port 3000 > ../.logs/next.log 2>&1 ) &
+sleep 2
+
+echo "==> smoke incidents page"
+curl -fsS "http://127.0.0.1:3000/admin/incidents/inc_TEST?orgId=org_001" >/dev/null \
+  && echo "✅ incidents/[id] compiles now" \
+  || { echo "❌ still failing"; tail -n 140 .logs/next.log; exit 1; }
+
+echo
+echo "OPEN:"
+echo "  http://localhost:3000/admin/incidents/inc_TEST?orgId=org_001"
