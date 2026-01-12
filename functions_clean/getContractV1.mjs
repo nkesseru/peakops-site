@@ -7,8 +7,8 @@ if (!getApps().length) initializeApp();
 async function getContractV1(req, res) {
   res.set("Access-Control-Allow-Origin", "*");
   try {
-    const orgId = String(req.query.orgId || "").trim();
-    const contractId = String(req.query.contractId || "").trim();
+    const orgId = String((req.query.orgId ?? req.query.orgid ?? "")).trim();
+    const contractId = String((req.query.contractId ?? req.query.contractid ?? req.query.id ?? "")).trim();
     if (!orgId || !contractId) return res.status(400).json({ ok: false, error: "Missing orgId/contractId" });
 
     const db = getFirestore();

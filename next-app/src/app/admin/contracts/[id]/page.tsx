@@ -3,8 +3,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
+
 import AdminNav from "../../_components/AdminNav";
 import PrettyJson from "../../_components/PrettyJson";
+
 function pill(): React.CSSProperties {
   return {
     padding: "8px 12px",
@@ -34,7 +36,9 @@ function Panel(props: { title: string; children: React.ReactNode }) {
         background: "color-mix(in oklab, CanvasText 3%, transparent)",
       }}
     >
-      <div style={{ fontSize: 14, fontWeight: 900, marginBottom: 10 }}>{props.title}</div>
+      <div style={{ fontSize: 14, fontWeight: 900, marginBottom: 10 }}>
+        {props.title}
+      </div>
       {props.children}
     </div>
   );
@@ -75,43 +79,51 @@ export default function AdminContractDetail() {
 
   const packetHref = useMemo(
     () =>
-      `/admin/contracts/${encodeURIComponent(contractId)}/packet?orgId=${encodeURIComponent(
-        orgId
-      )}&versionId=${encodeURIComponent(versionId)}`,
+      `/admin/contracts/${encodeURIComponent(contractId)}/packet?orgId=${encodeURIComponent(orgId)}&versionId=${encodeURIComponent(
+        versionId
+      )}`,
     [orgId, contractId, versionId]
   );
 
   async function load() {
+    if (!contractId) return;
     setBusy(true);
     setErr("");
     try {
-      const r = await fetch(
-        `/api/fn/getContractV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}`,
-        { method: "GET" }
-      );
+      const url = `/api/fn/getContractV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}`;
+      const r = await fetch(url, { method: "GET" });
       const text = await r.text();
 
       if (!text || !text.trim()) {
         setDoc({});
-        setErr(`Contract API returned empty (${r.status}): Empty response body (HTTP ${r.status})`);
+        setErr(`Contract API returned empty (HTTP ${r.status})`);
         return;
       }
 
       const parsed = safeJson(text);
       if (!parsed.ok) {
         setDoc({});
-        setErr(`Contract API returned non-JSON (${r.status}): JSON Parse error: ${parsed.error}`);
+        setErr(`Contract API returned non-JSON (HTTP ${r.status}): ${parsed.error}`);
         return;
       }
 
       const j = parsed.value;
+
       if (j?.ok === false) {
         setDoc({});
         setErr(String(j?.error || "getContractV1 failed"));
         return;
       }
 
-      setDoc(j?.doc || j); // tolerate either {doc} or full object
+      // tolerate shapes: {doc}, {contract}, or raw object
+      const d = j?.doc || j?.contract || j;
+      if (!d || (typeof d === "object" && Object.keys(d).length === 0)) {
+        setDoc({});
+        setErr("Contract not found");
+        return;
+      }
+
+      setDoc(d);
     } catch (e: any) {
       setDoc({});
       setErr(String(e?.message || e));
@@ -121,6 +133,7 @@ export default function AdminContractDetail() {
   }
 
   async function downloadZip() {
+    if (!contractId) return;
     setBusy(true);
     setErr("");
     try {
@@ -129,7 +142,6 @@ export default function AdminContractDetail() {
         `&contractId=${encodeURIComponent(contractId)}` +
         `&versionId=${encodeURIComponent(versionId)}` +
         `&limit=200`;
-
       const r = await fetch(url, { method: "GET" });
       const text = await r.text();
 
@@ -150,7 +162,7 @@ export default function AdminContractDetail() {
         return;
       }
 
-      const b64 = String(j.zipBase64 || "");
+      const b64 = String(j?.zipBase64 || "");
       if (!b64) {
         setErr("Packet API ok:true but zipBase64 missing.");
         return;
@@ -159,7 +171,7 @@ export default function AdminContractDetail() {
       const blob = b64ToBlob(b64, "application/zip");
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = String(j.filename || `contract_packet_${contractId}.zip`);
+      a.download = String(j?.filename || `contract_packet_${contractId}.zip`);
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -180,7 +192,7 @@ export default function AdminContractDetail() {
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
       <AdminNav orgId={orgId} contractId={contractId} versionId={versionId} />
 
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <div style={{ fontSize: 22, fontWeight: 950 }}>Admin · Contract</div>
           <div style={{ fontSize: 12, opacity: 0.8 }}>
@@ -190,8 +202,8 @@ export default function AdminContractDetail() {
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Link style={pill()} href={`/admin/contracts?orgId=${encodeURIComponent(orgId)}`}>← Contracts</Link>
-          <a style={pill()} href={payloadsHref}>Payloads →</a>
-          <a style={pill()} href={packetHref}>Preview Packet</a>
+          <Link style={pill()} href={payloadsHref}>Payloads →</Link>
+          <Link style={pill()} href={packetHref}>Preview Packet</Link>
           <button style={pill()} onClick={downloadZip} disabled={busy}>Download ZIP</button>
           <button style={pill()} onClick={load} disabled={busy}>{busy ? "Loading…" : "Refresh"}</button>
         </div>

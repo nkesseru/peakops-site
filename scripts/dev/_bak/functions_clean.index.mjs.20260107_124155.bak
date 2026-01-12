@@ -1,0 +1,18 @@
+import { onRequest } from "firebase-functions/v2/https";
+import helloHandler from "./hello.mjs";
+import getContractsV1Handler from "./getContractsV1.mjs";
+import getContractV1Handler from "./getContractV1.mjs";
+import getContractPayloadsV1Handler from "./getContractPayloadsV1.mjs";
+import writeContractPayloadV1Handler from "./writeContractPayloadV1.mjs";
+import exportContractPacketV1Handler from "./exportContractPacketV1.mjs";
+import getWorkflowV1Handler from "./getWorkflowV1.mjs";
+
+export const hello = onRequest({ cors: true }, helloHandler);
+export const getContractsV1 = onRequest({ cors: true }, getContractsV1Handler);
+export const getContractV1 = onRequest({ cors: true }, getContractV1Handler);
+export const getContractPayloadsV1 = onRequest({ cors: true }, getContractPayloadsV1Handler);
+export const writeContractPayloadV1 = onRequest({ cors: true }, writeContractPayloadV1Handler);
+export const exportContractPacketV1 = onRequest({ cors: true }, exportContractPacketV1Handler);
+
+// ✅ NEW
+export const getWorkflowV1 = onRequest({ cors: true }, getWorkflowV1Handler);

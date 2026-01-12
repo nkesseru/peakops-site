@@ -1,0 +1,14 @@
+{
+  "name": "functions_emu",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "firebase-functions": "^6.6.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.2"
+  }
+}

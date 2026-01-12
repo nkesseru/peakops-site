@@ -1,23 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import FilingMetaStub from "../../_components/FilingMetaStub";
+import TimelinePreviewMock from "../../_components/TimelinePreviewMock";
+import BackendBadge from "../../_components/BackendBadge";
 import { useParams, useSearchParams } from "next/navigation";
 import AdminNav from "../../_components/AdminNav";
-function pill(active: boolean) {
-  return {
-    padding: "6px 10px",
-    borderRadius: 999,
-    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-    background: active ? "color-mix(in oklab, CanvasText 10%, transparent)" : "transparent",
-    color: "CanvasText",
-    fontSize: 12,
-    fontWeight: 800,
-    textDecoration: "none",
-    cursor: "pointer",
-  } as const;
-}
+import GuidedWorkflowPanel from "../../_components/GuidedWorkflowPanel";
 
-function Panel({ title, children }: { title: string; children: any }) {
+
+function Panel(props: { title: string; children: React.ReactNode }) {
   return (
     <div
       style={{
@@ -27,36 +19,77 @@ function Panel({ title, children }: { title: string; children: any }) {
         background: "color-mix(in oklab, CanvasText 3%, transparent)",
       }}
     >
-      <div style={{ fontWeight: 950, marginBottom: 8 }}>{title}</div>
-      {children}
+      <div style={{ fontSize: 14, fontWeight: 900, marginBottom: 10 }}>{props.title}</div>
+      {props.children}
     </div>
   );
 }
 
-type WFStep = { key: string; title?: string; hint?: string; status?: string };
-type WFResp = { ok: boolean; orgId?: string; incidentId?: string; workflow?: { version?: string; steps?: WFStep[] }; error?: string };
+function panelCardStyle(): React.CSSProperties {
+  return {
+    border: "1px solid color-mix(in oklab, CanvasText 14%, transparent)",
+    borderRadius: 16,
+    padding: 14,
+    background: "color-mix(in oklab, CanvasText 3%, transparent)",
+  };
+}
+
+function pill(active: boolean): React.CSSProperties {
+  return {
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
+    background: active ? "color-mix(in oklab, CanvasText 10%, transparent)" : "transparent",
+    color: "CanvasText",
+    fontSize: 12,
+    fontWeight: 800,
+    cursor: "pointer",
+    userSelect: "none",
+  };
+}
+
+type WFResp = {
+  ok: boolean;
+  orgId?: string;
+  incidentId?: string;
+  workflow?: { version?: string; steps?: any[] };
+  error?: string;
+};
 
 export default function AdminIncidentDetail() {
-  const sp = useSearchParams();
   const params = useParams() as any;
+  const sp = useSearchParams();
 
-  const incidentId = String(params?.id || "inc_TEST");
   const orgId = sp.get("orgId") || "org_001";
+  const incidentId = String(params?.id || "inc_TEST");
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>("");
   const [wf, setWf] = useState<WFResp | null>(null);
 
+  const stepsCount = useMemo(() => wf?.workflow?.steps?.length || 0, [wf]);
+
   async function load() {
     setBusy(true);
     setErr("");
     try {
-      const r = await fetch(`/api/fn/getWorkflowV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
+      const url =
+        `/api/fn/getWorkflowV1?orgId=${encodeURIComponent(orgId)}` +
+        `&incidentId=${encodeURIComponent(incidentId)}`;
+
+      const r = await fetch(url);
       const text = await r.text();
-      const j = JSON.parse(text) as WFResp;
+
+      let j: WFResp;
+      try {
+        j = JSON.parse(text);
+      } catch {
+        throw new Error(`Workflow API returned non-JSON (HTTP ${r.status})`);
+      }
       if (!j.ok) throw new Error(j.error || "getWorkflowV1 failed");
       setWf(j);
     } catch (e: any) {
+      setWf(null);
       setErr(String(e?.message || e));
     } finally {
       setBusy(false);
@@ -65,25 +98,25 @@ export default function AdminIncidentDetail() {
 
   useEffect(() => { void load(); /* eslint-disable-next-line */ }, [orgId, incidentId]);
 
-  const steps = useMemo(() => (wf?.workflow?.steps || []), [wf]);
-
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
-      <AdminNav orgId={orgId} incidentId={incidentId} />
+      <AdminNav orgId={orgId} />
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: 22, fontWeight: 950 }}>Admin · Incident</div>
           <div style={{ fontSize: 12, opacity: 0.8 }}>
-            Org: <b>{orgId}</b> · Incident: <b>{incidentId}</b>
+            Org: <b>{orgId}</b> · Incident: <b>{incidentId}</b> · Steps: <b>{stepsCount}</b>
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button style={pill(false)} onClick={load} disabled={busy}>
-            {busy ? "Loading…" : "Refresh"}
-          </button>
-        </div>
+        
+<div style={{ display:"flex", gap:10, alignItems:"center" }}>
+  <BackendBadge orgId={orgId} incidentId={incidentId} />
+  <button style={pill(false)} onClick={load} disabled={busy}>
+          {busy ? "Loading…" : "Refresh"}
+        </button>
+</div>
       </div>
 
       {err ? (
@@ -92,62 +125,39 @@ export default function AdminIncidentDetail() {
         </div>
       ) : null}
 
-      <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
-        <Panel title="Guided Workflow">
-          <div style={{ display: "grid", gap: 10 }}>
-            {steps.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>No workflow steps.</div>
-            ) : (
-              steps.map((s, idx) => (
-                <div
-                  key={String(s.key || idx)}
-                  style={{
-                    border: "1px solid color-mix(in oklab, CanvasText 12%, transparent)",
-                    borderRadius: 14,
-                    padding: 12,
-                    background: "color-mix(in oklab, CanvasText 2%, transparent)",
-                    display: "grid",
-                    gap: 6,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-                    <div style={{ fontWeight: 950 }}>
-                      {s.title || s.key}
-                    </div>
-                    <div style={{ fontSize: 12, opacity: 0.85 }}>
-                      <span style={{
-                        padding: "3px 8px",
-                        borderRadius: 999,
-                        border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-                        background: "color-mix(in oklab, CanvasText 8%, transparent)",
-                        fontWeight: 900,
-                      }}>
-                        {(s.status || "TODO").toUpperCase()}
-                      </span>
-                    </div>
-                  </div>
-                  {s.hint ? <div style={{ opacity: 0.75, fontSize: 13 }}>{s.hint}</div> : null}
-                </div>
-              ))
-            )}
-          </div>
-        </Panel>
+      <div style={{ marginTop: 14 }}>
+        <div style={panelCardStyle()}>
+          <div style={{ fontWeight: 950, marginBottom: 8 }}>Guided Workflow</div>
+          <GuidedWorkflowPanel orgId={orgId} incidentId={incidentId} />
+        
 
-        <Panel title="Filing Meta">
+        
+        
+
+
+<TimelinePreviewMock orgId={orgId} incidentId={incidentId} />
+<FilingMetaStub incident={wf?.incident} />
+{/* PACKET_STATE_STUB */}
+</div>
+      </div>
+
+      <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+        <div style={panelCardStyle()}>
+          <div style={{ fontWeight: 950, marginBottom: 6 }}>Filing Meta</div>
           <div style={{ opacity: 0.7 }}>Not generated yet (Phase 2 UI wiring next).</div>
-        </Panel>
-
-        <Panel title="Evidence Locker">
+        </div>
+        <div style={panelCardStyle()}>
+          <div style={{ fontWeight: 950, marginBottom: 6 }}>Evidence Locker</div>
           <div style={{ opacity: 0.7 }}>Not wired yet (Phase 2 UI wiring next).</div>
-        </Panel>
-
-        <Panel title="Timeline">
+        </div>
+        <div style={panelCardStyle()}>
+          <div style={{ fontWeight: 950, marginBottom: 6 }}>Timeline</div>
           <div style={{ opacity: 0.7 }}>Not wired yet (Phase 2 UI wiring next).</div>
-        </Panel>
-
-        <Panel title="Filings">
+        </div>
+        <div style={panelCardStyle()}>
+          <div style={{ fontWeight: 950, marginBottom: 6 }}>Filings</div>
           <div style={{ opacity: 0.7 }}>Not wired yet (Phase 2 UI wiring next).</div>
-        </Panel>
+        </div>
       </div>
     </div>
   );
