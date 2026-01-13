@@ -16,7 +16,7 @@ type StepStatus = "TODO" | "DOING" | "DONE";
 type Step = { key: string; title?: string; hint?: string; status?: StepStatus };
 type Workflow = { version?: string; steps?: Step[] };
 
-function pill(active: boolean): React.CSSProperties {
+function pill(active: boolean, level: "NORMAL" | "DOING" = "NORMAL"): React.CSSProperties {
   return {
     padding: "4px 10px",
     borderRadius: 999,
@@ -146,7 +146,28 @@ export default function GuidedWorkflowPanel(props: { orgId: string; incidentId: 
 
   function setStatus(key: string, status: StepStatus) {
     const k = String(key);
+
+    // 1) Update the clicked step
     const next = { ...localStatus, [k]: status };
+
+    // 2) Auto-advance: if user marks a step DONE, set the *next* step to DOING (only if it's still TODO)
+    try {
+      if (status === "DONE" && steps && steps.length) {
+        const idx = steps.findIndex((x) => String(x?.key) === k);
+        if (idx >= 0 && idx + 1 < steps.length) {
+          const nextKey = String(steps[idx + 1]?.key || "");
+          if (nextKey) {
+            const current = next[nextKey] || steps[idx + 1]?.status || "TODO";
+            if (current === "TODO") {
+              next[nextKey] = "DOING";
+            }
+          }
+        }
+      }
+    } catch {
+      // never block UI
+    }
+
     setLocalStatus(next);
     writeLocal(storageKey, next);
   }
