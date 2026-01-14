@@ -30,7 +30,7 @@ exports.getTimelineEventsV1 = onRequest({ cors: true }, async (req, res) => {
     }
 
     // Pull timelineEvents subcollection if present
-    let q = incRef.collection("timelineEvents").orderBy("occurredAt", "asc").limit(limit);
+    let q = incRef.collection("timeline_events").orderBy("occurredAt", "asc").limit(limit);
     const snap = await q.get();
 
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
