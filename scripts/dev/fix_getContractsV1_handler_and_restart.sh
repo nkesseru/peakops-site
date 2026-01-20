@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +H 2>/dev/null || true
 set -euo pipefail
 
 echo "==> (1) Rewrite functions_clean/getContractsV1.mjs as TRUE list endpoint (no contractId)"

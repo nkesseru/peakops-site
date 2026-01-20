@@ -70,7 +70,7 @@ export default function BundlePage() {
   const orgId = String(sp.get("orgId") || "org_001");
   const incidentId = String(params?.id || "inc_TEST");
 
-  // BOOTSTRAP_BADGES_V6: hydrate lock + zip verification + packet meta AFTER ids exist
+  // BOOTSTRAP_BADGES_BULLETPROOF: hydrate truth on mount/id change (after ids exist)
   useEffect(() => {
     if (!orgId || !incidentId) return;
     void loadPacketMeta();
@@ -78,6 +78,7 @@ export default function BundlePage() {
     void hydrateLock();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, incidentId]);
+
 
   const contractId = String(sp.get("contractId") || "");
 
@@ -90,13 +91,6 @@ export default function BundlePage() {
 
 
   // Bootstrap: keep badges sticky across hard refresh
-  useEffect(() => {
-    void loadPacketMeta();
-    void hydrateZipVerification();
-    void hydrateLock();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId, incidentId]);
-
   const [immutable, setImmutable] = useState<boolean>(false);
   const [zipVerified, setZipVerified] = useState<boolean>(false);
 
@@ -481,15 +475,6 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
       setManifestBusy(false);
     }
   }
-
-  useEffect(() => {
-    void loadPacketMeta();
-    void hydrateZipVerification();
-    void hydrateIncidentLock();
-void hydrateZipVerification();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId, incidentId, contractId]);
-
   const badgeStyle = (ok: boolean): React.CSSProperties => ({
     display: "inline-flex",
     alignItems: "center",

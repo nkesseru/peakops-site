@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +H 2>/dev/null || true
 set -euo pipefail
 
 FILE="next-app/src/app/admin/_components/GuidedWorkflowPanel.tsx"

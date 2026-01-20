@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +H 2>/dev/null || true
 set -euo pipefail
 
 # Pick the file Next is actually building. (Your errors show src/app/... sometimes; other times next-app/src/...)

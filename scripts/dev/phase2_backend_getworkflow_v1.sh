@@ -1,3 +1,4 @@
+set +H 2>/dev/null || true
 set -euo pipefail
 cd ~/peakops/my-app
 mkdir -p .logs scripts/dev/_bak

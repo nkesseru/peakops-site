@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +H 2>/dev/null || true
 set -euo pipefail
 
 # Locate the function file (works for .js/.mjs)

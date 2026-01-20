@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +H 2>/dev/null || true
 set -euo pipefail
 
 INC_PAGE="next-app/src/app/admin/incidents/[id]/page.tsx"

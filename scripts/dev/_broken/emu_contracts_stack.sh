@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +H 2>/dev/null || true
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-peakops-pilot}"

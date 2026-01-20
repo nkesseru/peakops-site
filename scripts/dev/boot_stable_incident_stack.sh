@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +H 2>/dev/null || true
 
 if [[ -z "${BASH_VERSION:-}" ]]; then
   echo "❌ Run with: bash scripts/dev/boot_stable_incident_stack.sh ..."

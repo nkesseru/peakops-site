@@ -1,3 +1,4 @@
+set +H 2>/dev/null || true
 set -euo pipefail
 REGION=us-west1; SERVICE=peakops-api
 URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"
