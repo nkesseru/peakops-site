@@ -34,6 +34,8 @@ exports.getWorkflowV1 = require("./getWorkflowV1").getWorkflowV1;
 
 /* --- Timeline Events API --- */
 const { getTimelineEventsV1 } = require("./getTimelineEventsV1");
+const { generateTimelineV1 } = require("./generateTimelineV1");
+
 exports.getTimelineEventsV1 = getTimelineEventsV1;
 // alias (what Next proxy will call)
 exports.getTimelineEvents = getTimelineEventsV1;
@@ -42,3 +44,13 @@ exports.generateFilingsV1 = require('./generateFilingsV1').generateFilingsV1;
 
 exports.exportIncidentPacketV1 = require('./exportIncidentPacketV1').exportIncidentPacketV1;
 exports.getIncidentV1 = require("./getIncidentV1").getIncidentV1;
+
+// --- Incident bundle (Phase 2)
+exports.getIncidentBundleV1 = require("./getIncidentBundleV1").getIncidentBundleV1;
+
+// --- DIRS generator (Phase 2)
+exports.generateDIRSV1 = require("./generateDIRSV1").generateDIRSV1;
+
+exports.generateTimelineV1 = generateTimelineV1;
+
+exports.getIncidentPacketMetaV1 = require("./getIncidentPacketMetaV1").getIncidentPacketMetaV1;

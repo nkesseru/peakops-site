@@ -1,33 +1,10 @@
 {
-  "firestore": {
-    "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
-  },
-  "storage": [
-    {
-      "target": "rules",
-      "rules": "storage.rules"
-    }
-  ],
-  "functions": {
-    "source": "functions_clean",
-    "runtime": "nodejs20"
-  },
+  "functions": { "source": "functions_clean" },
   "emulators": {
-    "functions": {
-      "host": "127.0.0.1",
-      "port": 5001
-    },
-    "firestore": {
-      "host": "127.0.0.1",
-      "port": 8081
-    },
-    "ui": {
-      "enabled": false
-    },
-    "hub": {
-      "host": "127.0.0.1",
-      "port": 4409
-    }
+    "functions": { "host": "127.0.0.1", "port": 5001 },
+    "firestore": { "host": "127.0.0.1", "port": 8080 },
+    "hub": { "host": "127.0.0.1", "port": 4400 },
+    "ui": { "host": "127.0.0.1", "port": 4000 },
+    "logging": { "host": "127.0.0.1", "port": 4500 }
   }
 }

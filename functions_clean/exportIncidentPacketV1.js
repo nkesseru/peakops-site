@@ -1,6 +1,6 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const { getApps, initializeApp } = require("firebase-admin/app");
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getFirestore, Timestamp } = require("firebase-admin/firestore");
 const crypto = require("crypto");
 
 if (!getApps().length) initializeApp();
@@ -16,24 +16,43 @@ function sha256(s) {
 
 exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
   try {
-    const orgId = String(req.query.orgId || "");
-    const incidentId = String(req.query.incidentId || "");
+    const orgId = String(req.query.orgId || "").trim();
+    const incidentId = String(req.query.incidentId || "").trim();
+    const force = String(req.query.force || "").trim() === "1";
     if (!orgId || !incidentId) return send(res, 400, { ok: false, error: "Missing orgId/incidentId" });
 
     const incidentRef = db.collection("incidents").doc(incidentId);
 
     const incidentSnap = await incidentRef.get();
-    const incident = incidentSnap.exists ? { id: incidentSnap.id, ...incidentSnap.data() } : null;
 
+    // --- IMMUTABLE EXPORT (write-once) ---
+    const existingMeta = incidentSnap.exists ? (incidentSnap.data()?.packetMeta || null) : null;
+    if (!force && existingMeta && (existingMeta.packetHash || existingMeta.exportedAt || existingMeta.sizeBytes)) {
+      return send(res, 200, {
+        ok: true,
+        orgId,
+        incidentId,
+        immutable: true,
+        packetMeta: existingMeta,
+      });
+    }
+
+    if (!incidentSnap.exists) return send(res, 404, { ok: false, error: "Incident not found" });
+
+    const incident = { id: incidentSnap.id, ...incidentSnap.data() };
+
+    // Canonical collections
     const filingsSnap = await incidentRef.collection("filings").get();
-    const payloads = filingsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const filings = filingsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-    const timelineSnap = await incidentRef.collection("timeline").get();
-    const timeline = timelineSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const tlSnap = await incidentRef.collection("timeline_events").get();
+    const timelineEvents = tlSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
     const exportedAt = new Date().toISOString();
-    const packet = { orgId, incidentId, exportedAt, incident, payloads, timeline };
+    const nowTs = Timestamp.now();
 
+    // Meta hash is derived from deterministic JSON (MVP). ZIP hash can come later.
+    const packet = { orgId, incidentId, exportedAt, incident, filings, timelineEvents };
     const packetJson = JSON.stringify(packet);
     const packetHash = sha256(packetJson);
     const sizeBytes = Buffer.byteLength(packetJson, "utf8");
@@ -45,31 +64,35 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
           exportedAt,
           packetHash,
           sizeBytes,
-          payloadCount: payloads.length,
-          timelineCount: timeline.length,
+          filingsCount: filings.length,
+          timelineCount: timelineEvents.length,
           source: "exportIncidentPacketV1",
         },
-        updatedAt: FieldValue.serverTimestamp(),
+        updatedAt: nowTs,
       },
       { merge: true }
     );
 
-    const evId = `t_export_${Date.now()}`;
-    await incidentRef.collection("timeline").doc(evId).set({
-      id: evId,
-      orgId,
-      incidentId,
-      type: "PACKET_EXPORTED",
-      title: "Packet exported",
-      message: "Packet metadata saved (hash + size).",
-      occurredAt: exportedAt,
-      createdAt: exportedAt,
-      updatedAt: exportedAt,
-      source: "exportIncidentPacketV1",
-    });
+    // Emit canonical timeline event
+    const evId = `t3_packet_${Date.now()}`;
+    await incidentRef.collection("timeline_events").doc(evId).set(
+      {
+        id: evId,
+        orgId,
+        incidentId,
+        type: "PACKET_EXPORTED",
+        title: "Packet exported",
+        message: "Packet metadata saved (hash + size).",
+        occurredAt: exportedAt,
+        requestedBy: String(req.query.requestedBy || "system"),
+        createdAt: nowTs,
+        updatedAt: nowTs,
+        source: "exportIncidentPacketV1",
+      },
+      { merge: true }
+    );
 
-    // Safe MVP: return meta only (no ZIP yet)
-    return send(res, 200, { ok: true, orgId, incidentId, packetMeta: { packetHash, sizeBytes } });
+    return send(res, 200, { ok: true, orgId, incidentId, packetMeta: { exportedAt, packetHash, sizeBytes } });
   } catch (e) {
     return send(res, 500, { ok: false, error: String(e?.message || e) });
   }

@@ -1,243 +1,152 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
 import crypto from "crypto";
 
-export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type AnyJson = any;
 
-function sha256(bytes: Uint8Array): string {
-  return crypto.createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+function sha256Hex(buf: Buffer | string): string {
+  const b = typeof buf === "string" ? Buffer.from(buf, "utf8") : buf;
+  return crypto.createHash("sha256").update(b).digest("hex");
 }
 
-function utf8(s: string): Uint8Array {
-  return Buffer.from(s, "utf8");
-}
-
-async function safeFetchJson(url: string): Promise<{ ok: true; json: AnyJson } | { ok: false; status: number; text: string }> {
-  const r = await fetch(url, { method: "GET" });
-  const text = await r.text();
-  if (!text || !text.trim()) return { ok: false, status: r.status, text: "" };
-  try {
-    return { ok: true, json: JSON.parse(text) };
-  } catch {
-    return { ok: false, status: r.status, text };
-  }
-}
-
-/**
- * Packet contents we want (v1):
- * - README.txt
- * - packet_meta.json
- * - manifest.json (list of file entries)
- * - hashes.json (path->sha256)
- * - workflow.json (from /api/fn/getWorkflowV1)
- * - timeline/events.json (from /api/fn/getTimelineEvents)
- * - contract/contract.json (if contractId provided, from /api/fn/getContractV1)
- * - filings/index.json + stubs: filings/dirs.json, filings/oe417.json, filings/nors.json, filings/sar.json, filings/baba.json
- */
-async function buildPacket(req: Request) {
-  const url = new URL(req.url);
-  const orgId = url.searchParams.get("orgId") || "";
-  const incidentId = url.searchParams.get("incidentId") || "";
-  const contractId = url.searchParams.get("contractId") || "";
-  if (!orgId || !incidentId) {
-    throw new Error("Missing orgId/incidentId");
-  }
-
-  const nowIso = new Date().toISOString();
-  const origin = url.origin;
-
-  // Pull sources (best-effort; keep stable even if missing)
-  const wfResp = await safeFetchJson(
-    `${origin}/api/fn/getWorkflowV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`
-  );
-  const timelineResp = await safeFetchJson(
-    `${origin}/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`
-  );
-
-  let contractJson: AnyJson = null;
-  if (contractId) {
-    const cResp = await safeFetchJson(
-      `${origin}/api/fn/getContractV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}`
-    );
-    if (cResp.ok && cResp.json?.ok !== false) {
-      contractJson = cResp.json;
-    } else {
-      contractJson = { ok: false, error: "Contract not found", status: cResp.ok ? 200 : cResp.status };
+function stableJson(obj: AnyJson): string {
+  // Basic stable stringify: sort object keys recursively
+  const seen = new WeakSet();
+  const norm = (v: any): any => {
+    if (v && typeof v === "object") {
+      if (seen.has(v)) return null;
+      seen.add(v);
+      if (Array.isArray(v)) return v.map(norm);
+      const out: any = {};
+      for (const k of Object.keys(v).sort()) out[k] = norm(v[k]);
+      return out;
     }
-  }
-
-  // Build file list (excluding meta/hashes/manifest until computed)
-  const files: { path: string; bytes: Uint8Array }[] = [];
-
-  files.push({
-    path: "README.txt",
-    bytes: utf8(
-      [
-        "PeakOps — Immutable Incident Artifact (v1)",
-        "",
-        `orgId: ${orgId}`,
-        `incidentId: ${incidentId}`,
-        `contractId: ${contractId || "(none)"}`,
-        `generatedAt: ${nowIso}`,
-        "",
-        "This zip is the canonical shareable artifact for audits + evidence.",
-      ].join("\n")
-    ),
-  });
-
-  // workflow.json
-  const wfJson = wfResp.ok ? wfResp.json : { ok: false, error: `workflow non-JSON/empty (HTTP ${wfResp.status})`, sample: wfResp.text?.slice(0, 200) };
-  files.push({ path: "workflow.json", bytes: utf8(JSON.stringify(wfJson, null, 2)) });
-
-  // timeline/events.json
-  const tJson = timelineResp.ok ? timelineResp.json : { ok: false, error: `timeline non-JSON/empty (HTTP ${timelineResp.status})`, sample: timelineResp.text?.slice(0, 200) };
-  files.push({ path: "timeline/events.json", bytes: utf8(JSON.stringify(tJson, null, 2)) });
-
-  // contract snapshot
-  if (contractId) {
-    files.push({ path: "contract/contract.json", bytes: utf8(JSON.stringify(contractJson, null, 2)) });
-  }
-
-  // filings folder stub
-  const filingsIndex = {
-    packetVersion: "v1",
-    note: "Stub. These will become incident-generated payloads (DIRS/OE-417/NORS/SAR/BABA).",
-    files: ["filings/dirs.json", "filings/oe417.json", "filings/nors.json", "filings/sar.json", "filings/baba.json"],
+    return v;
   };
-  files.push({ path: "filings/index.json", bytes: utf8(JSON.stringify(filingsIndex, null, 2)) });
-
-  const filingStub = (type: string) => ({
-    ok: true,
-    stub: true,
-    type,
-    orgId,
-    incidentId,
-    generatedAt: nowIso,
-    note: "Not wired yet. This is a placeholder artifact file so the packet structure is stable.",
-  });
-
-  files.push({ path: "filings/dirs.json", bytes: utf8(JSON.stringify(filingStub("DIRS"), null, 2)) });
-  files.push({ path: "filings/oe417.json", bytes: utf8(JSON.stringify(filingStub("OE_417"), null, 2)) });
-  files.push({ path: "filings/nors.json", bytes: utf8(JSON.stringify(filingStub("NORS"), null, 2)) });
-  files.push({ path: "filings/sar.json", bytes: utf8(JSON.stringify(filingStub("SAR"), null, 2)) });
-  files.push({ path: "filings/baba.json", bytes: utf8(JSON.stringify(filingStub("BABA"), null, 2)) });
-
-  // Compute hashes + manifest
-  const hashes: Record<string, string> = {};
-  const manifest: { path: string; sha256: string; sizeBytes: number }[] = [];
-
-  for (const f of files) {
-    const h = sha256(f.bytes);
-    hashes[f.path] = h;
-    manifest.push({ path: f.path, sha256: h, sizeBytes: f.bytes.byteLength });
-  }
-
-  // Stable packetHash derived from hashes.json (not zip)
-  const packetHash = sha256(utf8(JSON.stringify(hashes, null, 2)));
-
-  const packetMeta = {
-    packetVersion: "v1",
-    orgId,
-    incidentId,
-    contractId: contractId || null,
-    generatedAt: nowIso,
-    packetHash,
-    fileCount: files.length + 2, // + manifest + hashes
-  };
-
-  // Add meta files LAST so they're included in hashes/manifest below? (No — we want manifest/hashes to include themselves.)
-  // Approach: include packet_meta.json, manifest.json, hashes.json, then recompute a final hashes/manifest that includes them.
-  // This makes the packet truly self-describing.
-
-  // First add placeholders, then compute final
-  files.push({ path: "packet_meta.json", bytes: utf8(JSON.stringify(packetMeta, null, 2)) });
-  files.push({ path: "manifest.json", bytes: utf8(JSON.stringify(manifest, null, 2)) });
-  files.push({ path: "hashes.json", bytes: utf8(JSON.stringify(hashes, null, 2)) });
-
-  // Final recompute to include the 3 meta files themselves
-  const finalHashes: Record<string, string> = {};
-  const finalManifest: { path: string; sha256: string; sizeBytes: number }[] = [];
-
-  for (const f of files) {
-    const h = sha256(f.bytes);
-    finalHashes[f.path] = h;
-    finalManifest.push({ path: f.path, sha256: h, sizeBytes: f.bytes.byteLength });
-  }
-
-  const finalPacketHash = sha256(utf8(JSON.stringify(finalHashes, null, 2)));
-
-  const finalPacketMeta = {
-    ...packetMeta,
-    packetHash: finalPacketHash,
-    fileCount: files.length,
-  };
-
-  // Overwrite meta files with final versions
-  const replaceFile = (path: string, bytes: Uint8Array) => {
-    const idx = files.findIndex((x) => x.path === path);
-    if (idx >= 0) files[idx] = { path, bytes };
-    else files.push({ path, bytes });
-  };
-
-  replaceFile("packet_meta.json", utf8(JSON.stringify(finalPacketMeta, null, 2)));
-  replaceFile("manifest.json", utf8(JSON.stringify(finalManifest, null, 2)));
-  replaceFile("hashes.json", utf8(JSON.stringify(finalHashes, null, 2)));
-
-  // ZIP
-  const zip = new JSZip();
-  for (const f of files) zip.file(f.path, f.bytes);
-
-  const zipBytes = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
-  const zipSha = sha256(zipBytes);
-
-  return {
-    orgId,
-    incidentId,
-    contractId: contractId || null,
-    generatedAt: nowIso,
-    packetHash: finalPacketHash,
-    zipSha,
-    zipSize: zipBytes.byteLength,
-    zipBytes,
-  };
+  return JSON.stringify(norm(obj), null, 2);
 }
 
-export async function HEAD(req: Request) {
-  try {
-    const pkt = await buildPacket(req);
-    return new NextResponse(null, {
-      status: 200,
-      headers: {
-        "Cache-Control": "no-store",
-        "X-PeakOps-GeneratedAt": pkt.generatedAt,
-        "X-PeakOps-PacketHash": pkt.packetHash,
-        "X-PeakOps-Zip-SHA256": pkt.zipSha,
-        "X-PeakOps-Zip-Size": String(pkt.zipSize),
-      },
-    });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
+async function getJsonSameOrigin(req: NextRequest, path: string): Promise<any> {
+  const url = new URL(req.url);
+  const u = `${url.origin}${path}`;
+  const r = await fetch(u, { method: "GET", cache: "no-store" });
+  const text = await r.text();
+  let j: any = null;
+  try { j = JSON.parse(text); } catch {
+    throw new Error(`non-json from ${path}: ${text.slice(0, 160)}`);
   }
+  if (!r.ok || j?.ok === false) {
+    throw new Error(j?.error || `HTTP ${r.status} from ${path}`);
+  }
+  return j;
 }
 
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
   try {
-    const pkt = await buildPacket(req);
-    const filename = `incident_${pkt.incidentId}_packet.zip`;
-    return new NextResponse(pkt.zipBytes, {
+    const u = new URL(req.url);
+    const orgId = u.searchParams.get("orgId") || "";
+    const incidentId = u.searchParams.get("incidentId") || "";
+    if (!orgId || !incidentId) {
+      return NextResponse.json({ ok: false, error: "missing orgId or incidentId" }, { status: 400 });
+    }
+
+    // Pull canonical sources (all same-origin /api/fn routes)
+    const bundle = await getJsonSameOrigin(req, `/api/fn/getIncidentBundleV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
+    const timeline = await getJsonSameOrigin(req, `/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`).catch(() => ({ ok: true, docs: [] }));
+    const workflow = await getJsonSameOrigin(req, `/api/fn/getWorkflowV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`).catch(() => ({ ok: true }));
+
+    // Packet meta (if present) gives us the canonical exportedAt + packetHash
+    const metaResp = await getJsonSameOrigin(req, `/api/fn/getIncidentPacketMetaV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`).catch(() => ({ ok: true, packetMeta: null }));
+    const packetMeta = metaResp?.packetMeta || null;
+
+    // Deterministic “generatedAt”:
+    // - if packetMeta.exportedAt exists, use it
+    // - else fixed epoch so ZIP sha stays stable during dev
+    const generatedAtIso = (packetMeta?.exportedAt || "2000-01-01T00:00:00.000Z") as string;
+    const fixedZipDate = new Date(generatedAtIso);
+
+    // Build canonical files
+    const files: Record<string, string> = {};
+    files["README.txt"] = [
+      "PEAKOPS Incident Packet",
+      `orgId=${orgId}`,
+      `incidentId=${incidentId}`,
+      `generatedAt=${generatedAtIso}`,
+      "",
+      "This packet is intended to be shareable + auditable.",
+    ].join("\n");
+
+    files["packet_meta.json"] = stableJson({
+      orgId,
+      incidentId,
+      generatedAt: generatedAtIso,
+      packetHash: packetMeta?.packetHash || null,
+      exportedAt: packetMeta?.exportedAt || null,
+      sizeBytes: packetMeta?.sizeBytes || null,
+      filingsCount: packetMeta?.filingsCount ?? (bundle?.filings?.length ?? null),
+      timelineCount: packetMeta?.timelineCount ?? (timeline?.docs?.length ?? null),
+      source: packetMeta?.source || "downloadIncidentPacketZip",
+    });
+
+    files["workflow.json"] = stableJson(workflow);
+    files["timeline/events.json"] = stableJson({ ok: true, orgId, incidentId, docs: timeline?.docs || [] });
+
+    files["contract/contract.json"] = stableJson(bundle?.contract || bundle?.incident || {});
+    files["filings/index.json"] = stableJson({
+      ok: true,
+      orgId,
+      incidentId,
+      filings: (bundle?.filings || []).map((f: any) => ({ id: f?.id, type: f?.type, status: f?.status, title: f?.title, updatedAt: f?.updatedAt })),
+    });
+
+    for (const f of (bundle?.filings || [])) {
+      const id = String(f?.id || "unknown");
+      files[`filings/${id}.json`] = stableJson(f);
+    }
+
+    // Hashes + manifest (stable ordering)
+    const paths = Object.keys(files).sort();
+    const hashes: Record<string, string> = {};
+    const manifest = { files: [] as Array<{ path: string; bytes: number; sha256: string }> };
+
+    for (const pth of paths) {
+      const content = files[pth];
+      const buf = Buffer.from(content, "utf8");
+      const h = sha256Hex(buf);
+      hashes[pth] = h;
+      manifest.files.push({ path: pth, bytes: buf.length, sha256: h });
+    }
+
+    files["hashes.json"] = stableJson(hashes);
+    files["manifest.json"] = stableJson(manifest);
+
+    // Deterministic packetHash: sha256(manifest.json + hashes.json)
+    const computedPacketHash = sha256Hex(files["manifest.json"] + "\n" + files["hashes.json"]);
+    const packetHash = packetMeta?.packetHash || computedPacketHash;
+
+    // Zip (stable timestamps)
+    const zip = new JSZip();
+    for (const pth of Object.keys(files).sort()) {
+      zip.file(pth, files[pth], { date: fixedZipDate });
+    }
+
+    const buf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+    const zipSha256 = sha256Hex(buf);
+
+    const res = new NextResponse(buf, {
       status: 200,
       headers: {
-        "Content-Type": "application/zip",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "no-store",
-        "X-PeakOps-GeneratedAt": pkt.generatedAt,
-        "X-PeakOps-PacketHash": pkt.packetHash,
-        "X-PeakOps-Zip-SHA256": pkt.zipSha,
-        "X-PeakOps-Zip-Size": String(pkt.zipSize),
+        "content-type": "application/zip",
+        "content-disposition": `attachment; filename="incident_${incidentId}_packet.zip"`,
+        "x-peakops-generatedat": generatedAtIso,
+        "x-peakops-packethash": packetHash,
+        "x-peakops-zip-sha256": zipSha256,
+        "x-peakops-zip-size": String(buf.length),
       },
     });
+    return res;
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
