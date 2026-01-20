@@ -60,7 +60,7 @@ if (incidentData.immutable === true && !force) {
     const nowTs = Timestamp.now();
 
     // Meta hash is derived from deterministic JSON (MVP). ZIP hash can come later.
-    const packet = { orgId, incidentId, exportedAt, incident, filings, timelineEvents };
+    const packet = { orgId, incidentId, exportedAt, incidentData, filings, timelineEvents };
     const packetJson = JSON.stringify(packet);
     const packetHash = sha256(packetJson);
     const sizeBytes = Buffer.byteLength(packetJson, "utf8");

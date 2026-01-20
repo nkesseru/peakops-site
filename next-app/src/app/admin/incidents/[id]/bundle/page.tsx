@@ -69,14 +69,8 @@ export default function BundlePage() {
 
   const orgId = String(sp.get("orgId") || "org_001");
   const incidentId = String(params?.id || "inc_TEST");
-  const contractId = String(sp.get("contractId") || "");
 
-  const [toasts, setToasts] = useState<{ id: string; msg: string; kind: ToastKind }[]>([]);
-  const [busyAction, setBusyAction] = useState<string>("");
-  const [err, setErr] = useState<string>("");
-
-
-  // BOOTSTRAP_BADGES_FIXED: hydrate meta + zip verification + immutable lock on mount / id change
+  // BOOTSTRAP_BADGES_V6: hydrate lock + zip verification + packet meta AFTER ids exist
   useEffect(() => {
     if (!orgId || !incidentId) return;
     void loadPacketMeta();
@@ -84,6 +78,12 @@ export default function BundlePage() {
     void hydrateLock();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, incidentId]);
+
+  const contractId = String(sp.get("contractId") || "");
+
+  const [toasts, setToasts] = useState<{ id: string; msg: string; kind: ToastKind }[]>([]);
+  const [busyAction, setBusyAction] = useState<string>("");
+  const [err, setErr] = useState<string>("");
   const [packetMeta, setPacketMeta] = useState<PacketMeta | null>(null);
 
   
