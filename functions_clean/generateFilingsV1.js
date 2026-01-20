@@ -23,6 +23,14 @@ exports.generateFilingsV1 = onRequest({ cors: true }, async (req, res) => {
 
     const incidentRef = db.collection("incidents").doc(incidentId);
     const snap = await incidentRef.get();
+
+    // IMMUTABILITY_GUARD_C2
+    const force = String((req.query && req.query.force) || (payload && payload.force) || (req.body && req.body.force) || "") === "1";
+    const incident = snap.exists ? (snap.data() || {}) : {};
+    if (incident.immutable === true && !force) {
+      return res.status(409).json({ ok: false, error: "IMMUTABLE: Incident is finalized" });
+    }
+
     if (!snap.exists) return res.status(404).json({ ok:false, error:"Incident not found" });
 
     const nowIso = new Date().toISOString();

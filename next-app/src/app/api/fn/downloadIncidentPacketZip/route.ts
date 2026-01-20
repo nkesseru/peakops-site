@@ -44,6 +44,8 @@ async function getJsonSameOrigin(req: NextRequest, path: string): Promise<any> {
 }
 
 export async function GET(req: NextRequest) {
+
+  const generatedAt = new Date().toISOString();
   try {
     const u = new URL(req.url);
     const orgId = u.searchParams.get("orgId") || "";
@@ -64,7 +66,7 @@ export async function GET(req: NextRequest) {
     // Deterministic “generatedAt”:
     // - if packetMeta.exportedAt exists, use it
     // - else fixed epoch so ZIP sha stays stable during dev
-    const generatedAtIso = (packetMeta?.exportedAt || "2000-01-01T00:00:00.000Z") as string;
+    const generatedAtIso = (packetMeta?.exportedAt || "" + new Date().toISOString() + "") as string;
     const fixedZipDate = new Date(generatedAtIso);
 
     // Build canonical files
@@ -76,7 +78,7 @@ export async function GET(req: NextRequest) {
       `generatedAt=${generatedAtIso}`,
       "",
       "This packet is intended to be shareable + auditable.",
-    ].join("\n");
+    ].join("");
 
     files["packet_meta.json"] = stableJson({
       orgId,
@@ -123,7 +125,7 @@ export async function GET(req: NextRequest) {
     files["manifest.json"] = stableJson(manifest);
 
     // Deterministic packetHash: sha256(manifest.json + hashes.json)
-    const computedPacketHash = sha256Hex(files["manifest.json"] + "\n" + files["hashes.json"]);
+    const computedPacketHash = sha256Hex(files["manifest.json"] + "" + files["hashes.json"]);
     const packetHash = packetMeta?.packetHash || computedPacketHash;
 
     // Zip (stable timestamps)

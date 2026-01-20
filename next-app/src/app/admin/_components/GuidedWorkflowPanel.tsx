@@ -216,14 +216,19 @@ const { orgId, incidentId } = props;
     }
   }, [histKey]);
 
-
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>("");
-
+  const workflowMissingDerived = !!(err && (String(err).includes("getWorkflowV1") || String(err).includes("does not exist") || String(err).includes("HTTP 404") || String(err).includes("Function us-central1-getWorkflowV1") || String(err).includes("proxyGET failed") || String(err).includes("fetch failed")));
   const [wf, setWf] = useState<Workflow | null>(null);
 
-  const [autoLevel, setAutoLevel] = useState<AutoLevel>("");
+  /*__MANUAL_MODE_DERIVED_STATUS__*/
+  // Derived flags (declare once, after wf exists)
+  const effectiveCanonical = Boolean((wf?.steps || []).find((x: any) => x?.key === "export_packet")?.status === "DONE");
+  const effectiveZipVerified = Boolean((wf?.steps || []).find((x: any) => x?.key === "verify_zip")?.status === "DONE");
 
+  // Derived flags (declare once, after wf exists)
+
+  const [autoLevel, setAutoLevel] = useState<AutoLevel>("");
 
 /*__TIMELINE_AUTO_WIRE_V1__*/
 type TimelineEvent = {
@@ -295,7 +300,7 @@ useEffect(() => {
       const parsed = safeParseJson(text);
       if (!parsed.ok) {
         const sample = text.slice(0, 140).replace(/\s+/g, " ");
-        throw new Error(`Workflow API returned non-JSON (HTTP ${r.status}): ${parsed.error} — ${sample}`);
+        throw new Error(`Workflow engine not active yet (manual mode) (HTTP ${r.status}): ${parsed.error} — ${sample}`);
       }
 
       const j = parsed.value;
@@ -328,7 +333,7 @@ useEffect(() => {
     };
 
     try {
-      // Baseline + meta signals via incident bundle
+      // Baseline + meta signals via undefined bundle
       const bUrl =
         `/api/fn/getIncidentBundleV1?orgId=${encodeURIComponent(orgId)}` +
         `&incidentId=${encodeURIComponent(incidentId)}`;
@@ -337,15 +342,15 @@ useEffect(() => {
       const bParsed = safeParseJson(bTxt || "");
       const bundle = bParsed.ok ? bParsed.value : null;
 
-      const incident = bundle?.incident || bundle?.doc || bundle?.data || null;
+      const undefined = bundle?.undefined || bundle?.doc || bundle?.data || null;
 
-      const title = String(incident?.title || "").trim();
-      const startTime = incident?.startTime || incident?.createdAt || null;
+      const title = String(undefined?.title || "").trim();
+      const startTime = undefined?.startTime || undefined?.createdAt || null;
       out.baselineOk = !!(incidentId && title && startTime);
       out.notes.push(out.baselineOk ? "Baseline OK: title + startTime present." : "Baseline missing: add title + startTime (Intake).");
 
       // Timeline check: meta or events exist
-      const timelineMeta = bundle?.timelineMeta || incident?.timelineMeta || null;
+      const timelineMeta = bundle?.timelineMeta || undefined?.timelineMeta || null;
       const eventCount = Number(timelineMeta?.eventCount || 0);
       if (eventCount > 0) {
         out.timelineOk = true;
@@ -363,13 +368,13 @@ useEffect(() => {
       }
 
       // Filings check: filingsMeta or filings array
-      const filingsMeta = incident?.filingsMeta || null;
+      const filingsMeta = undefined?.filingsMeta || null;
       const filings = Array.isArray(bundle?.filings) ? bundle.filings : [];
       out.filingsOk = !!(filingsMeta?.generatedAt || filings.length > 0);
       out.notes.push(out.filingsOk ? `Filings OK: ${filings.length || "meta"} present.` : "Filings missing: run Generate Filings.");
 
-      // Packet check: packetMeta present on incident (earned export)
-      const packetMeta = incident?.packetMeta || bundle?.packetMeta || null;
+      // Packet check: packetMeta present on undefined (earned export)
+      const packetMeta = undefined?.packetMeta || bundle?.packetMeta || null;
       out.packetOk = !!(packetMeta?.packetHash || packetMeta?.hash);
       out.notes.push(out.packetOk ? "Packet OK: packetMeta present." : "Packet not ready yet (run Export Packet).");
 
@@ -415,6 +420,12 @@ useEffect(() => {
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
         <div>
           <div style={{ fontWeight: 950 }}>Guided Workflow</div>
+
+{workflowMissingDerived && (
+  <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 12, background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.25)", fontSize: 12 }}>
+    Workflow engine not active yet — running in manual mode. (This is OK in dev.)
+  </div>
+)}
           <div style={{ fontSize: 12, opacity: 0.75 }}>
             {steps.length} steps · {donePct}% complete
           </div>
@@ -483,7 +494,7 @@ useEffect(() => {
         </div>
       )}
 
-      {err && (
+      {err && !workflowMissingDerived && (
         <div style={{ marginTop: 10, color: "crimson", fontWeight: 900 }}>
           {err}
         </div>

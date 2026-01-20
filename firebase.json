@@ -1,10 +1,29 @@
 {
-  "functions": { "source": "functions_clean" },
+  "functions": [
+    {
+      "source": "functions_clean"
+    }
+  ],
   "emulators": {
-    "functions": { "host": "127.0.0.1", "port": 5001 },
-    "firestore": { "host": "127.0.0.1", "port": 8080 },
-    "hub": { "host": "127.0.0.1", "port": 4400 },
-    "ui": { "host": "127.0.0.1", "port": 4000 },
-    "logging": { "host": "127.0.0.1", "port": 4500 }
+    "functions": {
+      "host": "127.0.0.1",
+      "port": 5001
+    },
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8080
+    },
+    "hub": {
+      "host": "127.0.0.1",
+      "port": 4400
+    },
+    "ui": {
+      "host": "127.0.0.1",
+      "port": 4000
+    },
+    "logging": {
+      "host": "127.0.0.1",
+      "port": 4500
+    }
   }
 }

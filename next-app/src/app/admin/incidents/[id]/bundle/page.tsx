@@ -75,7 +75,18 @@ export default function BundlePage() {
   const [busyAction, setBusyAction] = useState<string>("");
   const [err, setErr] = useState<string>("");
 
+
+  // BOOTSTRAP_BADGES_FIXED: hydrate meta + zip verification + immutable lock on mount / id change
+  useEffect(() => {
+    if (!orgId || !incidentId) return;
+    void loadPacketMeta();
+    void hydrateZipVerification();
+    void hydrateLock();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, incidentId]);
   const [packetMeta, setPacketMeta] = useState<PacketMeta | null>(null);
+
+  
 
 
   // Bootstrap: keep badges sticky across hard refresh
@@ -91,13 +102,10 @@ export default function BundlePage() {
 
   
 
-  // BOOTSTRAP_BADGES: hydrate meta + zip verification + immutable lock on every mount / id change
-  useEffect(() => {
-    void loadPacketMeta();
-    void hydrateZipVerification();
-    void hydrateLock();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgId, incidentId]);
+
+  
+
+  
 
 const [manifestBusy, setManifestBusy] = useState<boolean>(false);
   const [manifestItems, setManifestItems] = useState<FileRow[]>([]);
@@ -273,8 +281,6 @@ async function hydrateZipVerification() {
   }
 
 
-
-
   async function handleCopyHash() {
     const h = packetMeta?.packetHash;
     if (!h) return pushToast("No packetHash yet.", "warn");
@@ -419,7 +425,6 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
   for (const b of bytes) out += b.toString(16).padStart(2, "0");
   return out;
 }
-
 
 
   async function loadManifestFromZip() {
@@ -629,7 +634,7 @@ void hydrateZipVerification();
               path · bytes · sha256
             </div>
             <pre style={{ fontSize: 12, opacity: 0.9, whiteSpace: "pre-wrap" }}>
-{manifestItems.map((f) => `${f.ok ? "✓" : "—"} ${f.path}  ${f.bytes ?? "?"}  ${f.sha256 ?? "—"}`).join("\n")}
+{manifestItems.map((f) => `${f.ok ? "✓" : "—"} ${f.path}  ${f.bytes ?? "?"}  ${f.sha256 ?? "—"}`).join("")}
             </pre>
           </div>
         )}

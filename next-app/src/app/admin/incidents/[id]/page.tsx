@@ -25,6 +25,24 @@ function btn(primary: boolean): React.CSSProperties {
 }
 
 
+  async function handleCreateIncidentV1() {
+    try {
+      const r = await fetch("/api/fn/createIncidentV1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orgId, title: "New Incident" }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!j?.ok) throw new Error(j?.error || `Create failed (HTTP ${r.status})`);
+      const newId = j.incidentId;
+      window.location.href = `/admin/incidents/${encodeURIComponent(newId)}?orgId=${encodeURIComponent(orgId)}`;
+    } catch (e: any) {
+      alert(String(e?.message || e));
+    }
+  }
+
+
+
 function isImmutable409(status: number, bodyText: string) {
   return status === 409 && (bodyText || "").includes("IMMUTABLE");
 }
@@ -187,6 +205,9 @@ export default function AdminIncidentDetail() {
   <BackendBadge orgId={orgId} incidentId={incidentId} />
   <button style={pill(false)} onClick={load} disabled={busy}>
           {busy ? "Loading…" : "Refresh"}
+        </button>
+        <button style={pill(false)} onClick={handleCreateIncidentV1}>
+          + Create New Incident
         </button>
 </div>
       </div>

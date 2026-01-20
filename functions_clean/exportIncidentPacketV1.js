@@ -25,6 +25,16 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     const incidentSnap = await incidentRef.get();
 
+// IMMUTABILITY_GUARD_C2
+const incidentData = incidentSnap.exists ? (incidentSnap.data() || {}) : {};
+
+if (incidentData.immutable === true && !force) {
+  return res.status(409).json({
+    ok: false,
+    error: "IMMUTABLE: Incident is finalized"
+  });
+}
+
     // --- IMMUTABLE EXPORT (write-once) ---
     const existingMeta = incidentSnap.exists ? (incidentSnap.data()?.packetMeta || null) : null;
     if (!force && existingMeta && (existingMeta.packetHash || existingMeta.exportedAt || existingMeta.sizeBytes)) {
@@ -38,8 +48,6 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     }
 
     if (!incidentSnap.exists) return send(res, 404, { ok: false, error: "Incident not found" });
-
-    const incident = { id: incidentSnap.id, ...incidentSnap.data() };
 
     // Canonical collections
     const filingsSnap = await incidentRef.collection("filings").get();
