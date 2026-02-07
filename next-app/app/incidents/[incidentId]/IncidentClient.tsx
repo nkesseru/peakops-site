@@ -1,0 +1,1297 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { outboxFlushSupervisorRequests } from "@/lib/offlineOutbox";
+import { useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
+import AddEvidenceButton from "@/components/evidence/AddEvidenceButton";
+import FilingCountdown from "@/components/incident/FilingCountdown";
+import NextBestAction from "@/components/incident/NextBestAction";
+import TimelinePanel from "@/components/incident/TimelinePanel";
+
+type EvidenceDoc = {
+  id: string;
+  phase?: string;
+  labels?: string[];
+  storedAt?: { _seconds: number };
+  createdAt?: { _seconds: number };
+  file?: { originalName?: string; storagePath?: string; contentType?: string };
+  sessionId?: string;
+  notes?: string;
+};
+
+type TimelineDoc = {
+  id: string;
+  type: string;
+  actor?: string;
+  refId?: string | null;
+  sessionId?: string;
+  occurredAt?: { _seconds: number };
+  meta?: any;
+  gps?: any;
+};
+
+function fmtAgo(sec?: number) {
+  if (!sec) return "—";
+  const now = Date.now() / 1000;
+  const d = Math.max(0, Math.floor(now - sec));
+  if (d < 60) return `${d}s`;
+  if (d < 3600) return `${Math.floor(d / 60)}m`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h`;
+  return `${Math.floor(d / 86400)}d`;
+}
+
+function prettyType(t: string) {
+  const m: Record<string, string> = {
+    NOTES_SAVED: "Notes saved",
+    EVIDENCE_ADDED: "Evidence secured",
+    FIELD_ARRIVED: "Arrived on site",
+    FIELD_APPROVED: "Supervisor approved",
+    MATERIAL_ADDED: "Material logged",
+    INCIDENT_OPENED: "Incident opened",
+    SESSION_STARTED: "Field session started",
+    DEBUG_EVENT: "Debug event",
+  };
+  return m[t] || t.replace(/_/g, " ").toLowerCase().replace(/(^|\s)\S/g, (x) => x.toUpperCase());
+}
+
+function iconFor(t: string) {
+  const m: Record<string, string> = {
+    NOTES_SAVED: "Notes saved",
+    EVIDENCE_ADDED: "📸",
+    FIELD_ARRIVED: "✅",
+    FIELD_APPROVED: "🛡️",
+    MATERIAL_ADDED: "🧱",
+    INCIDENT_OPENED: "⚡",
+    SESSION_STARTED: "🧑‍🔧",
+    DEBUG_EVENT: "🧪",
+  };
+  return m[t] || "•";
+}
+
+function normLabel(l: string) {
+  return String(l || "").trim().toUpperCase();
+}
+
+function tileClassByCount(n: number) {
+  // Auto size tiles by count (mobile-first)
+  // 1 = hero tile, 2 = large tiles, 3-4 = normal, 5+ = compact
+  if (n <= 1) return "w-[300px] sm:w-[360px]";
+  if (n == 2) return "w-[220px] sm:w-[260px]";
+  if (n <= 4) return "w-[160px] sm:w-[180px]";
+  return "w-[130px] sm:w-[150px]";
+}
+
+function labelChipColor(label: string) {
+  const L = normLabel(label);
+  // Cohesive system chips: dark base + subtle tint + quiet borders
+  if (L === "DAMAGE") return "bg-red-500/12 border-red-400/20 text-red-200";
+  if (L === "SAFETY") return "bg-amber-400/12 border-amber-300/25 text-amber-200";
+  if (L === "DOCS") return "bg-sky-400/12 border-sky-300/25 text-sky-200";
+  return "bg-white/6 border-white/12 text-gray-200";
+}
+
+function chipClass(kind: "actor" | "session" | "meta" = "meta") {
+  if (kind === "actor") return "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-200";
+  if (kind === "session") return "px-2 py-0.5 rounded-full bg-black/40 border border-white/10 text-gray-300";
+  return "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-300";
+}
+
+async function postJson<T>(url: string, body: any): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const txt = await res.text();
+  if (!res.ok) throw new Error(`POST ${url} -> ${res.status} ${txt}`);
+  return JSON.parse(txt) as T;
+}
+
+export default function IncidentClient({ incidentId }: { incidentId: string }) {
+  // PEAKOPS_NOTES_SAVED_FOCUS: re-check when user returns from Notes page
+  useEffect(() => {
+    try { outboxFlushSupervisorRequests(); } catch {}
+
+    const onFocus = () => syncNotesSavedLocal();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [incidentId]);
+
+  const [arrived, setArrived] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+// PHASE7_2_REQUPDATE_SYNC_V1
+
+  const [arriving, setArriving] = useState(false);
+  // toast (tiny UX feedback)
+const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const toast = (msg: string, ms = 2200) => {
+    setToastMsg(msg);
+    // @ts-ignore
+    window.clearTimeout((toast as any)._t);
+    // @ts-ignore
+    (toast as any)._t = window.setTimeout(() => setToastMsg(null), ms);
+  };
+
+  // V6_SESSION_HELPERS__WIRE
+  async function markArrived() {
+    const sid = String(activeSessionId || "").trim();
+    if (!sid) return toast("No active session yet — add evidence first.", 3000);
+    try {
+      setArriving(true);
+    // OPTIMISTIC_FIELD_ARRIVED: instant UI feedback (reverted on failure)
+    const __optId = "opt_arrived_" + Date.now();
+    const __sid = String(activeSessionId || "").trim();
+    if (__sid) {
+      setTimeline((prev: any) => ([
+        {
+          id: __optId,
+          type: "FIELD_ARRIVED",
+          actor: "ui",
+          sessionId: __sid,
+          occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
+          refId: null,
+          meta: { optimistic: true }
+        },
+        ...(Array.isArray(prev) ? prev : [])
+      ]));
+    }
+
+      const out: any = await postJson(functionsBase + "/markArrivedV1", {
+        orgId,
+        incidentId,
+        sessionId: sid,
+        updatedBy: "ui",
+      });
+      if (!out?.ok) throw new Error(out?.error || "markArrived failed");
+      setArrived(true);
+      toast("Arrived ✓", 1500);
+    } catch (e: any) {
+      // OPTIMISTIC_FIELD_ARRIVED revert
+      try { setTimeline((prev: any) => (Array.isArray(prev) ? prev.filter((x:any) => x?.id !== __optId) : prev)); } catch {}
+
+      const msg = (e && (e.message || String(e))) || "markArrived failed";
+      toast("Arrive failed: " + msg, 3500);
+    } finally {
+      setArriving(false);
+    }
+  }
+
+  async function submitSession() {
+    const sid = String(activeSessionId || "").trim();
+    if (!sid) return toast("No active session yet — add evidence first.", 3000);
+    const ok = window.confirm("Submit this session? This locks the field visit for supervisor review.");
+    if (!ok) return;
+    try {
+      setSubmitting(true);
+      const out: any = await postJson(functionsBase + "/submitFieldSessionV1", {
+        orgId,
+        incidentId,
+        sessionId: sid,
+        updatedBy: "ui",
+      });
+      if (!out?.ok) throw new Error(out?.error || "submit failed");
+      toast("Session submitted ✓", 2200);
+    } catch (e: any) {
+      const msg = (e && (e.message || String(e))) || "submit failed";
+      toast("Submit failed: " + msg, 3500);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const router = useRouter();
+  const orgId = "org_001";
+  const functionsBase = process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "";
+
+  // Evidence + Timeline
+  const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
+  const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
+
+  
+    
+  // PEAKOPS_V2_EVIDENCE_CAPTIONS: local-only evidence naming (v2). Persist later in Firestore.
+  // PEAKOPS_V2_CAPTION_WRAPPERS_V1
+  // Some parts of the UI call getCaption/setCaption; keep these stable wrappers.
+  const getCaption = (eid: string) => {
+    try {
+      const id = String(eid || "").trim();
+      if (!id) return "";
+      // Prefer in-memory map if present
+      try {
+        // @ts-ignore
+        if (typeof evCaption === "object" && evCaption && (id in evCaption)) return String(evCaption[id] || "");
+      } catch {}
+      // Fall back to localStorage loader if present
+      try {
+        // @ts-ignore
+        if (typeof loadCaption === "function") return String(loadCaption(id) || "");
+      } catch {}
+      return "";
+    } catch {
+      return "";
+    }
+  };
+
+  const setCaption = (eid: string, v: string) => {
+    try {
+      const id = String(eid || "").trim();
+      if (!id) return;
+      const val = String(v || "");
+      // Prefer your existing persistence helper if present
+      try {
+        // @ts-ignore
+        if (typeof saveCaption === "function") { saveCaption(id, val); return; }
+      } catch {}
+      // Fall back to updating state map if present
+      try {
+        // @ts-ignore
+        if (typeof setEvCaption === "function") {
+          setEvCaption((m: any) => ({ ...(m || {}), [id]: val }));
+        }
+      } catch {}
+    } catch {}
+  };
+  const [evCaption, setEvCaption] = useState<Record<string, string>>({});
+  const loadCaption = (eid: string) => {
+    try { return localStorage.getItem("peakops_ev_caption_" + String(eid)) || ""; } catch { return ""; }
+  };
+  const saveCaption = (eid: string, v: string) => {
+    try { localStorage.setItem("peakops_ev_caption_" + String(eid), String(v || "")); } catch {}
+    setEvCaption((m) => ({ ...m, [String(eid)]: String(v || "") }));
+  };
+// PEAKOPS_NOTES_SAVED_SYNC: allow Notes page to flip readiness instantly via localStorage
+  const [notesSavedLocal, setNotesSavedLocal] = useState<boolean>(false);
+
+  const syncNotesSavedLocal = () => {
+    try {
+      const k = "peakops_notes_saved_" + String(incidentId);
+      const v = localStorage.getItem(k);
+      setNotesSavedLocal(!!v);
+    } catch {
+      // ignore
+    }
+  };
+// Global hook for cross-page optimistic events (e.g., Notes → NOTEs_SAVED)
+  useEffect(() => {
+    try {
+      (window as any).__PEAKOPS_ADD_TIMELINE__ = (evt: any) => {
+        try {
+          if (!evt || !evt.type) return;
+          setTimeline((prev: any) => {
+            const arr = Array.isArray(prev) ? prev : [];
+            // de-dupe by id if present
+            if (evt.id && arr.some((x:any) => x?.id === evt.id)) return arr;
+            return [evt, ...arr];
+          });
+        } catch {}
+      };
+      return () => { try { delete (window as any).__PEAKOPS_ADD_TIMELINE__; } catch {} };
+    } catch {}
+  }, []);
+// V6_SESSION_HELPERS__START
+  // Derive sessionId from current state (no TDZ). Prefer latest evidence sessionId.
+  const getActiveSessionId = () => {
+    const evSid = (Array.isArray(evidence) && evidence.length ? (evidence[0] as any)?.sessionId : "") || "";
+    const tlSid = (Array.isArray(timeline) && timeline.length ? (timeline[0] as any)?.sessionId : "") || "";
+    return String(evSid || tlSid || "").trim();
+  };
+
+  const v6MarkArrived = async () => {
+    try {
+      setArriving(true);
+      const sid = getActiveSessionId();
+      if (!sid) throw new Error("sessionId missing — add evidence / start a session first.");
+      const out: any = await postJson(`${functionsBase}/markArrivedV1`, {
+        orgId,
+        incidentId,
+        sessionId: sid,
+        updatedBy: "ui",
+      });
+      if (!out?.ok) throw new Error(out?.error || "markArrived failed");
+      setArrived(true);
+      toast("Arrived ✓", 1500);
+    } catch (e: any) {
+      const msg = (e && (e.message || String(e))) || "markArrived failed";
+      toast(`Arrive failed: ${msg}`, 3500);
+    } finally {
+      setArriving(false);
+    }
+  };
+
+  const v6SubmitSession = async () => {
+    try {
+      setSubmitting(true);
+      const sid = getActiveSessionId();
+      if (!sid) throw new Error("sessionId missing — add evidence / start a session first.");
+      const out: any = await postJson(`${functionsBase}/submitFieldSessionV1`, {
+        orgId,
+        incidentId,
+        sessionId: sid,
+        updatedBy: "ui",
+      });
+      if (!out?.ok) throw new Error(out?.error || "submit failed");
+      toast("Session submitted ✓", 2000);
+    } catch (e: any) {
+      const msg = (e && (e.message || String(e))) || "submit failed";
+      toast(`Submit failed: ${msg}`, 3500);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  // V6_SESSION_HELPERS__END
+
+  // V6_SESSION_STATE__ACTIVE
+  const [activeSessionId, setActiveSessionId] = useState<string>(" ".trim());
+
+  // V6_SESSION_DETECT__EVID_TL
+  useEffect(() => {
+    if ((activeSessionId || "").trim()) return;
+    const sid =
+      (Array.isArray(evidence) && evidence[0] && (evidence[0] as any).sessionId) ||
+      (Array.isArray(timeline) && timeline[0] && (timeline[0] as any).sessionId) ||
+      "";
+    if (sid) setActiveSessionId(String(sid));
+  }, [activeSessionId, evidence, timeline]);
+
+  const [loading, setLoading] = useState(false);
+  const [hi, setHi] = useState<string | null>(null);
+  const [dataStatus, setDataStatus] = useState<"live" | "error">("live");
+
+  // Thumbnails (evidenceId -> signed url)
+  const [thumbUrl, setThumbUrl] = useState<Record<string, string>>({});
+
+  // PEAKOPS_THUMBS_C2_V1: per-evidence thumb error flag
+  const [thumbErr, setThumbErr] = useState<Record<string, boolean>>({});
+
+  // Modal preview
+  const [previewUrl, setPreviewUrl] = useState<string>("");
+  const [previewName, setPreviewName] = useState<string>("");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string>("");
+  // PHASE5A_REQUEST_UPDATE_BANNER_V1
+  // PHASE7_2_REQUPDATE_SYNC_V1
+  // Supervisor "Request update" note:
+  // - Server truth via GET/DELETE /api/supervisor-request
+  // - Offline fallback via localStorage
+  // - Outbox flush on mount (ReviewClient writes outbox; IncidentClient just reads)
+
+  const [reqUpdateText, setReqUpdateText] = useState<string>("");
+  const reqUpdateKey = "peakops_review_request_" + String(incidentId || "");
+
+  const loadReqUpdate = async () => {
+    // Server truth
+    try {
+      const id = String(incidentId || "").trim();
+      if (id) {
+        const res = await fetch("/api/supervisor-request?incidentId=" + encodeURIComponent(id), { method: "GET" });
+        if (res.ok) {
+          const j: any = await res.json().catch(() => ({}));
+          const msg = String(j?.message || j?.requestUpdate?.message || "").trim();
+          if (msg) {
+            try { localStorage.setItem(reqUpdateKey, msg); } catch {}
+            setReqUpdateText(msg);
+            return;
+          }
+        }
+      }
+    } catch {}
+
+    // Offline fallback
+    try {
+      const v = localStorage.getItem(reqUpdateKey);
+      if (v) setReqUpdateText(String(v));
+    } catch {}
+  };
+
+  const clearReqUpdate = async () => {
+    // Try server clear
+    try {
+      const id = String(incidentId || "").trim();
+      if (id) {
+        await fetch("/api/supervisor-request", {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ incidentId: id, actor: { role: "field" } }),
+        });
+      }
+    } catch {}
+    try { localStorage.removeItem(reqUpdateKey); } catch {}
+    setReqUpdateText("");
+  };
+
+  // Load on mount + when incident changes
+  useEffect(() => {
+    try { outboxFlushSupervisorRequests(); } catch {}
+    try { loadReqUpdate(); } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentId]);
+
+
+const [contextLockId, setContextLockId] = useState<string | null>(null);
+// PEAKOPS_UX_TOAST_V1
+
+  // Jump helper used by TimelinePanel (must be in component scope)
+      // PEAKOPS_JUMP_CENTER_LOCKED_V2
+  const jumpToEvidence = (eid: string) => {
+    try {
+      const id = String(eid || "").trim();
+      if (!id) return;
+
+      // highlight immediately
+      setSelectedEvidenceId(id);
+
+      // PHASE4_2_CONTEXT_LOCK_V1
+      try {
+        setContextLockId(id);
+        window.setTimeout(() => { try { setContextLockId(null); } catch {} }, 800);
+      } catch {}
+
+
+      // A) Vertical: bring Evidence section into view (not top)
+      try {
+        const anchor = document.getElementById("evidence");
+        if (anchor && "scrollIntoView" in anchor) {
+          (anchor as any).scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      } catch {}
+
+      // B) Horizontal: after layout settles, CENTER the tile in the scroller
+      window.setTimeout(() => {
+        try {
+          const scroller = document.getElementById("evidenceScroller") as HTMLElement | null;
+          const tile = document.querySelector('[data-ev-id="' + id + '"]') as HTMLElement | null;
+          if (!tile) return;
+
+          if (scroller) {
+            const prevSnap = scroller.style.scrollSnapType || "";
+            const prevPadL = (scroller.style.scrollPaddingLeft || "");
+            const prevPadR = (scroller.style.scrollPaddingRight || "");
+            const prevAlign = (tile.style as any).scrollSnapAlign || "";
+
+            // Temporarily disable snap + add scroll-padding so "inline:center" can actually center
+            try { scroller.style.scrollSnapType = "none"; } catch {}
+
+            try {
+              const pad = Math.max(0, (scroller.clientWidth / 2) - (tile.offsetWidth / 2));
+              scroller.style.scrollPaddingLeft = pad + "px";
+              scroller.style.scrollPaddingRight = pad + "px";
+            } catch {}
+
+            // Force selected tile to prefer center snapping (while we center)
+            try { (tile.style as any).scrollSnapAlign = "center"; } catch {}
+
+            // Let browser do the centering (more reliable than manual math w/ snap)
+            try {
+              tile.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+            } catch {}
+
+            // Restore styles after it lands
+            window.setTimeout(() => {
+              try { scroller.style.scrollSnapType = prevSnap; } catch {}
+              try { scroller.style.scrollPaddingLeft = prevPadL; } catch {}
+              try { scroller.style.scrollPaddingRight = prevPadR; } catch {}
+              try { (tile.style as any).scrollSnapAlign = prevAlign; } catch {}
+            }, 550);
+          } else {
+            // fallback: still try to center
+            try { tile.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" }); } catch {}
+          }
+        } catch {}
+      }, 180);
+    } catch {}
+};
+// PHASE4_1_KEYNAV_V1
+  useEffect(() => {
+    if (!selectedEvidenceId) return;
+    if (previewOpen) return;
+
+    const onKey = (e: KeyboardEvent) => {
+      const k = e.key;
+      if (k !== "ArrowLeft" && k !== "ArrowRight" && k !== "Escape") return;
+
+      try { e.preventDefault(); } catch {}
+
+      if (k === "Escape") {
+        setSelectedEvidenceId("");
+        return;
+      }
+
+      const idx = (evidence || []).findIndex((ev: any) => String(ev?.id || "") === String(selectedEvidenceId || ""));
+      if (idx < 0) return;
+
+      const nextIdx = k === "ArrowRight"
+        ? Math.min(idx + 1, (evidence || []).length - 1)
+        : Math.max(idx - 1, 0);
+
+      const next = (evidence || [])[nextIdx];
+      if (!next || !next.id) return;
+
+      setSelectedEvidenceId(next.id);
+      jumpToEvidence(String(next.id));
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => {
+      try { window.removeEventListener("keydown", onKey); } catch {}
+    };
+  }, [selectedEvidenceId, previewOpen, evidence]);
+
+  const evidenceCount = evidence.length;
+  const latestEvidenceSec = evidence?.[0]?.storedAt?._seconds || evidence?.[0]?.createdAt?._seconds;
+  const lastActivity = useMemo(() => fmtAgo(latestEvidenceSec), [latestEvidenceSec]);
+
+  // NOTE: match your actual bucket (this is the one you configured CORS for)
+  const evidenceBucket = "peakops-evidence-peakops-pilot-20251028065848";
+
+  async function refresh() {
+    if (!functionsBase) return;
+    setLoading(true);
+
+    try {
+      // Evidence (GET-only)
+      const evUrl =
+        `${functionsBase}/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}` +
+        `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
+      const ev = await fetch(evUrl).then((r) => r.json());
+
+      if (ev?.ok && Array.isArray(ev.docs)) {
+        setEvidence(ev.docs);
+        
+      prefetchThumbs(ev.docs);
+      // PHASE3_THUMBS_RETRY_SCHEDULED: re-try failed thumbs once
+      try { window.setTimeout(() => { try { retryThumbsOnce(ev.docs); } catch {} }, 1200); } catch {}
+        
+
+      // PEAKOPS_THUMBS_RETRY_EFFECT_V1
+      // Retry failed thumbs once after a short delay (keeps the rail feeling “alive”)
+      setTimeout(() => {
+        try {
+          const latest = (ev.docs || []).filter((x:any) => x?.file?.storagePath).slice(0, 7);
+          latest.forEach((x:any) => {
+            const id = String(x?.id || "");
+            if (!id) return;
+            if (thumbErr?.[id]) {
+              // clear the error so prefetchThumbs will try again
+              setThumbErr((m:any) => ({ ...m, [id]: false }));
+            }
+          });
+          retryThumbs(latest);
+        } catch {}
+      }, 800);
+
+if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId)) {
+          setSelectedEvidenceId("");
+        }
+      }
+
+      // Timeline (GET-only)
+      const tlUrl =
+        `${functionsBase}/getTimelineEventsV1?orgId=${encodeURIComponent(orgId)}` +
+        `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
+      const tl = await fetch(tlUrl).then((r) => r.json());
+
+      if (tl?.ok && Array.isArray(tl.docs)) {
+        const docs: TimelineDoc[] = tl.docs.slice();
+        docs.sort((a, b) => (b.occurredAt?._seconds || 0) - (a.occurredAt?._seconds || 0));
+        setTimeline(docs.filter((x) => x.type !== "DEBUG_EVENT"));
+      }
+
+      setDataStatus("live");
+    } catch (e) {
+      console.error("refresh failed", e);
+      setDataStatus("error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Prefetch signed thumbnail URLs for latest 12 evidence items
+  async function prefetchThumbs(latest: EvidenceDoc[]) {
+    if (!functionsBase) return;
+    const want = latest.filter((x) => x.file?.storagePath).slice(0, 7);
+
+    await Promise.all(
+      want.map(async (ev) => {
+        if (thumbUrl[ev.id]) return;
+
+        try {
+          const storagePath = ev.file!.storagePath!;
+          const resp = await postJson<{ ok: boolean; url?: string; error?: string }>(
+            `${functionsBase}/createEvidenceReadUrlV1`,
+            { orgId, incidentId, storagePath, bucket: evidenceBucket, expiresSec: 900 }
+          );
+          if (resp?.ok && resp.url) {
+            setThumbUrl((m) => ({ ...m, [ev.id]: resp.url! }));
+          
+            setThumbErr((m) => ({ ...m, [ev.id]: false }));
+}
+        } catch (e) {
+          console.warn("thumb prefetch failed", ev.id, e);
+        
+          setThumbErr((m) => ({ ...m, [ev.id]: true }));
+}
+      })
+    );
+  }
+
+  // PEAKOPS_THUMBS_RETRY_HELPER_V1
+  // One-shot retry (keeps single prefetch call site).
+  async function retryThumbs(latest: EvidenceDoc[]) {
+    try {
+      if (!functionsBase) return;
+      const arr = Array.isArray(latest) ? latest : [];
+      const want = arr
+        .filter((x: any) => !!x?.file?.storagePath)
+        .slice(0, 7);
+
+      // Only retry ones that previously failed (thumbErr[id] true) OR still missing thumbUrl.
+      for (const ev of want) {
+        const id = String((ev as any)?.id || "");
+        const sp = String((ev as any)?.file?.storagePath || "");
+        if (!id || !sp) continue;
+
+        const hadErr = !!(thumbErr as any)?.[id];
+        const hasUrl = !!(thumbUrl as any)?.[id];
+        if (!hadErr && hasUrl) {
+            continue;
+          }
+          continue
+
+        try {
+          const resp: any = await postJson(
+            `${functionsBase}/createEvidenceReadUrlV1`,
+            { orgId, incidentId, storagePath: sp, bucket: evidenceBucket, expiresSec: 900 }
+          );
+
+          if (resp?.ok && resp.url) {
+            setThumbUrl((m: any) => ({ ...m, [id]: resp.url }));
+            setThumbErr((m: any) => ({ ...m, [id]: false }));
+          } else {
+            setThumbErr((m: any) => ({ ...m, [id]: true }));
+          }
+        } catch {
+          setThumbErr((m: any) => ({ ...m, [id]: true }));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    
+    syncNotesSavedLocal();
+const t = setInterval(refresh, 60000);
+
+  // === ZIP PACK v3: micro-feedback helpers ===
+
+  function pulseEvidenceTile(eid: string) {
+    const el = document.querySelector(`[data-ev-id="${eid}"]`);
+    if (!el) return;
+    el.classList.add("ring-2", "ring-amber-300/40");
+    setTimeout(() => {
+      el.classList.remove("ring-2", "ring-amber-300/40");
+    }, 1200);
+  }
+
+  function scrollToId(id: string) {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // === ZIP PACK v3: button system ===
+  const CTA = {
+    primary:
+      "w-full py-4 rounded-xl text-lg font-semibold " +
+      "bg-gradient-to-r from-amber-500 to-slate-400 " +
+      "shadow-[0_0_0_1px_rgba(251,191,36,0.18),0_14px_45px_rgba(0,0,0,0.55)] " +
+      "text-black/90 hover:brightness-105 active:brightness-95 transition",
+    secondary:
+      "py-3 rounded-xl bg-white/5 border border-white/10 text-gray-200 " +
+      "hover:bg-white/8 active:bg-white/10 transition",
+    ghost:
+      "px-2 py-1 rounded bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-xs",
+    jump:
+      "px-2 py-1 rounded-full bg-amber-400/12 border border-amber-300/25 text-amber-200 " +
+      "hover:bg-amber-400/18 transition text-xs",
+  };
+
+  async function callFn(path: string, payload: any) {
+    const base = process.env.NEXT_PUBLIC_FUNCTIONS_BASE || process.env.NEXT_PUBLIC_API_BASE || "";
+    if (!base) throw new Error("Missing NEXT_PUBLIC_FUNCTIONS_BASE / NEXT_PUBLIC_API_BASE");
+    const url = `${base}/${path}`.replace(/\/+$/, "");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    const txt = await res.text().catch(() => "");
+    if (!res.ok) throw new Error(`POST ${url} -> ${res.status} ${txt}`);
+    try {
+      return JSON.parse(txt);
+    } catch {
+      return { ok: true, raw: txt };
+    }
+  }
+
+return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentId]);
+
+  
+  // ZIP: query hi=... -> toast + pulse + auto-scroll
+  const sp = useSearchParams();
+  
+  // OPTIMISTIC: Notes saved → flip readiness instantly
+  useEffect(() => {
+    try {
+      const v = sp.get("notesSaved");
+      if (v !== "1") return;
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const sid = String(activeSessionId || "").trim();
+      const opt = {
+        id: "__opt_notes_saved__" + String(nowSec),
+        type: "NOTES_SAVED",
+        actor: "ui",
+        sessionId: sid || null,
+        occurredAt: { _seconds: nowSec },
+        meta: { optimistic: true },
+      };
+
+      setTimeline((prev: any) => (Array.isArray(prev) ? [opt, ...prev] : [opt]));
+      router.replace(`/incidents/${incidentId}`, { scroll: false } as any);
+    } catch {}
+  }, [sp, incidentId]);
+useEffect(() => {
+    const v = sp.get("hi");
+    if (!v) return;
+    setHi(v);
+    toast("Evidence secured ✓");
+    const t = setTimeout(() => toast(null), 2200);
+    // Scroll tile into view (if present)
+    setTimeout(() => {
+      const el = document.querySelector(`[data-ev-id="${v}"]`);
+      if (el && "scrollIntoView" in el) (el as any).scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 120);
+    return () => clearTimeout(t);
+  }, [sp]);
+useEffect(() => {
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evidence]);
+
+  function scrollToEvidence(eid: string) {
+    try {
+      const el = document.getElementById(`ev-${eid}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch {}
+  }
+
+  function openModal(ev: EvidenceDoc) {
+    const u = thumbUrl[ev.id];
+    if (!u) return;
+    setPreviewName(ev.file?.originalName || ev.id);
+    setPreviewUrl(u);
+    setSelectedEvidenceId(ev.id);
+    setPreviewOpen(true);
+                toast("Opened preview");
+  }
+
+  // Narrative timeline: compress types into a readable story
+  const story = useMemo(() => {
+    // Collapse consecutive evidence events per-session
+
+    const sorted = timeline.slice(0, 14);
+    const out: any[] = [];
+    let lastSes = "";
+    for (const t of sorted) {
+      // evidence group: if this event is EVIDENCE_ADDED and previous is same type+session, we collapse
+
+      const ses = String(t.sessionId || "");
+      if (ses && ses !== lastSes) {
+        out.push({ type: "__SESSION__", sessionId: ses });
+        lastSes = ses;
+      }
+      out.push(t);
+    }
+    return out;
+  }, [timeline]);
+
+  const storyItems = useMemo(() => {
+    const out = story.map((t: any) => {
+      if (t.type === "__SESSION__") return t;
+      const when = fmtAgo(t.occurredAt?._seconds);
+      const title = prettyType(t.type);
+      const actor = t.actor || "system";
+      const session = t.sessionId || "";
+      return { ...t, when, title, actor, session };
+    });
+    return out;
+  }, [story]);
+
+  const _unused_story = useMemo(() => {
+    const out = timeline.slice(0, 10).map((t) => {
+      const when = fmtAgo(t.occurredAt?._seconds);
+      const title = prettyType(t.type);
+      const actor = t.actor || "system";
+      const session = t.sessionId || "";
+      return { ...t, when, title, actor, session };
+    });
+    return out;
+  }, [timeline]);
+
+  // PEAKOPS_NEXTBESTACTION_V1
+  const _hasSession = Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "SESSION_STARTED" || String(t?.type) === "FIELD_ARRIVED" || String(t?.type) === "EVIDENCE_ADDED");
+  const _evidenceN = Array.isArray(evidence) ? evidence.filter((ev: any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath||"").includes("demo_placeholder")).length : 0;
+  const _hasEvidence = _evidenceN >= 4;
+  const _hasNotes = !!(notesSavedLocal || (Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "NOTES_SAVED")));
+  const _hasApproved = Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "FIELD_APPROVED");
+
+  // PHASE6_1_TIMERS_V1
+  const _secForType = (ty: string): number | null => {
+    try {
+      let best = 0;
+      for (const t of (timeline || []) as any[]) {
+        if (String(t?.type || "") !== ty) continue;
+        const sec = Number(t?.occurredAt?._seconds || 0);
+        if (sec > best) best = sec;
+      }
+      return best ? best : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const _arrivalSec = _secForType("FIELD_ARRIVED");
+  const _notesSec = _secForType("NOTES_SAVED");
+
+  // Prefer timeline event; fallback to latest evidence timestamp if needed
+  const _evidenceSecFromTL = _secForType("EVIDENCE_ADDED");
+  const _evidenceSecFromDocs =
+    (Array.isArray(evidence) && evidence[0] && (evidence[0] as any).storedAt?._seconds) ||
+    (Array.isArray(evidence) && evidence[0] && (evidence[0] as any).createdAt?._seconds) ||
+    null;
+
+  const _lastEvidenceSec = _evidenceSecFromTL || (_evidenceSecFromDocs ? Number(_evidenceSecFromDocs) : null);
+
+  const _arrivalAgo = _arrivalSec ? fmtAgo(_arrivalSec) : "—";
+  const _evidenceAgo = _lastEvidenceSec ? fmtAgo(_lastEvidenceSec) : "—";
+  const _notesAgo = _notesSec ? fmtAgo(_notesSec) : "—";
+
+  return (
+    <main className="min-h-screen bg-black text-white">
+      {/* Top bar */}
+      <div className="px-4 pt-4 pb-3 border-b border-white/10 sticky top-0 bg-black/80 backdrop-blur z-10">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-gray-400">Field Incident</div>
+            <div className="text-xl font-semibold tracking-tight">{incidentId} • Spokane Valley</div>
+          </div>
+
+          <div className="flex items-center gap-2">
+        <button
+              type="button"
+              className="px-2 py-1 rounded-full text-xs bg-purple-600/20 border border-purple-400/20 text-purple-100 hover:bg-purple-600/30 transition"
+              title="Supervisor review + approve/lock"
+              onClick={() => {
+  const id = String(incidentId || "");
+  if (!id || id.includes("${")) return;
+  router.push(`/incidents/${id}/review`);
+}}>
+              🛡 Review
+            </button>
+          
+      {/* PEAKOPS_UX_TOAST_RENDER_V1 */}
+      {toastMsg ? (
+        <div className="fixed left-1/2 -translate-x-1/2 top-20 z-50 px-3 py-2 rounded-xl bg-black/70 border border-white/10 text-sm text-gray-100 backdrop-blur shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
+          {toastMsg}
+        </div>
+      ) : null}
+
+</div>
+        </div>
+      </div>
+
+      <div className={"p-4 space-y-4 " + (contextLockId ? "opacity-[0.94] transition-opacity" : "")}>
+        
+              
+{/* PEAKOPS: removed big Open Notes bar */}
+{/* PEAKOPS_NEXTBESTACTION_V1_RENDER */}
+        <NextBestAction
+          arrived={arrived}
+          hasSession={_hasSession}
+          hasEvidence={_hasEvidence}
+          hasNotes={_hasNotes}
+          hasApproved={_hasApproved}
+          onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
+	  onAddEvidence={() => document.getElementById("evidence")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+          onMarkArrived={() => markArrived()}
+          onSubmitSession={() => submitSession()}
+        />
+        
+        {/* PHASE6_1_TIMERS_V1_RENDER */}
+        {/* PHASE6_1_TIMERS_POLISH_V2 + PHASE6_2_ACTION_NEEDED_V1 */}
+<div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+  <div className="flex items-center justify-between gap-3">
+    <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
+    {_notesAgo === "—" ? (
+      <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-300/25 text-amber-100">
+        Action needed: notes
+      </span>
+    ) : null}
+  </div>
+
+  <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
+    <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-1">
+      <div className="text-[10px] uppercase tracking-wide text-gray-400">Arrival</div>
+      <div className="mt-1 text-base font-semibold text-gray-100">{_arrivalAgo}</div>
+    </div>
+
+    <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-2">
+      <div className="text-[10px] uppercase tracking-wide text-gray-400">Evidence</div>
+      <div className="mt-1 text-base font-semibold text-gray-100">{_evidenceAgo}</div>
+    </div>
+
+    <div
+      className={
+        "rounded-xl border px-3 py-2 sm:col-span-2 " +
+        (_notesAgo === "—"
+          ? "bg-amber-500/10 border-amber-300/25"
+          : "bg-black/30 border-white/10")
+      }>
+      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-amber-200/80" : "text-gray-400")}>
+        Notes
+      </div>
+      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-amber-50" : "text-gray-100")}>
+        {_notesAgo}
+      </div>
+    </div>
+  </div>
+</div>
+
+
+        
+        {/* PHASE5A_REQUEST_UPDATE_BANNER_V1 */}
+        {reqUpdateText ? (
+          <section className="rounded-2xl border border-amber-300/20 bg-amber-400/10 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-wide text-amber-200/80">
+                  Supervisor requested an update
+                </div>
+                <div className="mt-1 text-sm text-amber-50/90 whitespace-pre-wrap break-words">
+                  {reqUpdateText}
+                </div>
+                <div className="mt-2 text-[11px] text-amber-100/50">
+                  (V2 demo: stored locally on this device. Phase B will persist to Firestore + notify.)
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-amber-50 hover:bg-white/10"
+                  onClick={() => { try { loadReqUpdate(); } catch {} try { refresh(); } catch {} }}
+                  title="Reload local request note"
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-300/25 text-sm text-amber-50 hover:bg-amber-500/20"
+                  onClick={() => {
+                    clearReqUpdate();
+                  }}
+                  title="Clear this request note (local only)"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+{/* Quick actions */}
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
+  <div className="flex items-center justify-between">
+    <div className="text-xs uppercase tracking-wide text-gray-400" id="evidence">Evidence</div>
+    <span className="text-xs text-gray-500">Latest {Math.min(12, evidence.length)}</span>
+  </div>
+
+  {/* Evidence rail centering depends on runway padding on #evidenceScroller. Keep that padding. */}
+  <div className="mt-3 -mx-1 overflow-x-auto px-[calc(50%-74px)] scroll-smooth scroll-pl-4 scroll-pr-4 sm:scroll-pl-[calc(50vw-74px)] sm:scroll-pr-[calc(50vw-74px)]" id="evidenceScroller"
+>
+    <div className="flex gap-2 snap-x snap-mandatory">
+      {(() => {
+        const list = (evidence || [])
+          .filter((ev:any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath || "").includes("demo_placeholder"));
+        const maxShow = 12;
+        const shown = list.slice(0, maxShow);
+        const more = Math.max(0, list.length - maxShow);
+
+        return (
+          <>
+            {shown.map((ev:any) => {
+              const u = thumbUrl[ev.id];
+              const labels = (ev.labels || []).map(normLabel);
+              const selected = selectedEvidenceId === ev.id;
+
+              return (
+                <button
+                  key={ev.id}
+                  data-ev-id={ev.id}
+                  className={
+                    "snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] relative rounded-xl overflow-hidden border " +
+                    (selected ? "border-indigo-300/95 border-2 ring-4 ring-indigo-500/40 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_12px_40px_rgba(0,0,0,0.55)]  scale-[1.02] transition-transform duration-150" : "border-white/10 ") +
+                    "bg-black/40 hover:border-white/25 transition"
+                  }
+                  onClick={() => openModal(ev)}
+                  title={ev.file?.originalName || ev.id}>
+                  {u ? (
+                    <img src={u} className="w-full h-full object-cover transition-transform duration-200 hover:scale-[1.04]" loading="lazy" />
+                  ) : (
+                    thumbErr[ev.id] ? (
+                      <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-500">Unavailable</div>
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-400">Loading…</div>
+                    )
+                  )}
+
+                  <div className="absolute top-2 left-2 flex flex-wrap gap-1">
+                    {labels.slice(0, 2).map((l:string) => (
+                      <span key={l} className={"text-[10px] px-2 py-0.5 rounded-full border " + labelChipColor(l)}>
+                        {l}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="absolute bottom-2 left-2 right-2 text-[10px] text-gray-200/90 truncate bg-black/40 px-2 py-1 rounded">
+                    {(ev.file?.originalName || "evidence")}
+                  </div>
+                </button>
+              );
+            })}
+
+            {more ? (
+              <button
+                type="button"
+                className="snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition flex flex-col items-center justify-center"
+                onClick={() => {
+                  try { document.getElementById("evidence")?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch {}
+                }}>
+                <div className="text-lg font-semibold text-gray-100">+{more}</div>
+                <div className="text-[11px] text-gray-400 mt-1">more</div>
+                <div className="text-[10px] text-gray-500 mt-2 px-2 text-center">Scroll to view</div>
+              </button>
+            ) : null}
+          </>
+        );
+      })()}
+    </div>
+  </div>
+
+  <div className="mt-2 text-[11px] text-gray-500">
+    Horizontal scroll. Tap a tile to preview. Timeline events will highlight related evidence.
+  </div>
+</section>
+
+        {/* Timeline story */}
+        
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-xs uppercase tracking-wide text-gray-400">Timeline</div>
+            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">Auto-log: On</span>
+          </div>
+
+          
+<TimelinePanel
+  items={timeline as any}
+  onJumpToEvidence={jumpToEvidence}
+  highlightId={selectedEvidenceId}
+  showHeader={false}
+/>
+        </section>
+
+        {/* Notes section will remain below if you already inserted it elsewhere */}
+        {/* Readiness Checklist */}
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-xs uppercase tracking-wide text-gray-400">Readiness</div>
+            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">
+              Live
+            </span>
+          </div>
+
+          {(() => {
+            const hasSession = timeline.some((t: any) => String(t.type) === "SESSION_STARTED" || String(t.type) === "FIELD_ARRIVED" || String(t.type) === "EVIDENCE_ADDED");
+            const evidenceN = evidence.filter((ev: any) => !!ev.file?.storagePath && !String(ev.file?.storagePath||"").includes("demo_placeholder")).length;
+            const hasEvidence = evidenceN >= 4;
+            const hasNotes = notesSavedLocal || timeline.some((t: any) => String(t.type) === "NOTES_SAVED"); const hasApproved = timeline.some((t: any) => String(t.type) === "FIELD_APPROVED");
+
+            const items = [
+              ["Field session started", hasSession],
+              ["Evidence captured (4+)", hasEvidence],
+              ["Notes saved", hasNotes],
+              ["Supervisor approved", hasApproved],
+            ];
+
+            const ready = hasSession && hasEvidence && hasNotes;
+
+            return (
+              <div className="mt-3 space-y-2 text-sm">
+                <div className={"rounded-xl p-3 border " + (ready ? "bg-green-700/15 border-green-400/20" : "bg-amber-700/10 border-amber-400/20")}>
+                  <div className="font-semibold">{ready ? "Ready for supervisor review" : "Not ready yet"}</div>
+                  <div className="text-xs text-gray-400 mt-1">This is computed from live events + evidence.</div>
+                </div>
+
+                <div className="grid gap-2">
+                  {items.map(([label, ok]) => (
+                    <div key={String(label)} className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
+                      <div className="text-gray-200">{label}</div>
+                      <div className={ok ? "text-green-300" : "text-gray-500"}>{ok ? "✓" : "—"}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+        </section>
+
+        <div className="h-20" />
+      </div>
+
+      {/* Bottom dock */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/10">
+        <div className="grid grid-cols-4 gap-2">
+          {/* Arrive */}
+          <button
+            type="button"
+            className={
+              "py-3 rounded-xl text-sm font-semibold border transition " +
+              (arrived
+                ? "bg-emerald-500/15 border-emerald-300/25 text-emerald-100"
+                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
+            }
+            onClick={() => { try { markArrived(); } catch {} }}
+            disabled={arrived}
+            title={arrived ? "Arrived (done)" : "Mark arrival"}>
+            Arrive
+          </button>
+
+          {/* Evidence */}
+          <button
+            type="button"
+            className={
+              "py-3 rounded-xl text-sm font-semibold border transition " +
+              (_hasEvidence
+                ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
+                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
+            }
+            onClick={() => { try { document.getElementById("evidence")?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch {} }}
+            title={_hasEvidence ? "Evidence captured (done)" : "Go to Evidence"}>
+            Evidence
+          </button>
+
+          {/* Notes */}
+          <button
+            type="button"
+            className={
+              "py-3 rounded-xl text-sm font-semibold border transition " +
+              (_hasNotes
+                ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
+                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
+            }
+            onClick={() => { try { router.push("/incidents/" + incidentId + "/notes"); } catch {} }}
+            title={_hasNotes ? "Notes saved (done)" : "Write notes"}>
+            Notes
+          </button>
+
+          {/* Submit */}
+          <button
+            type="button"
+            className={
+              "w-full py-3 rounded-xl text-sm font-semibold border transition " +
+              ((arrived && _hasEvidence && _hasNotes && !submitting)
+                ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
+                : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
+            }
+            disabled={submitting || !arrived || !_hasEvidence || !_hasNotes}
+            title={
+              (arrived && _hasEvidence && _hasNotes)
+                ? "Submit session for supervisor review"
+                : "Complete Arrive + Evidence + Notes first"
+            }
+            onClick={(e) => {
+              try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {}
+              try { submitSession(); } catch {}
+            }}>
+            Submit
+          </button>
+        </div>
+      </div>
+
+{/* Modal */}
+      {previewOpen ? (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur flex items-center justify-center p-6 z-50">
+          <div className="w-full max-w-3xl rounded-2xl bg-black border border-white/10 overflow-hidden">
+            <div className="flex items-center justify-between p-3 border-b border-white/10">
+              <div className="text-sm text-gray-200 truncate">{previewName}</div>
+              <button
+                className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/15"
+                onClick={() => setPreviewOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="p-3">
+              {previewUrl ? (
+                <img src={previewUrl} className="w-full h-full object-cover" />
+              ) : (
+                <div className="text-gray-400 text-sm">Loading…</div>
+              )}
+
+              {/* PEAKOPS_V2_CAPTION_UI */}
+              <div className="mt-3">
+                <div className="text-[11px] uppercase tracking-wide text-gray-400">Evidence label</div>
+
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200 outline-none placeholder:text-gray-500"
+                    placeholder="e.g., Pole base (wide), conductor break (close), panel label…"
+                    value={getCaption(selectedEvidenceId)}
+                    onChange={(e) => setCaption(selectedEvidenceId, e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="px-3 py-2 rounded-xl bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-sm"
+                    onClick={() => setCaption(selectedEvidenceId, "")}
+                    title="Clear label"
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <div className="mt-2 text-[11px] text-gray-500">
+                  v2: stored locally for now. Later we’ll persist to Firestore + enforce naming rules.
+                </div>
+              </div>
+</div>
+          </div>
+        </div>
+      ) : null}
+    
+      {/* ZIP_TOAST */}
+      
+
+      
+    
+      {toastMsg ? (
+        <div className="fixed top-4 right-4 z-50 rounded-xl bg-black/70 border border-white/10 px-4 py-3 text-sm text-gray-200 backdrop-blur">
+          {toastMsg}
+        </div>
+      ) : null}
+
+    </main>
+  );
+}
