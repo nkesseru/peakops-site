@@ -204,6 +204,21 @@ const { orgId, incidentId } = props;
   const storageKey = useMemo(() => `wf:${orgId}:${incidentId}`, [orgId, incidentId]);
   const histKey = useMemo(() => `wf_hist:${orgId}:${incidentId}`, [orgId, incidentId]);
 
+  function resetLocalWorkflow() {
+    try {
+      if (typeof window === "undefined") return;
+      window.localStorage.removeItem(storageKey);
+      window.localStorage.removeItem(histKey);
+      // also clear any legacy keys if present
+      window.localStorage.removeItem(`wf:${orgId}:${incidentId}`);
+      window.localStorage.removeItem(`wf_hist:${orgId}:${incidentId}`);
+      window.location.reload();
+    } catch {
+      // ignore
+    }
+  }
+
+
   const [hist, setHist] = useState<WfHistItem[]>([]);
 
   // Load history (client only)
@@ -432,6 +447,14 @@ useEffect(() => {
         </div>
 
         <button onClick={refreshAll} disabled={busy || autoBusy} style={pill(false)}>
+          <button
+            onClick={resetLocalWorkflow}
+            style={{ marginRight: 10, border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.06)", borderRadius: 999, padding: "8px 10px", fontSize: 12, cursor: "pointer" }}
+            title="Clears local workflow cache for this incident and reloads"
+          >
+            Reset Local
+          </button>
+
           {(busy || autoBusy) ? "Checking…" : "Re-check"}
         </button>
       </div>

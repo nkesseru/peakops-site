@@ -6,11 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "ui": "cd next-app && PORT=3001 npm run dev",
+    "ui:kill": "pkill -f \"next dev\" || true && rm -f next-app/.next/dev/lock"
   },
   "dependencies": {
     "@uiw/react-json-view": "2.0.0-alpha.40",
     "firebase-admin": "^13.6.0",
+    "idb-keyval": "^6.2.2",
     "jszip": "^3.10.1",
     "next": "16.0.3",
     "react": "19.2.0",

@@ -8,6 +8,7 @@ import AddEvidenceButton from "@/components/evidence/AddEvidenceButton";
 import FilingCountdown from "@/components/incident/FilingCountdown";
 import NextBestAction from "@/components/incident/NextBestAction";
 import TimelinePanel from "@/components/incident/TimelinePanel";
+import { getFunctionsBase } from "@/lib/functionsBase";
 
 type EvidenceDoc = {
   id: string;
@@ -15,7 +16,19 @@ type EvidenceDoc = {
   labels?: string[];
   storedAt?: { _seconds: number };
   createdAt?: { _seconds: number };
-  file?: { originalName?: string; storagePath?: string; contentType?: string };
+  file?: {
+    originalName?: string;
+    storagePath?: string;
+    contentType?: string;
+    previewPath?: string;
+    previewContentType?: string;
+    thumbPath?: string;
+    thumbContentType?: string;
+    derivatives?: {
+      preview?: { storagePath?: string; contentType?: string };
+      thumb?: { storagePath?: string; contentType?: string };
+    };
+  };
   sessionId?: string;
   notes?: string;
 };
@@ -97,6 +110,43 @@ function chipClass(kind: "actor" | "session" | "meta" = "meta") {
   return "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-300";
 }
 
+function isHeicEvidence(ev: EvidenceDoc) {
+  const f: any = ev?.file || {};
+  const ct = String(f?.contentType || "").toLowerCase();
+  const name = String(f?.originalName || "");
+  const sp = String(f?.storagePath || "");
+  return (
+    ct.includes("heic") ||
+    ct.includes("heif") ||
+    /\.(heic|heif)$/i.test(name) ||
+    /\.(heic|heif)$/i.test(sp)
+  );
+}
+
+function pickEvidencePaths(ev: EvidenceDoc) {
+  const f: any = ev?.file || {};
+  const originalPath = String(f?.storagePath || "");
+  const previewPath =
+    String(f?.previewPath || f?.derivatives?.preview?.storagePath || "").trim();
+  const thumbPath =
+    String(f?.thumbPath || f?.derivatives?.thumb?.storagePath || "").trim();
+  const heic = isHeicEvidence(ev);
+  return {
+    thumbPath: heic && thumbPath ? thumbPath : originalPath,
+    previewPath: heic && previewPath ? previewPath : originalPath,
+  };
+}
+
+function isConvertingHeic(ev: EvidenceDoc) {
+  if (!isHeicEvidence(ev)) return false;
+  const f: any = ev?.file || {};
+  const status = String(f?.conversionStatus || "").toLowerCase();
+  if (status === "source_missing" || status === "failed") return false;
+  const hasPreview = !!String(f?.previewPath || f?.derivatives?.preview?.storagePath || "").trim();
+  const hasThumb = !!String(f?.thumbPath || f?.derivatives?.thumb?.storagePath || "").trim();
+  return !(hasPreview && hasThumb);
+}
+
 async function postJson<T>(url: string, body: any): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
@@ -109,6 +159,8 @@ async function postJson<T>(url: string, body: any): Promise<T> {
 }
 
 export default function IncidentClient({ incidentId }: { incidentId: string }) {
+  const functionsBase = getFunctionsBase();
+
   // PEAKOPS_NOTES_SAVED_FOCUS: re-check when user returns from Notes page
   useEffect(() => {
     try { outboxFlushSupervisorRequests(); } catch {}
@@ -125,6 +177,8 @@ export default function IncidentClient({ incidentId }: { incidentId: string }) {
   const [arriving, setArriving] = useState(false);
   // toast (tiny UX feedback)
 const [toastMsg, setToastMsg] = useState<string | null>(null);
+const [convertingHeic, setConvertingHeic] = useState(false);
+const [debuggingHeic, setDebuggingHeic] = useState(false);
   const toast = (msg: string, ms = 2200) => {
     setToastMsg(msg);
     // @ts-ignore
@@ -133,49 +187,155 @@ const [toastMsg, setToastMsg] = useState<string | null>(null);
     (toast as any)._t = window.setTimeout(() => setToastMsg(null), ms);
   };
 
+  // PHASE7_EVIDENCE_LAUNCH_V1
+  const [addingEvidence, setAddingEvidence] = useState(false);
+
+  const goAddEvidence = async () => {
+    // PEAKOPS_EVIDENCE_GO_V2: ensure session exists, then go to add-evidence
+    try {
+      setAddingEvidence(true);
+
+      // If we already have a session, just go.
+      let sid = String(activeSessionId || "").trim();
+      if (!sid) {
+        // Create session via Functions (emulator/prod depending on NEXT_PUBLIC_FUNCTIONS_BASE)
+        const base = functionsBase;
+        if (!base) throw new Error("Missing NEXT_PUBLIC_FUNCTIONS_BASE");
+
+        const techUserId = (process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web").trim();
+
+        const res = await fetch(`${base}/startFieldSessionV1`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ orgId: orgId, incidentId, createdBy: "ui", techUserId }),
+        });
+
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || !out?.ok || !out?.sessionId) {
+          throw new Error(out?.error || `Could not start field session (${res.status})`);
+        }
+
+        sid = String(out.sessionId || "").trim();
+        if (!sid) throw new Error("startFieldSessionV1 returned no sessionId");
+
+        try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
+        try { setActiveSessionId(sid); } catch {}
+      }
+
+      router.push(`/incidents/${incidentId}/add-evidence?sid=${encodeURIComponent(sid)}`);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      try { toast("Add evidence failed: " + msg, 3500); } catch {}
+      console.error(e);
+    } finally {
+      try { setAddingEvidence(false); } catch {}
+    }
+};
+
+
   // V6_SESSION_HELPERS__WIRE
   async function markArrived() {
-    const sid = String(activeSessionId || "").trim();
-    if (!sid) return toast("No active session yet — add evidence first.", 3000);
-    try {
-      setArriving(true);
-    // OPTIMISTIC_FIELD_ARRIVED: instant UI feedback (reverted on failure)
-    const __optId = "opt_arrived_" + Date.now();
-    const __sid = String(activeSessionId || "").trim();
-    if (__sid) {
-      setTimeline((prev: any) => ([
-        {
-          id: __optId,
-          type: "FIELD_ARRIVED",
-          actor: "ui",
-          sessionId: __sid,
-          occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
-          refId: null,
-          meta: { optimistic: true }
-        },
-        ...(Array.isArray(prev) ? prev : [])
-      ]));
+    // PEAKOPS_ARRIVE_RETRY_SESSION_V1
+    // If sessionId is missing or stale, create a new field session and retry once.
+    const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
+    const base = functionsBase;
+    const org = (typeof orgId !== "undefined" && orgId) ? String(orgId) : "spokane-valley";
+
+    if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
+
+    let sid = String(activeSessionId || "").trim();
+    if (!sid) {
+      // try last known session from storage (if any)
+      try { sid = String(localStorage.getItem("peakops_active_session_" + String(incidentId || "")) || "").trim(); } catch {}
     }
 
-      const out: any = await postJson(functionsBase + "/markArrivedV1", {
-        orgId,
-        incidentId,
-        sessionId: sid,
-        updatedBy: "ui",
+    async function startSession(): Promise<string> {
+      const res = await fetch(`${base}/startFieldSessionV1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orgId: org, incidentId, createdBy: "ui", techUserId }),
       });
-      if (!out?.ok) throw new Error(out?.error || "markArrived failed");
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out?.ok || !out?.sessionId) {
+        throw new Error(out?.error || `startFieldSessionV1 failed (${res.status})`);
+      }
+      return String(out.sessionId);
+    }
+
+    async function postArrived(sessionId: string): Promise<any> {
+      const res = await fetch(`${base}/markArrivedV1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orgId: org, incidentId, sessionId: String(sessionId), updatedBy: "ui", techUserId }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out?.ok) {
+        const msg = out?.error || `markArrivedV1 failed (${res.status})`;
+        const err = new Error(msg);
+        (err as any).__status = res.status;
+        throw err;
+      }
+      return out;
+    }
+
+    try {
+      setArriving(true);
+
+      // Optimistic UI event id (stable across try/catch)
+      let __optId = "opt_arrived_" + Date.now();
+      try {
+        const __sid = sid || "";
+        if (__sid) {
+          setTimeline((prev: any) => ([
+            {
+              id: __optId,
+              type: "FIELD_ARRIVED",
+              actor: "ui",
+              sessionId: __sid,
+              occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
+              refId: null,
+              meta: { optimistic: true }
+            },
+            ...(Array.isArray(prev) ? prev : [])
+          ]));
+        }
+      } catch {}
+
+      // If no session yet, create one
+      if (!sid) {
+        sid = await startSession();
+        try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
+        try { setActiveSessionId(sid); } catch {}
+      }
+
+      // First attempt
+      try {
+        await postArrived(sid);
+      } catch (e: any) {
+        const msg = String(e?.message || e || "");
+        // If stale session, recreate once and retry
+                  if ((e as any)?.__status == 404 || msg.toLowerCase().includes("session not found")) {
+          sid = await startSession();
+          try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
+          try { setActiveSessionId(sid); } catch {}
+          await postArrived(sid);
+        } else {
+          throw e;
+        }
+      }
+
       setArrived(true);
-      toast("Arrived ✓", 1500);
+      toast("Arrived ✓", 1800);
     } catch (e: any) {
+      const msg = e?.message || String(e) || "markArrived failed";
+      toast("Arrive failed: " + msg, 3500);
       // OPTIMISTIC_FIELD_ARRIVED revert
       try { setTimeline((prev: any) => (Array.isArray(prev) ? prev.filter((x:any) => x?.id !== __optId) : prev)); } catch {}
-
-      const msg = (e && (e.message || String(e))) || "markArrived failed";
-      toast("Arrive failed: " + msg, 3500);
+      console.error(e);
     } finally {
       setArriving(false);
     }
-  }
+}
 
   async function submitSession() {
     const sid = String(activeSessionId || "").trim();
@@ -184,8 +344,7 @@ const [toastMsg, setToastMsg] = useState<string | null>(null);
     if (!ok) return;
     try {
       setSubmitting(true);
-      const out: any = await postJson(functionsBase + "/submitFieldSessionV1", {
-        orgId,
+      const out: any = await postJson(functionsBase + "/submitFieldSessionV1", { orgId: orgId,
         incidentId,
         sessionId: sid,
         updatedBy: "ui",
@@ -201,9 +360,7 @@ const [toastMsg, setToastMsg] = useState<string | null>(null);
   }
 
   const router = useRouter();
-  const orgId = "org_001";
-  const functionsBase = process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "";
-
+  const orgId = "riverbend-electric";
   // Evidence + Timeline
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
@@ -302,8 +459,7 @@ const [toastMsg, setToastMsg] = useState<string | null>(null);
       setArriving(true);
       const sid = getActiveSessionId();
       if (!sid) throw new Error("sessionId missing — add evidence / start a session first.");
-      const out: any = await postJson(`${functionsBase}/markArrivedV1`, {
-        orgId,
+      const out: any = await postJson(`${functionsBase}/markArrivedV1`, { orgId: orgId,
         incidentId,
         sessionId: sid,
         updatedBy: "ui",
@@ -324,8 +480,7 @@ const [toastMsg, setToastMsg] = useState<string | null>(null);
       setSubmitting(true);
       const sid = getActiveSessionId();
       if (!sid) throw new Error("sessionId missing — add evidence / start a session first.");
-      const out: any = await postJson(`${functionsBase}/submitFieldSessionV1`, {
-        orgId,
+      const out: any = await postJson(`${functionsBase}/submitFieldSessionV1`, { orgId: orgId,
         incidentId,
         sessionId: sid,
         updatedBy: "ui",
@@ -380,16 +535,26 @@ const [toastMsg, setToastMsg] = useState<string | null>(null);
   const reqUpdateKey = "peakops_review_request_" + String(incidentId || "");
 
   const loadReqUpdate = async () => {
-    // Server truth
+    // PHASE7_2_REQUPDATE_SYNC_V2 (timeout + cache fallback)
+    const id = String(incidentId || "").trim();
+    const key = reqUpdateKey;
+
+    // 1) Fast server truth (hard timeout)
     try {
-      const id = String(incidentId || "").trim();
       if (id) {
-        const res = await fetch("/api/supervisor-request?incidentId=" + encodeURIComponent(id), { method: "GET" });
+        const ctrl = new AbortController();
+        const t = window.setTimeout(() => ctrl.abort(), 2500);
+        const res = await fetch("/api/supervisor-request?incidentId=" + encodeURIComponent(id), {
+          method: "GET",
+          signal: ctrl.signal,
+          cache: "no-store",
+        }).finally(() => window.clearTimeout(t));
+
         if (res.ok) {
           const j: any = await res.json().catch(() => ({}));
           const msg = String(j?.message || j?.requestUpdate?.message || "").trim();
           if (msg) {
-            try { localStorage.setItem(reqUpdateKey, msg); } catch {}
+            try { localStorage.setItem(key, msg); } catch {}
             setReqUpdateText(msg);
             return;
           }
@@ -397,11 +562,13 @@ const [toastMsg, setToastMsg] = useState<string | null>(null);
       }
     } catch {}
 
-    // Offline fallback
+    // 2) Cache fallback (offline-safe)
     try {
-      const v = localStorage.getItem(reqUpdateKey);
-      if (v) setReqUpdateText(String(v));
-    } catch {}
+      const v = localStorage.getItem(key);
+      setReqUpdateText(v ? String(v) : "");
+    } catch {
+      setReqUpdateText("");
+    }
   };
 
   const clearReqUpdate = async () => {
@@ -553,21 +720,25 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       const evUrl =
         `${functionsBase}/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}` +
         `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
-      const ev = await fetch(evUrl).then((r) => r.json());
+      const evRes = await fetch(evUrl);
+      const evBody = await evRes.text();
+      if (!evRes.ok) {
+        throw new Error(`GET ${evUrl} -> ${evRes.status} ${evBody}`);
+      }
+      const ev = evBody ? JSON.parse(evBody) : {};
 
       if (ev?.ok && Array.isArray(ev.docs)) {
         setEvidence(ev.docs);
         
       prefetchThumbs(ev.docs);
       // PHASE3_THUMBS_RETRY_SCHEDULED: re-try failed thumbs once
-      try { window.setTimeout(() => { try { retryThumbsOnce(ev.docs); } catch {} }, 1200); } catch {}
         
 
       // PEAKOPS_THUMBS_RETRY_EFFECT_V1
       // Retry failed thumbs once after a short delay (keeps the rail feeling “alive”)
       setTimeout(() => {
         try {
-          const latest = (ev.docs || []).filter((x:any) => x?.file?.storagePath).slice(0, 7);
+          const latest = (ev.docs || []).filter((x:any) => x?.file?.storagePath);
           latest.forEach((x:any) => {
             const id = String(x?.id || "");
             if (!id) return;
@@ -589,7 +760,12 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       const tlUrl =
         `${functionsBase}/getTimelineEventsV1?orgId=${encodeURIComponent(orgId)}` +
         `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
-      const tl = await fetch(tlUrl).then((r) => r.json());
+      const tlRes = await fetch(tlUrl);
+      const tlBody = await tlRes.text();
+      if (!tlRes.ok) {
+        throw new Error(`GET ${tlUrl} -> ${tlRes.status} ${tlBody}`);
+      }
+      const tl = tlBody ? JSON.parse(tlBody) : {};
 
       if (tl?.ok && Array.isArray(tl.docs)) {
         const docs: TimelineDoc[] = tl.docs.slice();
@@ -599,7 +775,11 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
 
       setDataStatus("live");
     } catch (e) {
-      console.error("refresh failed", e);
+      console.error("refresh failed", {
+        functionsBase,
+        incidentId,
+        error: String((e as any)?.message || e),
+      });
       setDataStatus("error");
     } finally {
       setLoading(false);
@@ -609,17 +789,18 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
   // Prefetch signed thumbnail URLs for latest 12 evidence items
   async function prefetchThumbs(latest: EvidenceDoc[]) {
     if (!functionsBase) return;
-    const want = latest.filter((x) => x.file?.storagePath).slice(0, 7);
+    const want = latest.filter((x) => x.file?.storagePath);
 
     await Promise.all(
       want.map(async (ev) => {
         if (thumbUrl[ev.id]) return;
 
         try {
-          const storagePath = ev.file!.storagePath!;
+          const storagePath = pickEvidencePaths(ev).thumbPath;
+          if (!storagePath) return;
           const resp = await postJson<{ ok: boolean; url?: string; error?: string }>(
             `${functionsBase}/createEvidenceReadUrlV1`,
-            { orgId, incidentId, storagePath, bucket: evidenceBucket, expiresSec: 900 }
+            { orgId: orgId, incidentId, storagePath, bucket: (ev.file?.bucket || ev.bucket || evidenceBucket), expiresSec: 900 }
           );
           if (resp?.ok && resp.url) {
             setThumbUrl((m) => ({ ...m, [ev.id]: resp.url! }));
@@ -643,25 +824,24 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       const arr = Array.isArray(latest) ? latest : [];
       const want = arr
         .filter((x: any) => !!x?.file?.storagePath)
-        .slice(0, 7);
+        ;
 
       // Only retry ones that previously failed (thumbErr[id] true) OR still missing thumbUrl.
       for (const ev of want) {
         const id = String((ev as any)?.id || "");
-        const sp = String((ev as any)?.file?.storagePath || "");
+        const sp = String(pickEvidencePaths(ev as any).thumbPath || "");
         if (!id || !sp) continue;
 
         const hadErr = !!(thumbErr as any)?.[id];
         const hasUrl = !!(thumbUrl as any)?.[id];
         if (!hadErr && hasUrl) {
-            continue;
-          }
-          continue
+          continue;
+        }
 
         try {
           const resp: any = await postJson(
             `${functionsBase}/createEvidenceReadUrlV1`,
-            { orgId, incidentId, storagePath: sp, bucket: evidenceBucket, expiresSec: 900 }
+            { orgId: orgId, incidentId, storagePath: sp, bucket: (ev.file?.bucket || ev.bucket || evidenceBucket), expiresSec: 900 }
           );
 
           if (resp?.ok && resp.url) {
@@ -719,7 +899,7 @@ const t = setInterval(refresh, 60000);
   };
 
   async function callFn(path: string, payload: any) {
-    const base = process.env.NEXT_PUBLIC_FUNCTIONS_BASE || process.env.NEXT_PUBLIC_API_BASE || "";
+    const base = functionsBase || process.env.NEXT_PUBLIC_API_BASE || "";
     if (!base) throw new Error("Missing NEXT_PUBLIC_FUNCTIONS_BASE / NEXT_PUBLIC_API_BASE");
     const url = `${base}/${path}`.replace(/\/+$/, "");
     const res = await fetch(url, {
@@ -739,6 +919,15 @@ const t = setInterval(refresh, 60000);
 return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incidentId]);
+
+  useEffect(() => {
+    const pending = (evidence || []).some((ev: any) => isConvertingHeic(ev as EvidenceDoc));
+    if (!pending) return;
+    const t = window.setTimeout(() => {
+      try { refresh(); } catch {}
+    }, 4000);
+    return () => window.clearTimeout(t);
+  }, [evidence, incidentId]);
 
   
   // ZIP: query hi=... -> toast + pulse + auto-scroll
@@ -791,12 +980,86 @@ useEffect(() => {
 
   function openModal(ev: EvidenceDoc) {
     const u = thumbUrl[ev.id];
-    if (!u) return;
     setPreviewName(ev.file?.originalName || ev.id);
-    setPreviewUrl(u);
+    setPreviewUrl(u || "");
     setSelectedEvidenceId(ev.id);
     setPreviewOpen(true);
-                toast("Opened preview");
+    toast("Opened preview");
+    (async () => {
+      try {
+        const sp = pickEvidencePaths(ev).previewPath;
+        if (!sp) return;
+        const resp = await postJson<{ ok: boolean; url?: string; error?: string }>(
+          `${functionsBase}/createEvidenceReadUrlV1`,
+          { orgId: orgId, incidentId, storagePath: sp, bucket: ((ev as any)?.file?.bucket || (ev as any)?.bucket || evidenceBucket), expiresSec: 900 }
+        );
+        if (resp?.ok && resp.url) setPreviewUrl(resp.url);
+      } catch {}
+    })();
+  }
+
+  const selectedEvidence = (evidence || []).find((ev: any) => String(ev?.id || "") === String(selectedEvidenceId || "")) as EvidenceDoc | undefined;
+  const selectedIsHeic = !!(selectedEvidence && isHeicEvidence(selectedEvidence));
+  const selectedMissingDerivatives = !!(
+    selectedEvidence &&
+    selectedIsHeic &&
+    (
+      !String((selectedEvidence as any)?.file?.previewPath || (selectedEvidence as any)?.file?.derivatives?.preview?.storagePath || "").trim() ||
+      !String((selectedEvidence as any)?.file?.thumbPath || (selectedEvidence as any)?.file?.derivatives?.thumb?.storagePath || "").trim()
+    )
+  );
+
+  async function convertSelectedHeicNow() {
+    try {
+      if (!selectedEvidenceId) return;
+      setConvertingHeic(true);
+      const out: any = await postJson(`${functionsBase}/convertEvidenceHeicNowV1`, {
+        orgId,
+        incidentId,
+        evidenceId: selectedEvidenceId,
+      });
+      if (!out?.ok) throw new Error(out?.error || "convertEvidenceHeicNowV1 failed");
+      await refresh();
+      toast("HEIC converted ✓", 1800);
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg.includes("object_not_found")) {
+        toast("Upload not in storage yet", 3200);
+      } else {
+        toast("Convert HEIC failed: " + msg, 3000);
+      }
+    } finally {
+      setConvertingHeic(false);
+    }
+  }
+
+  async function debugRunSelectedHeic() {
+    try {
+      if (!selectedEvidenceId) return;
+      setDebuggingHeic(true);
+      const report: any = await postJson(`${functionsBase}/debugHeicConversionV1`, {
+        orgId,
+        incidentId,
+        evidenceId: selectedEvidenceId,
+        dryRun: false,
+      });
+      console.log("debugHeicConversionV1 report", report);
+      const ok = !!(report?.conversionResult?.ok);
+      const reason = String(report?.conversionResult?.reason || "");
+      if (ok) {
+        toast("Debug conversion: success ✓", 2200);
+        await refresh();
+      } else if (reason === "object_not_found" || report?.sourceCheck?.httpStatus === 404) {
+        toast("Upload not in storage yet", 3200);
+      } else {
+        toast("Debug conversion: " + (reason || "no change"), 3200);
+      }
+    } catch (e: any) {
+      toast("Debug conversion failed: " + String(e?.message || e), 3200);
+      console.error("debugHeicConversionV1 failed", e);
+    } finally {
+      setDebuggingHeic(false);
+    }
   }
 
   // Narrative timeline: compress types into a readable story
@@ -882,12 +1145,17 @@ useEffect(() => {
 
   return (
     <main className="min-h-screen bg-black text-white">
+      {process.env.NODE_ENV !== "production" ? (
+        <div className="px-4 pt-2 text-[11px] text-gray-400">
+          functionsBase={functionsBase || "(unset)"}
+        </div>
+      ) : null}
       {/* Top bar */}
       <div className="px-4 pt-4 pb-3 border-b border-white/10 sticky top-0 bg-black/80 backdrop-blur z-10">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-[11px] uppercase tracking-wider text-gray-400">Field Incident</div>
-            <div className="text-xl font-semibold tracking-tight">{incidentId} • Spokane Valley</div>
+            <div className="text-xl font-semibold tracking-tight">{incidentId} • Riverbend Electric</div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -919,18 +1187,18 @@ useEffect(() => {
               
 {/* PEAKOPS: removed big Open Notes bar */}
 {/* PEAKOPS_NEXTBESTACTION_V1_RENDER */}
-        <NextBestAction
-          arrived={arrived}
-          hasSession={_hasSession}
-          hasEvidence={_hasEvidence}
-          hasNotes={_hasNotes}
-          hasApproved={_hasApproved}
-          onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
-	  onAddEvidence={() => document.getElementById("evidence")?.scrollIntoView({ behavior: "smooth", block: "start" })}
-          onMarkArrived={() => markArrived()}
-          onSubmitSession={() => submitSession()}
-        />
-        
+		<NextBestAction
+	  arrived={arrived}
+	  hasSession={_hasSession}
+	  hasEvidence={_hasEvidence}
+	  hasNotes={_hasNotes}
+	  hasApproved={_hasApproved}
+	  onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
+	  onAddEvidence={goAddEvidence}
+  onMarkArrived={() => { try { markArrived(); } catch {} }}
+  onSubmitSession={() => { try { submitSession(); } catch {} }}
+/>
+
         {/* PHASE6_1_TIMERS_V1_RENDER */}
         {/* PHASE6_1_TIMERS_POLISH_V2 + PHASE6_2_ACTION_NEEDED_V1 */}
 <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
@@ -1029,14 +1297,15 @@ useEffect(() => {
           .filter((ev:any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath || "").includes("demo_placeholder"));
         const maxShow = 12;
         const shown = list.slice(0, maxShow);
-        const more = Math.max(0, list.length - maxShow);
-
         return (
           <>
             {shown.map((ev:any) => {
               const u = thumbUrl[ev.id];
               const labels = (ev.labels || []).map(normLabel);
               const selected = selectedEvidenceId === ev.id;
+              const converting = isConvertingHeic(ev as EvidenceDoc);
+              const convStatus = String((ev as any)?.file?.conversionStatus || "").toLowerCase();
+              const uploadMissing = convStatus === "source_missing";
 
               return (
                 <button
@@ -1065,6 +1334,16 @@ useEffect(() => {
                         {l}
                       </span>
                     ))}
+                    {converting ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-400/15 border-amber-300/30 text-amber-100">
+                        Converting…
+                      </span>
+                    ) : null}
+                    {uploadMissing ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100">
+                        Upload not in storage yet
+                      </span>
+                    ) : null}
                   </div>
 
                   <div className="absolute bottom-2 left-2 right-2 text-[10px] text-gray-200/90 truncate bg-black/40 px-2 py-1 rounded">
@@ -1074,18 +1353,7 @@ useEffect(() => {
               );
             })}
 
-            {more ? (
-              <button
-                type="button"
-                className="snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition flex flex-col items-center justify-center"
-                onClick={() => {
-                  try { document.getElementById("evidence")?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch {}
-                }}>
-                <div className="text-lg font-semibold text-gray-100">+{more}</div>
-                <div className="text-[11px] text-gray-400 mt-1">more</div>
-                <div className="text-[10px] text-gray-500 mt-2 px-2 text-center">Scroll to view</div>
-              </button>
-            ) : null}
+            
           </>
         );
       })()}
@@ -1189,7 +1457,7 @@ useEffect(() => {
                 ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
                 : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
             }
-            onClick={() => { try { document.getElementById("evidence")?.scrollIntoView({ behavior: "smooth", block: "start" }); } catch {} }}
+            onClick={() => { try { goAddEvidence(); } catch {} }}
             title={_hasEvidence ? "Evidence captured (done)" : "Go to Evidence"}>
             Evidence
           </button>
@@ -1243,6 +1511,26 @@ useEffect(() => {
                 onClick={() => setPreviewOpen(false)}>
                 Close
               </button>
+              {process.env.NODE_ENV !== "production" && selectedIsHeic && selectedMissingDerivatives ? (
+                <button
+                  className="text-xs px-2 py-1 rounded bg-amber-500/20 border border-amber-300/30 hover:bg-amber-500/30"
+                  disabled={convertingHeic}
+                  onClick={() => { try { convertSelectedHeicNow(); } catch {} }}
+                  title="Dev fallback: run HEIC conversion now"
+                >
+                  {convertingHeic ? "Converting…" : "Convert HEIC"}
+                </button>
+              ) : null}
+              {process.env.NODE_ENV !== "production" && selectedIsHeic ? (
+                <button
+                  className="text-xs px-2 py-1 rounded bg-sky-500/20 border border-sky-300/30 hover:bg-sky-500/30"
+                  disabled={debuggingHeic}
+                  onClick={() => { try { debugRunSelectedHeic(); } catch {} }}
+                  title="Dev: run structured conversion debug + one conversion attempt"
+                >
+                  {debuggingHeic ? "Debugging…" : "Debug/Run Conversion"}
+                </button>
+              ) : null}
             </div>
             <div className="p-3">
               {previewUrl ? (

@@ -1,4 +1,5 @@
 import { getFirestore } from "firebase-admin/firestore";
+import { getEvidenceCollectionRef } from "./evidenceRefs.mjs";
 
 export async function handleListEvidenceLockerRequest(req, res) {
   try {
@@ -13,14 +14,8 @@ export async function handleListEvidenceLockerRequest(req, res) {
     }
 
     const db = getFirestore();
-    const snap = await db
-      .collection("incidents").doc(incidentId)
-      .collection("evidence_locker")
-      .orderBy("storedAt", "desc")
-      .limit(limit)
-      .get();
-
-    const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const out = await listEvidenceLockerCore(db, { orgId, incidentId, limit });
+    const docs = out.docs || [];
     return res.json({ ok:true, orgId, incidentId, count: docs.length, docs });
   } catch (e) {
     return res.status(500).json({ ok:false, error:String(e) });
@@ -31,14 +26,18 @@ export async function handleListEvidenceLockerRequest(req, res) {
 // ---- Compatibility exports (for exportRegPacketV1) ----
 
 export async function listEvidenceLockerCore(db, { orgId, incidentId, limit=25 } = {}) {
-  if (!orgId || !incidentId) return { ok:false, error:"Missing orgId/incidentId", orgId, incidentId, count:0, docs:[] };
-  const snap = await db.collection("incidents").doc(String(incidentId))
-    .collection("evidence_locker")
+  if (!incidentId) return { ok:false, error:"Missing incidentId", orgId, incidentId, count:0, docs:[] };
+  const cap = Math.min(Number(limit || 25), 500);
+  const scan = orgId ? Math.min(cap * 3, 500) : cap;
+  const snap = await getEvidenceCollectionRef(db, String(incidentId))
     .orderBy("storedAt","desc")
-    .limit(Math.min(Number(limit||25), 500))
+    .limit(scan)
     .get()
     .catch(() => null);
 
-  const docs = snap ? snap.docs.map(d => ({ id:d.id, ...(d.data()||{}) })) : [];
+  const docsAll = snap ? snap.docs.map(d => ({ id:d.id, ...(d.data()||{}) })) : [];
+  const docs = orgId
+    ? docsAll.filter((d) => String(d.orgId || "") === String(orgId)).slice(0, cap)
+    : docsAll.slice(0, cap);
   return { ok:true, orgId, incidentId, count: docs.length, docs };
 }

@@ -116,3 +116,24 @@ firestore-debug.log
 peakops_*packet_*.zip
 peakops_regpacket_*.zip
 next-app/package-lock.json
+
+# Secret hygiene (credentials JSON)
+serviceAccount.json
+service-account.json
+sa.json
+sa-peakops.json
+ingest-fns/service-account.json
+next-app/service-account.json
+*service-account*.json
+*serviceAccount*.json
+sa*.json
+.secrets/
+
+# One True Stack local-only archives / scratch
+archive/local-only/
+firebase.emu.min.json
+firebase.deploy.functions_clean.json
+
+# Canonical env contract: keep template, ignore local values
+next-app/.env.local
+!next-app/.env.local.example

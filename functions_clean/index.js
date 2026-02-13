@@ -31,6 +31,9 @@ exports.exportContractPacketV1 = onRequest(exportContractPacketV1);
 
 // Phase 2
 exports.getWorkflowV1 = require("./getWorkflowV1").getWorkflowV1;
+exports.startFieldSessionV1 = require("./startFieldSessionV1").startFieldSessionV1;
+exports.markArrivedV1 = require("./markArrivedV1").markArrivedV1;
+exports.addEvidenceV1 = require("./addEvidenceV1").addEvidenceV1;
 
 /* --- Timeline Events API --- */
 const { getTimelineEventsV1 } = require("./getTimelineEventsV1");
@@ -54,3 +57,24 @@ exports.generateDIRSV1 = require("./generateDIRSV1").generateDIRSV1;
 exports.generateTimelineV1 = generateTimelineV1;
 
 exports.getIncidentPacketMetaV1 = require("./getIncidentPacketMetaV1").getIncidentPacketMetaV1;
+
+exports.listEvidenceLocker = require("./listEvidenceLocker").listEvidenceLocker;
+exports.getIncidentNotesV1 = require("./getIncidentNotesV1").getIncidentNotesV1;
+exports.saveIncidentNotesV1 = require("./saveIncidentNotesV1").saveIncidentNotesV1;
+
+exports.addMaterialV1 = require("./addMaterialV1").addMaterialV1;
+
+exports.submitFieldSessionV1 = require("./submitFieldSessionV1").submitFieldSessionV1;
+
+exports.approveFieldSessionV1 = require("./approveFieldSessionV1").approveFieldSessionV1;
+
+exports.debugEmitTimelineV1 = require("./debugEmitTimelineV1").debugEmitTimelineV1;
+
+exports.createEvidenceUploadUrlV1 = require("./createEvidenceUploadUrlV1").createEvidenceUploadUrlV1;
+exports.uploadEvidenceProxyV1 = require("./uploadEvidenceProxyV1").uploadEvidenceProxyV1;
+exports.createEvidenceReadUrlV1 = require("./createEvidenceReadUrlV1").createEvidenceReadUrlV1;
+exports.convertHeicOnFinalize = require("./convertHeicOnFinalize").convertHeicOnFinalize;
+exports.convertEvidenceHeicNowV1 = require("./convertEvidenceHeicNowV1").convertEvidenceHeicNowV1;
+exports.runConversionJobsV1 = require("./runConversionJobsV1").runConversionJobsV1;
+exports.debugHeicConversionV1 = require("./debugHeicConversionV1").debugHeicConversionV1;
+exports.getEvidenceDebugV1 = require("./getEvidenceDebugV1").getEvidenceDebugV1;

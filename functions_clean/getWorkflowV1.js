@@ -19,6 +19,9 @@ exports.getWorkflowV1 = onRequest({ cors: true }, async (req, res) => {
       return res.status(404).json({ ok: false, error: "Incident not found" });
     }
 
+    const packetMeta = (incidentSnap.data() || {}).packetMeta || null;
+    const exportReady = !!(packetMeta && packetMeta.packetHash);
+
     // ---- derive readiness from Firestore ----
     const filingsSnap = await incidentRef.collection("filings").limit(1).get();
     const filingsReady = filingsSnap.size > 0;
@@ -31,7 +34,7 @@ exports.getWorkflowV1 = onRequest({ cors: true }, async (req, res) => {
       { key: "intake",   title: "Intake",           status: "DONE" },
       { key: "timeline", title: "Build Timeline",   status: timelineReady ? "DONE" : "TODO" },
       { key: "filings",  title: "Generate Filings", status: filingsReady ? "DONE" : "TODO" },
-      { key: "export",   title: "Export Packet",    status: "TODO" },
+      { key: "export",   title: "Export Packet",    status: exportReady ? "DONE" : "TODO" },
     ];
 
     return res.status(200).json({
@@ -44,7 +47,7 @@ exports.getWorkflowV1 = onRequest({ cors: true }, async (req, res) => {
         version: "v1",
         steps,
         filingsReady,
-        exportReady: false,
+        exportReady: exportReady,
       },
     });
   } catch (e) {
