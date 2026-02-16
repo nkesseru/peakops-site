@@ -153,9 +153,9 @@ function isConvertingHeic(ev: EvidenceDoc) {
   const f: any = ev?.file || {};
   const status = String(f?.conversionStatus || "").toLowerCase();
   if (status === "ready" || status === "source_missing" || status === "failed") return false;
-  const hasPreview = !!String(f?.previewPath || f?.derivatives?.preview?.storagePath || "").trim();
-  const hasThumb = !!String(f?.thumbPath || f?.derivatives?.thumb?.storagePath || "").trim();
-  if (hasPreview || hasThumb) return false;
+  const hasPreview = !!String(f?.previewPath || "").trim();
+  const hasThumb = !!String(f?.thumbPath || "").trim();
+  if (hasThumb || hasPreview) return false;
   return status === "pending";
 }
 
@@ -947,6 +947,25 @@ return () => clearInterval(t);
     return () => window.clearTimeout(t);
   }, [evidence, incidentId]);
 
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    (evidence || []).forEach((ev: any) => {
+      const f: any = ev?.file || {};
+      const hasThumb = !!String(f?.thumbPath || "").trim();
+      const hasPreview = !!String(f?.previewPath || "").trim();
+      const conversionStatus = String(f?.conversionStatus || "").toLowerCase();
+      const converting = isConvertingHeic(ev as EvidenceDoc);
+      // Dev-only trace for HEIC conversion state drift.
+      console.debug("[heic-status]", {
+        evidenceId: String(ev?.id || ""),
+        conversionStatus,
+        hasThumb,
+        hasPreview,
+        isConverting: converting,
+      });
+    });
+  }, [evidence]);
+
   
   // ZIP: query hi=... -> toast + pulse + auto-scroll
   const sp = useSearchParams();
@@ -1058,6 +1077,8 @@ useEffect(() => {
       const ok = !!(report?.conversionResult?.ok);
       const reason = String(report?.conversionResult?.reason || "");
       if (ok) {
+        await refresh();
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
         await refresh();
         const hasPreview = !!String(report?.finalEvidence?.previewPath || "").trim();
         const hasThumb = !!String(report?.finalEvidence?.thumbPath || "").trim();

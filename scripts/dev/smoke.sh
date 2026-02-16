@@ -5,7 +5,7 @@ PROJECT_ID="${PROJECT_ID:-peakops-pilot}"
 FN_PORT="${FN_PORT:-5002}"
 NEXT_PORT="${NEXT_PORT:-3001}"
 ORG_ID="${ORG_ID:-riverbend-electric}"
-INCIDENT_ID="${INCIDENT_ID:-inc_20260121_121658_26f47b}"
+INCIDENT_ID="${INCIDENT_ID:-inc_demo}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="$ROOT_DIR/next-app/.env.local"
@@ -61,6 +61,12 @@ fi
 EVIDENCE_COUNT="$(jq -r '(.count // 0) as $c | if ($c|type) == "number" then $c else 0 end' /tmp/peakops_smoke_list.json)"
 if [[ "${EVIDENCE_COUNT}" -le 0 ]]; then
   fail "listEvidenceLocker returned count=0 for incident ${INCIDENT_ID}. Run scripts/dev/seed_demo_incident.sh"
+fi
+if ! jq -e '.docs[]? | select(.id=="ev_demo_heic_001")' /tmp/peakops_smoke_list.json >/dev/null 2>&1; then
+  fail "Seed marker evidence ev_demo_heic_001 missing for incident ${INCIDENT_ID}. Run scripts/dev/seed_demo_incident.sh"
+fi
+if ! jq -e '.docs[]? | select(((.file.thumbPath // "") | length) > 0 or ((.file.conversionStatus // "") | ascii_downcase) == "ready" or ((.file.conversionStatus // "") | ascii_downcase) == "n/a")' /tmp/peakops_smoke_list.json >/dev/null 2>&1; then
+  say "WARN no evidence has thumbPath/ready/n/a status yet; conversion pipeline may still be warming up."
 fi
 
 say "Probing Next"
