@@ -38,6 +38,7 @@ export type UploadEvidenceArgs = {
 
   file: File;
   sessionId?: string;
+  jobId?: string;
 
   onStatus?: (s: string) => void;
 };
@@ -167,6 +168,7 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
     gps,
     notes,
     file,
+    jobId,
     onStatus,
   } = args;
 
@@ -319,6 +321,7 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
     bucket: finalBucket,
     notes: notes || "",
     originalName: file.name || "upload.bin",
+    jobId: String(jobId || "").trim() || null,
   });
 
   if (!addResp.ok) {

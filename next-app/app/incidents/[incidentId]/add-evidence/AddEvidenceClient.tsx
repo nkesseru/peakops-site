@@ -30,6 +30,7 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
   // Env / context
   const functionsBase = getFunctionsBase();
   const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
+  const selectedJobId = String(sp?.get("jobId") || "").trim();
 
   // Prefer orgId from query (?orgId=...), else localStorage, else riverbend-electric (your demo org)
   const orgId = useMemo(() => {
@@ -148,6 +149,7 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
 
   async function uploadOne(it: Item) {
     if (!functionsBase) throw new Error("Missing NEXT_PUBLIC_FUNCTIONS_BASE in .env.local");
+    if (!selectedJobId) throw new Error("No job selected. Return to incident page and pick My job first.");
     await uploadEvidence({
       functionsBase,
       techUserId,
@@ -155,6 +157,7 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
       incidentId,
       phase: "inspection",
       labels: ["damage"],
+      jobId: selectedJobId,
       file: it.file,
       onStatus: setStatus,
     });
@@ -198,6 +201,12 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
         <div className="text-lg font-semibold">
           Incident {incidentId.slice(-6)}
         </div>
+        <div className="text-xs text-cyan-200/90 mt-1">
+          My job: {selectedJobId || "(not selected)"}
+        </div>
+        {!selectedJobId ? (
+          <div className="text-xs text-amber-200 mt-1">Select a job on incident page before uploading.</div>
+        ) : null}
         <div className="text-xs text-gray-500 mt-1">Audit-safe capture • Auto-tagged • Time-locked</div>
       </div>
 
@@ -297,8 +306,8 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
               <button
                 className="mt-3 w-full py-4 rounded-xl bg-green-600/90 border border-green-300/20 text-white font-semibold hover:bg-green-600 active:translate-y-[1px] transition"
                 onClick={uploadAll}
-                disabled={busy || !items.length}
-                title={items.length ? "Upload all queued evidence" : "Add photos first"}
+                disabled={busy || !items.length || !selectedJobId}
+                title={!selectedJobId ? "Return and select My job first" : (items.length ? "Upload all queued evidence" : "Add photos first")}
               >
                 {busy ? (status || "Working…") : "Upload & Secure Evidence"}
               </button>

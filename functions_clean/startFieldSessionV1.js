@@ -32,6 +32,16 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
 
     const db = getFirestore();
     const base = db.collection("orgs").doc(orgId).collection("incidents").doc(incidentId);
+    const incRef = db.collection("incidents").doc(incidentId);
+    const incSnap = await incRef.get();
+    const inc = incSnap.exists ? (incSnap.data() || {}) : {};
+    const curStatus = String(inc.status || "").toLowerCase();
+    if (curStatus === "closed") {
+      return j(res, 409, { ok: false, error: "incident_closed", detail: "Incident is read-only" });
+    }
+    if (curStatus && curStatus !== "open" && curStatus !== "in_progress" && curStatus !== "submitted") {
+      return j(res, 409, { ok: false, error: "invalid_transition", detail: `unsupported incident.status=${curStatus}` });
+    }
 
     const sessionId = newId("ses");
     const now = FieldValue.serverTimestamp();
@@ -40,6 +50,19 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
       { orgId, incidentId, sessionId, techUserId, status: "IN_PROGRESS", startedAt: now, requestedBy, version: 1 },
       { merge: true }
     );
+
+    if (!curStatus || curStatus === "open") {
+      await incRef.set(
+        {
+          orgId,
+          incidentId,
+          status: "in_progress",
+          updatedAt: now,
+          inProgressAt: now,
+        },
+        { merge: true }
+      );
+    }
 
     return j(res, 200, { ok: true, orgId, incidentId, sessionId, status: "IN_PROGRESS" });
   } catch (e) {

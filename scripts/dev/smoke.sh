@@ -12,6 +12,7 @@ ENV_FILE="$ROOT_DIR/next-app/.env.local"
 EXPECTED_BASE="http://127.0.0.1:${FN_PORT}/${PROJECT_ID}/us-central1"
 LIST_URL="$EXPECTED_BASE/listEvidenceLocker?orgId=${ORG_ID}&incidentId=${INCIDENT_ID}&limit=50"
 NEXT_URL="http://127.0.0.1:${NEXT_PORT}"
+INCIDENT_PAGE_URL="${NEXT_URL}/incidents/${INCIDENT_ID}"
 
 fail() {
   echo "[smoke] FAIL: $*" >&2
@@ -73,6 +74,10 @@ say "Probing Next"
 NHTTP="$(curl -sS -o /dev/null -w '%{http_code}' "$NEXT_URL" || true)"
 if [[ "$NHTTP" == "000" ]]; then
   fail "Next not reachable at ${NEXT_URL}"
+fi
+IPHTTP="$(curl -sS -o /dev/null -w '%{http_code}' "$INCIDENT_PAGE_URL" || true)"
+if [[ "$IPHTTP" == "000" ]]; then
+  fail "Incident page not reachable at ${INCIDENT_PAGE_URL}"
 fi
 
 say "PASS"

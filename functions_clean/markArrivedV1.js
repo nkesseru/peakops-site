@@ -44,6 +44,12 @@ exports.markArrivedV1 = onRequest({ cors: true }, async (req, res) => {
     const gps = normGps(body.gps);
 
     const db = getFirestore();
+    const incRef = db.collection("incidents").doc(incidentId);
+    const incSnap = await incRef.get();
+    const incStatus = String((incSnap.exists ? (incSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (incStatus === "closed") {
+      return j(res, 409, { ok: false, error: "incident_closed", detail: "Incident is read-only" });
+    }
     const sessionRef =
       db.collection("orgs").doc(orgId)
         .collection("incidents").doc(incidentId)

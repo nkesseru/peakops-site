@@ -138,11 +138,12 @@ export async function runHealthChecks(): Promise<HealthReport> {
     })
   );
 
-  const listUrl = `${functionsBase}/listEvidenceLocker?orgId=${encodeURIComponent(DEMO_ORG_ID)}&incidentId=${encodeURIComponent(DEMO_INCIDENT_ID)}&limit=1`;
+  const listUrl = `${functionsBase}/listEvidenceLocker?orgId=${encodeURIComponent(DEMO_ORG_ID)}&incidentId=${encodeURIComponent(DEMO_INCIDENT_ID)}&limit=25`;
   const list = await timedJson<{ ok?: boolean; count?: number; docs?: any[] }>(listUrl);
   const demoCount = list.ok
     ? (typeof list.data?.count === "number" ? list.data.count : Array.isArray(list.data?.docs) ? list.data.docs.length : 0)
     : 0;
+  const hasSeedHeic = list.ok && Array.isArray(list.data?.docs) && list.data.docs.some((d: any) => String(d?.id || "") === "ev_demo_heic_001");
   checks.push(
     makeCheck({
       name: "listEvidenceLocker",
@@ -153,17 +154,49 @@ export async function runHealthChecks(): Promise<HealthReport> {
     })
   );
 
-  const demoSeeded = list.ok && list.data?.ok === true && demoCount > 0;
+  const demoSeeded = list.ok && list.data?.ok === true && demoCount >= 5 && hasSeedHeic;
   checks.push(
     makeCheck({
-      name: "Demo data readiness",
+      name: "Demo seed integrity",
       section: "Demo Data",
       ok: demoSeeded,
       severity: demoSeeded ? "green" : "yellow",
       details: demoSeeded
-        ? `Seed present for ${DEMO_INCIDENT_ID}.`
-        : "Demo not seeded. Run scripts/dev/seed_demo_incident.sh",
+        ? `count=${demoCount}; found ev_demo_heic_001=true`
+        : `Expected count>=5 and ev_demo_heic_001 present. got count=${demoCount} heicSeed=${String(hasSeedHeic)}. Run scripts/dev/seed_demo_incident.sh`,
       latencyMs: list.latencyMs,
+    })
+  );
+
+  const heicDebug = await timedJson<any>(`${functionsBase}/debugHeicConversionV1`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      orgId: DEMO_ORG_ID,
+      incidentId: DEMO_INCIDENT_ID,
+      dryRun: true,
+    }),
+  });
+  const heicReason = heicDebug.ok ? String(heicDebug.data?.reason || "") : "";
+  const heicSelected = heicDebug.ok ? String(heicDebug.data?.selectedEvidenceId || "") : "";
+  const heicOk = heicDebug.ok && (
+    (heicDebug.data?.ok === true && !!heicSelected) ||
+    heicReason === "no_heic_evidence_found"
+  );
+  const heicSeverity: HealthCheck["severity"] =
+    heicDebug.ok && heicReason === "no_heic_evidence_found" ? "yellow" : (heicOk ? "green" : "red");
+  checks.push(
+    makeCheck({
+      name: "debugHeicConversionV1",
+      section: "HEIC Stack",
+      ok: heicOk,
+      severity: heicSeverity,
+      details: heicDebug.ok
+        ? (heicReason === "no_heic_evidence_found"
+          ? "no_heic_evidence_found (expected if HEIC sample not provided in seed script)"
+          : `ok=${String(heicDebug.data?.ok)} selectedEvidenceId=${heicSelected || "<empty>"}`)
+        : heicDebug.error,
+      latencyMs: heicDebug.latencyMs,
     })
   );
 
@@ -197,13 +230,22 @@ export async function runHealthChecks(): Promise<HealthReport> {
     uploadProbe.data?.ok === true &&
     !!String(uploadProbe.data?.bucket || "").trim() &&
     !!String(uploadProbe.data?.uploadUrl || "").trim();
+  let uploadHost = "";
+  if (uploadProbe.ok) {
+    try {
+      uploadHost = new URL(String(uploadProbe.data?.uploadUrl || "")).hostname;
+    } catch {
+      uploadHost = "";
+    }
+  }
+  const uploadHostOk = uploadHost === "storage.googleapis.com";
   checks.push(
     makeCheck({
-      name: "createEvidenceUploadUrlV1",
+      name: "Storage upload readiness",
       section: "Storage/Uploads",
-      ok: uploadOk,
+      ok: uploadOk && uploadHostOk,
       details: uploadProbe.ok
-        ? `ok=${String(uploadProbe.data?.ok)} bucket=${String(uploadProbe.data?.bucket || "<empty>")}`
+        ? `ok=${String(uploadProbe.data?.ok)} bucket=${String(uploadProbe.data?.bucket || "<empty>")} uploadHost=${uploadHost || "<invalid>"} proxyDefault=${String(!useSignedPut)}`
         : uploadProbe.error,
       latencyMs: uploadProbe.latencyMs,
     })

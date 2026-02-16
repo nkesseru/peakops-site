@@ -89,6 +89,7 @@ exports.addEvidenceV1 = onRequest({ cors: true }, async (req, res) => {
 
     const gps = normGps(body.gps);
     const notes = String(body.notes || "").trim().slice(0, 500);
+    const jobId = String(body.jobId || "").trim();
 
     // In MVP we store metadata; actual upload can be separate.
     const storagePath = String(body.storagePath || "").trim(); // optional for now
@@ -120,6 +121,19 @@ exports.addEvidenceV1 = onRequest({ cors: true }, async (req, res) => {
     if (!resolvedBucket) return j(res, 400, { ok: false, error: "bucket_missing", details: "resolved bucket empty" });
 
     const db = getFirestore();
+    const incRef = db.collection("incidents").doc(incidentId);
+    const incSnap = await incRef.get();
+    const incStatus = String((incSnap.exists ? (incSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (incStatus === "closed") {
+      return j(res, 409, { ok: false, error: "incident_closed", detail: "Incident is read-only" });
+    }
+    if (jobId) {
+      const jobRef = db.collection("incidents").doc(incidentId).collection("jobs").doc(jobId);
+      const jobSnap = await jobRef.get();
+      if (!jobSnap.exists) return j(res, 404, { ok: false, error: "job_not_found" });
+      const job = jobSnap.data() || {};
+      if (String(job.orgId || "") !== orgId) return j(res, 409, { ok: false, error: "org_mismatch" });
+    }
     const { getEvidenceCollectionRef } = await import("./evidenceRefs.mjs");
 
     // Ensure session exists (org-scoped)
@@ -168,6 +182,9 @@ exports.addEvidenceV1 = onRequest({ cors: true }, async (req, res) => {
           conversionStatus,
           conversionUpdatedAt: now,
           exportName,
+        },
+        evidence: {
+          jobId: jobId || null,
         },
         version: 1,
       },

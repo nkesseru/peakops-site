@@ -27,6 +27,16 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     const submittedBy = String(body.submittedBy || body.techUserId || "ui");
 
     const db = getFirestore();
+    const incRef = db.collection("incidents").doc(incidentId);
+    const incSnap = await incRef.get();
+    const incStatus = String((incSnap.exists ? (incSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (incStatus === "closed") {
+      return j(res, 409, { ok:false, error:"incident_closed", detail:"Incident is read-only" });
+    }
+    if (incStatus && incStatus !== "open" && incStatus !== "in_progress" && incStatus !== "submitted") {
+      return j(res, 409, { ok:false, error:"invalid_transition", detail:`unsupported incident.status=${incStatus}` });
+    }
+
     const sesRef = db.collection("orgs").doc(orgId)
       .collection("incidents").doc(incidentId)
       .collection("fieldSessions").doc(sessionId);
@@ -42,18 +52,28 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 200, { ok:true, orgId, incidentId, sessionId, already:true });
     }
 
+    const now = FieldValue.serverTimestamp();
     await sesRef.set(
       {
         status: "SUBMITTED",
-        submittedAt: FieldValue.serverTimestamp(),
+        submittedAt: now,
         submittedBy
       },
       { merge: true }
     );
 
-    return j(res, 200, { ok:true, orgId, incidentId, sessionId, status:"SUBMITTED" });
-
     await emitTimelineEvent({ orgId, incidentId, type: "FIELD_SUBMITTED", sessionId, actor: submittedBy });
+    await incRef.set(
+      {
+        orgId,
+        incidentId,
+        status: "submitted",
+        submittedAt: now,
+        submittedBy,
+        updatedAt: now,
+      },
+      { merge: true }
+    );
 
     return j(res, 200, { ok:true, orgId, incidentId, sessionId, status:"SUBMITTED" });
   } catch (e) {
