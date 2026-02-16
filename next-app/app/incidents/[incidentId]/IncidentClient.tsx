@@ -161,6 +161,12 @@ async function postJson<T>(url: string, body: any): Promise<T> {
 export default function IncidentClient({ incidentId }: { incidentId: string }) {
   const functionsBase = getFunctionsBase();
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("peakops_last_incident_id", String(incidentId || "").trim());
+    } catch {}
+  }, [incidentId]);
+
   // PEAKOPS_NOTES_SAVED_FOCUS: re-check when user returns from Notes page
   useEffect(() => {
     try { outboxFlushSupervisorRequests(); } catch {}
