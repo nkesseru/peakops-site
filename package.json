@@ -7,6 +7,7 @@
     "start": "node functions/server.mjs",
     "test:contracts": "bash scripts/dev/contracts_stack_up_fixed.sh car_abc123 cust_acme_001 v1",
     "dev": "cd next-app && pnpm dev",
+    "next:restart": "cd next-app && pnpm run dev:local",
     "build": "next build",
     "ui": "lsof -ti :3001 | xargs -r kill -9 || true; cd next-app && PORT=3001 NEXT_DISABLE_TURBOPACK=1 npm run dev",
     "ui:kill": "pkill -f \"next dev\" || true && rm -f next-app/.next/dev/lock",

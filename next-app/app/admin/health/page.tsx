@@ -23,6 +23,7 @@ export default function AdminHealthPage() {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<HealthReport | null>(null);
   const [error, setError] = useState<string>("");
+  const [copied, setCopied] = useState(false);
 
   async function run() {
     setLoading(true);
@@ -49,6 +50,20 @@ export default function AdminHealthPage() {
       items: src.filter((c) => c.section === section),
     }));
   }, [report]);
+
+  const overall = useMemo(() => {
+    if (!report) return "YELLOW";
+    if (report.summary.fail > 0) return "RED";
+    if (report.summary.warn > 0) return "YELLOW";
+    return "GREEN";
+  }, [report]);
+
+  async function copyReport() {
+    if (!report) return;
+    await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  }
 
   return (
     <main style={{ minHeight: "100vh", background: "#000", color: "#fff", padding: 20 }}>
@@ -94,10 +109,27 @@ export default function AdminHealthPage() {
             <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
               NODE_ENV: <code>{report.config.nodeEnv || "<empty>"}</code>
             </div>
-            <div style={{ marginTop: 6, display: "flex", gap: 10, fontSize: 12 }}>
+            <div style={{ marginTop: 6, display: "flex", gap: 10, fontSize: 12, flexWrap: "wrap" }}>
+              <span style={{ ...badgeStyle(overall === "GREEN" ? "green" : overall === "YELLOW" ? "yellow" : "red"), borderRadius: 999, padding: "2px 8px", fontWeight: 600 }}>
+                Overall {overall}
+              </span>
               <span style={{ ...badgeStyle("green"), borderRadius: 999, padding: "2px 8px" }}>OK {report.summary.ok}</span>
               <span style={{ ...badgeStyle("yellow"), borderRadius: 999, padding: "2px 8px" }}>Warn {report.summary.warn}</span>
               <span style={{ ...badgeStyle("red"), borderRadius: 999, padding: "2px 8px" }}>Fail {report.summary.fail}</span>
+              <button
+                type="button"
+                onClick={copyReport}
+                style={{
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  background: "rgba(255,255,255,0.09)",
+                  color: "#fff",
+                  borderRadius: 999,
+                  padding: "2px 10px",
+                  cursor: "pointer",
+                }}
+              >
+                {copied ? "Copied" : "Copy report"}
+              </button>
             </div>
           </div>
         ) : null}
@@ -136,6 +168,9 @@ export default function AdminHealthPage() {
                         <div style={{ ...badgeStyle(c.severity), borderRadius: 999, padding: "2px 8px", fontSize: 11 }}>
                           {c.severity.toUpperCase()}
                         </div>
+                      </div>
+                      <div style={{ marginTop: 4, fontSize: 11, opacity: 0.75 }}>
+                        result: {c.ok ? "PASS" : "FAIL"}
                       </div>
                       <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                         {c.details}

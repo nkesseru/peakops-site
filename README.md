@@ -41,6 +41,12 @@ cd next-app
 pnpm run dev:local
 ```
 
+If you see `EADDRINUSE`, run:
+
+```bash
+pnpm run dev:clean
+```
+
 3.5. Enable direct browser PUT to signed GCS URLs (one-time per bucket):
 
 ```bash

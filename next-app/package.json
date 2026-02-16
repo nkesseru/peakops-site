@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "dev:local": "next dev --hostname 127.0.0.1 --port 3001",
+    "dev:local": "lsof -tiTCP:3001 -sTCP:LISTEN | xargs -r kill -9 || true && next dev --hostname 127.0.0.1 --port 3001",
+    "dev:clean": "lsof -tiTCP:3001 -sTCP:LISTEN | xargs -r kill -9 || true && rm -rf .next && pnpm run dev:local",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
