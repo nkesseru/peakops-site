@@ -30,7 +30,7 @@ firebase emulators:start --project peakops-pilot --config firebase.json --only f
 
 ```bash
 cd next-app
-pnpm dev -- --hostname 127.0.0.1 --port 3001
+pnpm run dev:local
 ```
 
 3. Run smoke test:
