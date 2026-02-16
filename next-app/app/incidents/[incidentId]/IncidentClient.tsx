@@ -30,6 +30,10 @@ type EvidenceDoc = {
       thumb?: { storagePath?: string; contentType?: string };
     };
   };
+  evidence?: {
+    jobId?: string | null;
+  };
+  jobId?: string | null;
   sessionId?: string;
   notes?: string;
 };
@@ -44,6 +48,22 @@ type TimelineDoc = {
   meta?: any;
   gps?: any;
 };
+
+type JobStatus = "open" | "in_progress" | "complete" | "review" | "approved" | "rejected";
+type JobDoc = {
+  id: string;
+  jobId?: string;
+  orgId?: string;
+  incidentId?: string;
+  title?: string;
+  status?: JobStatus | string;
+  assignedTo?: string | null;
+  notes?: string | null;
+  createdAt?: { _seconds: number };
+  updatedAt?: { _seconds: number };
+};
+
+const JOB_STATUSES: JobStatus[] = ["open", "in_progress", "complete", "review", "approved", "rejected"];
 
 function fmtAgo(sec?: number) {
   if (!sec) return "—";
@@ -109,6 +129,16 @@ function chipClass(kind: "actor" | "session" | "meta" = "meta") {
   if (kind === "actor") return "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-200";
   if (kind === "session") return "px-2 py-0.5 rounded-full bg-black/40 border border-white/10 text-gray-300";
   return "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-300";
+}
+
+function jobStatusPill(status: string) {
+  const s = String(status || "").toLowerCase();
+  if (s === "approved") return "bg-emerald-500/15 border-emerald-300/30 text-emerald-100";
+  if (s === "rejected") return "bg-red-500/15 border-red-300/30 text-red-100";
+  if (s === "in_progress") return "bg-blue-500/15 border-blue-300/30 text-blue-100";
+  if (s === "review") return "bg-amber-500/15 border-amber-300/30 text-amber-100";
+  if (s === "complete") return "bg-indigo-500/15 border-indigo-300/30 text-indigo-100";
+  return "bg-white/8 border-white/15 text-gray-200";
 }
 
 function isHeicEvidence(ev: EvidenceDoc) {
@@ -190,6 +220,8 @@ export default function IncidentClient({ incidentId }: { incidentId: string }) {
 
   const [arrived, setArrived] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [closingIncident, setClosingIncident] = useState(false);
+  const [incidentStatus, setIncidentStatus] = useState<string>("open");
 // PHASE7_2_REQUPDATE_SYNC_V1
 
   const [arriving, setArriving] = useState(false);
@@ -211,6 +243,14 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
   const goAddEvidence = async () => {
     // PEAKOPS_EVIDENCE_GO_V2: ensure session exists, then go to add-evidence
     try {
+      if (String(incidentStatus).toLowerCase() === "closed") {
+        toast("Incident is closed (read-only).", 2600);
+        return;
+      }
+      if (!String(currentJobId || "").trim()) {
+        toast("Select My job first before uploading evidence.", 2600);
+        return;
+      }
       setAddingEvidence(true);
 
       // If we already have a session, just go.
@@ -240,7 +280,7 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
         try { setActiveSessionId(sid); } catch {}
       }
 
-      router.push(`/incidents/${incidentId}/add-evidence?sid=${encodeURIComponent(sid)}`);
+      router.push(`/incidents/${incidentId}/add-evidence?sid=${encodeURIComponent(sid)}&jobId=${encodeURIComponent(String(currentJobId || "").trim())}`);
     } catch (e: any) {
       const msg = e?.message || String(e);
       try { toast("Add evidence failed: " + msg, 3500); } catch {}
@@ -252,7 +292,7 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
 
 
   // V6_SESSION_HELPERS__WIRE
-  async function markArrived() {
+async function markArrived() {
     // PEAKOPS_ARRIVE_RETRY_SESSION_V1
     // If sessionId is missing or stale, create a new field session and retry once.
     const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
@@ -260,6 +300,7 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
     const org = (typeof orgId !== "undefined" && orgId) ? String(orgId) : "spokane-valley";
 
     if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
+    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
 
     let sid = String(activeSessionId || "").trim();
     if (!sid) {
@@ -356,6 +397,7 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
 }
 
   async function submitSession() {
+    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
     const sid = String(activeSessionId || "").trim();
     if (!sid) return toast("No active session yet — add evidence first.", 3000);
     const ok = window.confirm("Submit this session? This locks the field visit for supervisor review.");
@@ -382,6 +424,29 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
   // Evidence + Timeline
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
+  const [jobs, setJobs] = useState<JobDoc[]>([]);
+  const [jobsBusy, setJobsBusy] = useState(false);
+  const [showCreateJob, setShowCreateJob] = useState(false);
+  const [jobTitle, setJobTitle] = useState("");
+  const [jobAssignedTo, setJobAssignedTo] = useState("");
+  const [jobNotes, setJobNotes] = useState("");
+  const [currentJobId, setCurrentJobId] = useState("");
+  const currentJobStorageKey = `peakops_current_job_${String(incidentId || "").trim()}`;
+
+  useEffect(() => {
+    try {
+      const saved = String(localStorage.getItem(currentJobStorageKey) || "").trim();
+      if (saved) setCurrentJobId(saved);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentId]);
+
+  useEffect(() => {
+    try {
+      if (currentJobId) localStorage.setItem(currentJobStorageKey, String(currentJobId));
+      else localStorage.removeItem(currentJobStorageKey);
+    } catch {}
+  }, [currentJobId, currentJobStorageKey]);
 
   
     
@@ -729,11 +794,144 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   // NOTE: match your actual bucket (this is the one you configured CORS for)
   const evidenceBucket = "peakops-evidence-peakops-pilot-20251028065848";
 
+  const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
+
+  async function closeIncident() {
+    if (isClosed) {
+      toast("Incident already closed.", 1800);
+      return;
+    }
+    const ok = window.confirm("Close this incident? This sets read-only mode.");
+    if (!ok) return;
+    try {
+      setClosingIncident(true);
+      const res = await fetch("/api/fn/closeIncidentV1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orgId, incidentId, closedBy: "field_ui" }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out?.ok) throw new Error(out?.error || `closeIncidentV1 failed (${res.status})`);
+      setIncidentStatus("closed");
+      await refresh();
+      toast("Incident closed ✓", 2200);
+    } catch (e: any) {
+      toast("Close failed: " + String(e?.message || e), 3200);
+    } finally {
+      setClosingIncident(false);
+    }
+  }
+
+  async function createJob() {
+    const title = String(jobTitle || "").trim();
+    if (!title) return toast("Job title is required.", 2200);
+    try {
+      setJobsBusy(true);
+      const out: any = await postJson(`${functionsBase}/createJobV1`, {
+        orgId,
+        incidentId,
+        title,
+        assignedTo: String(jobAssignedTo || "").trim(),
+        notes: String(jobNotes || "").trim(),
+      });
+      if (!out?.ok) throw new Error(out?.error || "createJobV1 failed");
+      setShowCreateJob(false);
+      setJobTitle("");
+      setJobAssignedTo("");
+      setJobNotes("");
+      await refresh();
+      toast("Job created ✓", 1800);
+    } catch (e: any) {
+      toast("Create job failed: " + String(e?.message || e), 3200);
+    } finally {
+      setJobsBusy(false);
+    }
+  }
+
+  async function setJobStatus(jobId: string, status: JobStatus) {
+    try {
+      setJobsBusy(true);
+      const out: any = await postJson(`${functionsBase}/updateJobStatusV1`, {
+        orgId,
+        incidentId,
+        jobId,
+        status,
+      });
+      if (!out?.ok) throw new Error(out?.error || "updateJobStatusV1 failed");
+      await refresh();
+      toast("Job status updated ✓", 1500);
+    } catch (e: any) {
+      toast("Update status failed: " + String(e?.message || e), 3000);
+    } finally {
+      setJobsBusy(false);
+    }
+  }
+
+  async function markCurrentJobComplete() {
+    const jid = String(currentJobId || "").trim();
+    if (!jid) return toast("Select My job first.", 2200);
+    const ok = window.confirm("Mark current job complete?");
+    if (!ok) return;
+    await setJobStatus(jid, "complete");
+  }
+
+  async function assignEvidenceJob(evidenceId: string, jobIdRaw: string) {
+    try {
+      setJobsBusy(true);
+      const out: any = await postJson(`${functionsBase}/assignEvidenceToJobV1`, {
+        orgId,
+        incidentId,
+        evidenceId,
+        jobId: String(jobIdRaw || "").trim() || null,
+      });
+      if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
+      await refresh();
+      toast("Evidence job assignment updated ✓", 1600);
+    } catch (e: any) {
+      toast("Assign evidence failed: " + String(e?.message || e), 3200);
+    } finally {
+      setJobsBusy(false);
+    }
+  }
+
   async function refresh() {
     if (!functionsBase) return;
     setLoading(true);
 
     try {
+      const incUrl =
+        `${functionsBase}/getIncidentV1?orgId=${encodeURIComponent(orgId)}` +
+        `&incidentId=${encodeURIComponent(incidentId)}`;
+      const incRes = await fetch(incUrl);
+      const incBody = await incRes.text();
+      if (incRes.ok) {
+        const inc = incBody ? JSON.parse(incBody) : {};
+        const st = String(inc?.doc?.status || "open").toLowerCase();
+        setIncidentStatus(st || "open");
+      }
+
+      const jobsUrl =
+        `${functionsBase}/listJobsV1?orgId=${encodeURIComponent(orgId)}` +
+        `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
+      const jobsRes = await fetch(jobsUrl);
+      const jobsBody = await jobsRes.text();
+      if (jobsRes.ok) {
+        const jb = jobsBody ? JSON.parse(jobsBody) : {};
+        if (jb?.ok && Array.isArray(jb.docs)) {
+          const docs = jb.docs;
+          setJobs(docs);
+          const exists = docs.some((j: any) => String(j?.id || j?.jobId || "") === String(currentJobId || ""));
+          if (!exists) {
+            const preferred = docs.find((j: any) => {
+              const st = String(j?.status || "").toLowerCase();
+              return st === "in_progress" || st === "open" || st === "review";
+            });
+            const nextId = String(preferred?.id || preferred?.jobId || docs?.[0]?.id || docs?.[0]?.jobId || "").trim();
+            if (nextId) setCurrentJobId(nextId);
+          }
+        }
+      }
+
       // Evidence (GET-only)
       const evUrl =
         `${functionsBase}/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}` +
@@ -1190,6 +1388,11 @@ useEffect(() => {
           <div>
             <div className="text-[11px] uppercase tracking-wider text-gray-400">Field Incident</div>
             <div className="text-xl font-semibold tracking-tight">{incidentId} • Riverbend Electric</div>
+            <div className="mt-1 text-[11px]">
+              <span className={"px-2 py-0.5 rounded-full border " + (isClosed ? "bg-red-500/15 border-red-400/30 text-red-100" : "bg-emerald-500/15 border-emerald-400/30 text-emerald-100")}>
+                status: {incidentStatus || "open"}
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -1203,6 +1406,30 @@ useEffect(() => {
   router.push(`/incidents/${id}/review`);
 }}>
               🛡 Review
+            </button>
+            <button
+              type="button"
+              className={"px-2 py-1 rounded-full text-xs border transition " + (isClosed ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed" : "bg-red-600/20 border-red-400/30 text-red-100 hover:bg-red-600/30")}
+              disabled={isClosed || closingIncident}
+              onClick={() => { try { closeIncident(); } catch {} }}
+              title={isClosed ? "Incident already closed" : "Set incident status to closed"}>
+              {closingIncident ? "Closing..." : "Close Incident"}
+            </button>
+            <button
+              type="button"
+              className={"px-2 py-1 rounded-full text-xs border transition " + (isClosed ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed" : "bg-cyan-600/20 border-cyan-400/30 text-cyan-100 hover:bg-cyan-600/30")}
+              disabled={isClosed}
+              onClick={() => { if (!isClosed) setShowCreateJob(true); }}
+              title={isClosed ? "Incident is closed (read-only)" : "Create a job"}>
+              + Create Job
+            </button>
+            <button
+              type="button"
+              className="px-2 py-1 rounded-full text-xs bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 transition"
+              onClick={() => { try { router.push(`/incidents/${incidentId}/summary`); } catch {} }}
+              title="Open incident summary"
+            >
+              Summary
             </button>
           
       {/* PEAKOPS_UX_TOAST_RENDER_V1 */}
@@ -1228,9 +1455,9 @@ useEffect(() => {
 	  hasNotes={_hasNotes}
 	  hasApproved={_hasApproved}
 	  onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
-	  onAddEvidence={goAddEvidence}
-  onMarkArrived={() => { try { markArrived(); } catch {} }}
-  onSubmitSession={() => { try { submitSession(); } catch {} }}
+	  onAddEvidence={() => { if (!isClosed) goAddEvidence(); else toast("Incident is closed (read-only).", 2600); }}
+  onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
+  onSubmitSession={() => { if (!isClosed) { try { submitSession(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
 />
 
         {/* PHASE6_1_TIMERS_V1_RENDER */}
@@ -1406,6 +1633,124 @@ useEffect(() => {
   </div>
 </section>
 
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase tracking-wide text-gray-400">My Job</div>
+            <span className="text-xs text-gray-500">default for new evidence</span>
+          </div>
+          {(() => {
+            const current = jobs.find((j: any) => String(j?.id || j?.jobId || "") === String(currentJobId || ""));
+            return (
+              <div className="mt-3 space-y-2">
+                <select
+                  className="w-full text-sm bg-black/40 border border-white/15 rounded-lg px-3 py-2"
+                  disabled={isClosed || jobsBusy || jobs.length === 0}
+                  value={currentJobId}
+                  onChange={(e) => setCurrentJobId(String(e.target.value || ""))}
+                >
+                  <option value="">{jobs.length ? "Select job" : "No jobs available"}</option>
+                  {jobs.map((j: any) => (
+                    <option key={String(j?.id || j?.jobId)} value={String(j?.id || j?.jobId)}>
+                      {String(j?.title || j?.id || "job")} [{String(j?.status || "open")}]
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className={"px-3 py-2 rounded-lg text-sm border " + (isClosed ? "bg-white/5 border-white/10 text-gray-500 cursor-not-allowed" : "bg-emerald-600/20 border-emerald-300/30 text-emerald-100 hover:bg-emerald-600/30")}
+                    disabled={isClosed || jobsBusy || !currentJobId}
+                    onClick={() => { try { markCurrentJobComplete(); } catch {} }}
+                  >
+                    Mark Complete
+                  </button>
+                  {current ? (
+                    <span className={"text-[10px] px-2 py-0.5 rounded-full border " + jobStatusPill(String(current?.status || "open"))}>
+                      {String(current?.status || "open")}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })()}
+        </section>
+
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase tracking-wide text-gray-400">Jobs</div>
+            <span className="text-xs text-gray-500">{jobs.length} total</span>
+          </div>
+          <div className="mt-3 space-y-2">
+            {jobs.length === 0 ? (
+              <div className="text-sm text-gray-400">No jobs yet. Create one to organize evidence.</div>
+            ) : jobs.map((j: any) => (
+              <div
+                key={String(j?.id || j?.jobId)}
+                onClick={() => setCurrentJobId(String(j?.id || j?.jobId || ""))}
+                className={
+                  "w-full rounded-lg border px-3 py-2 flex items-center justify-between gap-2 text-left " +
+                  (String(currentJobId || "") === String(j?.id || j?.jobId || "")
+                    ? "border-cyan-300/35 bg-cyan-500/10"
+                    : "border-white/10 bg-black/30")
+                }
+              >
+                <div className="min-w-0">
+                  <div className="text-sm text-gray-100 truncate">{String(j?.title || "(untitled)")}</div>
+                  <div className="text-[11px] text-gray-400 truncate">
+                    {(j?.assignedTo ? `assigned: ${j.assignedTo}` : "unassigned")}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={"text-[10px] px-2 py-0.5 rounded-full border " + jobStatusPill(String(j?.status || "open"))}>
+                    {String(j?.status || "open")}
+                  </span>
+                  <select
+                    className="text-xs bg-black/50 border border-white/15 rounded px-2 py-1"
+                    disabled={isClosed || jobsBusy}
+                    value={String(j?.status || "open")}
+                    onChange={(e) => { try { setJobStatus(String(j?.id || j?.jobId || ""), e.target.value as JobStatus); } catch {} }}
+                  >
+                    {JOB_STATUSES.map((s) => (<option key={s} value={s}>{s}</option>))}
+                  </select>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase tracking-wide text-gray-400">Evidence to Job Mapping</div>
+            <span className="text-xs text-gray-500">Set `evidence.jobId`</span>
+          </div>
+          <div className="mt-3 space-y-2">
+            {(evidence || []).slice(0, 25).map((ev: any) => {
+              const currentJobId = String(ev?.evidence?.jobId || ev?.jobId || "");
+              return (
+                <div key={String(ev?.id || "")} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-sm text-gray-100 truncate">{String(ev?.file?.originalName || ev?.id || "evidence")}</div>
+                    <div className="text-[11px] text-gray-400 truncate">evidenceId: {String(ev?.id || "")}</div>
+                  </div>
+                  <select
+                    className="text-xs bg-black/50 border border-white/15 rounded px-2 py-1 min-w-[180px]"
+                    disabled={isClosed || jobsBusy}
+                    value={currentJobId}
+                    onChange={(e) => { try { assignEvidenceJob(String(ev?.id || ""), String(e.target.value || "")); } catch {} }}
+                  >
+                    <option value="">(no job)</option>
+                    {jobs.map((j: any) => (
+                      <option key={String(j?.id || j?.jobId)} value={String(j?.id || j?.jobId)}>
+                        {String(j?.title || j?.id || "job")} [{String(j?.status || "open")}]
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
         {/* Timeline story */}
         
         <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
@@ -1484,8 +1829,8 @@ useEffect(() => {
                 : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
             }
             onClick={() => { try { markArrived(); } catch {} }}
-            disabled={arrived}
-            title={arrived ? "Arrived (done)" : "Mark arrival"}>
+            disabled={arrived || isClosed}
+            title={isClosed ? "Incident is closed (read-only)" : (arrived ? "Arrived (done)" : "Mark arrival")}>
             Arrive
           </button>
 
@@ -1499,7 +1844,8 @@ useEffect(() => {
                 : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
             }
             onClick={() => { try { goAddEvidence(); } catch {} }}
-            title={_hasEvidence ? "Evidence captured (done)" : "Go to Evidence"}>
+            disabled={isClosed}
+            title={isClosed ? "Incident is closed (read-only)" : (_hasEvidence ? "Evidence captured (done)" : "Go to Evidence")}>
             Evidence
           </button>
 
@@ -1522,13 +1868,15 @@ useEffect(() => {
             type="button"
             className={
               "w-full py-3 rounded-xl text-sm font-semibold border transition " +
-              ((arrived && _hasEvidence && _hasNotes && !submitting)
+              ((arrived && _hasEvidence && _hasNotes && !submitting && !isClosed)
                 ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
                 : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
             }
-            disabled={submitting || !arrived || !_hasEvidence || !_hasNotes}
+            disabled={submitting || !arrived || !_hasEvidence || !_hasNotes || isClosed}
             title={
-              (arrived && _hasEvidence && _hasNotes)
+              isClosed
+                ? "Incident is closed (read-only)"
+                : (arrived && _hasEvidence && _hasNotes)
                 ? "Submit session for supervisor review"
                 : "Complete Arrive + Evidence + Notes first"
             }
@@ -1540,6 +1888,48 @@ useEffect(() => {
           </button>
         </div>
       </div>
+
+{/* Modal */}
+      {showCreateJob ? (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur flex items-center justify-center p-6 z-50">
+          <div className="w-full max-w-lg rounded-2xl bg-black border border-white/10 overflow-hidden">
+            <div className="flex items-center justify-between p-3 border-b border-white/10">
+              <div className="text-sm text-gray-200">Create Job</div>
+              <button className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/15" onClick={() => setShowCreateJob(false)}>
+                Close
+              </button>
+            </div>
+            <div className="p-3 space-y-3">
+              <input
+                className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200"
+                placeholder="Job title"
+                value={jobTitle}
+                onChange={(e) => setJobTitle(e.target.value)}
+              />
+              <input
+                className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200"
+                placeholder="Assigned to (optional)"
+                value={jobAssignedTo}
+                onChange={(e) => setJobAssignedTo(e.target.value)}
+              />
+              <textarea
+                className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200 min-h-24"
+                placeholder="Notes (optional)"
+                value={jobNotes}
+                onChange={(e) => setJobNotes(e.target.value)}
+              />
+              <button
+                type="button"
+                className="w-full py-2 rounded-xl bg-cyan-600/20 border border-cyan-300/30 text-cyan-100 hover:bg-cyan-600/30 disabled:opacity-60"
+                disabled={jobsBusy || isClosed}
+                onClick={() => { try { createJob(); } catch {} }}
+              >
+                {jobsBusy ? "Creating..." : "Create Job"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
 {/* Modal */}
       {previewOpen ? (

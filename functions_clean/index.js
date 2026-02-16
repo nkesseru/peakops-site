@@ -65,6 +65,7 @@ exports.saveIncidentNotesV1 = require("./saveIncidentNotesV1").saveIncidentNotes
 exports.addMaterialV1 = require("./addMaterialV1").addMaterialV1;
 
 exports.submitFieldSessionV1 = require("./submitFieldSessionV1").submitFieldSessionV1;
+exports.closeIncidentV1 = require("./closeIncidentV1").closeIncidentV1;
 
 exports.approveFieldSessionV1 = require("./approveFieldSessionV1").approveFieldSessionV1;
 
@@ -79,3 +80,9 @@ exports.runConversionJobsV1 = require("./runConversionJobsV1").runConversionJobs
 exports.debugHeicConversionV1 = require("./debugHeicConversionV1").debugHeicConversionV1;
 exports.heicHealthV1 = require("./heicHealthV1").heicHealthV1;
 exports.getEvidenceDebugV1 = require("./getEvidenceDebugV1").getEvidenceDebugV1;
+exports.createJobV1 = require("./createJobV1").createJobV1;
+exports.listJobsV1 = require("./listJobsV1").listJobsV1;
+exports.updateJobStatusV1 = require("./updateJobStatusV1").updateJobStatusV1;
+exports.assignEvidenceToJobV1 = require("./assignEvidenceToJobV1").assignEvidenceToJobV1;
+exports.approveJobV1 = require("./approveJobV1").approveJobV1;
+exports.rejectJobV1 = require("./rejectJobV1").rejectJobV1;

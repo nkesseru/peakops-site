@@ -21,6 +21,10 @@ type EvidenceDoc = {
       thumb?: { storagePath?: string; contentType?: string };
     };
   };
+  evidence?: {
+    jobId?: string | null;
+  };
+  jobId?: string | null;
   storedAt?: { _seconds?: number };
   createdAt?: { _seconds?: number };
   sessionId?: string;
@@ -34,6 +38,18 @@ type TimelineDoc = {
   sessionId?: string | null;
   occurredAt?: { _seconds?: number };
   meta?: any;
+};
+
+type JobDoc = {
+  id: string;
+  jobId?: string;
+  orgId?: string;
+  incidentId?: string;
+  title?: string;
+  status?: string;
+  notes?: string | null;
+  assignedTo?: string | null;
+  rejectReason?: string | null;
 };
 
 async function postJson<T>(url: string, body: any): Promise<T> {
@@ -111,24 +127,19 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     } catch {}
   };
 
-  const orgId = "org_001";
- "org_001";
+  const orgId = "riverbend-electric";
   const functionsBase = getFunctionsBase();
   const evidenceBucket = "peakops-evidence-peakops-pilot-20251028065848";
-
-  
-  // PHASE5B_SUPERVISOR_REQUEST_PERSIST_V1
-  async function persistSupervisorRequest(text: string) {
-    try {
-      await ({ incidentId, message: String(reqText || reqUpdateText || reqUpdate || ""), actor: { role: "supervisor" } });
-} catch {}
-  }
 
 const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string>("");
 
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
+  const [jobs, setJobs] = useState<JobDoc[]>([]);
+  const [selectedJobId, setSelectedJobId] = useState<string>("");
+  const [jobActionBusy, setJobActionBusy] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
 
   // Gallery state
   const [thumbUrl, setThumbUrl] = useState<Record<string, string>>({});
@@ -230,6 +241,27 @@ const [loading, setLoading] = useState(false);
       const ev = evText ? JSON.parse(evText) : {};
       if (ev?.ok && Array.isArray(ev.docs)) setEvidence(ev.docs);
 
+      const jobsUrl =
+        `${functionsBase}/listJobsV1?orgId=${encodeURIComponent(orgId)}` +
+        `&incidentId=${encodeURIComponent(incidentId)}&limit=100`;
+      const jobsRes = await fetch(jobsUrl);
+      const jobsText = await jobsRes.text();
+      if (!jobsRes.ok) throw new Error(`GET ${jobsUrl} -> ${jobsRes.status} ${jobsText}`);
+      const jb = jobsText ? JSON.parse(jobsText) : {};
+      if (jb?.ok && Array.isArray(jb.docs)) {
+        const list = jb.docs;
+        setJobs(list);
+        const reviewable = list.filter((j: any) => {
+          const st = String(j?.status || "").toLowerCase();
+          return st === "complete" || st === "review";
+        });
+        const exists = reviewable.some((j: any) => String(j?.id || j?.jobId || "") === String(selectedJobId || ""));
+        if (!exists) {
+          const next = String(reviewable?.[0]?.id || reviewable?.[0]?.jobId || "");
+          if (next) setSelectedJobId(next);
+        }
+      }
+
       const tlUrl =
         `${functionsBase}/getTimelineEventsV1?orgId=${encodeURIComponent(orgId)}` +
         `&incidentId=${encodeURIComponent(incidentId)}&limit=500`;
@@ -298,6 +330,21 @@ const [loading, setLoading] = useState(false);
   }, [timeline, notesSavedLocal]);
 
   const ready = hasSession && hasEvidence && hasNotes;
+  const reviewableJobs = useMemo(() => {
+    return (jobs || []).filter((j: any) => {
+      const st = String(j?.status || "").toLowerCase();
+      return st === "complete" || st === "review";
+    });
+  }, [jobs]);
+  const selectedJob = useMemo(
+    () => (jobs || []).find((j: any) => String(j?.id || j?.jobId || "") === String(selectedJobId || "")),
+    [jobs, selectedJobId]
+  );
+  const selectedJobEvidence = useMemo(() => {
+    const sid = String(selectedJobId || "");
+    if (!sid) return [];
+    return (evidence || []).filter((ev: any) => String(ev?.evidence?.jobId || ev?.jobId || "") === sid);
+  }, [evidence, selectedJobId]);
 
   async function approveAndLock() {
     alert("TODO: wire approve endpoint (approveIncidentV1). For now, this is a stub.");
@@ -305,6 +352,49 @@ const [loading, setLoading] = useState(false);
 
   async function sendBack() {
     alert("TODO: wire send-back endpoint (sendBackIncidentV1). For now, this is a stub.");
+  }
+
+  async function approveJob(jobId: string) {
+    try {
+      setJobActionBusy(true);
+      const out: any = await postJson(`${functionsBase}/approveJobV1`, {
+        orgId,
+        incidentId,
+        jobId,
+        approvedBy: "supervisor_ui",
+      });
+      if (!out?.ok) throw new Error(out?.error || "approveJobV1 failed");
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setJobActionBusy(false);
+    }
+  }
+
+  async function rejectJob(jobId: string) {
+    try {
+      const reason = String(rejectReason || "").trim();
+      if (!reason) {
+        setErr("Reject reason is required.");
+        return;
+      }
+      setJobActionBusy(true);
+      const out: any = await postJson(`${functionsBase}/rejectJobV1`, {
+        orgId,
+        incidentId,
+        jobId,
+        reason,
+        rejectedBy: "supervisor_ui",
+      });
+      if (!out?.ok) throw new Error(out?.error || "rejectJobV1 failed");
+      setRejectReason("");
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setJobActionBusy(false);
+    }
   }
 
 
@@ -330,6 +420,12 @@ const [loading, setLoading] = useState(false);
               onClick={() => router.push(`/incidents/${incidentId}/notes`)}
             >
               📝 Notes
+            </button>
+            <button
+              className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
+              onClick={() => router.push(`/incidents/${incidentId}/summary`)}
+            >
+              Summary
             </button>
           </div>
         </div>
@@ -468,6 +564,92 @@ const [loading, setLoading] = useState(false);
 
           <div className="mt-2 text-xs text-gray-400">
             Supervisor should only approve once these are green.
+          </div>
+        </section>
+
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-gray-400">Jobs Review</div>
+              <div className="text-xs text-gray-500">
+                Reviewable: {reviewableJobs.length} (status complete/review)
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="space-y-2">
+              {reviewableJobs.length === 0 ? (
+                <div className="text-sm text-gray-400">No jobs in complete/review state.</div>
+              ) : reviewableJobs.map((j: any) => {
+                const jid = String(j?.id || j?.jobId || "");
+                const active = jid === String(selectedJobId || "");
+                return (
+                  <button
+                    key={jid}
+                    type="button"
+                    onClick={() => setSelectedJobId(jid)}
+                    className={
+                      "w-full text-left rounded-lg border px-3 py-2 transition " +
+                      (active ? "bg-blue-600/15 border-blue-400/30" : "bg-black/30 border-white/10 hover:border-white/20")
+                    }
+                  >
+                    <div className="text-sm text-gray-100 truncate">{String(j?.title || jid)}</div>
+                    <div className="text-[11px] text-gray-400">
+                      status: {String(j?.status || "open")} {j?.assignedTo ? `• assigned: ${String(j.assignedTo)}` : ""}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+              {!selectedJob ? (
+                <div className="text-sm text-gray-400">Select a job to review details.</div>
+              ) : (
+                <>
+                  <div className="text-sm font-semibold text-gray-100">{String(selectedJob?.title || selectedJobId)}</div>
+                  <div className="text-xs text-gray-400 mt-1">jobId: {String(selectedJobId)}</div>
+                  <div className="text-xs text-gray-400 mt-1">status: {String(selectedJob?.status || "open")}</div>
+
+                  <div className="mt-3 text-xs uppercase tracking-wide text-gray-400">Evidence for this job</div>
+                  <div className="mt-2 space-y-1 max-h-48 overflow-auto">
+                    {selectedJobEvidence.length === 0 ? (
+                      <div className="text-xs text-gray-500">No evidence linked to this job.</div>
+                    ) : selectedJobEvidence.map((ev: any) => (
+                      <div key={String(ev?.id || "")} className="text-xs text-gray-200 truncate">
+                        {String(ev?.file?.originalName || ev?.id || "evidence")}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-lg bg-green-700/25 border border-green-400/25 text-green-200 hover:bg-green-700/35 disabled:opacity-50"
+                      disabled={loading || jobActionBusy}
+                      onClick={() => approveJob(String(selectedJobId))}
+                    >
+                      Approve Job
+                    </button>
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-lg bg-red-700/25 border border-red-400/25 text-red-200 hover:bg-red-700/35 disabled:opacity-50"
+                      disabled={loading || jobActionBusy}
+                      onClick={() => rejectJob(String(selectedJobId))}
+                    >
+                      Reject Job
+                    </button>
+                  </div>
+                  <textarea
+                    className="mt-2 w-full min-h-[70px] bg-black/30 border border-white/10 rounded-xl p-2 text-xs text-gray-200 outline-none"
+                    placeholder="Reject reason (required for reject)"
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                  />
+                </>
+              )}
+            </div>
           </div>
         </section>
 
