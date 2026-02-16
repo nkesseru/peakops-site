@@ -52,6 +52,10 @@ function isLocalDev() {
   }
 }
 
+function useSignedPutInLocalDev() {
+  return String(process.env.NEXT_PUBLIC_USE_SIGNED_PUT || "").trim() === "1";
+}
+
 async function postJson<T>(url: string, body: any): Promise<T> {
   let res: Response;
   try {
@@ -219,21 +223,59 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
   let finalBucket = uploadBucket;
   let finalStoragePath = createResp.storagePath;
   if (localDev) {
-    onStatus?.("Uploading via dev proxy…");
-    const proxyOut = await uploadViaDevProxy({
-      functionsBase,
-      orgId,
-      incidentId,
-      sessionId,
-      storagePath: createResp.storagePath,
-      bucket: uploadBucket,
-      file,
-    });
-    if (!proxyOut?.ok) throw new Error(`uploadEvidenceProxyV1 failed: ${JSON.stringify(proxyOut)}`);
-    finalBucket = String(proxyOut.bucket || uploadBucket).trim();
-    finalStoragePath = String(proxyOut.storagePath || createResp.storagePath).trim();
-    if (!finalBucket || !finalStoragePath) {
-      throw new Error(`uploadEvidenceProxyV1 missing bucket/path: ${JSON.stringify(proxyOut)}`);
+    const preferSignedPut = useSignedPutInLocalDev();
+    if (preferSignedPut) {
+      onStatus?.("Uploading via signed PUT…");
+      try {
+        const putRes = await fetch(createResp.uploadUrl, {
+          method: "PUT",
+          headers: { "content-type": file.type || "application/octet-stream" },
+          body: file,
+        });
+        if (!putRes.ok) {
+          const errTxt = await putRes.text().catch(() => "");
+          throw new Error(`PUT signed URL -> ${putRes.status} ${errTxt}`);
+        }
+      } catch (e: any) {
+        console.warn("[uploadEvidence] signed PUT failed in local dev; falling back to proxy", {
+          error: String(e?.message || e),
+          bucket: uploadBucket,
+          storagePath: createResp.storagePath,
+        });
+        onStatus?.("Signed PUT failed, retrying via dev proxy…");
+        const proxyOut = await uploadViaDevProxy({
+          functionsBase,
+          orgId,
+          incidentId,
+          sessionId,
+          storagePath: createResp.storagePath,
+          bucket: uploadBucket,
+          file,
+        });
+        if (!proxyOut?.ok) throw new Error(`uploadEvidenceProxyV1 failed: ${JSON.stringify(proxyOut)}`);
+        finalBucket = String(proxyOut.bucket || uploadBucket).trim();
+        finalStoragePath = String(proxyOut.storagePath || createResp.storagePath).trim();
+        if (!finalBucket || !finalStoragePath) {
+          throw new Error(`uploadEvidenceProxyV1 missing bucket/path: ${JSON.stringify(proxyOut)}`);
+        }
+      }
+    } else {
+      onStatus?.("Uploading via dev proxy…");
+      const proxyOut = await uploadViaDevProxy({
+        functionsBase,
+        orgId,
+        incidentId,
+        sessionId,
+        storagePath: createResp.storagePath,
+        bucket: uploadBucket,
+        file,
+      });
+      if (!proxyOut?.ok) throw new Error(`uploadEvidenceProxyV1 failed: ${JSON.stringify(proxyOut)}`);
+      finalBucket = String(proxyOut.bucket || uploadBucket).trim();
+      finalStoragePath = String(proxyOut.storagePath || createResp.storagePath).trim();
+      if (!finalBucket || !finalStoragePath) {
+        throw new Error(`uploadEvidenceProxyV1 missing bucket/path: ${JSON.stringify(proxyOut)}`);
+      }
     }
   } else {
     const putRes = await fetch(createResp.uploadUrl, {

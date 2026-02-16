@@ -203,7 +203,7 @@ exports.runConversionJobsV1 = onRequest({ cors: true }, async (req, res) => {
       if (converted?.ok || converted?.reason === "derivatives_exist") {
         const previewPath = toStr(converted?.previewPath || "");
         const thumbPath = toStr(converted?.thumbPath || "");
-        await finalizeHeicSuccess({
+        const finalize = await finalizeHeicSuccess({
           db,
           incidentId: iid,
           evidenceId: eid,
@@ -212,6 +212,29 @@ exports.runConversionJobsV1 = onRequest({ cors: true }, async (req, res) => {
           previewPath,
           thumbPath,
         });
+        if (!finalize?.ok) {
+          await applyEvidenceConversionState({
+            db,
+            incidentId: iid,
+            evidenceId: eid,
+            storagePath,
+            bucket,
+            status: "failed",
+            error: "finalize_missing_paths",
+          });
+          await jobDoc.ref.set(
+            {
+              status: "failed",
+              updatedAt: FieldValue.serverTimestamp(),
+              finishedAt: FieldValue.serverTimestamp(),
+              error: "finalize_missing_paths",
+            },
+            { merge: true }
+          );
+          failed += 1;
+          outRows.push({ incidentId: iid, evidenceId: eid, status: "failed", reason: "finalize_missing_paths", error: "finalize_missing_paths" });
+          continue;
+        }
         logger.info("HEIC finalize ready", { incidentId: iid, evidenceId: eid });
         await jobDoc.ref.set(
           {

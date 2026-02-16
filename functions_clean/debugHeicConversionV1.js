@@ -194,14 +194,32 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
           previewPath,
           thumbPath,
         });
-        logger.info("HEIC finalize ready", { incidentId, evidenceId });
-        report.backfillApplied = !!backfill?.applied;
-        report.conversionResult = {
-          ...(converted || {}),
-          ok: true,
-          previewPath,
-          thumbPath,
-        };
+        if (!backfill?.ok) {
+          await applyEvidenceConversionState({
+            db,
+            incidentId,
+            evidenceId,
+            storagePath: objectName,
+            bucket,
+            status: "failed",
+            error: "finalize_missing_paths",
+          });
+          report.backfillApplied = false;
+          report.conversionResult = {
+            ...(converted || {}),
+            ok: false,
+            reason: "finalize_missing_paths",
+          };
+        } else {
+          logger.info("HEIC finalize ready", { incidentId, evidenceId });
+          report.backfillApplied = !!backfill?.applied;
+          report.conversionResult = {
+            ...(converted || {}),
+            ok: true,
+            previewPath: toStr(backfill?.previewPath || previewPath),
+            thumbPath: toStr(backfill?.thumbPath || thumbPath),
+          };
+        }
       } else if (converted?.reason === "object_not_found") {
         await applyEvidenceConversionState({
           db,

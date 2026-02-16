@@ -142,6 +142,24 @@ exports.convertEvidenceHeicNowV1 = onRequest({ cors: true }, async (req, res) =>
       previewPath,
       thumbPath,
     });
+    if (!finalize?.ok) {
+      await applyEvidenceConversionState({
+        db: getFirestore(),
+        incidentId,
+        evidenceId,
+        storagePath,
+        bucket: bucketName,
+        status: "failed",
+        error: "finalize_missing_paths",
+      });
+      return j(res, 500, {
+        ok: false,
+        reason: "finalize_missing_paths",
+        incidentId,
+        evidenceId,
+        storagePath,
+      });
+    }
     logger.info("HEIC finalize ready", { incidentId, evidenceId, applied: !!finalize?.applied });
 
     return j(res, 200, {

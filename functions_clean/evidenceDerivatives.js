@@ -148,7 +148,16 @@ async function finalizeHeicSuccess({
   });
   const finalPreview = toStr(previewPath) || toStr(derived.previewPath);
   const finalThumb = toStr(thumbPath) || toStr(derived.thumbPath);
-  return applyEvidenceConversionState({
+  if (!finalPreview || !finalThumb) {
+    return {
+      ok: false,
+      applied: false,
+      reason: "finalize_missing_paths",
+      previewPath: finalPreview,
+      thumbPath: finalThumb,
+    };
+  }
+  const out = await applyEvidenceConversionState({
     db,
     incidentId,
     evidenceId,
@@ -158,6 +167,11 @@ async function finalizeHeicSuccess({
     previewPath: finalPreview,
     thumbPath: finalThumb,
   });
+  return {
+    ...out,
+    previewPath: finalPreview,
+    thumbPath: finalThumb,
+  };
 }
 
 module.exports = {
