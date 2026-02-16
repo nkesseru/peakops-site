@@ -12,6 +12,8 @@ LOG_PORT="${LOG_PORT:-4503}"
 WS_PORT="${WS_PORT:-9152}"
 NEXT_PORT="${NEXT_PORT:-3001}"
 
+git config core.hooksPath .githooks >/dev/null 2>&1 || true
+
 for p in "$NEXT_PORT" "$FN_PORT" "$FS_PORT" "$HUB_PORT" "$UI_PORT" "$LOG_PORT" "$WS_PORT"; do
   lsof -tiTCP:$p -sTCP:LISTEN 2>/dev/null | xargs -I{} kill -9 {} 2>/dev/null || true
 done

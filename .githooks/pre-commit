@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Scan all staged text files for obvious private key material.
+PATTERN='BEGIN PRIVATE KEY|\"private_key\"|"private_key"'
+hits=""
+
+while IFS= read -r path; do
+  [[ -z "${path}" ]] && continue
+  case "${path}" in
+    .githooks/pre-commit|scripts/dev/secret_scan.sh|scripts/migrations/2025-09-03-init.js)
+      continue
+      ;;
+  esac
+  if git show ":${path}" 2>/dev/null | rg -n -a "${PATTERN}" >/tmp/precommit_secret_hits.txt 2>/dev/null; then
+    while IFS= read -r line; do
+      hits+="${path}:${line}"$'\n'
+    done < /tmp/precommit_secret_hits.txt
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+if [[ -n "${hits}" ]]; then
+  echo "pre-commit: blocked potential secret material in staged files:"
+  printf "%s" "${hits}"
+  echo "Remove secrets or unstage these files before committing."
+  exit 1
+fi
+
+exit 0

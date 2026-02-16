@@ -22,7 +22,11 @@
 
 # misc
 .DS_Store
+key.one
+pem.check
 *.pem
+*.key
+*.p12
 
 # debug
 npm-debug.log*
@@ -131,6 +135,7 @@ sa*.json
 
 # One True Stack local-only archives / scratch
 archive/local-only/
+archive/local-only/**
 firebase.emu.min.json
 firebase.deploy.functions_clean.json
 

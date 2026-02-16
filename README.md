@@ -48,6 +48,18 @@ scripts/dev/smoke.sh
 scripts/dev/repo_doctor.sh
 ```
 
+- Enable repo hook guardrails once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+- Scan for leaked private keys:
+
+```bash
+scripts/dev/secret_scan.sh
+```
+
 - Smoke test validates:
   - emulator and next ports are listening
   - `next-app/.env.local` points at local functions emulator
