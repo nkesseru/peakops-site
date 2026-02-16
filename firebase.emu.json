@@ -1,4 +1,15 @@
 {
-  "firestore": { "rules": "firestore.rules" },
-  "functions": { "source": "functions_emu", "runtime": "nodejs22" }
+  "functions": {
+    "source": "functions_clean"
+  },
+  "emulators": {
+    "functions": {
+      "host": "127.0.0.1",
+      "port": 5001
+    },
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8082
+    }
+  }
 }

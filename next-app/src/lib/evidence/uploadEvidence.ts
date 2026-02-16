@@ -191,7 +191,7 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
     incidentId,
     sessionId,
     contentType: file.type || "application/octet-stream",
-    originalName: file.name || "upload",
+    originalName: file.name || "upload.bin",
   });
 
   if (!createResp.ok || !createResp.uploadUrl || !createResp.storagePath) {
@@ -201,6 +201,7 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
   if (!uploadBucket) {
     throw new Error(`createEvidenceUploadUrlV1 missing bucket for storagePath=${createResp.storagePath}`);
   }
+  const localDev = isLocalDev();
   const u = redactUploadUrl(createResp.uploadUrl);
   console.info("[uploadEvidence] signed upload URL", {
     url: u.redactedUrl,
@@ -209,14 +210,32 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
     bucket: uploadBucket,
     storagePath: createResp.storagePath,
   });
-  if (isLocalDev()) {
+  if (localDev) {
     onStatus?.(`Upload URL ${u.redactedUrl}`);
   }
 
-  // 3) PUT upload
+  // 3) Upload bytes
   onStatus?.("Uploading…");
-  let uploaded = false;
-  try {
+  let finalBucket = uploadBucket;
+  let finalStoragePath = createResp.storagePath;
+  if (localDev) {
+    onStatus?.("Uploading via dev proxy…");
+    const proxyOut = await uploadViaDevProxy({
+      functionsBase,
+      orgId,
+      incidentId,
+      sessionId,
+      storagePath: createResp.storagePath,
+      bucket: uploadBucket,
+      file,
+    });
+    if (!proxyOut?.ok) throw new Error(`uploadEvidenceProxyV1 failed: ${JSON.stringify(proxyOut)}`);
+    finalBucket = String(proxyOut.bucket || uploadBucket).trim();
+    finalStoragePath = String(proxyOut.storagePath || createResp.storagePath).trim();
+    if (!finalBucket || !finalStoragePath) {
+      throw new Error(`uploadEvidenceProxyV1 missing bucket/path: ${JSON.stringify(proxyOut)}`);
+    }
+  } else {
     const putRes = await fetch(createResp.uploadUrl, {
       method: "PUT",
       headers: { "content-type": file.type || "application/octet-stream" },
@@ -226,49 +245,21 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
       const errTxt = await putRes.text().catch(() => "");
       throw new Error(`PUT signed URL -> ${putRes.status} ${errTxt}`);
     }
-    uploaded = true;
-  } catch (e: any) {
-    const msg = String(e?.message || e);
-    console.error("[uploadEvidence] signed PUT failed", {
-      error: msg,
-      url: u.redactedUrl,
-      protocol: u.protocol,
-      hostname: u.hostname,
-      bucket: uploadBucket,
-      storagePath: createResp.storagePath,
-    });
-    if (isLocalDev()) {
-      onStatus?.(`Signed PUT failed (${u.hostname}). Retrying via dev proxy…`);
-      const proxyOut = await uploadViaDevProxy({
-        functionsBase,
-        orgId,
-        incidentId,
-        sessionId,
-        storagePath: createResp.storagePath,
-        bucket: uploadBucket,
-        file,
-      });
-      if (!proxyOut?.ok) throw new Error(`uploadEvidenceProxyV1 failed: ${JSON.stringify(proxyOut)}`);
-      uploaded = true;
-    } else {
-      throw e;
-    }
   }
-  if (!uploaded) throw new Error("upload failed");
 
   // Dev safeguard: confirm uploaded object is actually reachable via signed read URL.
-  if (isLocalDev()) {
+  if (localDev) {
     onStatus?.("Verifying storage object…");
     try {
       await verifyObjectInStorage({
         functionsBase,
         orgId,
         incidentId,
-        storagePath: createResp.storagePath,
-        bucket: uploadBucket,
+        storagePath: finalStoragePath,
+        bucket: finalBucket,
       });
     } catch (e: any) {
-      throw new Error(`Upload not in storage bucket=${uploadBucket} path=${createResp.storagePath}`);
+      throw new Error(`Upload not in storage bucket=${finalBucket} path=${finalStoragePath}`);
     }
   }
 
@@ -282,10 +273,10 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
     labels,
     gps,
     contentType: file.type,
-    storagePath: createResp.storagePath,
-    bucket: uploadBucket,
+    storagePath: finalStoragePath,
+    bucket: finalBucket,
     notes: notes || "",
-    originalName: file.name || "upload",
+    originalName: file.name || "upload.bin",
   });
 
   if (!addResp.ok) {
@@ -293,7 +284,7 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
   }
 
   // Deterministic demo behavior: run queued conversion once right after HEIC upload in dev.
-  if (isLocalDev() && isHeicEvidence({ contentType: file.type, originalName: file.name, storagePath: createResp.storagePath })) {
+  if (localDev && isHeicEvidence({ contentType: file.type, originalName: file.name, storagePath: finalStoragePath })) {
     onStatus?.("Running HEIC conversion job…");
     const runOut = await postJson<{ ok?: boolean; error?: string }>(`${functionsBase}/runConversionJobsV1`, {
       incidentId,

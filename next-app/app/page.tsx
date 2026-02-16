@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const DEMO_INCIDENT_ID = "inc_20260211_121658_26f47b";
+const DEMO_INCIDENT_ID = "inc_20260121_121658_26f47b";
 
 function inferRecentIncidentId(): string {
   try {

@@ -18,7 +18,7 @@ export async function handleListEvidenceLockerRequest(req, res) {
     const docs = out.docs || [];
     return res.json({ ok:true, orgId, incidentId, count: docs.length, docs });
   } catch (e) {
-    return res.status(500).json({ ok:false, error:String(e) });
+    return res.status(500).json({ ok:false, error:String(e), count: 0, docs: [] });
   }
 }
 

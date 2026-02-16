@@ -3,8 +3,12 @@ import admin from "firebase-admin";
 import fs from "node:fs";
 
 const sa = JSON.parse(fs.readFileSync("./sa.json","utf8"));  // local file, do not commit
+const useAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE);
 if (!admin.apps.length) {
-  admin.initializeApp({ credential: admin.credential.cert(sa), projectId: sa.project_id });
+  admin.initializeApp({
+    credential: useAdc ? admin.credential.applicationDefault() : admin.credential.cert(sa),
+    projectId: sa.project_id
+  });
 }
 const db = admin.firestore();
 

@@ -1,16 +1,20 @@
 const { onRequest } = require("firebase-functions/v2/https");
+const { logger } = require("firebase-functions");
 const admin = require("firebase-admin");
+const { getFirestore } = require("firebase-admin/firestore");
 const { convertHeicObject } = require("./convertHeicOnFinalize");
 const { isHeicEvidence } = require("./evidenceHeic");
+const {
+  finalizeHeicSuccess,
+  applyEvidenceConversionState,
+  shortErr,
+  toStr,
+} = require("./evidenceDerivatives");
 
 if (!admin.apps.length) admin.initializeApp();
 
 function j(res, status, body) {
   res.status(status).set("content-type", "application/json").send(JSON.stringify(body));
-}
-
-function toStr(v) {
-  return String(v || "").trim();
 }
 
 function allowDebug(req) {
@@ -32,6 +36,8 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
     job: {},
     sourceCheck: {},
     conversionResult: null,
+    backfillApplied: false,
+    finalEvidence: {},
     errors: [],
     selectedEvidenceId: "",
   };
@@ -58,7 +64,7 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 200, report);
     }
 
-    const db = admin.firestore();
+    const db = getFirestore();
     const { getEvidenceDocRef, getEvidenceCollectionRef } = await import("./evidenceRefs.mjs");
     if (!evidenceId) {
       const candidates = await getEvidenceCollectionRef(db, incidentId)
@@ -73,6 +79,16 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
       });
       if (!chosen) {
         report.errors.push("no_heic_evidence_found");
+        report.evidence.sample = candidates.docs.slice(0, 5).map((d) => {
+          const ev = d.data() || {};
+          const file = (ev.file && typeof ev.file === "object") ? ev.file : {};
+          return {
+            id: d.id,
+            originalName: toStr(file.originalName || ""),
+            contentType: toStr(file.contentType || ""),
+            storagePath: toStr(file.storagePath || ""),
+          };
+        });
         return j(res, 200, report);
       }
       evidenceId = chosen.id;
@@ -162,24 +178,50 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
         bucketName: bucket,
         objectName,
         incidentIdHint: incidentId,
+        evidenceIdHint: evidenceId,
+        originalNameHint: toStr(file.originalName || ""),
       });
       report.conversionResult = converted || null;
-      if (converted?.ok) {
-        await evidenceRef.set(
-          {
-            "file.conversionStatus": "ready",
-            "file.conversionError": admin.firestore.FieldValue.delete(),
-          },
-          { merge: true }
-        );
+      if (converted?.ok || converted?.reason === "derivatives_exist") {
+        const previewPath = toStr(converted?.previewPath || "");
+        const thumbPath = toStr(converted?.thumbPath || "");
+        const backfill = await finalizeHeicSuccess({
+          db,
+          incidentId,
+          evidenceId,
+          storagePath: objectName,
+          bucket,
+          previewPath,
+          thumbPath,
+        });
+        logger.info("HEIC finalize ready", { incidentId, evidenceId });
+        report.backfillApplied = !!backfill?.applied;
+        report.conversionResult = {
+          ...(converted || {}),
+          ok: true,
+          previewPath,
+          thumbPath,
+        };
       } else if (converted?.reason === "object_not_found") {
-        await evidenceRef.set(
-          {
-            "file.conversionStatus": "source_missing",
-            "file.conversionError": "object_not_found",
-          },
-          { merge: true }
-        );
+        await applyEvidenceConversionState({
+          db,
+          incidentId,
+          evidenceId,
+          storagePath: objectName,
+          bucket,
+          status: "source_missing",
+          error: "object_not_found",
+        });
+      } else {
+        await applyEvidenceConversionState({
+          db,
+          incidentId,
+          evidenceId,
+          storagePath: objectName,
+          bucket,
+          status: "failed",
+          error: shortErr(converted || {}),
+        });
       }
     } else {
       report.conversionResult = {
@@ -187,6 +229,16 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
         reason: dryRun ? "dry_run" : (!report.sourceCheck.sourceExists ? "object_not_found" : "not_heic"),
       };
     }
+    const finalSnap = await evidenceRef.get();
+    const finalDoc = finalSnap.data() || {};
+    const finalFile = (finalDoc.file && typeof finalDoc.file === "object") ? finalDoc.file : {};
+    report.finalEvidence = {
+      exists: finalSnap.exists,
+      conversionStatus: toStr(finalFile.conversionStatus || ""),
+      conversionError: toStr(finalFile.conversionError || ""),
+      previewPath: toStr(finalFile.previewPath || finalFile?.derivatives?.preview?.storagePath || ""),
+      thumbPath: toStr(finalFile.thumbPath || finalFile?.derivatives?.thumb?.storagePath || ""),
+    };
 
     report.ok = true;
     return j(res, 200, report);

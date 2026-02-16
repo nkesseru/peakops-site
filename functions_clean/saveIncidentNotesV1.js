@@ -1,9 +1,9 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
-const { FieldValue } = require("firebase-admin/firestore");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 
 if (!admin.apps.length) admin.initializeApp();
-const db = admin.firestore();
+const db = getFirestore();
 
 async function emitTimelineEvent({ orgId, incidentId, type, actor, sessionId, refId, meta }) {
   const col = db.collection(`orgs/${orgId}/incidents/${incidentId}/timeline_events`);

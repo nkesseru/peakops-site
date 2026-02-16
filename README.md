@@ -26,14 +26,20 @@ NEXT_PUBLIC_TECH_USER_ID=tech_web
 firebase emulators:start --project peakops-pilot --config firebase.json --only functions,firestore,ui
 ```
 
-2. Start Next app:
+2. Seed deterministic demo data (incident + evidence):
+
+```bash
+scripts/dev/seed_demo_incident.sh
+```
+
+3. Start Next app:
 
 ```bash
 cd next-app
 pnpm run dev:local
 ```
 
-3. Run smoke test:
+4. Run smoke test:
 
 ```bash
 cd ..
@@ -63,7 +69,7 @@ scripts/dev/secret_scan.sh
 - Smoke test validates:
   - emulator and next ports are listening
   - `next-app/.env.local` points at local functions emulator
-  - `listEvidenceLocker` responds with `{ ok: true }`
+  - `listEvidenceLocker` responds with `{ ok: true }` and `count > 0` for seeded demo incident
 
 ## Notes
 

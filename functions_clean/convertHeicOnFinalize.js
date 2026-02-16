@@ -1,11 +1,21 @@
 const { onObjectFinalized } = require("firebase-functions/v2/storage");
 const { logger } = require("firebase-functions");
 const admin = require("firebase-admin");
+const { getFirestore } = require("firebase-admin/firestore");
 const sharp = require("sharp");
 const os = require("os");
 const path = require("path");
 const fs = require("fs/promises");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
 const { resolveEvidenceBucket } = require("./evidenceBucket");
+const {
+  deriveDerivativePaths,
+  backfillEvidenceDerivatives,
+  applyEvidenceConversionState,
+  shortErr,
+} = require("./evidenceDerivatives");
+const execFileAsync = promisify(execFile);
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -14,65 +24,53 @@ function isHeic(name = "") {
   return n.endsWith(".heic") || n.endsWith(".heif");
 }
 
-function toPreviewPath(originalPath) {
-  const dir = path.posix.dirname(originalPath);
-  const base = path.posix.basename(originalPath).replace(/\.(heic|heif)$/i, "");
-  return path.posix.join(dir, `${base}__preview.jpg`);
-}
-
-function toThumbPath(originalPath) {
-  const dir = path.posix.dirname(originalPath);
-  const base = path.posix.basename(originalPath).replace(/\.(heic|heif)$/i, "");
-  return path.posix.join(dir, `${base}__thumb.webp`);
-}
-
 function extractIncidentId(objectName = "") {
   const m = String(objectName).match(/\/incidents\/([^/]+)\//i);
   return m ? m[1] : "";
 }
 
-async function updateEvidenceDerivatives({
-  incidentId,
-  originalPath,
-  previewPath,
-  thumbPath,
-  bucketName,
-}) {
-  if (!incidentId) return;
-  const db = admin.firestore();
-  const { getEvidenceCollectionRef } = await import("./evidenceRefs.mjs");
-  const snap = await getEvidenceCollectionRef(db, incidentId)
-    .where("file.storagePath", "==", originalPath)
-    .limit(10)
-    .get();
-
-  if (snap.empty) {
-    logger.warn("HEIC converted but no evidence doc matched", { incidentId, originalPath });
-    return;
-  }
-
-  const patch = {
-    storedAt: admin.firestore.FieldValue.serverTimestamp(),
-    "file.conversionStatus": "ready",
-    "file.conversionError": admin.firestore.FieldValue.delete(),
-    "file.derivativeBucket": bucketName,
-    "file.previewPath": previewPath,
-    "file.previewContentType": "image/jpeg",
-    "file.thumbPath": thumbPath,
-    "file.thumbContentType": "image/webp",
-    "file.derivatives.preview.storagePath": previewPath,
-    "file.derivatives.preview.contentType": "image/jpeg",
-    "file.derivatives.thumb.storagePath": thumbPath,
-    "file.derivatives.thumb.contentType": "image/webp",
+function toErrorDetails(err) {
+  const e = err || {};
+  return {
+    errMessage: String(e?.message || e || ""),
+    errName: String(e?.name || ""),
+    errStack: String(e?.stack || ""),
+    errCode: String(e?.code || ""),
   };
+}
 
-  await Promise.all(snap.docs.map((d) => d.ref.set(patch, { merge: true })));
+function isHeicDecodeError(details = {}) {
+  const s = `${details.errMessage || ""} ${details.errName || ""}`.toLowerCase();
+  return /heic|heif|unsupported image format|no decode delegate|heif/.test(s);
+}
+
+function isLocalLike() {
+  return process.env.NODE_ENV !== "production" || process.env.FUNCTIONS_EMULATOR === "true";
+}
+
+async function commandExists(cmd) {
+  try {
+    await execFileAsync("which", [cmd]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function convertPreviewViaSips(tmpIn, tmpPreview) {
+  await execFileAsync("sips", ["-s", "format", "jpeg", tmpIn, "--out", tmpPreview]);
+}
+
+async function convertPreviewViaHeifConvert(tmpIn, tmpPreview) {
+  await execFileAsync("heif-convert", [tmpIn, tmpPreview]);
 }
 
 async function convertHeicObject({
   bucketName,
   objectName,
   incidentIdHint = "",
+  evidenceIdHint = "",
+  originalNameHint = "",
 }) {
   if (!objectName) return { ok: false, reason: "missing_object" };
   const rb = resolveEvidenceBucket({ file: { bucket: bucketName }, env: process.env });
@@ -90,8 +88,13 @@ async function convertHeicObject({
   const incidentId = incidentIdHint || extractIncidentId(objectName);
 
   const tmpIn = path.join(os.tmpdir(), path.basename(objectName));
-  const previewPath = toPreviewPath(objectName);
-  const thumbPath = toThumbPath(objectName);
+  const derived = deriveDerivativePaths({
+    bucket: bucketName,
+    storagePath: objectName,
+    originalName: originalNameHint,
+  });
+  const previewPath = derived.previewPath;
+  const thumbPath = derived.thumbPath;
 
   const tmpPreview = path.join(os.tmpdir(), path.basename(previewPath));
   const tmpThumb = path.join(os.tmpdir(), path.basename(thumbPath));
@@ -100,24 +103,55 @@ async function convertHeicObject({
     const [previewExists] = await bucket.file(previewPath).exists();
     const [thumbExists] = await bucket.file(thumbPath).exists();
     if (previewExists && thumbExists) {
-      await updateEvidenceDerivatives({
+      await backfillEvidenceDerivatives({
+        db: getFirestore(),
         incidentId,
-        originalPath: objectName,
+        evidenceId: evidenceIdHint,
+        storagePath: objectName,
+        bucket: bucketName,
+        previewPath,
+        thumbPath,
+      });
+      return {
+        ok: true,
+        skipped: true,
+        reason: "derivatives_exist",
+        incidentId,
+        // Always include canonical derivative paths so callers can backfill docs.
         previewPath,
         thumbPath,
         bucketName,
-      });
-      return { ok: true, skipped: true, reason: "derivatives_exist", incidentId, previewPath, thumbPath, bucketName, objectName };
+        objectName
+      };
     }
 
     await bucket.file(objectName).download({ destination: tmpIn });
 
-    await sharp(tmpIn)
-      .rotate()
-      .jpeg({ quality: 85, mozjpeg: true })
-      .toFile(tmpPreview);
+    let fallbackUsed = "";
+    try {
+      await sharp(tmpIn)
+        .rotate()
+        .jpeg({ quality: 85, mozjpeg: true })
+        .toFile(tmpPreview);
+    } catch (e) {
+      const details = toErrorDetails(e);
+      if (!isHeicDecodeError(details)) throw e;
 
-    await sharp(tmpIn)
+      const allowSips = String(process.env.ALLOW_SIPS_FALLBACK || "") === "1";
+      if (allowSips && isLocalLike() && process.platform === "darwin") {
+        await convertPreviewViaSips(tmpIn, tmpPreview);
+        fallbackUsed = "sips";
+      } else if (await commandExists("heif-convert")) {
+        await convertPreviewViaHeifConvert(tmpIn, tmpPreview);
+        fallbackUsed = "heif-convert";
+      } else {
+        const err = new Error(`${details.errMessage} | heic decoder unavailable; set ALLOW_SIPS_FALLBACK=1 on macOS dev or install libheif/heif-convert`);
+        err.code = details.errCode || "HEIC_DECODE_UNAVAILABLE";
+        throw err;
+      }
+    }
+
+    await sharp(tmpPreview)
       .rotate()
       .resize({ width: 480, withoutEnlargement: true })
       .webp({ quality: 72 })
@@ -133,31 +167,54 @@ async function convertHeicObject({
       metadata: { contentType: "image/webp" }
     });
 
-    await updateEvidenceDerivatives({
+    await backfillEvidenceDerivatives({
+      db: getFirestore(),
       incidentId,
-      originalPath: objectName,
+      evidenceId: evidenceIdHint,
+      storagePath: objectName,
+      bucket: bucketName,
       previewPath,
       thumbPath,
-      bucketName,
     });
 
-    return { ok: true, incidentId, previewPath, thumbPath, bucketName, objectName };
+    return { ok: true, incidentId, previewPath, thumbPath, bucketName, objectName, fallbackUsed };
   } catch (e) {
-    const msg = String(e?.message || e || "");
+    const details = toErrorDetails(e);
+    const msg = details.errMessage;
     if ((e && Number(e.code) === 404) || /No such object/i.test(msg)) {
+      await applyEvidenceConversionState({
+        db: getFirestore(),
+        incidentId,
+        evidenceId: evidenceIdHint,
+        storagePath: objectName,
+        bucket: bucketName,
+        status: "source_missing",
+        error: "object_not_found",
+      }).catch(() => {});
       return {
         ok: false,
         reason: "object_not_found",
         error: "object_not_found",
+        ...details,
         bucket: bucketName,
         objectName,
         hint: "upload did not reach storage",
       };
     }
+    await applyEvidenceConversionState({
+      db: getFirestore(),
+      incidentId,
+      evidenceId: evidenceIdHint,
+      storagePath: objectName,
+      bucket: bucketName,
+      status: "failed",
+      error: shortErr(details),
+    }).catch(() => {});
     return {
       ok: false,
       reason: "convert_error",
-      error: msg || "convert_error",
+      error: shortErr(details),
+      ...details,
       bucket: bucketName,
       objectName,
     };
@@ -199,6 +256,7 @@ exports.convertHeicOnFinalize = onObjectFinalized(
       }
       const out = await convertHeicObject({ bucketName: rb.bucket, objectName });
       if (out?.ok) logger.info("HEIC converted", out);
+      if (!out?.ok) logger.error("HEIC convert failed", out);
 
     } catch (e) {
       logger.error("HEIC conversion failed", e);

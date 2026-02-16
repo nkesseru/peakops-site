@@ -1,7 +1,14 @@
 const { onRequest } = require("firebase-functions/v2/https");
+const { logger } = require("firebase-functions");
 const admin = require("firebase-admin");
+const { getFirestore } = require("firebase-admin/firestore");
 const { convertHeicObject } = require("./convertHeicOnFinalize");
 const { isHeicEvidence } = require("./evidenceHeic");
+const {
+  finalizeHeicSuccess,
+  applyEvidenceConversionState,
+  shortErr,
+} = require("./evidenceDerivatives");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -25,7 +32,7 @@ exports.convertEvidenceHeicNowV1 = onRequest({ cors: true }, async (req, res) =>
     const evidenceId = mustStr(body.evidenceId, "evidenceId");
 
     const { getEvidenceDocRef } = await import("./evidenceRefs.mjs");
-    const ref = getEvidenceDocRef(admin.firestore(), incidentId, evidenceId);
+    const ref = getEvidenceDocRef(getFirestore(), incidentId, evidenceId);
     const snap = await ref.get();
     if (!snap.exists) {
       return j(res, 404, {
@@ -49,20 +56,6 @@ exports.convertEvidenceHeicNowV1 = onRequest({ cors: true }, async (req, res) =>
     if (!isHeicEvidence(file)) {
       return j(res, 200, { ok: true, skipped: true, reason: "not_heic", orgId, incidentId, evidenceId, storagePath });
     }
-
-    if (file.previewPath && file.thumbPath) {
-      return j(res, 200, {
-        ok: true,
-        skipped: true,
-        reason: "derivatives_exist",
-        orgId,
-        incidentId,
-        evidenceId,
-        previewPath: file.previewPath,
-        thumbPath: file.thumbPath,
-      });
-    }
-
     const bucketName = String(file.bucket || "").trim();
     if (!bucketName) {
       return j(res, 400, {
@@ -75,16 +68,46 @@ exports.convertEvidenceHeicNowV1 = onRequest({ cors: true }, async (req, res) =>
       });
     }
 
-    const out = await convertHeicObject({ bucketName, objectName: storagePath, incidentIdHint: incidentId });
+    if (file.previewPath && file.thumbPath) {
+      const finalize = await finalizeHeicSuccess({
+        db: getFirestore(),
+        incidentId,
+        evidenceId,
+        bucket: bucketName,
+        storagePath,
+        previewPath: String(file.previewPath || ""),
+        thumbPath: String(file.thumbPath || ""),
+      });
+      logger.info("HEIC finalize ready", { incidentId, evidenceId, applied: !!finalize?.applied });
+      return j(res, 200, {
+        ok: true,
+        skipped: true,
+        reason: "derivatives_exist",
+        orgId,
+        incidentId,
+        evidenceId,
+        previewPath: file.previewPath,
+        thumbPath: file.thumbPath,
+      });
+    }
+
+    const out = await convertHeicObject({
+      bucketName,
+      objectName: storagePath,
+      incidentIdHint: incidentId,
+      evidenceIdHint: evidenceId,
+      originalNameHint: String(file.originalName || ""),
+    });
     if (out?.reason === "object_not_found") {
-      await ref.set(
-        {
-          "file.conversionStatus": "source_missing",
-          "file.conversionError": "object_not_found",
-          storedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+      await applyEvidenceConversionState({
+        db: getFirestore(),
+        incidentId,
+        evidenceId,
+        storagePath,
+        bucket: bucketName,
+        status: "source_missing",
+        error: "object_not_found",
+      });
       return j(res, 404, {
         ok: false,
         error: "object_not_found",
@@ -96,9 +119,30 @@ exports.convertEvidenceHeicNowV1 = onRequest({ cors: true }, async (req, res) =>
         evidenceId,
       });
     }
-    if (!out?.ok) {
+    if (!out?.ok && out?.reason !== "derivatives_exist") {
+      await applyEvidenceConversionState({
+        db: getFirestore(),
+        incidentId,
+        evidenceId,
+        storagePath,
+        bucket: bucketName,
+        status: "failed",
+        error: shortErr(out || {}),
+      });
       return j(res, 500, { ok: false, error: "convert failed", details: out || null, orgId, incidentId, evidenceId });
     }
+    const previewPath = String(out?.previewPath || "");
+    const thumbPath = String(out?.thumbPath || "");
+    const finalize = await finalizeHeicSuccess({
+      db: getFirestore(),
+      incidentId,
+      evidenceId,
+      storagePath,
+      bucket: bucketName,
+      previewPath,
+      thumbPath,
+    });
+    logger.info("HEIC finalize ready", { incidentId, evidenceId, applied: !!finalize?.applied });
 
     return j(res, 200, {
       ok: true,
@@ -107,8 +151,10 @@ exports.convertEvidenceHeicNowV1 = onRequest({ cors: true }, async (req, res) =>
       evidenceId,
       storagePath,
       bucketName,
-      previewPath: out.previewPath,
-      thumbPath: out.thumbPath,
+      previewPath,
+      thumbPath,
+      reason: out?.reason || (out?.ok ? "converted" : "derivatives_exist"),
+      backfillApplied: !!finalize?.applied,
     });
   } catch (e) {
     return j(res, 400, { ok: false, error: String(e?.message || e) });

@@ -14,7 +14,11 @@ function loadSA() {
 }
 
 const sa = loadSA();
-admin.initializeApp({ credential: admin.credential.cert(sa), projectId: sa.project_id });
+const useAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE);
+admin.initializeApp({
+  credential: useAdc ? admin.credential.applicationDefault() : admin.credential.cert(sa),
+  projectId: sa.project_id
+});
 
 (async () => {
   const [uid, orgId, role] = process.argv.slice(2);

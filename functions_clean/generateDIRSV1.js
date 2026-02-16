@@ -4,6 +4,7 @@
  * Safe defaults: only fields we can confidently produce.
  */
 const admin = require("firebase-admin");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 
 function send(res, code, obj) {
   res.set("content-type", "application/json");
@@ -21,7 +22,7 @@ function safeStr(x) {
 exports.generateDIRSV1 = async function generateDIRSV1(req, res) {
   try {
     if (!admin.apps.length) admin.initializeApp();
-    const db = admin.firestore();
+    const db = getFirestore();
 
     const orgId = safeStr(req.query.orgId);
     const incidentId = safeStr(req.query.incidentId);
@@ -85,8 +86,8 @@ exports.generateDIRSV1 = async function generateDIRSV1(req, res) {
       present: true,
       generatedAt: isoNow(),
       payload,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
     };
 
     // Store under incident-scoped filings

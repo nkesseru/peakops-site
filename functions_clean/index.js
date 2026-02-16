@@ -77,4 +77,5 @@ exports.convertHeicOnFinalize = require("./convertHeicOnFinalize").convertHeicOn
 exports.convertEvidenceHeicNowV1 = require("./convertEvidenceHeicNowV1").convertEvidenceHeicNowV1;
 exports.runConversionJobsV1 = require("./runConversionJobsV1").runConversionJobsV1;
 exports.debugHeicConversionV1 = require("./debugHeicConversionV1").debugHeicConversionV1;
+exports.heicHealthV1 = require("./heicHealthV1").heicHealthV1;
 exports.getEvidenceDebugV1 = require("./getEvidenceDebugV1").getEvidenceDebugV1;

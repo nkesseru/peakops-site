@@ -6,7 +6,7 @@
 //   pnpm tsx scripts/seed.ts
 
 import { readFile } from 'fs/promises';
-import { initializeApp, cert, getApps, ServiceAccount } from 'firebase-admin/app';
+import { initializeApp, cert, applicationDefault, getApps, ServiceAccount } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
@@ -14,8 +14,11 @@ async function main() {
   const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || './service-account.json';
   const raw = await readFile(credPath, 'utf8');
   const sa = JSON.parse(raw) as ServiceAccount;
+  const useAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE);
 
-  if (!getApps().length) initializeApp({ credential: cert(sa) });
+  if (!getApps().length) {
+    initializeApp({ credential: useAdc ? applicationDefault() : cert(sa) });
+  }
 
   const db = getFirestore();
   const auth = getAuth();

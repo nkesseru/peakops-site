@@ -56,6 +56,11 @@ function safeBaseName(s) {
     .slice(0, 80);
 }
 
+function exactBaseName(s) {
+  const raw = String(s || "").split(/[\\/]/).pop();
+  return String(raw || "").trim();
+}
+
 function inferContentTypeFromName(name = "") {
   const n = String(name || "").toLowerCase();
   if (n.endsWith(".heic")) return "image/heic";
@@ -87,7 +92,8 @@ exports.addEvidenceV1 = onRequest({ cors: true }, async (req, res) => {
 
     // In MVP we store metadata; actual upload can be separate.
     const storagePath = String(body.storagePath || "").trim(); // optional for now
-    const originalName = safeBaseName(body.originalName || "photo.jpg");
+    const originalName = exactBaseName(body.originalName) || "photo.jpg";
+    const exportNameOriginal = safeBaseName(originalName);
     let contentType = normalizeContentType(body.contentType);
     if (!contentType) {
       contentType = inferContentTypeFromName(originalName);
@@ -130,7 +136,7 @@ exports.addEvidenceV1 = onRequest({ cors: true }, async (req, res) => {
     const stamp = utcStamp();
     const lblPart = labels.length ? `LBL-${labels.join("-")}` : "LBL-NA";
     const exportName =
-      `INC-${incidentId}__SES-${sessionId}__PHASE-${phase}__${lblPart}__UTC-${stamp}__${fmtGps(gps)}__${originalName}`;
+      `INC-${incidentId}__SES-${sessionId}__PHASE-${phase}__${lblPart}__UTC-${stamp}__${fmtGps(gps)}__${exportNameOriginal}`;
 
     const now = FieldValue.serverTimestamp();
 
@@ -140,6 +146,7 @@ exports.addEvidenceV1 = onRequest({ cors: true }, async (req, res) => {
       originalName,
     });
 
+    const conversionStatus = heicCandidate ? "pending" : "n/a";
     await evidenceRef.set(
       {
         orgId,
@@ -158,7 +165,8 @@ exports.addEvidenceV1 = onRequest({ cors: true }, async (req, res) => {
           originalName,
           filename: originalName,
           bucket: resolvedBucket,
-          conversionStatus: heicCandidate ? "pending" : "n/a",
+          conversionStatus,
+          conversionUpdatedAt: now,
           exportName,
         },
         version: 1,

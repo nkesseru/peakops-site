@@ -5,12 +5,12 @@ PROJECT_ID="${PROJECT_ID:-peakops-pilot}"
 FN_PORT="${FN_PORT:-5002}"
 NEXT_PORT="${NEXT_PORT:-3001}"
 ORG_ID="${ORG_ID:-riverbend-electric}"
-INCIDENT_ID="${INCIDENT_ID:-inc_20260211_121658_26f47b}"
+INCIDENT_ID="${INCIDENT_ID:-inc_20260121_121658_26f47b}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="$ROOT_DIR/next-app/.env.local"
 EXPECTED_BASE="http://127.0.0.1:${FN_PORT}/${PROJECT_ID}/us-central1"
-LIST_URL="$EXPECTED_BASE/listEvidenceLocker?orgId=${ORG_ID}&incidentId=${INCIDENT_ID}&limit=1"
+LIST_URL="$EXPECTED_BASE/listEvidenceLocker?orgId=${ORG_ID}&incidentId=${INCIDENT_ID}&limit=50"
 NEXT_URL="http://127.0.0.1:${NEXT_PORT}"
 
 fail() {
@@ -57,6 +57,10 @@ fi
 if ! jq -e '.ok == true' /tmp/peakops_smoke_list.json >/dev/null 2>&1; then
   cat /tmp/peakops_smoke_list.json
   fail "listEvidenceLocker response missing ok=true"
+fi
+EVIDENCE_COUNT="$(jq -r '(.count // 0) as $c | if ($c|type) == "number" then $c else 0 end' /tmp/peakops_smoke_list.json)"
+if [[ "${EVIDENCE_COUNT}" -le 0 ]]; then
+  fail "listEvidenceLocker returned count=0 for incident ${INCIDENT_ID}. Run scripts/dev/seed_demo_incident.sh"
 fi
 
 say "Probing Next"

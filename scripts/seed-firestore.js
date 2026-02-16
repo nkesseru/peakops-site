@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { initializeApp, cert, applicationDefault, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
 // --- Read creds from env ---
@@ -7,18 +7,18 @@ const projectId = process.env.FIREBASE_PROJECT_ID;
 const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
 const privateKeyB64 = process.env.FIREBASE_PRIVATE_KEY_BASE64;
 
-if (!projectId || !clientEmail || !privateKeyB64) {
-  console.error('Missing one or more env vars: FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY_BASE64');
-  process.exit(1);
-}
-
-const privateKey = Buffer.from(privateKeyB64, 'base64').toString('utf8');
-
 // --- Initialize Admin (idempotent) ---
 if (!getApps().length) {
-  initializeApp({
-    credential: cert({ projectId, clientEmail, privateKey }),
-  });
+  if (projectId && clientEmail && privateKeyB64) {
+    const privateKey = Buffer.from(privateKeyB64, 'base64').toString('utf8');
+    initializeApp({
+      credential: cert({ projectId, clientEmail, privateKey }),
+    });
+  } else {
+    initializeApp({
+      credential: applicationDefault(),
+    });
+  }
 }
 const db = getFirestore();
 

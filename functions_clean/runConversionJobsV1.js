@@ -1,17 +1,20 @@
 const { onRequest } = require("firebase-functions/v2/https");
+const { logger } = require("firebase-functions");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { convertHeicObject } = require("./convertHeicOnFinalize");
 const { isHeicEvidence } = require("./evidenceHeic");
+const {
+  finalizeHeicSuccess,
+  applyEvidenceConversionState,
+  shortErr,
+  toStr,
+} = require("./evidenceDerivatives");
 
 if (!admin.apps.length) admin.initializeApp();
 
 function j(res, status, body) {
   res.status(status).set("content-type", "application/json").send(JSON.stringify(body));
-}
-
-function toStr(v) {
-  return String(v || "").trim();
 }
 
 function toLimit(v, def = 10, max = 10) {
@@ -193,33 +196,31 @@ exports.runConversionJobsV1 = onRequest({ cors: true }, async (req, res) => {
         bucketName: bucket,
         objectName: storagePath,
         incidentIdHint: iid,
+        evidenceIdHint: eid,
+        originalNameHint: toStr((await evidenceRef.get()).data()?.file?.originalName || ""),
       });
 
-      if (converted?.ok) {
-        await evidenceRef.set(
-          {
-            "file.conversionStatus": "ready",
-            "file.conversionError": FieldValue.delete(),
-            ...(converted.previewPath ? { "file.previewPath": converted.previewPath } : {}),
-            ...(converted.thumbPath ? { "file.thumbPath": converted.thumbPath } : {}),
-            ...(converted.previewPath ? { "file.previewContentType": "image/jpeg" } : {}),
-            ...(converted.thumbPath ? { "file.thumbContentType": "image/webp" } : {}),
-            ...(converted.previewPath ? { "file.derivatives.preview.storagePath": converted.previewPath } : {}),
-            ...(converted.previewPath ? { "file.derivatives.preview.contentType": "image/jpeg" } : {}),
-            ...(converted.thumbPath ? { "file.derivatives.thumb.storagePath": converted.thumbPath } : {}),
-            ...(converted.thumbPath ? { "file.derivatives.thumb.contentType": "image/webp" } : {}),
-            storedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
+      if (converted?.ok || converted?.reason === "derivatives_exist") {
+        const previewPath = toStr(converted?.previewPath || "");
+        const thumbPath = toStr(converted?.thumbPath || "");
+        await finalizeHeicSuccess({
+          db,
+          incidentId: iid,
+          evidenceId: eid,
+          storagePath,
+          bucket,
+          previewPath,
+          thumbPath,
+        });
+        logger.info("HEIC finalize ready", { incidentId: iid, evidenceId: eid });
         await jobDoc.ref.set(
           {
             status: "done",
             updatedAt: FieldValue.serverTimestamp(),
             finishedAt: FieldValue.serverTimestamp(),
             result: {
-              previewPath: converted.previewPath || "",
-              thumbPath: converted.thumbPath || "",
+              previewPath: previewPath || "",
+              thumbPath: thumbPath || "",
               skipped: !!converted.skipped,
               reason: converted.reason || "",
             },
@@ -234,26 +235,27 @@ exports.runConversionJobsV1 = onRequest({ cors: true }, async (req, res) => {
       }
 
       const notFound = converted?.reason === "object_not_found";
-      await evidenceRef.set(
-        {
-          "file.conversionStatus": notFound ? "source_missing" : "failed",
-          "file.conversionError": String(converted?.error || converted?.reason || "convert_error"),
-          storedAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+      await applyEvidenceConversionState({
+        db,
+        incidentId: iid,
+        evidenceId: eid,
+        storagePath,
+        bucket,
+        status: notFound ? "source_missing" : "failed",
+        error: notFound ? "object_not_found" : shortErr(converted || {}),
+      });
       await jobDoc.ref.set(
         {
           status: "failed",
           updatedAt: FieldValue.serverTimestamp(),
           finishedAt: FieldValue.serverTimestamp(),
-          error: String(converted?.error || converted?.reason || "convert_error"),
+          error: shortErr(converted || {}),
           details: converted || null,
         },
         { merge: true }
       );
       failed += 1;
-      outRows.push({ incidentId: iid, evidenceId: eid, status: "failed", reason: converted?.reason || "", error: String(converted?.error || "") });
+      outRows.push({ incidentId: iid, evidenceId: eid, status: "failed", reason: converted?.reason || "", error: shortErr(converted || {}) });
     }
 
     return j(res, 200, {

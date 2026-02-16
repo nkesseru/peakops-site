@@ -9,6 +9,7 @@ import FilingCountdown from "@/components/incident/FilingCountdown";
 import NextBestAction from "@/components/incident/NextBestAction";
 import TimelinePanel from "@/components/incident/TimelinePanel";
 import { getFunctionsBase } from "@/lib/functionsBase";
+import { deriveDerivativePaths } from "@/lib/evidence/deriveDerivativePaths";
 
 type EvidenceDoc = {
   id: string;
@@ -126,14 +127,24 @@ function isHeicEvidence(ev: EvidenceDoc) {
 function pickEvidencePaths(ev: EvidenceDoc) {
   const f: any = ev?.file || {};
   const originalPath = String(f?.storagePath || "");
+  const derived = deriveDerivativePaths({
+    storagePath: originalPath,
+    originalName: String(f?.originalName || ""),
+  });
   const previewPath =
     String(f?.previewPath || f?.derivatives?.preview?.storagePath || "").trim();
   const thumbPath =
     String(f?.thumbPath || f?.derivatives?.thumb?.storagePath || "").trim();
   const heic = isHeicEvidence(ev);
+  if (heic) {
+    return {
+      thumbPath: thumbPath || previewPath || derived.thumbPath || "",
+      previewPath: previewPath || thumbPath || derived.previewPath || "",
+    };
+  }
   return {
-    thumbPath: heic && thumbPath ? thumbPath : originalPath,
-    previewPath: heic && previewPath ? previewPath : originalPath,
+    thumbPath: thumbPath || previewPath || originalPath,
+    previewPath: previewPath || thumbPath || originalPath,
   };
 }
 
@@ -141,10 +152,11 @@ function isConvertingHeic(ev: EvidenceDoc) {
   if (!isHeicEvidence(ev)) return false;
   const f: any = ev?.file || {};
   const status = String(f?.conversionStatus || "").toLowerCase();
-  if (status === "source_missing" || status === "failed") return false;
+  if (status === "ready" || status === "source_missing" || status === "failed") return false;
   const hasPreview = !!String(f?.previewPath || f?.derivatives?.preview?.storagePath || "").trim();
   const hasThumb = !!String(f?.thumbPath || f?.derivatives?.thumb?.storagePath || "").trim();
-  return !(hasPreview && hasThumb);
+  if (hasPreview || hasThumb) return false;
+  return status === "pending";
 }
 
 async function postJson<T>(url: string, body: any): Promise<T> {
@@ -1006,14 +1018,7 @@ useEffect(() => {
 
   const selectedEvidence = (evidence || []).find((ev: any) => String(ev?.id || "") === String(selectedEvidenceId || "")) as EvidenceDoc | undefined;
   const selectedIsHeic = !!(selectedEvidence && isHeicEvidence(selectedEvidence));
-  const selectedMissingDerivatives = !!(
-    selectedEvidence &&
-    selectedIsHeic &&
-    (
-      !String((selectedEvidence as any)?.file?.previewPath || (selectedEvidence as any)?.file?.derivatives?.preview?.storagePath || "").trim() ||
-      !String((selectedEvidence as any)?.file?.thumbPath || (selectedEvidence as any)?.file?.derivatives?.thumb?.storagePath || "").trim()
-    )
-  );
+  const selectedMissingDerivatives = !!(selectedEvidence && selectedIsHeic && isConvertingHeic(selectedEvidence));
 
   async function convertSelectedHeicNow() {
     try {
@@ -1053,8 +1058,10 @@ useEffect(() => {
       const ok = !!(report?.conversionResult?.ok);
       const reason = String(report?.conversionResult?.reason || "");
       if (ok) {
-        toast("Debug conversion: success ✓", 2200);
         await refresh();
+        const hasPreview = !!String(report?.finalEvidence?.previewPath || "").trim();
+        const hasThumb = !!String(report?.finalEvidence?.thumbPath || "").trim();
+        toast(hasPreview || hasThumb ? "Debug conversion: success ✓" : "Debug conversion: no derivative paths yet", 2500);
       } else if (reason === "object_not_found" || report?.sourceCheck?.httpStatus === 404) {
         toast("Upload not in storage yet", 3200);
       } else {
@@ -1312,6 +1319,8 @@ useEffect(() => {
               const converting = isConvertingHeic(ev as EvidenceDoc);
               const convStatus = String((ev as any)?.file?.conversionStatus || "").toLowerCase();
               const uploadMissing = convStatus === "source_missing";
+              const conversionFailed = convStatus === "failed";
+              const conversionError = String((ev as any)?.file?.conversionError || "").trim();
 
               return (
                 <button
@@ -1348,6 +1357,11 @@ useEffect(() => {
                     {uploadMissing ? (
                       <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100">
                         Upload not in storage yet
+                      </span>
+                    ) : null}
+                    {conversionFailed ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100" title={conversionError || "HEIC conversion failed"}>
+                        Convert failed
                       </span>
                     ) : null}
                   </div>

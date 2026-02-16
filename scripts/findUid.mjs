@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { initializeApp, cert } from 'firebase-admin/app';
+import { initializeApp, cert, applicationDefault } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 
 function sa() {
@@ -12,7 +12,11 @@ function sa() {
 }
 const obj = sa();
 console.log('Admin Project:', obj.project_id);
-initializeApp({ credential: cert(obj), projectId: obj.project_id });
+const useAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE);
+initializeApp({
+  credential: useAdc ? applicationDefault() : cert(obj),
+  projectId: obj.project_id
+});
 
 const email = process.argv[2];
 if (!email) { console.error('Usage: node scripts/findUid.mjs <email>'); process.exit(1); }
