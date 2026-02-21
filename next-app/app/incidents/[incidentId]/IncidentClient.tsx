@@ -823,6 +823,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function createJob() {
+    if (isClosed) return toast("Incident is closed (read-only).", 2600);
     const title = String(jobTitle || "").trim();
     if (!title) return toast("Job title is required.", 2200);
     try {
@@ -849,6 +850,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function setJobStatus(jobId: string, status: JobStatus) {
+    if (isClosed) return toast("Incident is closed (read-only).", 2600);
     try {
       setJobsBusy(true);
       const out: any = await postJson(`${functionsBase}/updateJobStatusV1`, {
@@ -868,6 +870,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function markCurrentJobComplete() {
+    if (isClosed) return toast("Incident is closed (read-only).", 2600);
     const jid = String(currentJobId || "").trim();
     if (!jid) return toast("Select My job first.", 2200);
     const ok = window.confirm("Mark current job complete?");
@@ -876,6 +879,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignEvidenceJob(evidenceId: string, jobIdRaw: string) {
+    if (isClosed) return toast("Incident is closed (read-only).", 2600);
     try {
       setJobsBusy(true);
       const out: any = await postJson(`${functionsBase}/assignEvidenceToJobV1`, {
@@ -920,14 +924,22 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         if (jb?.ok && Array.isArray(jb.docs)) {
           const docs = jb.docs;
           setJobs(docs);
-          const exists = docs.some((j: any) => String(j?.id || j?.jobId || "") === String(currentJobId || ""));
-          if (!exists) {
-            const preferred = docs.find((j: any) => {
-              const st = String(j?.status || "").toLowerCase();
-              return st === "in_progress" || st === "open" || st === "review";
+          const currentId = String(currentJobId || "").trim();
+          const exists = docs.some((j: any) => String(j?.id || j?.jobId || "") === currentId);
+          const firstJobId = String(docs?.[0]?.id || docs?.[0]?.jobId || "").trim();
+          let effectiveJobId = currentId;
+          if (!currentId || !exists) {
+            if (firstJobId) {
+              setCurrentJobId(firstJobId);
+              effectiveJobId = firstJobId;
+            }
+          }
+          if (process.env.NODE_ENV !== "production") {
+            console.debug("[jobs-refresh]", {
+              jobsCount: docs.length,
+              currentJobId: effectiveJobId || "",
+              firstJobId: firstJobId || "",
             });
-            const nextId = String(preferred?.id || preferred?.jobId || docs?.[0]?.id || docs?.[0]?.jobId || "").trim();
-            if (nextId) setCurrentJobId(nextId);
           }
         }
       }
