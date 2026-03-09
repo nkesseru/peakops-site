@@ -4,8 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getFunctionsBase } from "@/lib/functionsBase";
-
 type Item = { id: string; file: File; url: string };
+type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string; status?: string };
 
 function makeId() {
   return "ev_" + Date.now() + "_" + Math.random().toString(16).slice(2);
@@ -17,22 +17,32 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
 
   // Queue of captured/selected media
   const [items, setItems] = useState<Item[]>([]);
+const [mounted, setMounted] = useState(false);
+useEffect(() => {
+  setMounted(true);
+}, []);
+
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [errMsg, setErrMsg] = useState("");
+  const [sessionId, setSessionId] = useState<string>("");
+  const [sessionBusy, setSessionBusy] = useState(false);
 
   // Camera
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  const [jobs, setJobs] = useState<JobLite[]>([]);
 
   // Env / context
   const functionsBase = getFunctionsBase();
+  const fnProxyBase = "/api/fn";
+  const [selectedJobId, setSelectedJobId] = useState("");
   const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
-  const selectedJobId = String(sp?.get("jobId") || "").trim();
 
-  // Prefer orgId from query (?orgId=...), else localStorage, else riverbend-electric (your demo org)
+// Prefer orgId from query (?orgId=...), else localStorage, else riverbend-electric (your demo org)
   const orgId = useMemo(() => {
     const q = String(sp?.get("orgId") || "").trim();
     if (q) return q;
@@ -42,6 +52,136 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
     } catch {}
     return "riverbend-electric";
   }, [sp]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadJobsAndResolve() {
+      try {
+        const queryJobId = String(sp?.get("jobId") || "").trim();
+
+        let localJobId = "";
+        try {
+          localJobId = String(localStorage.getItem(`peakops_current_job_${String(incidentId || "").trim()}`) || "").trim();
+        } catch {}
+
+        const res = await fetch(
+          `/api/fn/listJobsV1?orgId=${encodeURIComponent(String(orgId || "").trim())}&incidentId=${encodeURIComponent(String(incidentId || "").trim())}&limit=50&actorUid=dev-admin&actorRole=admin`,
+          { cache: "no-store" }
+        );
+
+        const out = await res.json().catch(() => ({}));
+        const docs = Array.isArray(out?.docs) ? out.docs : [];
+
+        if (cancelled) return;
+        setJobs(docs);
+
+        const normalized = docs
+          .map((j: any) => ({
+            raw: j,
+            id: String(j?.id || j?.jobId || "").trim(),
+            status: String(j?.status || j?.rawStatus || "").trim().toLowerCase(),
+          }))
+          .filter((j: any) => j.id);
+
+        const chosen =
+          normalized.find((j: any) => j.id === queryJobId) ||
+          normalized.find((j: any) => j.id === localJobId) ||
+          normalized.find((j: any) => j.status === "open") ||
+          normalized.find((j: any) => j.status === "in_progress" || j.status === "in-progress") ||
+          normalized[0];
+
+        const chosenId = String(chosen?.id || "").trim();
+        if (chosenId) {
+          setSelectedJobId(chosenId);
+          try {
+            localStorage.setItem(`peakops_current_job_${String(incidentId || "").trim()}`, chosenId);
+          } catch {}
+        }
+      } catch (e) {
+        console.warn("[add-evidence] loadJobsAndResolve failed", e);
+      }
+    }
+
+    void loadJobsAndResolve();
+    return () => {
+      cancelled = true;
+    };
+  }, [incidentId, orgId, sp]);
+
+  useEffect(() => {
+    const jid = String(selectedJobId || "").trim();
+    const key = `peakops_current_job_${String(incidentId || "").trim()}`;
+    try {
+      if (jid) localStorage.setItem(key, jid);
+    } catch {}
+  }, [selectedJobId, incidentId]);
+
+  
+
+  useEffect(() => {
+    let cancelled = false;
+    async function ensureSession() {
+      if (!functionsBase || !orgId || !incidentId) return;
+      const existing = String(sp?.get("sid") || "").trim();
+      if (existing) {
+        if (!cancelled) {
+          setSessionId(existing);
+          setStatus("");
+        }
+        return;
+      }
+      let localSid = "";
+      try { localSid = String(localStorage.getItem("peakops_active_session_" + String(incidentId || "")) || "").trim(); } catch {}
+      if (localSid) {
+        if (!cancelled) {
+          setSessionId(localSid);
+          setStatus("");
+        }
+        return;
+      }
+      if (!cancelled) {
+        setSessionBusy(true);
+        setStatus("Starting session…");
+      }
+      try {
+        const res = await fetch(`${fnProxyBase}/startFieldSessionV1`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            orgId,
+            incidentId,
+            createdBy: "ui",
+            techUserId,
+            phase: "inspection",
+          }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || !out?.ok || !out?.sessionId) {
+          throw new Error(out?.error || `Could not start field session (${res.status})`);
+        }
+        const sid = String(out.sessionId || "").trim();
+        if (!sid) throw new Error("startFieldSessionV1 returned no sessionId");
+        try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
+        if (!cancelled) {
+          setSessionId(sid);
+          setStatus("");
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          const m = String(e?.message || e || "session_start_failed");
+          setErrMsg(m);
+          setStatus("Session start failed");
+        }
+      } finally {
+        if (!cancelled) setSessionBusy(false);
+      }
+    }
+    void ensureSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [functionsBase, orgId, incidentId, sp, techUserId]);
 
   useEffect(() => {
     // Cleanup camera + blob urls
@@ -148,16 +288,17 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
   }
 
   async function uploadOne(it: Item) {
-    if (!functionsBase) throw new Error("Missing NEXT_PUBLIC_FUNCTIONS_BASE in .env.local");
     if (!selectedJobId) throw new Error("No job selected. Return to incident page and pick My job first.");
+    if (!sessionId) throw new Error("Session not ready yet. Please wait for 'Starting session…' to finish.");
     await uploadEvidence({
-      functionsBase,
+      functionsBase: fnProxyBase,
       techUserId,
       orgId,
       incidentId,
       phase: "inspection",
       labels: ["damage"],
       jobId: selectedJobId,
+      sessionId,
       file: it.file,
       onStatus: setStatus,
     });
@@ -202,12 +343,16 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
           Incident {incidentId.slice(-6)}
         </div>
         <div className="text-xs text-cyan-200/90 mt-1">
-          My job: {selectedJobId || "(not selected)"}
+          My job: {mounted ? (selectedJobId || "(auto-selecting…)") : "…"}
+        </div>
+        <div className="text-xs text-cyan-200/90 mt-1">
+          Session: {sessionId ? `ready (${sessionId.slice(0, 8)}…)` : (sessionBusy ? "Starting session…" : "not ready")}
         </div>
         {!selectedJobId ? (
-          <div className="text-xs text-amber-200 mt-1">Select a job on incident page before uploading.</div>
+          <div className="text-xs text-amber-200 mt-1">No job bound yet. Attempting auto-select from incident jobs…</div>
         ) : null}
         <div className="text-xs text-gray-500 mt-1">Audit-safe capture • Auto-tagged • Time-locked</div>
+        <div className="text-xs text-gray-500 mt-1">Jobs detected: {Array.isArray(jobs) ? jobs.length : 0}</div>
       </div>
 
       {/* CAMERA MODE */}
@@ -246,25 +391,49 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
           <button
             className="w-full py-4 rounded-xl bg-gradient-to-r from-amber-500 to-slate-400 font-semibold active:from-amber-600 active:to-slate-500"
             onClick={openCamera}
-            disabled={busy}
+            disabled={busy || sessionBusy || !sessionId}
           >
             Open Camera
           </button>
 
           <input
             id="pick"
+            ref={fileInputRef}
             type="file"
             accept="image/*,video/*"
             multiple
-            onChange={(e) => addPickedFiles(e.target.files)}
+            onChange={(e) => {
+              if (process.env.NODE_ENV !== "production") {
+                console.warn("[add-evidence]", { step: "change", files: Number(e.target.files?.length || 0), ts: Date.now() });
+              }
+              addPickedFiles(e.target.files);
+            }}
             className="hidden"
+            disabled={busy || sessionBusy || !sessionId}
           />
-          <label
-            htmlFor="pick"
+          <button
+            type="button"
             className="w-full py-5 flex items-center justify-center border-2 border-dashed border-white/20 rounded-xl text-gray-200 active:border-white/40"
+            disabled={busy || sessionBusy || !sessionId}
+            onClick={() => {
+              if (process.env.NODE_ENV !== "production") {
+                console.warn("[add-evidence]", {
+                  step: "click",
+                  disabled: busy || sessionBusy || !sessionId,
+                  hasInput: !!fileInputRef.current,
+                  isUserGesture: true,
+                  ts: Date.now(),
+                });
+              }
+              if (busy || sessionBusy || !sessionId) return;
+              fileInputRef.current?.click();
+              if (process.env.NODE_ENV !== "production") {
+                console.warn("[add-evidence]", { step: "input_click", ts: Date.now() });
+              }
+            }}
           >
             Pick multiple photos/videos
-          </label>
+          </button>
 
           {items.length ? (
             <div className="rounded-xl border border-white/10 bg-white/5 p-3">
@@ -306,7 +475,7 @@ export default function AddEvidenceClient({ incidentId }: { incidentId: string }
               <button
                 className="mt-3 w-full py-4 rounded-xl bg-green-600/90 border border-green-300/20 text-white font-semibold hover:bg-green-600 active:translate-y-[1px] transition"
                 onClick={uploadAll}
-                disabled={busy || !items.length || !selectedJobId}
+                disabled={busy || sessionBusy || !sessionId || !items.length || !selectedJobId}
                 title={!selectedJobId ? "Return and select My job first" : (items.length ? "Upload all queued evidence" : "Add photos first")}
               >
                 {busy ? (status || "Working…") : "Upload & Secure Evidence"}

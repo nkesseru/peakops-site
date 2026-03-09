@@ -1,3 +1,5 @@
+"use client";
+
 import { isHeicEvidence } from "./isHeicEvidence";
 
 export type StartFieldSessionResp = {
@@ -10,6 +12,7 @@ export type StartFieldSessionResp = {
 export type CreateUploadUrlResp = {
   ok: boolean;
   uploadUrl: string;
+  uploadMethod?: "PUT" | "POST";
   storagePath: string;
   bucket?: string;
   contentType?: string;
@@ -24,13 +27,13 @@ export type AddEvidenceResp = {
 };
 
 export type UploadEvidenceArgs = {
-  functionsBase: string; // e.g. http://127.0.0.1:5002/peakops-pilot/us-central1
+  functionsBase: string; // e.g. http://127.0.0.1:5004/peakops-pilot/us-central1
   techUserId: string;
 
   orgId: string;
   incidentId: string;
 
-  phase: string; // "inspection"
+  phase: string;
   labels: string[];
 
   gps?: { lat: number; lng: number; acc?: number };
@@ -43,117 +46,58 @@ export type UploadEvidenceArgs = {
   onStatus?: (s: string) => void;
 };
 
-function isLocalDev() {
+function isLocalDev(): boolean {
   const envLocal = process.env.NEXT_PUBLIC_ENV === "local" || process.env.NODE_ENV !== "production";
   try {
-    const h = String(globalThis?.location?.hostname || "");
+    const h = String((globalThis as any)?.location?.hostname || "");
     return envLocal || h === "127.0.0.1" || h === "localhost";
   } catch {
     return envLocal;
   }
 }
 
-function useSignedPutInLocalDev() {
-  return String(process.env.NEXT_PUBLIC_USE_SIGNED_PUT || "").trim() === "1";
-}
-
 async function postJson<T>(url: string, body: any): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch (e: any) {
-    throw new Error(`POST ${url} -> network error: ${String(e?.message || e)}`);
-  }
-  const txt = await res.text();
-  if (!res.ok) throw new Error(`POST ${url} -> ${res.status} ${txt}`);
-  return JSON.parse(txt) as T;
-}
-
-async function verifyObjectInStorage({
-  functionsBase,
-  orgId,
-  incidentId,
-  storagePath,
-  bucket,
-}: {
-  functionsBase: string;
-  orgId: string;
-  incidentId: string;
-  storagePath: string;
-  bucket: string;
-}) {
-  const out = await postJson<{ ok?: boolean; url?: string; error?: string }>(
-    `${functionsBase}/createEvidenceReadUrlV1`,
-    { orgId, incidentId, storagePath, bucket, expiresSec: 120 }
-  );
-  if (!out?.ok || !out?.url) {
-    throw new Error(`verify failed: createEvidenceReadUrlV1 bucket=${bucket} path=${storagePath} -> ${JSON.stringify(out)}`);
-  }
-
-  const verifyRes = await fetch(out.url, { method: "GET" });
-  if (!verifyRes.ok) {
-    const txt = await verifyRes.text().catch(() => "");
-    throw new Error(`storage object missing bucket=${bucket} path=${storagePath} -> ${verifyRes.status} ${txt}`);
-  }
-}
-
-function redactUploadUrl(input: string) {
-  try {
-    const u = new URL(String(input || ""));
-    const redacted = new URL(u.toString());
-    ["X-Goog-Signature", "X-Amz-Signature", "signature", "sig"].forEach((k) => {
-      if (redacted.searchParams.has(k)) redacted.searchParams.set(k, "REDACTED");
-    });
-    return {
-      redactedUrl: redacted.toString(),
-      protocol: u.protocol || "",
-      hostname: u.hostname || "",
-    };
-  } catch {
-    return { redactedUrl: String(input || ""), protocol: "", hostname: "" };
-  }
-}
-
-async function uploadViaDevProxy({
-  functionsBase,
-  orgId,
-  incidentId,
-  sessionId,
-  storagePath,
-  bucket,
-  file,
-}: {
-  functionsBase: string;
-  orgId: string;
-  incidentId: string;
-  sessionId: string;
-  storagePath: string;
-  bucket: string;
-  file: File;
-}) {
-  const fd = new FormData();
-  fd.append("orgId", orgId);
-  fd.append("incidentId", incidentId);
-  fd.append("sessionId", sessionId);
-  fd.append("storagePath", storagePath);
-  fd.append("bucket", bucket);
-  fd.append("contentType", file.type || "application/octet-stream");
-  fd.append("originalName", file.name || "upload");
-  fd.append("file", file, file.name || "upload");
-  const res = await fetch(`${functionsBase}/uploadEvidenceProxyV1`, {
+  const res = await fetch(url, {
     method: "POST",
-    body: fd,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
   });
   const txt = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(`uploadEvidenceProxyV1 -> ${res.status} ${txt}`);
+  let parsed: any = {};
   try {
-    return JSON.parse(txt);
+    parsed = txt ? JSON.parse(txt) : {};
   } catch {
-    return { ok: true };
+    throw new Error(`POST ${url} -> ${res.status} non-json: ${txt.slice(0, 200)}`);
+  }
+  if (!res.ok || parsed?.ok === false) {
+    throw new Error(`POST ${url} -> ${res.status} ${txt.slice(0, 300)}`);
+  }
+  return parsed as T;
+}
+
+/**
+ * Upload bytes directly to the uploadUrl returned by createEvidenceUploadUrlV1.
+ * In emulator we’ve seen uploadMethod=POST (storage upload API) or PUT (signed URL style).
+ */
+async function uploadBytesToUploadUrl(opts: {
+  uploadUrl: string;
+  uploadMethod?: string;
+  file: File;
+}): Promise<void> {
+  const method = String(opts.uploadMethod || "PUT").toUpperCase();
+  const ct = opts.file.type || "application/octet-stream";
+
+  const res = await fetch(opts.uploadUrl, {
+    method: method === "POST" ? "POST" : "PUT",
+    headers: { "content-type": ct },
+    body: opts.file,
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`uploadUrl ${method} -> ${res.status} ${txt.slice(0, 300)}`);
   }
 }
 
@@ -168,179 +112,129 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
     gps,
     notes,
     file,
-    jobId,
     onStatus,
+    jobId,
   } = args;
 
-  // 1) Ensure we have a session
-  onStatus?.("Starting field session…");
-  let sessionId = args.sessionId;
+  const localDev = isLocalDev();
 
-  if (!sessionId) {
-    const sess = await postJson<StartFieldSessionResp>(`${functionsBase}/startFieldSessionV1`, {
+  const startFreshSession = async (): Promise<string> => {
+    const sess = await postJson<StartFieldSessionResp>(`/api/fn/startFieldSessionV1`, {
       orgId,
       incidentId,
-      phase,
       techUserId,
-      gps,
+      actorUid: "dev-admin",
+      actorRole: "admin",
     });
+    const sid = String(sess.sessionId || sess.id || "").trim();
+    if (!sid) throw new Error(`startFieldSessionV1 missing sessionId: ${JSON.stringify(sess)}`);
+    return sid;
+  };
 
-    if (!sess.ok) throw new Error(`startFieldSessionV1 not ok: ${JSON.stringify(sess)}`);
-    sessionId = sess.sessionId || sess.id;
-    if (!sessionId) throw new Error(`startFieldSessionV1 missing sessionId: ${JSON.stringify(sess)}`);
-  }
+  const isSessionMissing = (err: any): boolean => {
+    const msg = String(err?.message || err || "").toLowerCase();
+    return msg.includes("session not found");
+  };
 
-  // 2) Create signed URL
+  // 1) Ensure we have a sessionId
+    let activeSessionId = String(args.sessionId || "").trim();
+
+console.warn("[uploadEvidence] step=start-session", {
+  orgId,
+  incidentId,
+  fileName: file?.name,
+  incomingSessionId: activeSessionId,
+});
+
+onStatus?.("Starting field session…");
+
+  // 2) Get uploadUrl + storagePath (retry once if session is stale)
+  const requestUploadUrl = async (sidToUse: string): Promise<CreateUploadUrlResp> => {
+    return await postJson<CreateUploadUrlResp>(`/api/fn/createEvidenceUploadUrlV1`, {
+      orgId,
+      incidentId,
+      sessionId: sidToUse,
+      fileName: file.name || "upload.bin",
+      originalName: file.name || "upload.bin",
+      contentType: file.type || "application/octet-stream",
+    });
+  };
+
+  console.warn("[uploadEvidence] step=request-upload-url", { orgId, incidentId, incomingSessionId: activeSessionId, fileName: file?.name, contentType: file?.type });
   onStatus?.("Requesting upload URL…");
-  const createResp = await postJson<CreateUploadUrlResp>(`${functionsBase}/createEvidenceUploadUrlV1`, {
-    orgId,
-    incidentId,
-    sessionId,
-    contentType: file.type || "application/octet-stream",
-    originalName: file.name || "upload.bin",
-  });
+  let createResp: CreateUploadUrlResp;
+  try {
+    createResp = await requestUploadUrl(activeSessionId);
+  } catch (e: any) {
+    if (isSessionMissing(e)) {
+      onStatus?.("Refreshing session…");
+      activeSessionId = await startFreshSession();
+      console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
+      createResp = await requestUploadUrl(activeSessionId);
+    } else {
+      throw e;
+    }
+  }
 
-  if (!createResp.ok || !createResp.uploadUrl || !createResp.storagePath) {
+  console.warn("[uploadEvidence] createResp", createResp);
+  const uploadUrl = String(createResp.uploadUrl || "").trim();
+  const storagePath = String(createResp.storagePath || "").trim();
+  const bucket = String(createResp.bucket || "").trim();
+
+  if (!uploadUrl || !storagePath) {
     throw new Error(`createEvidenceUploadUrlV1 invalid: ${JSON.stringify(createResp)}`);
-  }
-  const uploadBucket = String(createResp.bucket || "").trim();
-  if (!uploadBucket) {
-    throw new Error(`createEvidenceUploadUrlV1 missing bucket for storagePath=${createResp.storagePath}`);
-  }
-  const localDev = isLocalDev();
-  const u = redactUploadUrl(createResp.uploadUrl);
-  console.info("[uploadEvidence] signed upload URL", {
-    url: u.redactedUrl,
-    protocol: u.protocol,
-    hostname: u.hostname,
-    bucket: uploadBucket,
-    storagePath: createResp.storagePath,
-  });
-  if (localDev) {
-    onStatus?.(`Upload URL ${u.redactedUrl}`);
   }
 
   // 3) Upload bytes
+  console.warn("[uploadEvidence] step=upload-bytes", { uploadMethod: createResp.uploadMethod, storagePath: createResp.storagePath, bucket: createResp.bucket });
   onStatus?.("Uploading…");
-  let finalBucket = uploadBucket;
-  let finalStoragePath = createResp.storagePath;
-  if (localDev) {
-    const preferSignedPut = useSignedPutInLocalDev();
-    if (preferSignedPut) {
-      onStatus?.("Uploading via signed PUT…");
-      try {
-        const putRes = await fetch(createResp.uploadUrl, {
-          method: "PUT",
-          headers: { "content-type": file.type || "application/octet-stream" },
-          body: file,
-        });
-        if (!putRes.ok) {
-          const errTxt = await putRes.text().catch(() => "");
-          throw new Error(`PUT signed URL -> ${putRes.status} ${errTxt}`);
-        }
-      } catch (e: any) {
-        console.warn("[uploadEvidence] signed PUT failed in local dev; falling back to proxy", {
-          error: String(e?.message || e),
-          bucket: uploadBucket,
-          storagePath: createResp.storagePath,
-        });
-        onStatus?.("Signed PUT failed, retrying via dev proxy…");
-        const proxyOut = await uploadViaDevProxy({
-          functionsBase,
-          orgId,
-          incidentId,
-          sessionId,
-          storagePath: createResp.storagePath,
-          bucket: uploadBucket,
-          file,
-        });
-        if (!proxyOut?.ok) throw new Error(`uploadEvidenceProxyV1 failed: ${JSON.stringify(proxyOut)}`);
-        finalBucket = String(proxyOut.bucket || uploadBucket).trim();
-        finalStoragePath = String(proxyOut.storagePath || createResp.storagePath).trim();
-        if (!finalBucket || !finalStoragePath) {
-          throw new Error(`uploadEvidenceProxyV1 missing bucket/path: ${JSON.stringify(proxyOut)}`);
-        }
-      }
-    } else {
-      onStatus?.("Uploading via dev proxy…");
-      const proxyOut = await uploadViaDevProxy({
-        functionsBase,
-        orgId,
-        incidentId,
-        sessionId,
-        storagePath: createResp.storagePath,
-        bucket: uploadBucket,
-        file,
-      });
-      if (!proxyOut?.ok) throw new Error(`uploadEvidenceProxyV1 failed: ${JSON.stringify(proxyOut)}`);
-      finalBucket = String(proxyOut.bucket || uploadBucket).trim();
-      finalStoragePath = String(proxyOut.storagePath || createResp.storagePath).trim();
-      if (!finalBucket || !finalStoragePath) {
-        throw new Error(`uploadEvidenceProxyV1 missing bucket/path: ${JSON.stringify(proxyOut)}`);
-      }
-    }
-  } else {
-    const putRes = await fetch(createResp.uploadUrl, {
-      method: "PUT",
-      headers: { "content-type": file.type || "application/octet-stream" },
-      body: file,
-    });
-    if (!putRes.ok) {
-      const errTxt = await putRes.text().catch(() => "");
-      throw new Error(`PUT signed URL -> ${putRes.status} ${errTxt}`);
-    }
-  }
-
-  // Dev safeguard: confirm uploaded object is actually reachable via signed read URL.
-  if (localDev) {
-    onStatus?.("Verifying storage object…");
-    try {
-      await verifyObjectInStorage({
-        functionsBase,
-        orgId,
-        incidentId,
-        storagePath: finalStoragePath,
-        bucket: finalBucket,
-      });
-    } catch (e: any) {
-      throw new Error(`Upload not in storage bucket=${finalBucket} path=${finalStoragePath}`);
-    }
-  }
-
-  // 4) Register evidence
-  onStatus?.("Securing evidence…");
-  const addResp = await postJson<AddEvidenceResp>(`${functionsBase}/addEvidenceV1`, {
-    orgId,
-    incidentId,
-    sessionId,
-    phase,
-    labels,
-    gps,
-    contentType: file.type,
-    storagePath: finalStoragePath,
-    bucket: finalBucket,
-    notes: notes || "",
-    originalName: file.name || "upload.bin",
-    jobId: String(jobId || "").trim() || null,
+  await uploadBytesToUploadUrl({
+    uploadUrl,
+    uploadMethod: createResp.uploadMethod,
+    file,
   });
 
-  if (!addResp.ok) {
-    throw new Error(`addEvidenceV1 not ok: ${JSON.stringify(addResp)}`);
-  }
-
-  // Deterministic demo behavior: run queued conversion once right after HEIC upload in dev.
-  if (localDev && isHeicEvidence({ contentType: file.type, originalName: file.name, storagePath: finalStoragePath })) {
-    onStatus?.("Running HEIC conversion job…");
-    const runOut = await postJson<{ ok?: boolean; error?: string }>(`${functionsBase}/runConversionJobsV1`, {
+  // 4) Register evidence (retry once if session went stale between upload + register)
+  const postAddEvidence = async (sidToUse: string): Promise<AddEvidenceResp> => {
+    return await postJson<AddEvidenceResp>(`/api/fn/addEvidenceV1`, {
+      orgId,
       incidentId,
-      evidenceId: addResp.evidenceId || "",
-      limit: 1,
+      sessionId: sidToUse,
+      phase,
+      labels,
+      gps,
+      contentType: file.type || "application/octet-stream",
+      storagePath,
+      bucket,
+      notes: notes || "",
+      originalName: file.name || "upload.bin",
+      jobId: String(jobId || "").trim() || null,
+      actorUid: "dev-admin",
+      actorRole: "admin",
     });
-    if (!runOut?.ok) {
-      throw new Error(`runConversionJobsV1 failed: ${JSON.stringify(runOut)}`);
+  };
+
+  console.warn("[uploadEvidence] step=add-evidence", { orgId, incidentId, incomingSessionId: activeSessionId, storagePath, bucket, fileName: file?.name, jobId });
+  onStatus?.("Securing evidence…");
+  let addResp: AddEvidenceResp;
+  try {
+    addResp = await postAddEvidence(activeSessionId);
+  } catch (e: any) {
+    if (isSessionMissing(e)) {
+      onStatus?.("Refreshing session…");
+      activeSessionId = await startFreshSession();
+      console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
+      addResp = await postAddEvidence(activeSessionId);
+    } else {
+      throw e;
     }
   }
 
-  onStatus?.("Secured ✔️");
+  if (localDev && isHeicEvidence({ contentType: file.type, originalName: file.name, storagePath })) {
+    // leave disabled unless you’ve stabilized HEIC end-to-end
+  }
+
+  console.warn("[uploadEvidence] success", { evidenceId: addResp?.evidenceId, finalSessionId: activeSessionId, registration: addResp });
+  onStatus?.("Secured ✅");
   return addResp;
 }
