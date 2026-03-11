@@ -20,7 +20,7 @@ export default function NextBestAction(props: Props) {
   let title = "Next best action";
   let desc = "Keep moving the incident toward supervisor-ready.";
   let cta = "Add evidence";
-  let action: "add" | "notes" | "arrive" | "submit" = "add";
+  let action: "add" | "notes" | "submit" = "add";
   let tone = "border-white/10 bg-white/5";
 
   if (!hasEvidence) {
@@ -57,7 +57,6 @@ export default function NextBestAction(props: Props) {
 
   const onClick = () => {
     if (action === "notes") return props.onOpenNotes();
-    if (action === "arrive") return props.onMarkArrived?.();
     if (action === "submit") return props.onSubmitSession();
     return props.onAddEvidence();
   };

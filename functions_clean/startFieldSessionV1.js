@@ -39,7 +39,7 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     if (curStatus === "closed") {
       return j(res, 409, { ok: false, error: "incident_closed", detail: "Incident is read-only" });
     }
-    if (curStatus && curStatus !== "open" && curStatus !== "in_progress" && curStatus !== "submitted") {
+    if (curStatus && curStatus !== "open" && curStatus !== "in_progress") {
       return j(res, 409, { ok: false, error: "invalid_transition", detail: `unsupported incident.status=${curStatus}` });
     }
 

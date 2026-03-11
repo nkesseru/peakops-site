@@ -3,3 +3,11 @@
 html, body { height: 100%; }
 body { margin: 0; background: #000; color: #fff; }
 * { box-sizing: border-box; }
+
+/* PEAKOPS_THUMB_FIX 2026-03-02T09:34:43 */
+/* Stop any accidental pixel-art rendering on evidence thumbnails. */
+img, canvas, video {
+  image-rendering: auto !important;
+}
+
+/* If your thumb tiles are inside a specific container, this still helps because it overrides inherited rules. */

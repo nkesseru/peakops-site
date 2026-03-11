@@ -19,7 +19,20 @@ function isLikelyHeicExt(value = "") {
   return /\.(heic|heif)$/i.test(String(value || "").trim());
 }
 
-function deriveDerivativePaths({ bucket = "", storagePath = "", originalName = "" } = {}) {
+function extractFromStoragePath(storagePath = "") {
+  const m = String(storagePath || "").match(/^orgs\/([^/]+)\/incidents\/([^/]+)\//i);
+  if (!m) return { orgId: "", incidentId: "" };
+  return { orgId: toStr(m[1]), incidentId: toStr(m[2]) };
+}
+
+function deriveDerivativePaths({
+  bucket = "",
+  storagePath = "",
+  originalName = "",
+  orgId = "",
+  incidentId = "",
+  evidenceId = "",
+} = {}) {
   const bucketOut = toStr(bucket);
   const storage = toStr(storagePath);
   const original = toStr(originalName);
@@ -31,15 +44,31 @@ function deriveDerivativePaths({ bucket = "", storagePath = "", originalName = "
   } else if (!/\.[a-z0-9]{2,8}$/i.test(storage) && isLikelyHeicExt(original)) {
     basePath = storage;
   }
-  const previewPath = basePath ? `${basePath}__preview.jpg` : "";
-  const thumbPath = basePath ? `${basePath}__thumb.webp` : "";
+  const legacyPreviewPath = basePath ? `${basePath}__preview.jpg` : "";
+  const legacyThumbPath = basePath ? `${basePath}__thumb.webp` : "";
+  const extracted = extractFromStoragePath(storage);
+  const resolvedOrgId = toStr(orgId) || extracted.orgId;
+  const resolvedIncidentId = toStr(incidentId) || extracted.incidentId;
+  const resolvedEvidenceId = toStr(evidenceId);
+  const derivedPrefix = (
+    resolvedOrgId && resolvedIncidentId && resolvedEvidenceId
+      ? `orgs/${resolvedOrgId}/incidents/${resolvedIncidentId}/evidence/derived/${resolvedEvidenceId}`
+      : ""
+  );
+  const previewPath = derivedPrefix ? `${derivedPrefix}/preview.jpg` : legacyPreviewPath;
+  const thumbPath = derivedPrefix ? `${derivedPrefix}/thumb.webp` : legacyThumbPath;
   return {
     bucket: bucketOut,
     storagePath: storage,
     originalName: original,
+    orgId: resolvedOrgId,
+    incidentId: resolvedIncidentId,
+    evidenceId: resolvedEvidenceId,
     isHeicCandidate: hasHeicExt || /heic|heif/i.test(lowerStorage) || /heic|heif/i.test(original.toLowerCase()),
     previewPath,
     thumbPath,
+    legacyPreviewPath,
+    legacyThumbPath,
   };
 }
 
@@ -82,7 +111,9 @@ async function applyEvidenceConversionState({
   const sp = toStr(storagePath);
   const pp = toStr(previewPath);
   const tp = toStr(thumbPath);
-  const s = toStr(status).toLowerCase() || "pending";
+  const rawStatus = toStr(status).toLowerCase() || "pending";
+  const successState = rawStatus === "ready" || rawStatus === "done";
+  const s = successState ? "done" : rawStatus;
   const patch = {
     storedAt: FieldValue.serverTimestamp(),
     "file.conversionStatus": s,
@@ -90,16 +121,18 @@ async function applyEvidenceConversionState({
   };
   if (b) patch["file.bucket"] = b;
   if (sp) patch["file.storagePath"] = sp;
-  if (s === "ready") {
+  if (successState) {
     patch["file.conversionError"] = FieldValue.delete();
     if (pp) {
       patch["file.previewPath"] = pp;
+      patch["file.convertedJpgPath"] = pp;
       patch["file.previewContentType"] = "image/jpeg";
       patch["file.derivatives.preview.storagePath"] = pp;
       patch["file.derivatives.preview.contentType"] = "image/jpeg";
     }
     if (tp) {
       patch["file.thumbPath"] = tp;
+      patch["file.thumbnailPath"] = tp;
       patch["file.thumbContentType"] = "image/webp";
       patch["file.derivatives.thumb.storagePath"] = tp;
       patch["file.derivatives.thumb.contentType"] = "image/webp";
@@ -127,7 +160,7 @@ async function backfillEvidenceDerivatives({
     evidenceId,
     storagePath,
     bucket,
-    status: "ready",
+    status: "done",
     previewPath,
     thumbPath,
   });
@@ -163,7 +196,7 @@ async function finalizeHeicSuccess({
     evidenceId,
     storagePath,
     bucket,
-    status: "ready",
+    status: "done",
     previewPath: finalPreview,
     thumbPath: finalThumb,
   });

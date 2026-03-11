@@ -1,17 +1,31 @@
 import { NextResponse } from "next/server";
+import { getFunctionsBase } from "@/lib/functionsBase";
 
 function pickBase() {
-  return process.env.FN_BASE || "http://127.0.0.1:5002/peakops-pilot/us-central1";
+  const canonical = String(getFunctionsBase() || "").trim();
+  const base =
+    canonical ||
+    String(process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "").trim() ||
+    String(process.env.FUNCTIONS_BASE || "").trim() ||
+    String(process.env.FN_BASE || "").trim();
+  if (!base) {
+    return {
+      ok: false as const,
+      error: "envMissing:functions_base",
+      checked: ["NEXT_PUBLIC_FUNCTIONS_BASE", "FUNCTIONS_BASE", "FN_BASE"],
+    };
+  }
+  return { ok: true as const, base };
 }
 
 // Emulator base includes /us-central1; Cloud Run base does NOT.
 // This keeps both working.
-function buildUrl(req: Request, fnName: string) {
-  const base = pickBase().replace(/\/+$/, "");
+function buildUrl(req: Request, fnName: string, base: string) {
+  const normalized = base.replace(/\/+$/, "");
   const inUrl = new URL(req.url);
 
-  const target = new URL(base);
-  const isCloudRun = base.includes(".a.run.app");
+  const target = new URL(normalized);
+  const isCloudRun = normalized.includes(".a.run.app");
   target.pathname = isCloudRun
     ? `/${String(fnName).replace(/^\//, "")}`
     : `${target.pathname.replace(/\/+$/, "")}/${String(fnName).replace(/^\//, "")}`;
@@ -42,7 +56,24 @@ async function safeJsonOrText(r: Response) {
 }
 
 export async function proxyGET(req: Request, fnName: string) {
-  const url = buildUrl(req, fnName);
+  if (!String(fnName || "").trim()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "missing_fn_name",
+        details: { method: "GET", reqUrl: req.url },
+      },
+      { status: 400 }
+    );
+  }
+  const p = pickBase();
+  if (!p.ok) {
+    return NextResponse.json(
+      { ok: false, error: p.error, details: { checked: p.checked, method: "GET", fnName } },
+      { status: 500 }
+    );
+  }
+  const url = buildUrl(req, fnName, p.base);
 
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 12000);
@@ -57,17 +88,57 @@ export async function proxyGET(req: Request, fnName: string) {
     const parsed = await safeJsonOrText(r);
     if (parsed.kind === "json") return NextResponse.json(parsed.body, { status: r.status });
 
-    // Return text but keep status so UI can show the real failure
-    return new Response(parsed.body, { status: r.status, headers: { "content-type": "text/plain; charset=utf-8" } });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "upstream_non_json",
+        details: {
+          targetUrl: url,
+          method: "GET",
+          status: r.status,
+          bodySnippet: String(parsed.body || "").slice(0, 500),
+        },
+      },
+      { status: r.status >= 400 ? r.status : 502 }
+    );
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: `proxyGET failed: ${String(e?.message || e)}` }, { status: 502 });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "proxy_get_failed",
+        details: {
+          targetUrl: url,
+          method: "GET",
+          status: 0,
+          message: String(e?.message || e),
+        },
+      },
+      { status: 502 }
+    );
   } finally {
     clearTimeout(t);
   }
 }
 
 export async function proxyPOST(req: Request, fnName: string, bodyObj: any) {
-  const url = buildUrl(req, fnName);
+  if (!String(fnName || "").trim()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "missing_fn_name",
+        details: { method: "POST", reqUrl: req.url },
+      },
+      { status: 400 }
+    );
+  }
+  const p = pickBase();
+  if (!p.ok) {
+    return NextResponse.json(
+      { ok: false, error: p.error, details: { checked: p.checked, method: "POST", fnName } },
+      { status: 500 }
+    );
+  }
+  const url = buildUrl(req, fnName, p.base);
 
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 12000);
@@ -87,9 +158,33 @@ export async function proxyPOST(req: Request, fnName: string, bodyObj: any) {
     const parsed = await safeJsonOrText(r);
     if (parsed.kind === "json") return NextResponse.json(parsed.body, { status: r.status });
 
-    return new Response(parsed.body, { status: r.status, headers: { "content-type": "text/plain; charset=utf-8" } });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "upstream_non_json",
+        details: {
+          targetUrl: url,
+          method: "POST",
+          status: r.status,
+          bodySnippet: String(parsed.body || "").slice(0, 500),
+        },
+      },
+      { status: r.status >= 400 ? r.status : 502 }
+    );
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: `proxyPOST failed: ${String(e?.message || e)}` }, { status: 502 });
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "proxy_post_failed",
+        details: {
+          targetUrl: url,
+          method: "POST",
+          status: 0,
+          message: String(e?.message || e),
+        },
+      },
+      { status: 502 }
+    );
   } finally {
     clearTimeout(t);
   }

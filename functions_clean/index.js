@@ -1,88 +1,64 @@
-const { onRequest } = require("firebase-functions/v2/https");
+require("./_emu_bootstrap");
 
-function pick(mod) {
-  // allow: module.exports = fn OR exports.default = fn OR named export
-  if (!mod) return null;
-  if (typeof mod === "function") return mod;
-  if (typeof mod.default === "function") return mod.default;
-  // first function export
-  for (const k of Object.keys(mod)) {
-    if (typeof mod[k] === "function") return mod[k];
+// Safe optional loader
+function safeExport(name, path) {
+  try {
+    exports[name] = require(path)[name];
+    console.log("[functions_clean] loaded", name);
+  } catch (e) {
+    console.log("[functions_clean] skipped", name, (e && e.message) ? e.message : e);
+    console.log((e && e.stack) ? e.stack : "");
   }
-  return null;
 }
 
-const getContractsV1 = pick(require("./dist/getContractsV1.cjs"));
-const getContractV1 = pick(require("./dist/getContractV1.cjs"));
-const getContractPayloadsV1 = pick(require("./dist/getContractPayloadsV1.cjs"));
-const writeContractPayloadV1 = pick(require("./dist/writeContractPayloadV1.cjs"));
-const exportContractPacketV1 = pick(require("./dist/exportContractPacketV1.cjs"));
+// --- Core health / debug ---
+safeExport("hello", "./hello");
+safeExport("healthzV1", "./healthzV1");
 
-if (!getContractsV1 || !getContractV1 || !getContractPayloadsV1 || !writeContractPayloadV1 || !exportContractPacketV1) {
-  throw new Error("functions_clean index.js: could not resolve one or more handlers");
-}
+// --- Incident core ---
+safeExport("getIncidentV1", "./getIncidentV1");
+safeExport("getTimelineEventsV1", "./getTimelineEventsV1");
+safeExport("listEvidenceLocker", "./listEvidenceLocker");
 
-exports.hello = onRequest((req, res) => res.json({ ok: true, msg: "hello from functions_clean" }));
-exports.getContractsV1 = onRequest(getContractsV1);
-exports.getContractV1 = onRequest(getContractV1);
-exports.getContractPayloadsV1 = onRequest(getContractPayloadsV1);
-exports.writeContractPayloadV1 = onRequest(writeContractPayloadV1);
-exports.exportContractPacketV1 = onRequest(exportContractPacketV1);
+// --- Sessions ---
+safeExport("startFieldSessionV1", "./startFieldSessionV1");
 
-// Phase 2
-exports.getWorkflowV1 = require("./getWorkflowV1").getWorkflowV1;
-exports.startFieldSessionV1 = require("./startFieldSessionV1").startFieldSessionV1;
-exports.markArrivedV1 = require("./markArrivedV1").markArrivedV1;
-exports.addEvidenceV1 = require("./addEvidenceV1").addEvidenceV1;
+// --- Evidence ---
+safeExport("addEvidenceV1", "./addEvidenceV1");
+safeExport("createEvidenceUploadUrlV1", "./createEvidenceUploadUrlV1");
+safeExport("createEvidenceReadUrlV1", "./createEvidenceReadUrlV1");
+safeExport("uploadEvidenceProxyV1", "./uploadEvidenceProxyV1");
 
-/* --- Timeline Events API --- */
-const { getTimelineEventsV1 } = require("./getTimelineEventsV1");
-const { generateTimelineV1 } = require("./generateTimelineV1");
+// --- Jobs ---
+  safeExport("createJobV1", "./createJobV1");
+safeExport("listJobsV1", "./listJobsV1");
+safeExport("getJobV1", "./getJobV1");
+safeExport("updateJobStatusV1", "./updateJobStatusV1");
+safeExport("getIncidentNotesV1", "./getIncidentNotesV1");
+safeExport("saveIncidentNotesV1", "./saveIncidentNotesV1");
+safeExport("assignEvidenceToJobV1", "./assignEvidenceToJobV1");
+safeExport("backfillEvidenceJobIdV1", "./backfillEvidenceJobIdV1");
 
-exports.getTimelineEventsV1 = getTimelineEventsV1;
-// alias (what Next proxy will call)
-exports.getTimelineEvents = getTimelineEventsV1;
+// --- HEIC / conversions ---
+safeExport("convertEvidenceHeicNowV1", "./convertEvidenceHeicNowV1");
+safeExport("convertHeicOnFinalize", "./convertHeicOnFinalize");
 
-exports.generateFilingsV1 = require('./generateFilingsV1').generateFilingsV1;
+// --- Debug / org tools ---
+safeExport("listOrgsV1", "./listOrgsV1");
+safeExport("debugEvidenceV1", "./debugEvidenceV1");
+safeExport("debugOrgsV1", "./debugOrgsV1");
 
-exports.exportIncidentPacketV1 = require('./exportIncidentPacketV1').exportIncidentPacketV1;
-exports.getIncidentV1 = require("./getIncidentV1").getIncidentV1;
+// Evidence labels
+safeExport("setEvidenceLabelV1", "./setEvidenceLabelV1");
 
-// --- Incident bundle (Phase 2)
-exports.getIncidentBundleV1 = require("./getIncidentBundleV1").getIncidentBundleV1;
+// Approvals
+safeExport("approveAndLockJobV1", "./approveAndLockJobV1");
 
-// --- DIRS generator (Phase 2)
-exports.generateDIRSV1 = require("./generateDIRSV1").generateDIRSV1;
+// Exports
+safeExport("exportIncidentPacketV1", "./exportIncidentPacketV1");
 
-exports.generateTimelineV1 = generateTimelineV1;
+// Supervisor Requests
+safeExport("createSupervisorRequestV1", "./createSupervisorRequestV1");
 
-exports.getIncidentPacketMetaV1 = require("./getIncidentPacketMetaV1").getIncidentPacketMetaV1;
-
-exports.listEvidenceLocker = require("./listEvidenceLocker").listEvidenceLocker;
-exports.getIncidentNotesV1 = require("./getIncidentNotesV1").getIncidentNotesV1;
-exports.saveIncidentNotesV1 = require("./saveIncidentNotesV1").saveIncidentNotesV1;
-
-exports.addMaterialV1 = require("./addMaterialV1").addMaterialV1;
-
-exports.submitFieldSessionV1 = require("./submitFieldSessionV1").submitFieldSessionV1;
-exports.closeIncidentV1 = require("./closeIncidentV1").closeIncidentV1;
-
-exports.approveFieldSessionV1 = require("./approveFieldSessionV1").approveFieldSessionV1;
-
-exports.debugEmitTimelineV1 = require("./debugEmitTimelineV1").debugEmitTimelineV1;
-
-exports.createEvidenceUploadUrlV1 = require("./createEvidenceUploadUrlV1").createEvidenceUploadUrlV1;
-exports.uploadEvidenceProxyV1 = require("./uploadEvidenceProxyV1").uploadEvidenceProxyV1;
-exports.createEvidenceReadUrlV1 = require("./createEvidenceReadUrlV1").createEvidenceReadUrlV1;
-exports.convertHeicOnFinalize = require("./convertHeicOnFinalize").convertHeicOnFinalize;
-exports.convertEvidenceHeicNowV1 = require("./convertEvidenceHeicNowV1").convertEvidenceHeicNowV1;
-exports.runConversionJobsV1 = require("./runConversionJobsV1").runConversionJobsV1;
-exports.debugHeicConversionV1 = require("./debugHeicConversionV1").debugHeicConversionV1;
-exports.heicHealthV1 = require("./heicHealthV1").heicHealthV1;
-exports.getEvidenceDebugV1 = require("./getEvidenceDebugV1").getEvidenceDebugV1;
-exports.createJobV1 = require("./createJobV1").createJobV1;
-exports.listJobsV1 = require("./listJobsV1").listJobsV1;
-exports.updateJobStatusV1 = require("./updateJobStatusV1").updateJobStatusV1;
-exports.assignEvidenceToJobV1 = require("./assignEvidenceToJobV1").assignEvidenceToJobV1;
-exports.approveJobV1 = require("./approveJobV1").approveJobV1;
-exports.rejectJobV1 = require("./rejectJobV1").rejectJobV1;
+// Job org assignment
+safeExport("assignJobOrgV1", "./assignJobOrgV1");

@@ -191,6 +191,14 @@ exports.runConversionJobsV1 = onRequest({ cors: true }, async (req, res) => {
         { "file.conversionStatus": "processing", "file.conversionError": FieldValue.delete() },
         { merge: true }
       );
+      logger.info("HEIC conversion processing", {
+        incidentId: iid,
+        evidenceId: eid,
+        orgId: toStr(job.orgId || ""),
+        storagePath,
+        contentType: toStr((await evidenceRef.get()).data()?.file?.contentType || ""),
+        state: "processing",
+      });
 
       const converted = await convertHeicObject({
         bucketName: bucket,
@@ -236,6 +244,29 @@ exports.runConversionJobsV1 = onRequest({ cors: true }, async (req, res) => {
           continue;
         }
         logger.info("HEIC finalize ready", { incidentId: iid, evidenceId: eid });
+        await evidenceRef.set(
+          {
+            "file.conversionStatus": "done",
+            "file.conversionError": FieldValue.delete(),
+            "file.conversionUpdatedAt": FieldValue.serverTimestamp(),
+            "file.previewPath": toStr(finalize?.previewPath || previewPath || ""),
+            "file.thumbPath": toStr(finalize?.thumbPath || thumbPath || ""),
+            "file.convertedJpgPath": toStr(finalize?.previewPath || previewPath || ""),
+            "file.thumbnailPath": toStr(finalize?.thumbPath || thumbPath || ""),
+            "file.previewContentType": "image/jpeg",
+            "file.thumbContentType": "image/webp",
+            "file.derivativeBucket": bucket,
+            "file.previewBucket": bucket,
+            "file.thumbBucket": bucket,
+            "file.derivatives.preview.storagePath": toStr(finalize?.previewPath || previewPath || ""),
+            "file.derivatives.preview.contentType": "image/jpeg",
+            "file.derivatives.preview.bucket": bucket,
+            "file.derivatives.thumb.storagePath": toStr(finalize?.thumbPath || thumbPath || ""),
+            "file.derivatives.thumb.contentType": "image/webp",
+            "file.derivatives.thumb.bucket": bucket,
+          },
+          { merge: true }
+        );
         await jobDoc.ref.set(
           {
             status: "done",
@@ -253,6 +284,15 @@ exports.runConversionJobsV1 = onRequest({ cors: true }, async (req, res) => {
         );
         if (converted.skipped) skipped += 1;
         else done += 1;
+        logger.info("HEIC conversion done", {
+          incidentId: iid,
+          evidenceId: eid,
+          orgId: toStr(job.orgId || ""),
+          storagePath,
+          convertedJpgPath: toStr(finalize?.previewPath || previewPath || ""),
+          thumbnailPath: toStr(finalize?.thumbPath || thumbPath || ""),
+          state: "done",
+        });
         outRows.push({ incidentId: iid, evidenceId: eid, status: "done", skipped: !!converted.skipped, reason: converted.reason || "" });
         continue;
       }
@@ -278,6 +318,15 @@ exports.runConversionJobsV1 = onRequest({ cors: true }, async (req, res) => {
         { merge: true }
       );
       failed += 1;
+      logger.error("HEIC conversion failed", {
+        incidentId: iid,
+        evidenceId: eid,
+        orgId: toStr(job.orgId || ""),
+        storagePath,
+        state: "failed",
+        error: shortErr(converted || {}),
+        details: converted || null,
+      });
       outRows.push({ incidentId: iid, evidenceId: eid, status: "failed", reason: converted?.reason || "", error: shortErr(converted || {}) });
     }
 

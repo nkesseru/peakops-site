@@ -44,7 +44,7 @@ exports.approveJobV1 = onRequest({ cors: true }, async (req, res) => {
     if (String(data.orgId || "") !== orgId) return j(res, 409, { ok: false, error: "org_mismatch" });
     const prev = String(data.status || "open").toLowerCase();
     if (prev === "approved") return j(res, 200, { ok: true, orgId, incidentId, jobId, status: "approved", already: true });
-    if (prev !== "complete" && prev !== "review") {
+    if (prev !== "review") {
       return j(res, 409, { ok: false, error: "invalid_transition", detail: `${prev} -> approved not allowed` });
     }
 
@@ -70,4 +70,3 @@ exports.approveJobV1 = onRequest({ cors: true }, async (req, res) => {
     return j(res, 400, { ok: false, error: String(e?.message || e) });
   }
 });
-

@@ -7,11 +7,15 @@
     "start": "node functions/server.mjs",
     "test:contracts": "bash scripts/dev/contracts_stack_up_fixed.sh car_abc123 cust_acme_001 v1",
     "dev": "cd next-app && pnpm dev",
-    "next:restart": "cd next-app && pnpm run dev:local",
+    "next:restart": "cd next-app && set -a; [ -f .env.local ] && . ./.env.local; set +a; pnpm run dev:local",
     "build": "next build",
     "ui": "lsof -ti :3001 | xargs -r kill -9 || true; cd next-app && PORT=3001 NEXT_DISABLE_TURBOPACK=1 npm run dev",
     "ui:kill": "pkill -f \"next dev\" || true && rm -f next-app/.next/dev/lock",
-    "dev:bootstrap:functions-clean": "bash scripts/dev/bootstrap_functions_clean.sh"
+    "dev:bootstrap:functions-clean": "bash scripts/dev/bootstrap_functions_clean.sh",
+    "seed:orgs:demo": "node scripts/dev/seed_orgs_demo.js",
+    "demo:kill": "bash scripts/dev/kill_demo_ports.sh",
+    "demo:boot": "bash scripts/dev/demo_up.sh",
+    "demo:reset": "bash scripts/dev/reset_demo.sh"
   },
   "engines": {
     "node": "20.x"

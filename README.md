@@ -65,7 +65,25 @@ cd ..
 scripts/dev/smoke.sh
 ```
 
+Zsh paste fix (so inline `# comments` do not break pasted commands):
+
+```bash
+source scripts/dev/zsh_setup.sh
+```
+
+Or persist once:
+
+```bash
+echo 'setopt interactivecomments' >> ~/.zshrc
+```
+
 ## Demo Bootstrap (Deterministic)
+
+### Demo reset
+```bash
+scripts/dev/demo_bootstrap.sh
+open http://127.0.0.1:3001/incidents/inc_demo
+```
 
 Use this flow to guarantee seeded demo data every time:
 

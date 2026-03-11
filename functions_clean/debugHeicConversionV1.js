@@ -28,6 +28,16 @@ function allowDebug(req) {
   return provided === key;
 }
 
+function toErrorFields(errLike = {}) {
+  const e = errLike || {};
+  const errMessage = toStr(e.errMessage || e.error || e.message || e.reason || "");
+  const errName = toStr(e.errName || e.name || "");
+  const errCode = toStr(e.errCode || e.code || "");
+  const stackRaw = String(e.errStack || e.stack || "").trim();
+  const errStack = stackRaw ? stackRaw.split("\n").slice(0, 6).join("\n") : "";
+  return { errMessage, errName, errCode, errStack };
+}
+
 exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
   const report = {
     ok: false,
@@ -141,6 +151,13 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
 
     const bucket = toStr(file.bucket || "");
     const objectName = toStr(file.storagePath || "");
+    report.selected = {
+      evidenceId,
+      bucket,
+      storagePath: objectName,
+      contentType: toStr(file.contentType || ""),
+      originalName: toStr(file.originalName || ""),
+    };
     if (!bucket) {
       report.sourceCheck.resolve = { ok: false, error: "bucket_missing", details: "evidence.file.bucket is empty" };
       report.errors.push("bucket_missing");
@@ -209,6 +226,7 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
             ...(converted || {}),
             ok: false,
             reason: "finalize_missing_paths",
+            ...toErrorFields({ error: "finalize_missing_paths" }),
           };
         } else {
           logger.info("HEIC finalize ready", { incidentId, evidenceId });
@@ -218,6 +236,7 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
             ok: true,
             previewPath: toStr(backfill?.previewPath || previewPath),
             thumbPath: toStr(backfill?.thumbPath || thumbPath),
+            ...toErrorFields(converted || {}),
           };
         }
       } else if (converted?.reason === "object_not_found") {
@@ -231,6 +250,7 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
           error: "object_not_found",
         });
       } else {
+        const errOut = toErrorFields(converted || {});
         await applyEvidenceConversionState({
           db,
           incidentId,
@@ -238,8 +258,14 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
           storagePath: objectName,
           bucket,
           status: "failed",
-          error: shortErr(converted || {}),
+          error: shortErr({ ...(converted || {}), ...errOut }),
         });
+        report.conversionResult = {
+          ...(converted || {}),
+          ok: false,
+          reason: toStr(converted?.reason || "convert_error"),
+          ...errOut,
+        };
       }
     } else {
       report.conversionResult = {
@@ -262,6 +288,11 @@ exports.debugHeicConversionV1 = onRequest({ cors: true }, async (req, res) => {
     return j(res, 200, report);
   } catch (e) {
     report.errors.push(String(e?.message || e));
+    report.conversionResult = {
+      ok: false,
+      reason: "exception",
+      ...toErrorFields(e || {}),
+    };
     return j(res, 200, report);
   }
 });

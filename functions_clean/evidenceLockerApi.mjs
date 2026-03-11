@@ -35,7 +35,17 @@ export async function listEvidenceLockerCore(db, { orgId, incidentId, limit=25 }
     .get()
     .catch(() => null);
 
-  const docsAll = snap ? snap.docs.map(d => ({ id:d.id, ...(d.data()||{}) })) : [];
+  const docsAll = snap
+    ? snap.docs.map((d) => {
+        const raw = { id: d.id, ...(d.data() || {}) };
+        const topJobId = String(raw?.jobId || "").trim();
+        const nestedJobId = String(raw?.evidence?.jobId || "").trim();
+        if (!topJobId && nestedJobId) {
+          return { ...raw, jobId: nestedJobId };
+        }
+        return raw;
+      })
+    : [];
   const docs = orgId
     ? docsAll.filter((d) => String(d.orgId || "") === String(orgId)).slice(0, cap)
     : docsAll.slice(0, cap);

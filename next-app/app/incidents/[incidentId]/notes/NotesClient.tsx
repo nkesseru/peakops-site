@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getFunctionsBase } from "@/lib/functionsBase";
 
 async function postJson<T>(url: string, body: any): Promise<T> {
   const res = await fetch(url, {
@@ -17,7 +16,6 @@ async function postJson<T>(url: string, body: any): Promise<T> {
 
 export default function NotesClient({ incidentId, orgId }: { incidentId: string; orgId: string }) {
   const router = useRouter();
-  const functionsBase = getFunctionsBase();
 
   const [incidentNotes, setIncidentNotes] = useState("");
   const [siteNotes, setSiteNotes] = useState("");
@@ -29,12 +27,18 @@ export default function NotesClient({ incidentId, orgId }: { incidentId: string;
     (async () => {
       try {
         setMsg("Loading…");
-        const out: any = await postJson(`${functionsBase}/getIncidentNotesV1`, { orgId, incidentId });
-        if (!alive) return;
-        if (!out?.ok) throw new Error(out?.error || "load failed");
-        setIncidentNotes(String(out?.incidentNotes || ""));
-        setSiteNotes(String(out?.siteNotes || ""));
-        setMsg("");
+        const res = await fetch(
+  `/api/fn/getIncidentNotesV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`,
+  { cache: "no-store" }
+);
+const txt = await res.text().catch(() => "");
+if (!res.ok) throw new Error(`GET /api/fn/getIncidentNotesV1 -> ${res.status} ${txt}`);
+const out: any = txt ? JSON.parse(txt) : {};
+if (!alive) return;
+if (!out?.ok) throw new Error(out?.error || "load failed");
+setIncidentNotes(String(out?.notes?.incidentNotes || ""));
+setSiteNotes(String(out?.notes?.siteNotes || ""));
+setMsg("");
       } catch (e: any) {
         if (!alive) return;
         setMsg((e && (e.message || String(e))) || "load failed");
@@ -43,13 +47,13 @@ export default function NotesClient({ incidentId, orgId }: { incidentId: string;
     return () => {
       alive = false;
     };
-  }, [functionsBase, orgId, incidentId]);
+  }, [orgId, incidentId]);
 
   async function save(updatedBy: string = "ui") {
     setSaving(true);
     setMsg("");
     try {
-      const out: any = await postJson(`${functionsBase}/saveIncidentNotesV1`, {
+      const out: any = await postJson(`/api/fn/saveIncidentNotesV1`, {
         orgId,
         incidentId,
         incidentNotes,

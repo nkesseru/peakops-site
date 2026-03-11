@@ -17,41 +17,24 @@ export default function AddEvidenceButton({
   useEffect(() => setMounted(true), []);
   if (!mounted) return null;
 
-  const startSessionAndGo = async () => {
+  const startSessionAndGo = () => {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[add-evidence]", {
+        step: "click",
+        disabled: busy,
+        hasInput: false,
+        isUserGesture: true,
+        ts: Date.now(),
+      });
+    }
     if (busy) return;
     setBusy(true);
-
     try {
-      const base = (process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "").trim();
-      if (!base) throw new Error("Missing NEXT_PUBLIC_FUNCTIONS_BASE");
-
-      const techUserId = (process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web").trim();
-
-      const res = await fetch(`${base}/startFieldSessionV1`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          orgId,
-          incidentId,
-          createdBy: "ui",
-          techUserId,
-        }),
-      });
-
-      const out = await res.json().catch(() => ({}));
-      if (!res.ok || !out?.ok || !out?.sessionId) {
-        throw new Error(out?.error || `Could not start field session (${res.status})`);
+      const q = `?orgId=${encodeURIComponent(String(orgId || "").trim())}`;
+      router.push(`/incidents/${incidentId}/add-evidence${q}`);
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[add-evidence]", { step: "navigate", ts: Date.now() });
       }
-
-      const sid = String(out.sessionId || "").trim();
-      if (!sid) throw new Error("startFieldSessionV1 returned no sessionId");
-
-      try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
-
-      router.push(`/incidents/${incidentId}/add-evidence?sid=${encodeURIComponent(sid)}`);
-    } catch (e: any) {
-      console.error(e);
-      alert(e?.message || "Could not start field session");
     } finally {
       setBusy(false);
     }
@@ -59,6 +42,7 @@ export default function AddEvidenceButton({
 
   return (
     <button
+      type="button"
       onClick={startSessionAndGo}
       disabled={busy}
       title="Add evidence (starts a field session if needed)"

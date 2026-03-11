@@ -3,6 +3,15 @@
 import { useMemo, useState } from "react";
 import TimelinePanel from "@/components/incident/TimelinePanel";
 
+
+// PEAKOPS_TIMELINE_LABEL_V1
+function prettyType(t: string): string {
+  const x = String(t || "").toUpperCase();
+  if (x === "SUPERVISOR_REQUEST_UPDATE") return "Request update";
+  return t;
+}
+
+
 // Keep props plain so memoization is effective.
 export default function TimelineModal(props: {
   items: any[];

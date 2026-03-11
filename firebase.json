@@ -1,28 +1,9 @@
 {
-  "functions": {
-    "source": "functions_clean"
-  },
+  "functions": { "source": "functions_clean" },
+  "storage": { "rules": "firebase/storage.rules" },
   "emulators": {
-    "hub": {
-      "host": "127.0.0.1",
-      "port": 4413
-    },
-    "ui": {
-      "host": "127.0.0.1",
-      "port": 4003
-    },
-    "logging": {
-      "host": "127.0.0.1",
-      "port": 4503
-    },
-    "functions": {
-      "host": "127.0.0.1",
-      "port": 5002
-    },
-    "firestore": {
-      "host": "127.0.0.1",
-      "port": 8085,
-      "websocketPort": 9152
-    }
+    "functions":  { "host": "127.0.0.1", "port": 5004 },
+    "firestore":  { "host": "127.0.0.1", "port": 8087, "websocketPort": 9154 },
+    "storage":    { "host": "127.0.0.1", "port": 9199 }
   }
 }

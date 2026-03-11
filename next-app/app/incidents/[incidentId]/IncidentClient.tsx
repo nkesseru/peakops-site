@@ -446,107 +446,64 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
 
   // V6_SESSION_HELPERS__WIRE
 async function markArrived() {
-    // PEAKOPS_ARRIVE_RETRY_SESSION_V1
-    // If sessionId is missing or stale, create a new field session and retry once.
+  try {
+    setArriving(true);
+
+    if (String(incidentStatus).toLowerCase() === "closed") {
+      toast("Incident is closed (read-only).", 2600);
+      return;
+    }
+
     const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
-    const base = functionsBase;
-    const org = (typeof orgId !== "undefined" && orgId) ? String(orgId) : "spokane-valley";
 
-    if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
-    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
+    const res = await fetch(`/api/fn/startFieldSessionV1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        orgId,
+        incidentId,
+        techUserId,
+        createdBy: "ui",
+      }),
+    });
 
-    let sid = String(activeSessionId || "").trim();
-    if (!sid) {
-      // try last known session from storage (if any)
-      try { sid = String(localStorage.getItem("peakops_active_session_" + String(incidentId || "")) || "").trim(); } catch {}
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out?.ok) {
+      throw new Error(out?.error || `startFieldSessionV1 failed (${res.status})`);
     }
 
-    async function startSession(): Promise<string> {
-      const res = await fetch(`/api/fn/startFieldSessionV1`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orgId: org, incidentId, createdBy: "ui", techUserId }),
-      });
-      const out = await res.json().catch(() => ({}));
-      if (!res.ok || !out?.ok || !out?.sessionId) {
-        throw new Error(out?.error || `startFieldSessionV1 failed (${res.status})`);
-      }
-      return String(out.sessionId);
-    }
-
-    async function postArrived(sessionId: string): Promise<any> {
-      const res = await fetch(`/api/fn/markArrivedV1`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orgId: org, incidentId, sessionId: String(sessionId), updatedBy: "ui", techUserId }),
-      });
-      const out = await res.json().catch(() => ({}));
-      if (!res.ok || !out?.ok) {
-        const msg = out?.error || `markArrivedV1 failed (${res.status})`;
-        const err = new Error(msg);
-        (err as any).__status = res.status;
-        throw err;
-      }
-      return out;
-    }
+    const sid = String(out?.sessionId || out?.id || "").trim();
+    if (!sid) throw new Error("startFieldSessionV1 returned no sessionId");
 
     try {
-      setArriving(true);
+      localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid);
+    } catch {}
 
-      // Optimistic UI event id (stable across try/catch)
-      let __optId = "opt_arrived_" + Date.now();
-      try {
-        const __sid = sid || "";
-        if (__sid) {
-          setTimeline((prev: any) => ([
-            {
-              id: __optId,
-              type: "FIELD_ARRIVED",
-              actor: "ui",
-              sessionId: __sid,
-              occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
-              refId: null,
-              meta: { optimistic: true }
-            },
-            ...(Array.isArray(prev) ? prev : [])
-          ]));
-        }
-      } catch {}
+    try {
+      setActiveSessionId(sid);
+    } catch {}
 
-      // If no session yet, create one
-      if (!sid) {
-        sid = await startSession();
-        try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
-        try { setActiveSessionId(sid); } catch {}
-      }
+    setArrived(true);
+    toast("Arrived ✓", 1800);
 
-      // First attempt
-      try {
-        await postArrived(sid);
-      } catch (e: any) {
-        const msg = String(e?.message || e || "");
-        // If stale session, recreate once and retry
-                  if ((e as any)?.__status == 404 || msg.toLowerCase().includes("session not found")) {
-          sid = await startSession();
-          try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
-          try { setActiveSessionId(sid); } catch {}
-          await postArrived(sid);
-        } else {
-          throw e;
-        }
-      }
-
-      setArrived(true);
-      toast("Arrived ✓", 1800);
-    } catch (e: any) {
-      const msg = e?.message || String(e) || "markArrived failed";
-      toast("Arrive failed: " + msg, 3500);
-      // OPTIMISTIC_FIELD_ARRIVED revert
-      try { setTimeline((prev: any) => (Array.isArray(prev) ? prev.filter((x:any) => x?.id !== __optId) : prev)); } catch {}
-      console.error(e);
-    } finally {
-      setArriving(false);
-    }
+    try {
+      const evt = {
+        id: "opt_arrived_" + Date.now(),
+        type: "FIELD_ARRIVED",
+        actor: "ui",
+        sessionId: sid,
+        occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
+        refId: null,
+        meta: { optimistic: true },
+      };
+      setTimeline((prev: any) => [evt, ...(Array.isArray(prev) ? prev : [])]);
+    } catch {}
+  } catch (e: any) {
+    const msg = e?.message || String(e) || "markArrived failed";
+    toast("Arrive failed: " + msg, 3500);
+  } finally {
+    setArriving(false);
+  }
 }
 
   async function submitSession() {

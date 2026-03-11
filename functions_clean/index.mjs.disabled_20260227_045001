@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { onRequest } from "firebase-functions/v2/https";
 
 import helloHandler from "./hello.mjs";
@@ -7,6 +8,9 @@ import getContractPayloadsV1Handler from "./getContractPayloadsV1.mjs";
 import writeContractPayloadV1Handler from "./writeContractPayloadV1.mjs";
 import exportContractPacketV1Handler from "./exportContractPacketV1.mjs";
 import getWorkflowV1Handler from "./getWorkflowV1.mjs";
+
+const __filename = fileURLToPath(import.meta.url);
+console.log("🔥 FUNCTIONS ENTRY LOADED:", __filename);
 
 export const hello = onRequest({ cors: true }, helloHandler);
 export const getContractsV1 = onRequest({ cors: true }, getContractsV1Handler);

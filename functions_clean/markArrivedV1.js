@@ -50,6 +50,9 @@ exports.markArrivedV1 = onRequest({ cors: true }, async (req, res) => {
     if (incStatus === "closed") {
       return j(res, 409, { ok: false, error: "incident_closed", detail: "Incident is read-only" });
     }
+    if (incStatus && incStatus !== "open" && incStatus !== "in_progress") {
+      return j(res, 409, { ok: false, error: "invalid_transition", detail: `unsupported incident.status=${incStatus}` });
+    }
     const sessionRef =
       db.collection("orgs").doc(orgId)
         .collection("incidents").doc(incidentId)
