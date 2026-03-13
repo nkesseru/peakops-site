@@ -51,27 +51,78 @@ export function logThumbEvent(event: string, details: any = {}): void {
 
 export function getBestEvidenceImageRef(ev: any): EvidenceImageRef | null {
   const file = (ev && (ev.file || ev)) || {};
-  const bucket = String(file.thumbBucket || file.thumbnailBucket || file.previewBucket || file.bucket || "").trim();
 
-  const thumbnailPath = String(file.thumbnailPath || "").trim();
-  const thumbPath = String(file.thumbPath || "").trim();
-  const previewPath = String(file.previewPath || file.convertedJpgPath || "").trim();
-  const storagePath = String(file.storagePath || file.path || "").trim();
+  const pickStr = (...vals: any[]) =>
+    vals
+      .map((v) => String(v ?? "").trim())
+      .find((v) => !!v) || "";
 
-  // Prefer thumbnail-ish first, then preview, then original
-  const chosenPath =
-    thumbnailPath ||
-    thumbPath ||
-    previewPath ||
-    storagePath;
+  const getDot = (obj: any, path: string) => {
+    try {
+      return path.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const bucket = pickStr(
+    getDot(ev, "file.derivatives.thumb.bucket"),
+    ev?.file?.derivatives?.thumb?.bucket,
+    getDot(ev, "file.derivatives.thumbBucket"),
+    ev?.file?.derivatives?.thumbBucket,
+    getDot(ev, "file.thumbBucket"),
+    ev?.file?.thumbBucket,
+    getDot(ev, "file.thumbnailBucket"),
+    ev?.file?.thumbnailBucket,
+    getDot(ev, "file.derivatives.preview.bucket"),
+    ev?.file?.derivatives?.preview?.bucket,
+    getDot(ev, "file.previewBucket"),
+    ev?.file?.previewBucket,
+    getDot(ev, "file.bucket"),
+    ev?.file?.bucket,
+    getDot(ev, "bucket"),
+    ev?.bucket
+  );
+
+  const thumbPath = pickStr(
+    getDot(ev, "file.derivatives.thumb.storagePath"),
+    ev?.file?.derivatives?.thumb?.storagePath,
+    getDot(ev, "file.thumbPath"),
+    ev?.file?.thumbPath,
+    getDot(ev, "file.thumbnailPath"),
+    ev?.file?.thumbnailPath
+  );
+
+  const previewPath = pickStr(
+    getDot(ev, "file.derivatives.preview.storagePath"),
+    ev?.file?.derivatives?.preview?.storagePath,
+    getDot(ev, "file.previewPath"),
+    ev?.file?.previewPath,
+    getDot(ev, "file.convertedJpgPath"),
+    ev?.file?.convertedJpgPath
+  );
+
+  const originalPath = pickStr(
+    getDot(ev, "file.storagePath"),
+    ev?.file?.storagePath,
+    getDot(ev, "file.path"),
+    ev?.file?.path,
+    getDot(ev, "storagePath"),
+    ev?.storagePath
+  );
+
+  const chosenPath = thumbPath || previewPath || originalPath;
 
   if (!bucket || !chosenPath) {
-    logThumbEvent("ref_missing", { id: String(ev?.id || ev?.evidenceId || ""), bucket, chosenPath });
+    logThumbEvent("ref_missing", {
+      id: String(ev?.id || ev?.evidenceId || ""),
+      bucket,
+      chosenPath,
+    });
     return null;
   }
 
   const kind: EvidenceImageRefKind =
-    thumbnailPath ? "thumbnailPath" :
     thumbPath ? "thumbPath" :
     previewPath ? "previewPath" :
     "original";

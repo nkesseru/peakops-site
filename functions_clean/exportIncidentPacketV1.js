@@ -126,7 +126,7 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     const zipName = `${ts}__packet.zip`;
     const zipPath = path.join(os.tmpdir(), `peakops_${incidentId}_${zipName}`);
 
-    await runZip(workDir, zipPath);
+    await runZip(workDir, zipPath);  
 
     const outStoragePath = `exports/incidents/${incidentId}/${zipName}`;
     await bucketObj.file(outStoragePath).save(await fs.promises.readFile(zipPath), {
@@ -136,8 +136,22 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     });
 
     const url = isEmu() ? emuDownloadUrl(bucket, outStoragePath) : outStoragePath;
+    
+        await db.doc(`incidents/${incidentId}`).set({
+      packetMeta: {
+        status: "ready",
+        bucket,
+        storagePath: outStoragePath,
+        exportedAt: new Date().toISOString(),
+        evidenceCount: downloaded.length + skipped.length,
+        exportedCount: downloaded.length,
+        skippedCount: skipped.length,
+        jobCount: Array.isArray(jobs) ? jobs.length : 0,
+      },
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
 
-    return j(res, 200, {
+return j(res, 200, {
       ok: true,
       orgId,
       incidentId,

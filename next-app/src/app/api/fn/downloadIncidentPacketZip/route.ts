@@ -137,7 +137,7 @@ export async function GET(req: NextRequest) {
     const buf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
     const zipSha256 = sha256Hex(buf);
 
-    const res = new NextResponse(buf, {
+    const res = new NextResponse(new Uint8Array(buf), {
       status: 200,
       headers: {
         "content-type": "application/zip",

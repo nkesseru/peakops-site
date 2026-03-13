@@ -156,9 +156,11 @@ export default function JobDetailClient({
       setNotes(String(out?.job?.notes || ""));
       const assignedOrg = String(out?.job?.assignedOrgId || "").trim();
       const incidentOrg = String(out?.incident?.orgId || "").trim();
-      const preferredOrg = assignedOrg || incidentOrg;
-      if (preferredOrg && preferredOrg !== orgId) {
-        setOrgId(preferredOrg);
+
+      // Keep API calls pinned to the canonical incident org.
+      // assignedOrgId is display/routing metadata only.
+      if (incidentOrg && incidentOrg !== orgId) {
+        setOrgId(incidentOrg);
       }
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -203,7 +205,6 @@ export default function JobDetailClient({
           const out = await mintEvidenceReadUrl({
             orgId,
             incidentId,
-            evidenceId: key,
             bucket: ref.bucket,
             storagePath: ref.storagePath,
             expiresSec: getThumbExpiresSec(),
@@ -272,7 +273,6 @@ export default function JobDetailClient({
     const out = await mintEvidenceReadUrl({
       orgId,
       incidentId,
-      evidenceId: id,
       bucket: ref.bucket,
       storagePath: ref.storagePath,
       expiresSec: getThumbExpiresSec(),
@@ -352,7 +352,7 @@ export default function JobDetailClient({
     if (!functionsBase || !incidentId) return;
     try {
       setSavingNotes(true);
-      await postJson(`${functionsBase}/updateJobNotesV1`, {
+      await postJson(`/api/fn/updateJobNotesV1`, {
         orgId,
         incidentId,
         jobId,
@@ -373,10 +373,11 @@ export default function JobDetailClient({
     if (!functionsBase || !incidentId) return;
     try {
       setMarkingComplete(true);
-      await postJson(`${functionsBase}/markJobCompleteV1`, {
+      await postJson(`/api/fn/markJobCompleteV1`, {
         orgId,
         incidentId,
         jobId,
+        assignedOrgId: String(job?.assignedOrgId || "").trim() || undefined,
         actorUid: actorUid(),
         actorRole: actorRole(),
         actorEmail: actorEmail(),

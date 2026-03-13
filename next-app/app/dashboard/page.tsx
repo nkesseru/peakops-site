@@ -184,7 +184,7 @@ async function doExport(i: Incident) {
 }
 
 function IncidentCard({ i }: { i: Incident }) {
-  const tone = bucketTone(i.bucket);
+  const tone = bucketTone(String((i as any)?.bucket || ""));
 
   const chip = readinessChip(i);
   const stale = staleFlag(i);

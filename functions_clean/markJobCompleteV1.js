@@ -40,10 +40,11 @@ exports.markJobCompleteV1 = onRequest({ cors: true }, async (req, res) => {
     if (!jobSnap.exists) return j(res, 404, { ok: false, error: "job_not_found" });
     const job = jobSnap.data() || {};
     const assignedOrgId = String(job.assignedOrgId || "").trim();
-    if (!assignedOrgId || orgId !== assignedOrgId) {
+    if (!assignedOrgId) {
       return j(res, 403, { ok: false, error: "assigned_org_required" });
     }
 
+    // Incident lives under incident orgId. Authorization is based on the job's assigned org.
     await requireOrgMember(db, assignedOrgId, actor, { requiredRoles: [] });
 
     const prev = String(job.status || "open").toLowerCase();

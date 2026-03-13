@@ -277,7 +277,7 @@ function isHeicEvidence(ev: EvidenceDoc) {
   );
 }
 
-type ImageRefKind = "thumb" | "preview" | "original";
+type ImageRefKind = "thumbnailPath" | "thumbPath" | "previewPath" | "original";
 type ImageRef = { kind: ImageRefKind; bucket: string; storagePath: string };
 type TileMedia =
   | { mode: "image"; ref: ImageRef }
@@ -533,7 +533,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     if (retryN < 1) {
       if (canDevLog) {
         logThumbEvent("img_error", {
-          evidenceId: (media?.ref?.id ?? selectedEvidenceId ?? "unknown"),
+	  evidenceId: (selectedEvidenceId || "unknown"),
           kind: media?.mode === "image" ? media.ref.kind : "unknown",
           bucket: media?.mode === "image" ? media.ref.bucket : "",
           storagePath: media?.mode === "image" ? media.ref.storagePath : "",
@@ -542,7 +542,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         });
       }
       logThumbEvent("retry_start", {
-        evidenceId: (media?.ref?.id ?? selectedEvidenceId ?? "unknown"),
+	evidenceId: (selectedEvidenceId || "unknown"),
         kind: media?.mode === "image" ? media.ref.kind : "unknown",
         storagePath: media?.mode === "image" ? media.ref.storagePath : "",
         retryCount: retryN,
@@ -568,7 +568,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         [evidenceId]: `thumb_proxy_failed http=${res.status} error=${err || "unknown"} ct=${ct || "unknown"} magic=${magic || "-"} size=${size || "-"}`,
       }));
       logThumbEvent("retry_fail", {
-        evidenceId: (media?.ref?.id ?? selectedEvidenceId ?? "unknown"),
+	evidenceId: (selectedEvidenceId || "unknown"),
         status: res.status,
         error: err || "unknown",
         storagePath: media?.mode === "image" ? media.ref.storagePath : "",
@@ -578,7 +578,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       setThumbErrorById((m) => ({ ...m, [evidenceId]: "probe_failed" }));
       setThumbReasonById((m) => ({ ...m, [evidenceId]: "thumb_proxy_failed http=0 error=probe_failed" }));
       logThumbEvent("retry_fail", {
-        evidenceId: (media?.ref?.id ?? selectedEvidenceId ?? "unknown"),
+	evidenceId: (selectedEvidenceId || "unknown"),
         status: 0,
         error: "probe_failed",
         storagePath: media?.mode === "image" ? media.ref.storagePath : "",
@@ -915,7 +915,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     const jid =
       typeof selectedJob !== "undefined" && selectedJob && (selectedJob.id || selectedJob.jobId)
         ? String(selectedJob.id || selectedJob.jobId)
-        : (typeof currentJobId !== "undefined" ? String(currentJobId || "") : "");
+        : "";
 
     if (!jid) {
       console.error("[Approve&Lock] missing selected jobId");
@@ -933,7 +933,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     let out: any = {};
     try { out = txt ? JSON.parse(txt) : {}; } catch {}
 
-    if (!res.ok || out?.ok === False) {
+    if (!res.ok || out?.ok === false) {
       throw new Error(out?.error || `approveAndLockJobV1 failed: ${res.status} ${String(txt || "").slice(0,200)}`);
     }
 
@@ -1682,7 +1682,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                             setThumbStatusById((m) => ({ ...m, [id]: 200 }));
                             setThumbErrorById((m) => ({ ...m, [id]: "" }));
                             logThumbEvent("retry_ok", {
-                              evidenceId: (media?.ref?.id ?? selectedEvidenceId ?? "unknown"),
+			      evidenceId: (selectedEvidenceId || "unknown"),
                               kind: media.mode === "image" ? media.ref.kind : "unknown",
                               storagePath: media.mode === "image" ? media.ref.storagePath : "",
                             });
@@ -1796,9 +1796,14 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
           <div className="mt-3 space-y-2">
             {timeline.slice(0, 12).map((t) => (
-              <div key={t.id} className="rounded-lg bg-black/30 border border-white/10 px-3 py-2 flex items-center justify-between">
+              <div
+                key={t.id}
+                className="rounded-lg bg-black/30 border border-white/10 px-3 py-2 flex items-center justify-between gap-3"
+              >
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold text-gray-100">{String(t.type || "EVENT")}</div>
+                  <div className="text-sm font-semibold text-gray-100">
+                    {String(t.type || "EVENT")}
+                  </div>
                   <div className="text-xs text-gray-500 truncate">
                     actor: {String(t.actor || "system")} {t.refId ? `• ref: ${t.refId}` : ""}
                   </div>
@@ -1812,3 +1817,4 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     </main>
   );
 }
+

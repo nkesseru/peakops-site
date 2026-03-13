@@ -812,45 +812,10 @@ elif [[ "${HAVE_HEIC_SAMPLE}" == "1" ]]; then
     fail "HEIC sample conversion did not populate previewPath/thumbPath"
   fi
 else
-  if command -v sips >/dev/null 2>&1 && [[ -f "${SITE_OVERVIEW_FILE}" ]]; then
-    TMP_HEIC="$(mktemp /tmp/peakops_seed_heic_gen.XXXXXX.HEIC)"
-    if sips -s format heic "${SITE_OVERVIEW_FILE}" --out "${TMP_HEIC}" >/tmp/peakops_seed_heic_gen.out 2>&1; then
-      HEIC_SAMPLE_FILE="${TMP_HEIC}"
-      HAVE_HEIC_SAMPLE="1"
-      if [[ "${SKIP_HEIC:-1}" == "1" ]]; then
-  say "SKIP_HEIC=1: skipping HEIC generation/conversion"
-else
-# [HEIC_DISABLED]   say "Generated HEIC sample via sips at ${TMP_HEIC}"
-# [HEIC_DISABLED]     else
-# [HEIC_DISABLED]       warn "Failed to generate HEIC sample via sips; keeping HEIC metadata-only"
-# [HEIC_DISABLED]       rm -f "${TMP_HEIC}"
-# [HEIC_DISABLED]       TMP_HEIC=""
-# [HEIC_DISABLED]     fi
-# [HEIC_DISABLED]   fi
-# [HEIC_DISABLED]   if [[ "${HAVE_HEIC_SAMPLE}" == "1" ]]; then
-# [HEIC_DISABLED]     heic_sp="${SEEDED_PATHS[0]}"
-# [HEIC_DISABLED]     say "Uploading generated HEIC sample and running conversion"
-# [HEIC_DISABLED]     upload_demo_file_via_proxy "${heic_sp}" "image/heic" "IMG_4344_2.HEIC" "${HEIC_SAMPLE_FILE}"
-# [HEIC_DISABLED]     heic_fields="$(mk_evidence_fields "ev_demo_heic_001" "image/heic" "IMG_4344_2.HEIC" "${heic_sp}" "pending")"
-# [HEIC_DISABLED]     patch_doc "incidents/${INCIDENT_ID}/evidence_locker/ev_demo_heic_001" "${heic_fields}"
-# [HEIC_DISABLED]     convert_code="$(
-# [HEIC_DISABLED]       curl -sS -o /tmp/peakops_seed_convert_heic.out -w '%{http_code}' \
-# [HEIC_DISABLED]         -X POST "${FN_BASE}/convertEvidenceHeicNowV1" \
-# [HEIC_DISABLED]         -H 'content-type: application/json' \
-# [HEIC_DISABLED]         -d "{\"orgId\":\"${ORG_ID}\",\"incidentId\":\"${INCIDENT_ID}\",\"evidenceId\":\"ev_demo_heic_001\",\"storagePath\":\"${heic_sp}\"}" || true
-# [HEIC_DISABLED]     )"
-# [HEIC_DISABLED]     if [[ "${convert_code}" -lt 200 || "${convert_code}" -gt 299 ]] || ! jq -e '.ok == true' /tmp/peakops_seed_convert_heic.out >/dev/null 2>&1; then
-# [HEIC_DISABLED]       tail -c 480 /tmp/peakops_seed_convert_heic.out 2>/dev/null || true
-# [HEIC_DISABLED]       say "WARN: convertEvidenceHeicNowV1 failed for generated HEIC sample (continuing)"
-# [HEIC_DISABLED]     fi
-# [HEIC_DISABLED]   else
-# [HEIC_DISABLED]     say "No usable HEIC sample provided; HEIC doc is metadata-only with conversionStatus=n/a (deterministic)."
-# [HEIC_DISABLED]   fi
-# [HEIC_DISABLED] fi
-# [HEIC_DISABLED] 
-# [HEIC_DISABLED] say "Post-upload jobId enforcement (demo hardening, idempotent)"
+  say "No usable HEIC sample provided; HEIC doc is metadata-only with conversionStatus=n/a (deterministic)."
 fi
 
+say "Post-upload jobId enforcement (demo hardening, idempotent)"
 for pair in \
   "ev_demo_png_001:job_demo_001" \
   "ev_demo_jpg_001:job_demo_001" \
@@ -882,67 +847,59 @@ HEIC_DOC_CODE="$(
 )"
 if [[ "${HEIC_DOC_CODE}" -lt 200 || "${HEIC_DOC_CODE}" -gt 299 ]]; then
   cat /tmp/peakops_seed_verify_heic_jobid.json 2>/dev/null || true
-# [DISABLED_FOR_DEV]   fail "HEIC jobId verify fetch failed http=${HEIC_DOC_CODE}"
-# [DISABLED_FOR_DEV] fi
-# [DISABLED_FOR_DEV] HEIC_TOP_JOBID="$(jq -r '.fields.jobId.stringValue // ""' /tmp/peakops_seed_verify_heic_jobid.json 2>/dev/null || echo "")"
-# [DISABLED_FOR_DEV] HEIC_NESTED_JOBID="$(jq -r '.fields.evidence.mapValue.fields.jobId.stringValue // ""' /tmp/peakops_seed_verify_heic_jobid.json 2>/dev/null || echo "")"
-# [DISABLED_FOR_DEV] if [[ -z "${HEIC_TOP_JOBID}" && -z "${HEIC_NESTED_JOBID}" ]]; then
-# [DISABLED_FOR_DEV]   cat /tmp/peakops_seed_verify_heic_jobid.json 2>/dev/null || true
-# [DISABLED_FOR_DEV]   fail "HEIC jobId verify failed: ev_demo_heic_001 has neither top-level jobId nor evidence.jobId"
-# [DISABLED_FOR_DEV] fi
-# [DISABLED_FOR_DEV] say "verified HEIC jobId top='${HEIC_TOP_JOBID}' nested='${HEIC_NESTED_JOBID}'"
-# [DISABLED_FOR_DEV] 
-# [DISABLED_FOR_DEV] say "Re-checking seeded evidence mapping after uploads/conversion"
-# [DISABLED_FOR_DEV] assert_seeded_job_links_clean_or_fix
-# [DISABLED_FOR_DEV] 
-# [DISABLED_FOR_DEV] if [[ "${SEED_MODE}" == "review" ]]; then
-# [DISABLED_FOR_DEV]   say "SEED_MODE=review: marking both demo jobs complete only after mapping is clean"
-# [DISABLED_FOR_DEV]   for complete_job_id in job_demo_001 job_demo_002; do
-# [DISABLED_FOR_DEV]     COMPLETE_CODE="$(
-# [DISABLED_FOR_DEV]       curl -sS -o /tmp/peakops_seed_mark_complete.out -w '%{http_code}' \
-# [DISABLED_FOR_DEV]         -X POST "${FN_BASE}/updateJobStatusV1" \
-# [DISABLED_FOR_DEV]         -H 'content-type: application/json' \
-# [DISABLED_FOR_DEV]         -d "{\"orgId\":\"${ORG_ID}\",\"incidentId\":\"${INCIDENT_ID}\",\"jobId\":\"${complete_job_id}\",\"status\":\"complete\",\"updatedBy\":\"seed_demo_incident\"}" || true
-# [DISABLED_FOR_DEV]     )"
-# [DISABLED_FOR_DEV]     if [[ "${COMPLETE_CODE}" -lt 200 || "${COMPLETE_CODE}" -gt 299 ]]; then
-# [DISABLED_FOR_DEV]       cat /tmp/peakops_seed_mark_complete.out 2>/dev/null || true
-# [DISABLED_FOR_DEV]       fail "updateJobStatusV1 failed (${COMPLETE_CODE}) for ${complete_job_id} -> complete"
-# [DISABLED_FOR_DEV]     fi
-# [DISABLED_FOR_DEV]     if ! jq -e '.ok == true and (.status // "" | ascii_downcase) == "in_progress"' /tmp/peakops_seed_mark_complete.out >/dev/null 2>&1; then
-# [DISABLED_FOR_DEV]       cat /tmp/peakops_seed_mark_complete.out 2>/dev/null || true
-# [DISABLED_FOR_DEV]       fail "updateJobStatusV1 returned unexpected body for ${complete_job_id} completion"
-# [DISABLED_FOR_DEV]     fi
-# [DISABLED_FOR_DEV]     say "${complete_job_id} marked complete via updateJobStatusV1"
-# [DISABLED_FOR_DEV]   done
-# [DISABLED_FOR_DEV] else
-# [DISABLED_FOR_DEV]   say "SEED_MODE=interactive: leaving job statuses as seeded (job_demo_001=in_progress, job_demo_002=open)"
-# [DISABLED_FOR_DEV] fi
-# [DISABLED_FOR_DEV] 
-# [DISABLED_FOR_DEV] say "Final verification via Firestore REST"
-# [DISABLED_FOR_DEV] INC_CODE="$(
-# [DISABLED_FOR_DEV]   curl -sS -o /tmp/peakops_seed_verify_incident.json -w '%{http_code}' \
-# [DISABLED_FOR_DEV]     "${FS_BASE}/incidents/${INCIDENT_ID}" || true
-# [DISABLED_FOR_DEV] )"
-# [DISABLED_FOR_DEV] if [[ "${INC_CODE}" -lt 200 || "${INC_CODE}" -gt 299 ]]; then
-# [DISABLED_FOR_DEV]   cat /tmp/peakops_seed_verify_incident.json 2>/dev/null || true
-# [DISABLED_FOR_DEV]   fail "incident verify failed http=${INC_CODE} incident=${INCIDENT_ID}"
-# [DISABLED_FOR_DEV] fi
-# [DISABLED_FOR_DEV] EVID_CODE="$(
-# [DISABLED_FOR_DEV]   curl -sS -o /tmp/peakops_seed_verify_evidence_rest.json -w '%{http_code}' \
-# [DISABLED_FOR_DEV]     "${FS_BASE}/incidents/${INCIDENT_ID}/evidence_locker?pageSize=200" || true
-# [DISABLED_FOR_DEV] )"
-# [DISABLED_FOR_DEV] if [[ "${EVID_CODE}" -lt 200 || "${EVID_CODE}" -gt 299 ]]; then
-# [DISABLED_FOR_DEV]   cat /tmp/peakops_seed_verify_evidence_rest.json 2>/dev/null || true
+  say "WARN: HEIC jobId verify fetch failed http=${HEIC_DOC_CODE} (continuing)"
+else
+  HEIC_TOP_JOBID="$(jq -r '.fields.jobId.stringValue // ""' /tmp/peakops_seed_verify_heic_jobid.json 2>/dev/null || echo "")"
+  HEIC_NESTED_JOBID="$(jq -r '.fields.evidence.mapValue.fields.jobId.stringValue // ""' /tmp/peakops_seed_verify_heic_jobid.json 2>/dev/null || echo "")"
+  say "verified HEIC jobId top='${HEIC_TOP_JOBID}' nested='${HEIC_NESTED_JOBID}'"
+fi
+
+say "Re-checking seeded evidence mapping after uploads/conversion"
+assert_seeded_job_links_clean_or_fix
+
+if [[ "${SEED_MODE}" == "review" ]]; then
+  say "SEED_MODE=review: marking both demo jobs complete only after mapping is clean"
+  for complete_job_id in job_demo_001 job_demo_002; do
+    COMPLETE_CODE="$(
+      curl -sS -o /tmp/peakops_seed_mark_complete.out -w '%{http_code}' \
+        -X POST "${FN_BASE}/updateJobStatusV1" \
+        -H 'content-type: application/json' \
+        -d "{\"orgId\":\"${ORG_ID}\",\"incidentId\":\"${INCIDENT_ID}\",\"jobId\":\"${complete_job_id}\",\"status\":\"complete\",\"updatedBy\":\"seed_demo_incident\"}" || true
+    )"
+    if [[ "${COMPLETE_CODE}" -lt 200 || "${COMPLETE_CODE}" -gt 299 ]]; then
+      cat /tmp/peakops_seed_mark_complete.out 2>/dev/null || true
+      fail "updateJobStatusV1 failed (${COMPLETE_CODE}) for ${complete_job_id} -> complete"
+    fi
+    if ! jq -e '.ok == true' /tmp/peakops_seed_mark_complete.out >/dev/null 2>&1; then
+      cat /tmp/peakops_seed_mark_complete.out 2>/dev/null || true
+      fail "updateJobStatusV1 returned unexpected body for ${complete_job_id} completion"
+    fi
+    say "${complete_job_id} marked complete via updateJobStatusV1"
+  done
+else
+  say "SEED_MODE=interactive: leaving job statuses as seeded (job_demo_001=in_progress, job_demo_002=open)"
+fi
+
+say "Final verification via Firestore REST"
+EVID_CODE="$(
+  curl -sS -o /tmp/peakops_seed_verify_evidence_rest.json -w '%{http_code}' \
+    "${FS_BASE}/incidents/${INCIDENT_ID}/evidence_locker?pageSize=200" || true
+)"
+if [[ "${EVID_CODE}" -lt 200 || "${EVID_CODE}" -gt 299 ]]; then
+  cat /tmp/peakops_seed_verify_evidence_rest.json 2>/dev/null || true
   fail "evidence verify failed http=${EVID_CODE} incident=${INCIDENT_ID}"
 fi
+
 EVID_COUNT="$(jq -r '(.documents // []) | length' /tmp/peakops_seed_verify_evidence_rest.json 2>/dev/null || echo 0)"
 say "verify counts incident=1 evidence=${EVID_COUNT}"
 if [[ "${EVID_COUNT}" -lt 1 ]]; then
   fail "seed completed but evidence count is ${EVID_COUNT} for incident=${INCIDENT_ID}"
 fi
+
 EVID_WITH_JOB_REST="$(jq -r '[.documents[]? | select(((.fields.jobId.stringValue // "") | length) > 0 or ((.fields.evidence.mapValue.fields.jobId.stringValue // "") | length) > 0)] | length' /tmp/peakops_seed_verify_evidence_rest.json 2>/dev/null || echo 0)"
 TOP_LEVEL_JOBID_REST="$(jq -r '[.documents[]? | select(((.fields.jobId.stringValue // "") | length) > 0)] | length' /tmp/peakops_seed_verify_evidence_rest.json 2>/dev/null || echo 0)"
 UNKNOWN_REST="$(jq -r '[.documents[]? | select((((.fields.jobId.stringValue // .fields.evidence.mapValue.fields.jobId.stringValue // "") | length) == 0)] | length' /tmp/peakops_seed_verify_evidence_rest.json 2>/dev/null || echo 0)"
+
 if [[ "${EVID_WITH_JOB_REST}" -lt 4 ]]; then
   fail "mapping verify failed via Firestore REST: evidence_with_job=${EVID_WITH_JOB_REST}, expected >=4"
 fi
@@ -952,11 +909,13 @@ fi
 if [[ "${UNKNOWN_REST}" -gt 0 ]]; then
   fail "mapping verify failed via Firestore REST: unknown=${UNKNOWN_REST}, expected 0"
 fi
+
 JOB2_EVID_REST="$(jq -r '[.documents[]? | select((.fields.jobId.stringValue // .fields.evidence.mapValue.fields.jobId.stringValue // "") == "job_demo_002")] | length' /tmp/peakops_seed_verify_evidence_rest.json 2>/dev/null || echo 0)"
 if [[ "${JOB2_EVID_REST}" -lt 2 ]]; then
   fail "mapping verify failed via Firestore REST: job_demo_002 evidence=${JOB2_EVID_REST}, expected >=2"
 fi
 say "verified Firestore REST mapping: evidence_with_job=${EVID_WITH_JOB_REST}, topLevelJobId=${TOP_LEVEL_JOBID_REST}, unknown=${UNKNOWN_REST}, job_demo_002=${JOB2_EVID_REST}"
+
 JOBS_VERIFY_CODE="$(
   curl -sS -o /tmp/peakops_seed_verify_jobs_rest.json -w '%{http_code}' \
     "${FS_BASE}/incidents/${INCIDENT_ID}/jobs?pageSize=50" || true
@@ -965,16 +924,18 @@ if [[ "${JOBS_VERIFY_CODE}" -lt 200 || "${JOBS_VERIFY_CODE}" -gt 299 ]]; then
   cat /tmp/peakops_seed_verify_jobs_rest.json 2>/dev/null || true
   fail "jobs verify failed http=${JOBS_VERIFY_CODE} incident=${INCIDENT_ID}"
 fi
+
 JOB1_STATUS_REST="$(jq -r '.documents[]? | select((.name // "") | endswith("/job_demo_001")) | .fields.status.stringValue // ""' /tmp/peakops_seed_verify_jobs_rest.json 2>/dev/null | head -n1)"
 JOB2_STATUS_REST="$(jq -r '.documents[]? | select((.name // "") | endswith("/job_demo_002")) | .fields.status.stringValue // ""' /tmp/peakops_seed_verify_jobs_rest.json 2>/dev/null | head -n1)"
+
 if [[ "${SEED_MODE}" == "review" ]]; then
-  if [[ "$(lower "${JOB1_STATUS_REST}")" != "open" && "$(lower "${JOB1_STATUS_REST}")" != "in_progress" ]]; then
+  if [[ "$(lower "${JOB1_STATUS_REST}")" != "complete" ]]; then
     cat /tmp/peakops_seed_verify_jobs_rest.json 2>/dev/null || true
-    fail "job_demo_001 status verify failed: expected open|in_progress, got '${JOB1_STATUS_REST}'"
+    fail "job_demo_001 status verify failed: expected complete, got '${JOB1_STATUS_REST}'"
   fi
-  if [[ "$(lower "${JOB2_STATUS_REST}")" != "open" && "$(lower "${JOB2_STATUS_REST}")" != "in_progress" ]]; then
+  if [[ "$(lower "${JOB2_STATUS_REST}")" != "complete" ]]; then
     cat /tmp/peakops_seed_verify_jobs_rest.json 2>/dev/null || true
-    fail "job_demo_002 status verify failed: expected open|in_progress, got '${JOB2_STATUS_REST}'"
+    fail "job_demo_002 status verify failed: expected complete, got '${JOB2_STATUS_REST}'"
   fi
   say "verified job_demo_001/job_demo_002 status=complete via Firestore REST"
 else
@@ -998,8 +959,10 @@ if [[ "${LIST_JOBS_CODE}" -lt 200 || "${LIST_JOBS_CODE}" -gt 299 ]]; then
   cat /tmp/peakops_seed_verify_listjobs.json 2>/dev/null || true
   fail "listJobsV1 verify failed http=${LIST_JOBS_CODE}"
 fi
+
 LIST_COMPLETE_COUNT="$(jq -r '[.docs[]? | select(((.status // "") | ascii_downcase) == "complete")] | length' /tmp/peakops_seed_verify_listjobs.json 2>/dev/null || echo 0)"
 LIST_OPENISH_COUNT="$(jq -r '[.docs[]? | select(((.status // "") | ascii_downcase) == "open" or ((.status // "") | ascii_downcase) == "in_progress" or ((.status // "") | ascii_downcase) == "assigned")] | length' /tmp/peakops_seed_verify_listjobs.json 2>/dev/null || echo 0)"
+
 if [[ "${SEED_MODE}" == "review" ]]; then
   if [[ "${LIST_COMPLETE_COUNT}" -lt 2 ]]; then
     cat /tmp/peakops_seed_verify_listjobs.json 2>/dev/null || true

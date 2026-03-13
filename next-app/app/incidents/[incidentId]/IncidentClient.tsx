@@ -1298,7 +1298,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
             const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
               orgId,
               incidentId,
-              evidenceId: id,
+	      evidenceId,
               jobId: jid,
             });
             if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
@@ -1339,7 +1339,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
         orgId,
         incidentId,
-        evidenceId: id,
+        evidenceId,
         jobId: nextJobId || null,
       });
       if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
@@ -1676,7 +1676,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
-            evidenceId: ev.id,
             storagePath: ref.storagePath,
             bucket: ref.bucket,
             expiresSec: getThumbExpiresSec(),
@@ -1735,7 +1734,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
-            evidenceId: id,
             storagePath: ref.storagePath,
             bucket: ref.bucket,
             expiresSec: getThumbExpiresSec(),
@@ -1810,7 +1808,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
     const out = await mintEvidenceReadUrl({
       orgId,
       incidentId,
-      evidenceId: id,
       bucket: ref.bucket,
       storagePath: ref.storagePath,
       expiresSec: getThumbExpiresSec(),
@@ -2035,7 +2032,7 @@ useEffect(() => {
     if (!v) return;
     setHi(v);
     toast("Evidence secured ✓");
-    const t = setTimeout(() => toast(null), 2200);
+    const t = setTimeout(() => toast(""), 2200);
     // Scroll tile into view (if present)
     setTimeout(() => {
       const el = document.querySelector(`[data-ev-id="${v}"]`);
@@ -2068,7 +2065,6 @@ useEffect(() => {
         const resp = await mintEvidenceReadUrl({
           orgId,
           incidentId,
-          evidenceId: ev.id,
           storagePath: ref.storagePath,
           bucket: ref.bucket,
           expiresSec: getThumbExpiresSec(),
@@ -2382,14 +2378,14 @@ useEffect(() => {
                 <button
                   type="button"
                   className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-sm text-amber-50"
-                  onClick={() => { try { setTab("timeline"); } catch { try { location.hash="#timeline"; } catch {} } }}
+                  onClick={() => { try { location.hash = "#timeline"; } catch {} }}
                 >
                   View timeline
                 </button>
                 <button
                   type="button"
                   className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-sm text-amber-50"
-                  onClick={() => { try { setTab("evidence"); } catch { try { document.getElementById("evidence")?.scrollIntoView({behavior:"smooth"}); } catch {} } }}
+                  onClick={() => { try { document.getElementById("evidence")?.scrollIntoView({ behavior: "smooth" }); } catch {} }}
                 >
                   Go to evidence
                 </button>
@@ -3069,7 +3065,6 @@ useEffect(() => {
   items={timeline as any}
   onJumpToEvidence={jumpToEvidence}
   highlightId={selectedEvidenceId}
-  showHeader={false}
 />
         </section>
         ) : null}

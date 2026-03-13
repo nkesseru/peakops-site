@@ -33,7 +33,7 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     if (incStatus === "closed") {
       return j(res, 409, { ok:false, error:"incident_closed", detail:"Incident is read-only" });
     }
-    if (incStatus && incStatus !== "in_progress" && incStatus !== "submitted") {
+    if (incStatus && !["open","in_progress","submitted"].includes(String(incStatus).toLowerCase())) {
       return j(res, 409, { ok:false, error:"invalid_transition", detail:`unsupported incident.status=${incStatus}` });
     }
 

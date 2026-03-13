@@ -262,11 +262,28 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         setTimeline(docs);
       }
 
-      const maybeArtifact = `/api/fn/downloadIncidentPacketZip?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`;
-      const packetStatus = String(inc?.doc?.packetMeta?.status || "").toLowerCase();
-      if (packetStatus === "ready") {
+      const packetMeta: any = inc?.doc?.packetMeta || {};
+      const packetStatus = String(packetMeta?.status || "").toLowerCase();
+      const packetBucket = String(packetMeta?.bucket || packetMeta?.packetBucket || "").trim();
+      const packetStoragePath = String(packetMeta?.storagePath || packetMeta?.packetStoragePath || "").trim();
+      const packetDownloadUrl = String(packetMeta?.downloadUrl || "").trim();
+
+      let maybeArtifact = "";
+      if (packetDownloadUrl) {
+        maybeArtifact = packetDownloadUrl;
+      } else if (packetBucket && packetStoragePath) {
+        maybeArtifact =
+          `/api/media?bucket=${encodeURIComponent(packetBucket)}` +
+          `&path=${encodeURIComponent(packetStoragePath)}&download=1`;
+      } else {
+        maybeArtifact =
+          `/api/fn/downloadIncidentPacketZip?orgId=${encodeURIComponent(requestOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}`;
+      }
+
+      if (packetStatus === "ready" && maybeArtifact) {
         setArtifactUrl(maybeArtifact);
-        setArtifactHint("Artifact ready.");
+        setArtifactHint("Artifact ready to download.");
         setArtifactReady(true);
       } else if (packetStatus === "building") {
         setArtifactUrl("");
@@ -274,7 +291,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         setArtifactReady(false);
       } else {
         setArtifactUrl("");
-        setArtifactHint("No artifact yet. Export packet first.");
+        setArtifactHint("No artifact yet. Click Download Artifact to generate it.");
         setArtifactReady(false);
       }
       setErrUrl("");
@@ -319,6 +336,98 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       setLoading(false);
     }
   }
+
+  
+
+  async function handleArtifactDownload() {
+    if (!activeOrgId || !incidentId) return;
+    setArtifactBusy(true);
+    setArtifactToast("");
+    setErr("");
+
+    try {
+      const exportRes = await fetch("/api/fn/exportIncidentPacketV1", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...demoHeaders },
+        body: JSON.stringify({
+          orgId: activeOrgId,
+          incidentId,
+          requestedBy: getActorUid?.() || "summary_ui",
+          actorUid: getActorUid?.() || "summary_ui",
+          actorRole: getActorRole?.() || "admin",
+        }),
+      });
+
+      const exportTxt = await exportRes.text();
+      const out = exportTxt ? JSON.parse(exportTxt) : {};
+
+      if (!exportRes.ok || !out?.ok) {
+        throw new Error(out?.error || `exportIncidentPacketV1 failed (${exportRes.status})`);
+      }
+
+      const bucket = String(
+        out?.bucket ||
+        out?.packetBucket ||
+        out?.packetMeta?.bucket ||
+        out?.packetMeta?.packetBucket ||
+        ""
+      ).trim();
+
+      const storagePath = String(
+        out?.storagePath ||
+        out?.packetStoragePath ||
+        out?.packetMeta?.storagePath ||
+        out?.packetMeta?.packetStoragePath ||
+        ""
+      ).trim();
+
+      const directUrl = String(
+        out?.downloadUrl ||
+        out?.packetMeta?.downloadUrl ||
+        ""
+      ).trim();
+
+      const filename =
+        String(out?.filename || "").trim() ||
+        (storagePath ? String(storagePath).split("/").pop() || "" : "") ||
+        `incident_${incidentId}_packet.zip`;
+
+      let href = directUrl;
+      if (!href && bucket && storagePath) {
+        href =
+          `/api/media?bucket=${encodeURIComponent(bucket)}` +
+          `&path=${encodeURIComponent(storagePath)}&download=1`;
+      }
+      if (!href) {
+        href =
+          `/api/fn/downloadIncidentPacketZip?orgId=${encodeURIComponent(activeOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}`;
+      }
+
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      setArtifactUrl(href);
+      setArtifactReady(true);
+      setLastArtifactFilename(filename);
+      setLastArtifactAt(new Date().toLocaleString());
+      setArtifactHint("Artifact ready to download.");
+      setArtifactToast(`Artifact downloaded: ${filename}`);
+
+      setTimeout(() => {
+        void refresh().catch(() => {});
+      }, 600);
+    } catch (e: any) {
+      setErr(String(e?.message || e || "artifact download failed"));
+    } finally {
+      setArtifactBusy(false);
+    }
+  }
+
 
   async function ensureArtifact() {
     const requestOrgId = String(orgId || "").trim();
@@ -380,7 +489,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           body: JSON.stringify({
             orgId: activeOrgId || orgId,
             incidentId,
-            evidenceId: id,
+            evidenceId,
             jobId: targetJobId,
           }),
         });
@@ -409,7 +518,6 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       const out = await mintEvidenceReadUrl({
         orgId: activeOrgId || orgId,
         incidentId,
-        evidenceId: id,
         storagePath: ref.storagePath,
         bucket: ref.bucket,
         expiresSec: getThumbExpiresSec(),
@@ -470,7 +578,6 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     const out = await mintEvidenceReadUrl({
       orgId: activeOrgId || orgId,
       incidentId,
-      evidenceId: id,
       storagePath: ref.storagePath,
       bucket: ref.bucket,
       expiresSec: getThumbExpiresSec(),
@@ -645,7 +752,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               type="button"
               className={"px-3 py-2 rounded-xl text-sm border " + (!err && orgId && incidentId ? "bg-emerald-600/20 border-emerald-300/30 text-emerald-100 hover:bg-emerald-600/30" : "bg-white/5 border-white/10 text-gray-400")}
               disabled={artifactBusy || !orgId || !incidentId || !!err}
-              onClick={() => ensureArtifact()}
+              onClick={() => { void handleArtifactDownload(); }}
               title={artifactHint}
             >
               {artifactBusy ? "Preparing Artifact..." : "Download Artifact"}

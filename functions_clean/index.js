@@ -22,6 +22,7 @@ safeExport("listEvidenceLocker", "./listEvidenceLocker");
 
 // --- Sessions ---
 safeExport("startFieldSessionV1", "./startFieldSessionV1");
+safeExport("submitFieldSessionV1", "./submitFieldSessionV1");
 
 // --- Evidence ---
 safeExport("addEvidenceV1", "./addEvidenceV1");
@@ -34,6 +35,8 @@ safeExport("uploadEvidenceProxyV1", "./uploadEvidenceProxyV1");
 safeExport("listJobsV1", "./listJobsV1");
 safeExport("getJobV1", "./getJobV1");
 safeExport("updateJobStatusV1", "./updateJobStatusV1");
+safeExport("updateJobNotesV1", "./updateJobNotesV1");
+safeExport("markJobCompleteV1", "./markJobCompleteV1");
 safeExport("getIncidentNotesV1", "./getIncidentNotesV1");
 safeExport("saveIncidentNotesV1", "./saveIncidentNotesV1");
 safeExport("assignEvidenceToJobV1", "./assignEvidenceToJobV1");

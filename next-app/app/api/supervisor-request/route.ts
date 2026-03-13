@@ -25,7 +25,7 @@ export async function GET(req: Request) {
     const db = getAdminDb();
     const ref = docRef(db, incidentId);
 
-    const snap = await withTimeout(ref.get(), 15000, "GET_supervisor_request");
+    const snap: any = await withTimeout(ref.get(), 15000, "GET_supervisor_request");
     if (!snap.exists) return NextResponse.json({ ok: true, requestUpdate: null });
 
     const data = snap.data() || {};
