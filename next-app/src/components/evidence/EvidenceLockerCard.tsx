@@ -14,7 +14,7 @@ export function EvidenceLockerCard({ item, onClick }: Props) {
       onClick={onClick}
       className="group overflow-hidden rounded-xl border border-neutral-200 bg-white text-left shadow-sm transition hover:shadow-md"
     >
-      <div className="aspect-square bg-neutral-100">
+      <div className="aspect-square bg-neutral-100" id={`evidence-card-${String((item as any)?.id || (ev as any)?.id || "")}`} data-evidence-id={String((item as any)?.id || (ev as any)?.id || "")}>
         {item.thumbnailUrl || item.viewerUrl ? (
           <img
             src={item.thumbnailUrl ?? item.viewerUrl ?? ""}
