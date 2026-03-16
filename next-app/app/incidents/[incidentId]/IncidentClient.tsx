@@ -795,6 +795,7 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   const [previewName, setPreviewName] = useState<string>("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [selectedEvidenceId, setSelectedEvidenceId] = useState<string>("");
+  const [pendingJumpEvidenceId, setPendingJumpEvidenceId] = useState<string>("");
   // PHASE5A_REQUEST_UPDATE_BANNER_V1
   // PHASE7_2_REQUPDATE_SYNC_V1
   // Supervisor "Request update" note:
@@ -876,219 +877,74 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       const id = String(eid || "").trim();
       if (!id) return;
 
-      // highlight immediately
       setSelectedEvidenceId(id);
+      setPendingJumpEvidenceId(id);
 
-      // PHASE4_2_CONTEXT_LOCK_V1
       try {
-        setContextLockId(id);
-        window.setTimeout(() => { try { setContextLockId(null); } catch {} }, 800);
+        if (typeof setActiveTab === "function") setActiveTab("evidence");
       } catch {}
 
-
-      // A) Vertical: bring Evidence section into view (not top)
       try {
-        const anchor = document.getElementById("evidence");
-        if (anchor && "scrollIntoView" in anchor) {
-          (anchor as any).scrollIntoView({ behavior: "smooth", block: "center" });
-        }
+        const u = new URL(window.location.href);
+        u.searchParams.set("evidenceId", id);
+        window.history.replaceState({}, "", u.toString());
       } catch {}
 
-      // B) Horizontal: after layout settles, CENTER the tile in the scroller
-      window.setTimeout(() => {
+      const tryScroll = () => {
         try {
-          const scroller = document.getElementById("evidenceScroller") as HTMLElement | null;
-          const tile = document.querySelector('[data-ev-id="' + id + '"]') as HTMLElement | null;
-          if (!tile) return;
+          const escaped = (globalThis as any).CSS?.escape ? (globalThis as any).CSS.escape(id) : id;
+          const selectors = [
+            `[data-evidence-id="${id}"]`,
+            `[data-evidence-id="${escaped}"]`,
+            `#evidence-card-${escaped}`,
+            `[data-evidence-ref="${id}"]`,
+          ];
 
-          if (scroller) {
-            const prevSnap = scroller.style.scrollSnapType || "";
-            const prevPadL = (scroller.style.scrollPaddingLeft || "");
-            const prevPadR = (scroller.style.scrollPaddingRight || "");
-            const prevAlign = (tile.style as any).scrollSnapAlign || "";
-
-            // Temporarily disable snap + add scroll-padding so "inline:center" can actually center
-            try { scroller.style.scrollSnapType = "none"; } catch {}
-
-            try {
-              const pad = Math.max(0, (scroller.clientWidth / 2) - (tile.offsetWidth / 2));
-              scroller.style.scrollPaddingLeft = pad + "px";
-              scroller.style.scrollPaddingRight = pad + "px";
-            } catch {}
-
-            // Force selected tile to prefer center snapping (while we center)
-            try { (tile.style as any).scrollSnapAlign = "center"; } catch {}
-
-            // Let browser do the centering (more reliable than manual math w/ snap)
-            try {
-              tile.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-            } catch {}
-
-            // Restore styles after it lands
-            window.setTimeout(() => {
-              try { scroller.style.scrollSnapType = prevSnap; } catch {}
-              try { scroller.style.scrollPaddingLeft = prevPadL; } catch {}
-              try { scroller.style.scrollPaddingRight = prevPadR; } catch {}
-              try { (tile.style as any).scrollSnapAlign = prevAlign; } catch {}
-            }, 550);
-          } else {
-            // fallback: still try to center
-            try { tile.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" }); } catch {}
+          for (const sel of selectors) {
+            const el = document.querySelector(sel) as HTMLElement | null;
+            if (el) {
+              try {
+                el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+              } catch {}
+              try {
+                el.classList.add("ring-2", "ring-cyan-400/70");
+                setTimeout(() => {
+                  try { el.classList.remove("ring-2", "ring-cyan-400/70"); } catch {}
+                }, 1800);
+              } catch {}
+              return true;
+            }
           }
         } catch {}
-      }, 180);
-    } catch {}
-};
-// PHASE4_1_KEYNAV_V1
-  useEffect(() => {
-    if (!selectedEvidenceId) return;
-    if (previewOpen) return;
+        return false;
+      };
 
-    const onKey = (e: KeyboardEvent) => {
-      const k = e.key;
-      if (k !== "ArrowLeft" && k !== "ArrowRight" && k !== "Escape") return;
-
-      try { e.preventDefault(); } catch {}
-
-      if (k === "Escape") {
-        setSelectedEvidenceId("");
-        return;
-      }
-
-      const idx = (evidence || []).findIndex((ev: any) => String(ev?.id || "") === String(selectedEvidenceId || ""));
-      if (idx < 0) return;
-
-      const nextIdx = k === "ArrowRight"
-        ? Math.min(idx + 1, (evidence || []).length - 1)
-        : Math.max(idx - 1, 0);
-
-      const next = (evidence || [])[nextIdx];
-      if (!next || !next.id) return;
-
-      setSelectedEvidenceId(next.id);
-      jumpToEvidence(String(next.id));
-    };
-
-    window.addEventListener("keydown", onKey);
-    return () => {
-      try { window.removeEventListener("keydown", onKey); } catch {}
-    };
-  }, [selectedEvidenceId, previewOpen, evidence]);
-
-  const evidenceCount = evidence.length;
-  const latestEvidenceSec = evidence?.[0]?.storedAt?._seconds || evidence?.[0]?.createdAt?._seconds;
-  const lastActivity = useMemo(() => fmtAgo(latestEvidenceSec), [latestEvidenceSec]);
-  const selectableFieldJobs = useMemo(
-    () => (jobs || []).filter((j: any) => isFieldSelectableJob(j?.status)),
-    [jobs]
-  );
-  const showJobsDebugPanel = useMemo(() => {
-    try {
-      const demoMode = String(localStorage.getItem("peakops_demo_mode") || "") === "1";
-      const host = String(new URL(String(functionsBase || "")).hostname || "").toLowerCase();
-      const localHost = host === "localhost" || host === "127.0.0.1";
-      return demoMode || localHost;
-    } catch {
-      return false;
-    }
-  }, [functionsBase]);
-  const rawJobsDebug = useMemo(
-    () =>
-      (jobs || []).map((j: any) => ({
-        id: String(j?.id || j?.jobId || ""),
-        title: String(j?.title || ""),
-        status: String(j?.status || ""),
-        reviewStatus: String(j?.reviewStatus || ""),
-        assignedOrgId: String(j?.assignedOrgId || ""),
-      })),
-    [jobs]
-  );
-  const normalizedJobStatuses = useMemo(
-    () =>
-      (jobs || []).map((j: any) => ({
-        id: String(j?.id || j?.jobId || ""),
-        title: String(j?.title || ""),
-        rawStatus: String(j?.status || ""),
-        norm: normalizeJobStatus(j?.status),
-      })),
-    [jobs]
-  );
-  const hasActiveFieldJobs = selectableFieldJobs.length > 0;
-
-  useEffect(() => {
-    const currentId = String(currentJobId || "").trim();
-    const existsInSelectable = selectableFieldJobs.some(
-      (j: any) => String(j?.id || j?.jobId || "") === currentId
-    );
-    if (currentId && existsInSelectable) return;
-    const firstSelectableId = String(selectableFieldJobs?.[0]?.id || selectableFieldJobs?.[0]?.jobId || "").trim();
-    if (firstSelectableId) setCurrentJobId(firstSelectableId);
-  }, [selectableFieldJobs, currentJobId]);
-
-  // PEAKOPS_JOB_AUTOSELECT_HARDEN_V2
-  useEffect(() => {
-    try {
-      const list = Array.isArray(jobs) ? jobs : [];
-      if (!list.length) return;
-
-      const currentId = String(currentJobId || "").trim();
-      const queryJobId = String(sp?.get?.("jobId") || "").trim();
-
-      let savedJobId = "";
-      try {
-        savedJobId = String(localStorage.getItem(`peakops_current_job_${String(incidentId || "").trim()}`) || "").trim();
-      } catch {}
-
-      const normalized = list
-        .map((j: any) => ({
-          raw: j,
-          id: String(j?.id || j?.jobId || "").trim(),
-          status: String(j?.status || j?.rawStatus || "").trim().toLowerCase(),
-        }))
-        .filter((j: any) => j.id);
-
-      if (!normalized.length) return;
-
-      const currentStillExists = normalized.some((j: any) => j.id === currentId);
-      if (currentId && currentStillExists) return;
-
-      const chosen =
-        normalized.find((j: any) => j.id === queryJobId) ||
-        normalized.find((j: any) => j.id === savedJobId) ||
-        normalized.find((j: any) => j.status === "open") ||
-        normalized.find((j: any) => j.status === "in_progress" || j.status === "in-progress") ||
-        normalized[0];
-
-      const chosenId = String(chosen?.id || "").trim();
-      if (!chosenId) return;
-
-      setCurrentJobId(chosenId);
-
-      try {
-        localStorage.setItem(`peakops_current_job_${String(incidentId || "").trim()}`, chosenId);
-      } catch {}
-
-      if (process.env.NODE_ENV !== "production") {
-        console.debug("[job-autoselect-hardened]", {
-          incidentId,
-          chosenId,
-          queryJobId,
-          savedJobId,
-          currentId,
-          jobsCount: normalized.length,
+      setTimeout(() => { tryScroll(); }, 0);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          tryScroll();
         });
-      }
+      });
     } catch (e) {
-      console.warn("[incident] hardened auto-select failed", e);
+      console.warn("[incident] jumpToEvidence failed", e);
     }
-  }, [jobs, currentJobId, incidentId]);
-
-  const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
-  const isDemoMode = isDemoIncident(incidentId);
-  const isIncidentClosedError = (e: any) => {
-    const msg = String(e?.message || e || "").toLowerCase();
-    return msg.includes("incident_closed") || (msg.includes("409") && msg.includes("incident"));
   };
+
+  const hasActiveFieldJobs = Array.isArray(jobs) && jobs.some((j: any) => isFieldSelectableJob(j?.status));
+
+const selectableFieldJobs = useMemo(
+  () => (Array.isArray(jobs) ? jobs.filter((j: any) => isFieldSelectableJob(j?.status)) : []),
+  [jobs]
+);
+
+const showJobsDebugPanel = false;
+const rawJobsDebug: any[] = [];
+const normalizedJobStatuses: any[] = [];
+
+const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
+
+  const isDemoMode = isDemoIncident(incidentId);
+
   const actorUid = () => getActorUid();
   const actorRole = () => getActorRole();
   const actorEmail = () => String(localStorage.getItem("peakops_email") || "").trim();
@@ -2334,10 +2190,13 @@ useEffect(() => {
       `}</style>
 
 {process.env.NODE_ENV !== "production" ? (
-        <div className="px-4 pt-2 text-[11px] text-gray-400">
-          functionsBase={functionsBase || "(unset)"}
-        </div>
-      ) : null}
+                  <div className="rounded-lg border border-cyan-300/25 bg-cyan-500/10 p-2 text-[11px] text-cyan-100">
+                    <div><span className="peakops-debug-only">jobs.length:</span> {jobs.length}</div>
+                    <div>currentJobId: {String(currentJobId || "(empty)")}</div>
+                    <div>incidentId: {String(incidentId || "")}</div>
+                    <div>hasActiveFieldJobs: {String(hasActiveFieldJobs)}</div>
+                  </div>
+                ) : null}
       {/* Top bar */}
       <div className="px-4 pt-4 pb-3 border-b border-white/[0.08] sticky top-0 bg-black/80 backdrop-blur z-10">
         <div className="flex items-start justify-between gap-3">
@@ -2760,22 +2619,20 @@ useEffect(() => {
                 {process.env.NODE_ENV !== "production" ? (
                   <div className="rounded-lg border border-cyan-300/25 bg-cyan-500/10 p-2 text-[11px] text-cyan-100">
                     <div><span className="peakops-debug-only">jobs.length:</span> {jobs.length}</div>
-                    <div>selectableFieldJobs.length: {selectableFieldJobs.length}</div>
                     <div>currentJobId: {String(currentJobId || "(empty)")}</div>
                     <div>incidentId: {String(incidentId || "")}</div>
                     <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-all text-[10px] text-cyan-200/90">
-                      {JSON.stringify(normalizedJobStatuses, null, 2)}
                     </pre>
                   </div>
                 ) : null}
                 <select
                   className="w-full text-sm bg-black/40 border border-white/15 rounded-lg px-3 py-2"
-                  disabled={isClosed || jobsBusy || selectableFieldJobs.length === 0}
+                  disabled={isClosed || jobsBusy || jobs.length === 0}
                   value={currentJobId}
                   onChange={(e) => setCurrentJobId(String(e.target.value || ""))}
                 >
-                  <option value="">{selectableFieldJobs.length ? "Select job" : "No active jobs available"}</option>
-                  {selectableFieldJobs.map((j: any) => (
+                  <option value="">{jobs.length ? "Select job" : "No active jobs available"}</option>
+                  {jobs.map((j: any) => (
                     <option key={String(j?.id || j?.jobId)} value={String(j?.id || j?.jobId)}>
                       {String(j?.id || j?.jobId || "job")}: {String(j?.title || "(untitled)")} ({jobStatusText(j?.status)})
                     </option>
@@ -2784,7 +2641,7 @@ useEffect(() => {
                 <div className="text-[11px] text-gray-500">
                   Default for new evidence: {currentTitle ? `${currentTitle} (${currentStatus})` : "none selected"}
                 </div>
-                {selectableFieldJobs.length === 0 ? (
+                {jobs.length === 0 ? (
                   <div className="rounded-lg border border-amber-300/25 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-100">
                     {jobs.length > 0 ? (
                       <>
@@ -3154,11 +3011,11 @@ useEffect(() => {
                 : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08]")
             }
             onClick={() => { try { goAddEvidence(); } catch {} }}
-            disabled={isClosed || !hasActiveFieldJobs}
+            disabled={isClosed}
             title={
               isClosed
                 ? "Incident is closed (read-only)"
-                : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : (_hasEvidence ? "Evidence captured (done)" : "Go to Evidence"))
+                : (_hasEvidence ? "Evidence captured (done)" : "Go to Evidence")
             }>
             Evidence
           </button>
