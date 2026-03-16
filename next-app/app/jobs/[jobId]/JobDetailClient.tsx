@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getFunctionsBase } from "@/lib/functionsBase";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
-import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 
 type JobDoc = {
   id: string;
@@ -188,7 +188,7 @@ export default function JobDetailClient({
     async function resolveThumbs() {
       if (!incidentId || !orgId) return;
       for (const ev of evidence) {
-        const ref = getBestEvidenceImageRef(ev);
+        const ref = getBestEvidencePreviewRef(ev);
         const key = String(ev.id || "").trim();
         if (!ref?.storagePath || !ref?.bucket || thumbUrlByKey[key]) continue;
         try {
@@ -253,7 +253,7 @@ export default function JobDetailClient({
       setThumbErrById((m) => ({ ...m, [id]: m[id] || "read_url_failed" }));
       return;
     }
-    const ref = getBestEvidenceImageRef(ev);
+    const ref = getBestEvidencePreviewRef(ev);
     if (!ref?.storagePath || !ref?.bucket) {
       setThumbErrById((m) => ({ ...m, [id]: "missing_bucket_or_storagePath" }));
       return;

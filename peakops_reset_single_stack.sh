@@ -1,5 +1,31 @@
-const DEV_FUNCTIONS_BASE = "http://127.0.0.1:5004/peakops-pilot/us-central1";
-const DEV_FALLBACK_FUNCTIONS_BASE = "http://127.0.0.1:5004/peakops-pilot/us-central1";
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$HOME/peakops/my-app"
+NEXT="$ROOT/next-app"
+FN="$ROOT/functions_clean"
+
+echo "== 1) kill all stale dev/emulator ports =="
+for p in 3001 4000 4002 4400 4401 4412 4500 4501 4502 5002 5004 8082 8087 9150 9154; do
+  PIDS="$(lsof -tiTCP:$p -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "${PIDS}" ]; then
+    kill -9 ${PIDS} 2>/dev/null || true
+  fi
+done
+pkill -f "firebase emulators:start" 2>/dev/null || true
+pkill -f "next dev --hostname 127.0.0.1 --port 3001" 2>/dev/null || true
+sleep 1
+
+echo "== 2) force app to use ONE functions base only: 5002 =="
+cat > "$NEXT/.env.local" <<'ENV'
+NEXT_PUBLIC_FUNCTIONS_BASE=http://127.0.0.1:5002/peakops-pilot/us-central1
+FUNCTIONS_BASE=http://127.0.0.1:5002/peakops-pilot/us-central1
+ENV
+
+echo "== 3) hard-set functionsBase.ts to 5002 primary/fallback =="
+cat > "$NEXT/src/lib/functionsBase.ts" <<'TS'
+const DEV_FUNCTIONS_BASE = "http://127.0.0.1:5002/peakops-pilot/us-central1";
+const DEV_FALLBACK_FUNCTIONS_BASE = "http://127.0.0.1:5002/peakops-pilot/us-central1";
 const SESSION_BASE_KEY = "peakops_functions_base_override";
 let warnedPortMismatch = false;
 
@@ -106,3 +132,64 @@ export function warnFunctionsBaseIfSuspicious(base: string) {
     console.warn(`[functionsBase] using ${b}. Expected local emulator proxy is :5002.`);
   }
 }
+TS
+
+echo "== 4) hard-set api proxy default to 5002 =="
+python3 - <<'PY'
+from pathlib import Path
+p = Path.home() / "peakops/my-app/next-app/app/api/fn/_proxy.ts"
+s = p.read_text()
+s = s.replace('"http://127.0.0.1:5004/peakops-pilot/us-central1"', '"http://127.0.0.1:5002/peakops-pilot/us-central1"')
+p.write_text(s)
+print("patched", p)
+PY
+
+echo "== 5) remove stray duplicate evidence button file if it exists =="
+rm -f "$NEXT/src/components/evidence/AddEvidenceButton.tsx'" || true
+
+echo "== 6) clear next build cache =="
+rm -rf "$NEXT/.next"
+
+echo "== 7) start emulators from functions_clean on ONE stack =="
+osascript -e 'tell application "Terminal" to do script "cd '"$FN"' && firebase emulators:start --project peakops-pilot --only functions,firestore"'
+
+echo "Waiting 8 seconds for emulators..."
+sleep 8
+
+echo "== 8) seed demo incident into firestore emulator 8082 =="
+cd "$FN"
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8082 node - <<'NODE'
+const admin = require("firebase-admin");
+if (!admin.apps.length) admin.initializeApp({ projectId: "peakops-pilot" });
+const db = admin.firestore();
+
+(async () => {
+  await db.collection("incidents").doc("inc_demo").set({
+    orgId: "riverbend-electric",
+    incidentId: "inc_demo",
+    title: "Riverbend Electric Demo Incident",
+    status: "open",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }, { merge: true });
+
+  const snap = await db.collection("incidents").doc("inc_demo").get();
+  console.log("exists after seed:", snap.exists);
+  console.log("data:", snap.exists ? snap.data() : null);
+})();
+NODE
+
+echo "== 9) verify function directly on 5002 =="
+curl -s "http://127.0.0.1:5002/peakops-pilot/us-central1/getIncidentV1?orgId=riverbend-electric&incidentId=inc_demo"
+echo
+echo
+
+echo "== 10) start next app on 3001 =="
+osascript -e 'tell application "Terminal" to do script "cd '"$ROOT"' && pnpm dev"'
+
+echo
+echo "✅ done"
+echo "Open after both windows finish booting:"
+echo "  http://127.0.0.1:3001/api/fn/getIncidentV1?orgId=riverbend-electric&incidentId=inc_demo"
+echo "  http://127.0.0.1:3001/incidents/inc_demo"
+echo "  http://127.0.0.1:3001/incidents/inc_demo/add-evidence?orgId=riverbend-electric"

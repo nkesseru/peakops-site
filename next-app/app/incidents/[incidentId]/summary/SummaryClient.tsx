@@ -14,7 +14,7 @@ import {
   warnFunctionsBaseIfSuspicious,
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
-import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 
 type IncidentDoc = {
   id: string;
@@ -512,7 +512,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   async function prefetchThumb(ev: EvidenceDoc) {
     const id = String(ev?.id || "");
     if (!id || thumbUrl[id]) return;
-    const ref = getBestEvidenceImageRef(ev);
+    const ref = getBestEvidencePreviewRef(ev);
     if (!ref?.storagePath || !ref?.bucket) return;
     try {
       const out = await mintEvidenceReadUrl({
@@ -558,7 +558,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       setThumbErrById((m) => ({ ...m, [id]: m[id] || "read_url_failed" }));
       return;
     }
-    const ref = getBestEvidenceImageRef(ev);
+    const ref = getBestEvidencePreviewRef(ev);
     if (!ref?.storagePath || !ref?.bucket) {
       setThumbErrById((m) => ({ ...m, [id]: "missing_bucket_or_storagePath" }));
       return;

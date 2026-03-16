@@ -84,9 +84,47 @@ async function uploadBytesToUploadUrl(opts: {
   uploadUrl: string;
   uploadMethod?: string;
   file: File;
+  proxyArgs?: {
+    orgId: string;
+    incidentId: string;
+    sessionId: string;
+    storagePath: string;
+    bucket?: string;
+    contentType?: string;
+    originalName?: string;
+  };
 }): Promise<void> {
   const method = String(opts.uploadMethod || "PUT").toUpperCase();
   const ct = opts.file.type || "application/octet-stream";
+
+  const isLocalStorageEmulatorUrl =
+    /127\.0\.0\.1:9199/i.test(String(opts.uploadUrl || "")) ||
+    /localhost:9199/i.test(String(opts.uploadUrl || ""));
+
+  if (isLocalStorageEmulatorUrl && opts.proxyArgs) {
+    const q = new URLSearchParams({
+      orgId: String(opts.proxyArgs.orgId || ""),
+      incidentId: String(opts.proxyArgs.incidentId || ""),
+      sessionId: String(opts.proxyArgs.sessionId || ""),
+      storagePath: String(opts.proxyArgs.storagePath || ""),
+      bucket: String(opts.proxyArgs.bucket || ""),
+      contentType: String(opts.proxyArgs.contentType || ct),
+      originalName: String(opts.proxyArgs.originalName || opts.file.name || "upload.bin"),
+    });
+
+    const res = await fetch(`/api/fn/uploadEvidenceProxyV1?${q.toString()}`, {
+      method: "POST",
+      headers: { "content-type": ct },
+      body: opts.file,
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`uploadEvidenceProxyV1 -> ${res.status} ${txt.slice(0, 300)}`);
+    }
+    return;
+  }
 
   const res = await fetch(opts.uploadUrl, {
     method: method === "POST" ? "POST" : "PUT",
@@ -192,6 +230,15 @@ onStatus?.("Starting field session…");
     uploadUrl,
     uploadMethod: createResp.uploadMethod,
     file,
+    proxyArgs: {
+      orgId,
+      incidentId,
+      sessionId: activeSessionId,
+      storagePath,
+      bucket,
+      contentType: file.type || "application/octet-stream",
+      originalName: file.name || "upload.bin",
+    },
   });
 
   // 4) Register evidence (retry once if session went stale between upload + register)

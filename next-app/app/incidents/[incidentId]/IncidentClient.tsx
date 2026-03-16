@@ -20,7 +20,11 @@ import {
   warnFunctionsBaseIfSuspicious,
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
-import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { EvidenceLockerGrid } from "@/components/evidence/EvidenceLockerGrid";
+import { EvidenceViewerModal } from "@/components/evidence/EvidenceViewerModal";
+import { mapEvidenceToViewModel } from "@/components/evidence/evidence.adapters";
+import { sortEvidenceForViewer } from "@/components/evidence/evidence.sort";
 
 
 
@@ -1021,6 +1025,64 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     if (firstSelectableId) setCurrentJobId(firstSelectableId);
   }, [selectableFieldJobs, currentJobId]);
 
+  // PEAKOPS_JOB_AUTOSELECT_HARDEN_V2
+  useEffect(() => {
+    try {
+      const list = Array.isArray(jobs) ? jobs : [];
+      if (!list.length) return;
+
+      const currentId = String(currentJobId || "").trim();
+      const queryJobId = String(sp?.get?.("jobId") || "").trim();
+
+      let savedJobId = "";
+      try {
+        savedJobId = String(localStorage.getItem(`peakops_current_job_${String(incidentId || "").trim()}`) || "").trim();
+      } catch {}
+
+      const normalized = list
+        .map((j: any) => ({
+          raw: j,
+          id: String(j?.id || j?.jobId || "").trim(),
+          status: String(j?.status || j?.rawStatus || "").trim().toLowerCase(),
+        }))
+        .filter((j: any) => j.id);
+
+      if (!normalized.length) return;
+
+      const currentStillExists = normalized.some((j: any) => j.id === currentId);
+      if (currentId && currentStillExists) return;
+
+      const chosen =
+        normalized.find((j: any) => j.id === queryJobId) ||
+        normalized.find((j: any) => j.id === savedJobId) ||
+        normalized.find((j: any) => j.status === "open") ||
+        normalized.find((j: any) => j.status === "in_progress" || j.status === "in-progress") ||
+        normalized[0];
+
+      const chosenId = String(chosen?.id || "").trim();
+      if (!chosenId) return;
+
+      setCurrentJobId(chosenId);
+
+      try {
+        localStorage.setItem(`peakops_current_job_${String(incidentId || "").trim()}`, chosenId);
+      } catch {}
+
+      if (process.env.NODE_ENV !== "production") {
+        console.debug("[job-autoselect-hardened]", {
+          incidentId,
+          chosenId,
+          queryJobId,
+          savedJobId,
+          currentId,
+          jobsCount: normalized.length,
+        });
+      }
+    } catch (e) {
+      console.warn("[incident] hardened auto-select failed", e);
+    }
+  }, [jobs, currentJobId, incidentId]);
+
   const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
   const isDemoMode = isDemoIncident(incidentId);
   const isIncidentClosedError = (e: any) => {
@@ -1486,15 +1548,27 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       if (jb?.ok && Array.isArray(jb.docs)) {
         const docs = jb.docs;
         setJobs(docs);
+
+        const normalizedDocs = docs
+          .map((j: any) => ({
+            raw: j,
+            id: String(j?.id || j?.jobId || "").trim(),
+            status: String(j?.status || j?.rawStatus || "").trim().toLowerCase(),
+          }))
+          .filter((j: any) => j.id);
+
         const selectable = docs.filter((j: any) => isFieldSelectableJob(j?.status));
         const currentId = String(currentJobId || "").trim();
         const existsInSelectable = selectable.some((j: any) => String(j?.id || j?.jobId || "") === currentId);
         const firstSelectableId = String(selectable?.[0]?.id || selectable?.[0]?.jobId || "").trim();
+        const firstAnyId = String(normalizedDocs?.[0]?.id || "").trim();
+
         let effectiveJobId = currentId;
         if (!currentId || !existsInSelectable) {
-          if (firstSelectableId) {
-            setCurrentJobId(firstSelectableId);
-            effectiveJobId = firstSelectableId;
+          const nextId = firstSelectableId || firstAnyId;
+          if (nextId) {
+            setCurrentJobId(nextId);
+            effectiveJobId = nextId;
           } else {
             setCurrentJobId("");
             effectiveJobId = "";
@@ -1668,7 +1742,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
 
     await Promise.all(
       want.map(async (ev) => {
-        const ref = getBestEvidenceImageRef(ev);
+        const ref = getBestEvidencePreviewRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
         if (thumbUrl[ev.id] && thumbPathById[ev.id] === ref.storagePath) return;
 
@@ -1787,7 +1861,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       setThumbDiagById((m) => ({ ...m, [id]: m[id] || "read_url_failed" }));
       return;
     }
-    const ref = getBestEvidenceImageRef(ev);
+    const ref = getBestEvidencePreviewRef(ev);
     if (!ref?.bucket || !ref?.storagePath) {
       setThumbErr((m) => ({ ...m, [id]: true }));
       setThumbDiagById((m) => ({ ...m, [id]: "missing_bucket_or_storagePath" }));
@@ -2060,7 +2134,7 @@ useEffect(() => {
     toast("Opened preview");
     (async () => {
       try {
-        const ref = getBestEvidenceImageRef(ev);
+        const ref = getBestEvidencePreviewRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
         const resp = await mintEvidenceReadUrl({
           orgId,
@@ -2626,114 +2700,47 @@ useEffect(() => {
     </div>
   </div>
 
-  {/* Evidence rail centering depends on runway padding on #evidenceScroller. Keep that padding. */}
-  <div className="mt-3 -mx-1 overflow-x-auto px-[calc(50%-74px)] scroll-smooth scroll-pl-4 scroll-pr-4 sm:scroll-pl-[calc(50vw-74px)] sm:scroll-pr-[calc(50vw-74px)]" id="evidenceScroller"
->
-    <div className="flex gap-2 snap-x snap-mandatory">
-      {(() => {
-        const list = (evidence || [])
-          .filter((ev:any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath || "").includes("demo_placeholder"));
-        const maxShow = 12;
-        const shown = list.slice(0, maxShow);
-        return (
-          <>
-            {shown.map((ev:any) => {
-              const u = thumbUrl[ev.id];
-              const labels = (ev.labels || []).map(normLabel);
-              const selected = selectedEvidenceId === ev.id;
-              const converting = isConvertingHeic(ev as EvidenceDoc);
-              const convStatus = String((ev as any)?.file?.conversionStatus || "").toLowerCase();
-              const uploadMissing = convStatus === "source_missing";
-              const conversionFailed = convStatus === "failed";
-              const conversionNoPreview = isHeicEvidence(ev as EvidenceDoc) && (convStatus === "n/a" || convStatus === "failed") && !String((ev as any)?.file?.thumbPath || "").trim() && !String((ev as any)?.file?.previewPath || "").trim();
-              const conversionError = String((ev as any)?.file?.conversionError || "").trim();
+  <div className="mt-3">
+    {(() => {
+      const viewerItems = sortEvidenceForViewer(
+        (evidence || [])
+          .filter((ev:any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath || "").includes("demo_placeholder"))
+          .map((ev:any) =>
+            mapEvidenceToViewModel({
+              ...ev,
+              incidentId,
+              jobId: ev?.evidence?.jobId ?? ev?.jobId ?? null,
+              label: Array.isArray(ev?.labels) && ev.labels.length ? String(ev.labels[0]) : null,
+              fileName: ev?.file?.originalName ?? null,
+              mimeType: ev?.file?.contentType ?? null,
+              uploadedAt: ev?.storedAt ?? null,
+              createdAt: ev?.createdAt ?? null,
+              thumbnailUrl: thumbUrl?.[ev.id] ? toInlineMediaUrl(thumbUrl[ev.id]) : null,
+              viewerUrl: thumbUrl?.[ev.id] ? toInlineMediaUrl(thumbUrl[ev.id]) : tileUrlFromEvidence(ev),
+            })
+          )
+      );
 
-              return (
-                <button
-                  key={ev.id}
-                  data-ev-id={ev.id}
-                  className={
-                    "snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] relative rounded-xl overflow-hidden border " +
-                    (selected ? "border-indigo-300/95 border-2 ring-4 ring-indigo-500/40 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_12px_40px_rgba(0,0,0,0.55)]  scale-[1.02] transition-transform duration-150" : "border-white/[0.08] ") +
-                    "bg-black/40 hover:border-white/25 transition"
-                  }
-                  onClick={() => openModal(ev)}
-                  title={ev.file?.originalName || ev.id}>
-                  {u ? (
-                    <img
-                      src={toInlineMediaUrl(u)}
-                      className="w-full h-full object-cover transition-transform duration-200 hover:scale-[1.04]"
-                      loading="lazy"
-                      onError={() => { void renewThumbOnce(ev, u); }}
-                    />
-                  ) : (
-                    thumbErr[ev.id] ? (
-                      <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-500">Unavailable</div>
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-400">Loading…</div>
-                    )
-                  )}
+      return (
+        <>
+          <EvidenceLockerGrid
+            items={viewerItems}
+            onSelect={(evidenceId) => setSelectedEvidenceId(evidenceId)}
+          />
 
-                  <div className="absolute top-2 left-2 flex flex-wrap gap-1">
-                    {labels.slice(0, 2).map((l:string) => (
-                      <span key={l} className={"text-[10px] px-2 py-0.5 rounded-full border " + labelChipColor(l)}>
-                        {l}
-                      </span>
-                    ))}
-                    {converting ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-400/15 border-yellow-500/20 text-yellow-100">
-                        Converting…
-                      </span>
-                    ) : null}
-                    {uploadMissing ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100">
-                        Upload not in storage yet
-                      </span>
-                    ) : null}
-                    {conversionFailed ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100" title={conversionError || "HEIC conversion failed"}>
-                        Convert failed
-                      </span>
-                    ) : null}
-                    {conversionNoPreview ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-gray-500/15 border-gray-300/30 text-gray-100">
-                        No preview
-                      </span>
-                    ) : null}
-                  </div>
-
-                  <div className="absolute bottom-2 left-2 right-2 text-[10px] text-gray-200/90 truncate bg-black/40 px-2 py-1 rounded">
-                    {(ev.file?.originalName || "evidence")}
-                  </div>
-                  {process.env.NODE_ENV !== "production" && thumbDiagById[String(ev?.id || "")] ? (
-                    <div className="absolute left-2 right-2 bottom-8 text-[10px] text-red-200 truncate bg-black/55 px-2 py-1 rounded border border-red-400/30">
-                      {thumbDiagById[String(ev?.id || "")]}
-                    </div>
-                  ) : null}
-                  {process.env.NODE_ENV !== "production" && thumbDebugOverlay ? (
-                    <div className="absolute left-2 right-2 top-8 text-[10px] text-cyan-100 bg-black/60 px-2 py-1 rounded border border-cyan-300/30">
-                      <div className="truncate">id={String(ev?.id || "")}</div>
-                      <div className="truncate">bucket={String(thumbBucketById[String(ev?.id || "")] || "")}</div>
-                      <div className="truncate">path={String(thumbPathById[String(ev?.id || "")] || "")}</div>
-                      <div className="truncate">mint_http={String(thumbStatusById[String(ev?.id || "")] || 0)}</div>
-                      <div className="truncate">mint_error={String(thumbMintErrorById[String(ev?.id || "")] || "-")}</div>
-                      <div className="truncate">probe_http={String(thumbProbeStatusById[String(ev?.id || "")] || "-")}</div>
-                      <div className="truncate">probe_error={String(thumbProbeErrorById[String(ev?.id || "")] || "-")}</div>
-                    </div>
-                  ) : null}
-                </button>
-              );
-            })}
-
-            
-          </>
-        );
-      })()}
-    </div>
+          <EvidenceViewerModal
+            items={viewerItems}
+            selectedEvidenceId={selectedEvidenceId || null}
+            onSelect={(evidenceId) => setSelectedEvidenceId(evidenceId)}
+            onClose={() => setSelectedEvidenceId("")}
+          />
+        </>
+      );
+    })()}
   </div>
 
   <div className="mt-2 text-[11px] text-gray-500">
-    Horizontal scroll. Tap a tile to preview. Timeline events will highlight related evidence.
+    Click a tile to preview. Use arrow keys to move between evidence items.
   </div>
 </section>
         ) : null}

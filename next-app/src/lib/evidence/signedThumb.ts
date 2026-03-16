@@ -49,9 +49,13 @@ export function logThumbEvent(event: string, details: any = {}): void {
   }
 }
 
-export function getBestEvidenceImageRef(ev: any): EvidenceImageRef | null {
-  const file = (ev && (ev.file || ev)) || {};
-
+function _pickEvidenceMedia(ev: any): {
+  bucket: string;
+  thumbnailPath: string;
+  thumbPath: string;
+  previewPath: string;
+  originalPath: string;
+} {
   const pickStr = (...vals: any[]) =>
     vals
       .map((v) => String(v ?? "").trim())
@@ -84,13 +88,16 @@ export function getBestEvidenceImageRef(ev: any): EvidenceImageRef | null {
     ev?.bucket
   );
 
+  const thumbnailPath = pickStr(
+    getDot(ev, "file.thumbnailPath"),
+    ev?.file?.thumbnailPath
+  );
+
   const thumbPath = pickStr(
     getDot(ev, "file.derivatives.thumb.storagePath"),
     ev?.file?.derivatives?.thumb?.storagePath,
     getDot(ev, "file.thumbPath"),
-    ev?.file?.thumbPath,
-    getDot(ev, "file.thumbnailPath"),
-    ev?.file?.thumbnailPath
+    ev?.file?.thumbPath
   );
 
   const previewPath = pickStr(
@@ -111,10 +118,15 @@ export function getBestEvidenceImageRef(ev: any): EvidenceImageRef | null {
     ev?.storagePath
   );
 
-  const chosenPath = thumbPath || previewPath || originalPath;
+  return { bucket, thumbnailPath, thumbPath, previewPath, originalPath };
+}
+
+export function getBestEvidenceTileRef(ev: any): EvidenceImageRef | null {
+  const { bucket, thumbnailPath, thumbPath, previewPath, originalPath } = _pickEvidenceMedia(ev);
+  const chosenPath = thumbnailPath || thumbPath || previewPath || originalPath;
 
   if (!bucket || !chosenPath) {
-    logThumbEvent("ref_missing", {
+    logThumbEvent("ref_missing_tile", {
       id: String(ev?.id || ev?.evidenceId || ""),
       bucket,
       chosenPath,
@@ -123,11 +135,35 @@ export function getBestEvidenceImageRef(ev: any): EvidenceImageRef | null {
   }
 
   const kind: EvidenceImageRefKind =
+    thumbnailPath ? "thumbnailPath" :
     thumbPath ? "thumbPath" :
     previewPath ? "previewPath" :
     "original";
 
   return { kind, bucket, storagePath: chosenPath };
+}
+
+export function getBestEvidencePreviewRef(ev: any): EvidenceImageRef | null {
+  const { bucket, previewPath, originalPath } = _pickEvidenceMedia(ev);
+  const chosenPath = previewPath || originalPath;
+
+  if (!bucket || !chosenPath) {
+    logThumbEvent("ref_missing_preview", {
+      id: String(ev?.id || ev?.evidenceId || ""),
+      bucket,
+      chosenPath,
+    });
+    return null;
+  }
+
+  const kind: EvidenceImageRefKind =
+    previewPath ? "previewPath" : "original";
+
+  return { kind, bucket, storagePath: chosenPath };
+}
+
+export function getBestEvidenceImageRef(ev: any): EvidenceImageRef | null {
+  return getBestEvidenceTileRef(ev);
 }
 
 export async function mintEvidenceReadUrl(

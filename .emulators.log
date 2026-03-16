@@ -1,0 +1,238 @@
+i  emulators: Starting emulators: functions, firestore
+⚠  emulators: It seems that you are running multiple instances of the emulator suite for project peakops-pilot. This may result in unexpected behavior.
+⚠  functions: The following emulators are not running, calls to these services from the Functions emulator will affect production: apphosting, auth, database, hosting, pubsub, storage, dataconnect
+⚠  functions: Application Default Credentials detected. Non-emulated services will access production using these credentials. Be careful!
+⚠  firestore: Cloud Firestore Emulator does not support multiple databases yet.
+⚠  firestore: Did not find a Cloud Firestore rules file specified in a firebase.json config file.
+⚠  firestore: The emulator will default to allowing all reads and writes. Learn more about this option: https://firebase.google.com/docs/emulator-suite/install_and_configure#security_rules_configuration.
+i  firestore: Firestore Emulator logging to firestore-debug.log
+✔  firestore: Firestore Emulator UI websocket is running on 9154.
+i  functions: Watching "/Users/kesserumini/peakops/my-app/functions_clean" for Cloud Functions...
+⚠  functions: package.json indicates an outdated version of firebase-functions. Please upgrade using npm install --save firebase-functions@latest in your functions directory.
+⚠  functions: Please note that there will be breaking changes when you upgrade.
+✔  functions: Using node@20 from host.
+Serving at port 8832
+
+🔥 _emu_bootstrap loaded env.runtime: /Users/kesserumini/peakops/my-app/functions_clean/env.runtime
+
+[functions_clean] loaded hello
+
+[functions_clean] loaded healthzV1
+
+[functions_clean] loaded getIncidentV1
+
+[functions_clean] loaded getTimelineEventsV1
+
+[functions_clean] loaded listEvidenceLocker
+
+[functions_clean] loaded startFieldSessionV1
+
+[functions_clean] loaded submitFieldSessionV1
+
+[functions_clean] loaded addEvidenceV1
+
+[functions_clean] loaded createEvidenceUploadUrlV1
+
+[functions_clean] loaded createEvidenceReadUrlV1
+
+[functions_clean] loaded uploadEvidenceProxyV1
+
+[functions_clean] loaded createJobV1
+
+[functions_clean] loaded listJobsV1
+
+[functions_clean] loaded getJobV1
+
+[functions_clean] loaded updateJobStatusV1
+
+[functions_clean] loaded updateJobNotesV1
+
+[functions_clean] loaded markJobCompleteV1
+
+[functions_clean] loaded getIncidentNotesV1
+
+[functions_clean] loaded saveIncidentNotesV1
+
+[functions_clean] loaded assignEvidenceToJobV1
+
+[functions_clean] loaded backfillEvidenceJobIdV1
+
+[functions_clean] loaded convertEvidenceHeicNowV1
+
+[functions_clean] loaded convertHeicOnFinalize
+
+[functions_clean] loaded listOrgsV1
+
+[functions_clean] loaded debugEvidenceV1
+
+[functions_clean] loaded debugOrgsV1
+
+[functions_clean] loaded setEvidenceLabelV1
+
+[functions_clean] loaded approveAndLockJobV1
+
+[functions_clean] loaded exportIncidentPacketV1
+
+[functions_clean] loaded createSupervisorRequestV1
+
+[functions_clean] loaded assignJobOrgV1
+
+✔  functions: Loaded functions definitions from source: hello, healthzV1, getIncidentV1, getTimelineEventsV1, listEvidenceLocker, startFieldSessionV1, submitFieldSessionV1, addEvidenceV1, createEvidenceUploadUrlV1, createEvidenceReadUrlV1, uploadEvidenceProxyV1, createJobV1, listJobsV1, getJobV1, updateJobStatusV1, updateJobNotesV1, markJobCompleteV1, getIncidentNotesV1, saveIncidentNotesV1, assignEvidenceToJobV1, backfillEvidenceJobIdV1, convertEvidenceHeicNowV1, convertHeicOnFinalize, listOrgsV1, debugEvidenceV1, debugOrgsV1, setEvidenceLabelV1, approveAndLockJobV1, exportIncidentPacketV1, createSupervisorRequestV1, assignJobOrgV1.
+✔  functions[us-central1-hello]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/hello).
+✔  functions[us-central1-healthzV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/healthzV1).
+✔  functions[us-central1-getIncidentV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/getIncidentV1).
+✔  functions[us-central1-getTimelineEventsV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/getTimelineEventsV1).
+✔  functions[us-central1-listEvidenceLocker]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/listEvidenceLocker).
+✔  functions[us-central1-startFieldSessionV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/startFieldSessionV1).
+✔  functions[us-central1-submitFieldSessionV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/submitFieldSessionV1).
+✔  functions[us-central1-addEvidenceV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/addEvidenceV1).
+✔  functions[us-central1-createEvidenceUploadUrlV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/createEvidenceUploadUrlV1).
+✔  functions[us-central1-createEvidenceReadUrlV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/createEvidenceReadUrlV1).
+✔  functions[us-central1-uploadEvidenceProxyV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/uploadEvidenceProxyV1).
+✔  functions[us-central1-createJobV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/createJobV1).
+✔  functions[us-central1-listJobsV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/listJobsV1).
+✔  functions[us-central1-getJobV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/getJobV1).
+✔  functions[us-central1-updateJobStatusV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/updateJobStatusV1).
+✔  functions[us-central1-updateJobNotesV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/updateJobNotesV1).
+✔  functions[us-central1-markJobCompleteV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/markJobCompleteV1).
+✔  functions[us-central1-getIncidentNotesV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/getIncidentNotesV1).
+✔  functions[us-central1-saveIncidentNotesV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/saveIncidentNotesV1).
+✔  functions[us-central1-assignEvidenceToJobV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/assignEvidenceToJobV1).
+✔  functions[us-central1-backfillEvidenceJobIdV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/backfillEvidenceJobIdV1).
+✔  functions[us-central1-convertEvidenceHeicNowV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/convertEvidenceHeicNowV1).
+✔  functions[us-central1-convertHeicOnFinalize]: storage function initialized.
+✔  functions[us-central1-listOrgsV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/listOrgsV1).
+✔  functions[us-central1-debugEvidenceV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/debugEvidenceV1).
+✔  functions[us-central1-debugOrgsV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/debugOrgsV1).
+✔  functions[us-central1-setEvidenceLabelV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/setEvidenceLabelV1).
+✔  functions[us-central1-approveAndLockJobV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/approveAndLockJobV1).
+✔  functions[us-central1-exportIncidentPacketV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/exportIncidentPacketV1).
+✔  functions[us-central1-createSupervisorRequestV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/createSupervisorRequestV1).
+✔  functions[us-central1-assignJobOrgV1]: http function initialized (http://127.0.0.1:5004/peakops-pilot/us-central1/assignJobOrgV1).
+
+[90m┌─────────────────────────────────────────────────────────────┐[39m
+[90m│[39m ✔  All emulators ready! It is now safe to connect your app. [90m│[39m
+[90m│[39m i  View Emulator UI at http://127.0.0.1:4000/               [90m│[39m
+[90m└─────────────────────────────────────────────────────────────┘[39m
+
+[90m┌───────────[39m[90m┬────────────────[39m[90m┬─────────────────────────────────┐[39m
+[90m│[39m[33m Emulator  [39m[90m│[39m[33m Host:Port      [39m[90m│[39m[33m View in Emulator UI             [39m[90m│[39m
+[90m├───────────[39m[90m┼────────────────[39m[90m┼─────────────────────────────────┤[39m
+[90m│[39m Functions [90m│[39m 127.0.0.1:5004 [90m│[39m http://127.0.0.1:4000/functions [90m│[39m
+[90m├───────────[39m[90m┼────────────────[39m[90m┼─────────────────────────────────┤[39m
+[90m│[39m Firestore [90m│[39m 127.0.0.1:8087 [90m│[39m http://127.0.0.1:4000/firestore [90m│[39m
+[90m└───────────[39m[90m┴────────────────[39m[90m┴─────────────────────────────────┘[39m
+  Emulator Hub host: 127.0.0.1 port: 4400
+  Other reserved ports: 4500, 9154
+
+Issues? Report them at https://github.com/firebase/firebase-tools/issues and attach the *-debug.log files.
+ 
+>  🔥 _emu_bootstrap loaded env.runtime: /Users/kesserumini/peakops/my-app/functions_clean/env.runtime
+>  [functions_clean] loaded hello
+>  [functions_clean] loaded healthzV1
+>  [functions_clean] loaded getIncidentV1
+>  [functions_clean] loaded getTimelineEventsV1
+>  [functions_clean] loaded listEvidenceLocker
+>  [functions_clean] loaded startFieldSessionV1
+>  [functions_clean] loaded submitFieldSessionV1
+>  [functions_clean] loaded addEvidenceV1
+>  [functions_clean] loaded createEvidenceUploadUrlV1
+>  [functions_clean] loaded createEvidenceReadUrlV1
+>  [functions_clean] loaded uploadEvidenceProxyV1
+>  [functions_clean] loaded createJobV1
+>  [functions_clean] loaded listJobsV1
+>  [functions_clean] loaded getJobV1
+>  [functions_clean] loaded updateJobStatusV1
+>  [functions_clean] loaded updateJobNotesV1
+>  [functions_clean] loaded markJobCompleteV1
+>  [functions_clean] loaded getIncidentNotesV1
+>  [functions_clean] loaded saveIncidentNotesV1
+>  [functions_clean] loaded assignEvidenceToJobV1
+>  [functions_clean] loaded backfillEvidenceJobIdV1
+>  [functions_clean] loaded convertEvidenceHeicNowV1
+>  [functions_clean] loaded convertHeicOnFinalize
+>  [functions_clean] loaded listOrgsV1
+>  [functions_clean] loaded debugEvidenceV1
+>  [functions_clean] loaded debugOrgsV1
+>  [functions_clean] loaded setEvidenceLabelV1
+>  [functions_clean] loaded approveAndLockJobV1
+>  [functions_clean] loaded exportIncidentPacketV1
+>  [functions_clean] loaded createSupervisorRequestV1
+>  [functions_clean] loaded assignJobOrgV1
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 339.942333ms
+>  🔥 _emu_bootstrap loaded env.runtime: /Users/kesserumini/peakops/my-app/functions_clean/env.runtime
+>  [functions_clean] loaded hello
+>  [functions_clean] loaded healthzV1
+>  [functions_clean] loaded getIncidentV1
+>  [functions_clean] loaded getTimelineEventsV1
+>  [functions_clean] loaded listEvidenceLocker
+>  [functions_clean] loaded startFieldSessionV1
+>  [functions_clean] loaded submitFieldSessionV1
+>  [functions_clean] loaded addEvidenceV1
+>  [functions_clean] loaded createEvidenceUploadUrlV1
+>  [functions_clean] loaded createEvidenceReadUrlV1
+>  [functions_clean] loaded uploadEvidenceProxyV1
+>  [functions_clean] loaded createJobV1
+>  [functions_clean] loaded listJobsV1
+>  [functions_clean] loaded getJobV1
+>  [functions_clean] loaded updateJobStatusV1
+>  [functions_clean] loaded updateJobNotesV1
+>  [functions_clean] loaded markJobCompleteV1
+>  [functions_clean] loaded getIncidentNotesV1
+>  [functions_clean] loaded saveIncidentNotesV1
+>  [functions_clean] loaded assignEvidenceToJobV1
+>  [functions_clean] loaded backfillEvidenceJobIdV1
+>  [functions_clean] loaded convertEvidenceHeicNowV1
+>  [functions_clean] loaded convertHeicOnFinalize
+>  [functions_clean] loaded listOrgsV1
+>  [functions_clean] loaded debugEvidenceV1
+>  [functions_clean] loaded debugOrgsV1
+>  [functions_clean] loaded setEvidenceLabelV1
+>  [functions_clean] loaded approveAndLockJobV1
+>  [functions_clean] loaded exportIncidentPacketV1
+>  [functions_clean] loaded createSupervisorRequestV1
+>  [functions_clean] loaded assignJobOrgV1
+i  functions: Beginning execution of "us-central1-listJobsV1"
+i  functions: Finished "us-central1-listJobsV1" in 57.797ms
+i  functions: Beginning execution of "us-central1-listJobsV1"
+i  functions: Finished "us-central1-listJobsV1" in 10.223ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 11.246167ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 8.099417ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 7.763917ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 7.755667ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 9.681583ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 8.7495ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 9.143167ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 11.745375ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 9.317375ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 10.763667ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 7.762375ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 10.534792ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 10.809625ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 10.085583ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 10.212459ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 11.584666ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 11.874042ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 9.691625ms
+i  functions: Beginning execution of "us-central1-getIncidentV1"
+i  functions: Finished "us-central1-getIncidentV1" in 11.066084ms
+/Users/kesserumini/peakops/my-app/peakops_recover_add_evidence.sh: line 59: 77022 Killed: 9               firebase emulators:start --project peakops-pilot --only functions,firestore

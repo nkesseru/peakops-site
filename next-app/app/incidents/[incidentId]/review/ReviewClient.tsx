@@ -16,7 +16,7 @@ import {
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid } from "@/lib/demoActor";
 import { getFileField } from "@/lib/evidence/fileField";
-import { getBestEvidenceImageRef, logThumbEvent } from "@/lib/evidence/signedThumb";
+import { getBestEvidenceImageRef, getBestEvidencePreviewRef, logThumbEvent } from "@/lib/evidence/signedThumb";
 
 
 
@@ -297,7 +297,7 @@ function getTileMedia(ev: EvidenceDoc): TileMedia {
   if (isHeicEvidence(ev)) {
     const st = String(getFileField(ev, "conversionStatus") || "n/a").toLowerCase().trim();
     if (st === "done" || st === "ready") {
-      const ref = getBestEvidenceImageRef(ev);
+      const ref = getBestEvidencePreviewRef(ev);
       if (ref) return { mode: "image", ref };
     }
     return { mode: "placeholder", label: "HEIC (no preview)", reason: st || "n/a" };
