@@ -2,6 +2,7 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { emitTimelineEvent } = require("./timelineEmit");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -38,14 +39,14 @@ exports.approveAndLockJobV1 = onRequest({ cors: true }, async (req, res) => {
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
 
-    await db.collection("incidents").doc(incidentId).collection("timeline_events").doc(`job_approved_${jobId}`).set({
-      id: `job_approved_${jobId}`,
-      type: "JOB_APPROVED",
-      jobId,
+    await emitTimelineEvent({
       orgId,
-      actorUid,
-      occurredAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
+      incidentId,
+      type: "job_approved",
+      refId: jobId,
+      actor: actorUid,
+      meta: { locked: true },
+    });
 
     return j(res, 200, { ok: true, orgId, incidentId, jobId, status: "approved", locked: true });
   } catch (e) {

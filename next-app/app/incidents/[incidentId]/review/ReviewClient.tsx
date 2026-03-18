@@ -815,7 +815,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     return (jobs || []).filter((j: any) => {
       const jid = String(j?.id || j?.jobId || "").trim();
       const st = String(j?.status || "").trim().toLowerCase();
-      return st === "complete" && Number(evidenceCountByJob[jid] || 0) >= 1;
+      return (st === "complete" || st === "review") && Number(evidenceCountByJob[jid] || 0) >= 1;
     });
   }, [jobs, evidenceCountByJob]);
   const rawJobsDebug = useMemo(
@@ -861,10 +861,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const selectedJobReadyState = selectedJobReviewStatus === "review" || selectedJobStatus === "complete";
   const selectedJobEvidenceCount = selectedJobEvidence.length;
   const ready = selectedJobReadyState && selectedJobEvidenceCount >= 1;
+  const canApproveNow = ready && hasReviewableJob && !selectedJobApproved;
   const missingItems = useMemo(() => {
     const out: string[] = [];
     if (noReviewablesApproved) return out;
-    if (!hasReviewableJob) out.push("No reviewable jobs (status=complete and linked evidence>=1)");
+    if (!hasReviewableJob) out.push("No reviewable jobs (status=complete/review and linked evidence>=1)");
     if (!selectedJobReadyState && !selectedJobApproved) out.push("Selected job must be complete or review");
     if (selectedJobEvidenceCount < 1) out.push("Selected job needs at least 1 linked evidence item");
     if (selectedJobApproved) out.push("Selected job is approved (terminal).");
@@ -1184,7 +1185,9 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div>
               <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500">Review Queue</div>
               <div className="mt-1 text-sm text-gray-200">Position {queuePositionLabel}</div>
-              <div className="text-xs text-gray-500 mt-1">{queueRemaining} remaining after this</div>
+              {queuePositionLabel === "Not in queue" ? null : (
+                <div className="text-xs text-gray-500 mt-1">{queueRemaining} remaining after this</div>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
@@ -1216,10 +1219,10 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         </div>
 
               <div className="text-sm text-gray-200">
-                {ready
-                  ? "Ready to approve."
-                  : noReviewablesApproved
+                {noReviewablesApproved
                     ? "No reviewable jobs. Latest decision: approved."
+                    : canApproveNow
+                  ? "Ready to approve."
                     : "Not ready yet — select a complete/review job with linked evidence."}
               </div>
               {err && canDevLog ? <div className="text-xs text-red-300 mt-1 truncate">Error: {err}</div> : null}
@@ -1235,35 +1238,54 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 ↩︎ Send Back
               </button>
 
-              <button
-                className={
-                  "px-3 py-2 rounded-xl text-sm font-semibold border " +
-                  (ready
-                    ? "bg-green-700/25 border-green-400/25 text-green-200 hover:bg-green-700/35"
-                    : "bg-white/5 border-white/10 text-gray-500")
-                }
-                onClick={() => {
-                  try {
-                    // Try common state vars
-                    // @ts-ignore
-                    const jid =
-                      (typeof selectedJobId !== "undefined" && selectedJobId) ? String(selectedJobId) :
+              <div className="flex flex-col items-start">
+                <button
+                  className={
+                    "px-3 py-2 rounded-xl text-sm font-semibold border " +
+                    (canApproveNow
+                      ? "bg-green-700/25 border-green-400/25 text-green-200 hover:bg-green-700/35"
+                      : "bg-white/5 border-white/10 text-gray-500")
+                  }
+                  onClick={async () => {
+                    try {
+                      // Try common state vars
                       // @ts-ignore
-                      (typeof activeJobId !== "undefined" && activeJobId) ? String(activeJobId) :
-                      // @ts-ignore
-                      (typeof selectedJob !== "undefined" && selectedJob && (selectedJob.id || selectedJob.jobId)) ? String(selectedJob.id || selectedJob.jobId) :
-                      "";
-                    if (!jid) { console.error("[Approve&Lock] missing selected jobId"); return; }
-                    approveAndLockJob(String(orgId || ""), String(incidentId || ""), jid)
-                      .then(() => { try { location.reload(); } catch {} })
-                      .catch((e:any) => console.error(e));
-                  } catch (e) { console.error(e); }
-                }}
-                disabled={!ready || loading}
-                title={ready ? "Approve & lock the record" : "Not ready yet"}
-              >
-                🛡 Approve & Lock
-              </button>
+                      const jid =
+                        (typeof selectedJobId !== "undefined" && selectedJobId) ? String(selectedJobId) :
+                        // @ts-ignore
+                        (typeof activeJobId !== "undefined" && activeJobId) ? String(activeJobId) :
+                        // @ts-ignore
+                        (typeof selectedJob !== "undefined" && selectedJob && (selectedJob.id || selectedJob.jobId)) ? String(selectedJob.id || selectedJob.jobId) :
+                        "";
+                      if (!jid) {
+                        const msg = "Select a job first.";
+                        setErr(msg);
+                        toast(msg, 2200);
+                        console.error("[Approve&Lock] missing selected jobId");
+                        return;
+                      }
+                      await approveAndLockJob(String(orgId || ""), String(incidentId || ""), jid);
+                      await refreshAfterMutation((rows) => {
+                        const j = (rows || []).find((x: any) => String(x?.id || x?.jobId || "") === String(jid || ""));
+                        const st = String(j?.status || "").toLowerCase();
+                        const rs = String(j?.reviewStatus || "").toLowerCase();
+                        return st === "approved" || rs === "approved" || !!j?.locked;
+                      });
+                      toast("Selected job approved + locked ✓", 1800);
+                    } catch (e: any) {
+                      const msg = String(e?.message || e || "approve_and_lock_failed");
+                      setErr(msg);
+                      toast("Approve & Lock failed: " + msg, 3200);
+                      console.error(e);
+                    }
+                  }}
+                  disabled={!canApproveNow || loading}
+                  title={canApproveNow ? "Approve and lock selected job" : "Not ready yet"}
+                >
+                  🛡 Approve & Lock Selected Job
+                </button>
+                <div className="mt-1 text-[11px] text-gray-500">Applies to selected job only.</div>
+              </div>
             </div>
           </div>
         </section>
@@ -1354,7 +1376,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
 
         {/* Readiness */}
-        <section className={"rounded-2xl border p-4 " + (ready ? "bg-green-700/15 border-green-400/20" : "bg-white/5 border-white/10")}>
+        <section className={"rounded-2xl border p-4 " + (canApproveNow ? "bg-green-700/15 border-green-400/20" : "bg-white/5 border-white/10")}>
           <div className="flex items-center justify-between">
             <div className="text-xs uppercase tracking-wide text-gray-400">Readiness</div>
             <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">
@@ -1380,6 +1402,9 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           <div className="mt-2 text-xs text-gray-400">
             Approval readiness is based on selected job state and linked evidence.
           </div>
+          <div className="mt-1 text-xs text-gray-500">
+            Incident close still requires all jobs approved.
+          </div>
           {missingItems.length ? (
             <div className="mt-2 text-xs text-amber-200">
               Missing: {missingItems.join(" • ")}
@@ -1392,7 +1417,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div>
               <div className="text-xs uppercase tracking-wide text-gray-400">Jobs Review</div>
               <div className="text-xs text-gray-500">
-                Reviewable: {reviewableJobs.length} (status=complete and linked evidence&gt;=1)
+                Reviewable: {reviewableJobs.length} (status=complete/review and linked evidence&gt;=1)
               </div>
               {reviewableJobs.length === 0 ? (
                 <div className="mt-1 text-xs text-amber-200">
@@ -1817,4 +1842,3 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     </main>
   );
 }
-

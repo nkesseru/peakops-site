@@ -19,6 +19,7 @@ safeExport("healthzV1", "./healthzV1");
 safeExport("getIncidentV1", "./getIncidentV1");
 safeExport("getTimelineEventsV1", "./getTimelineEventsV1");
 safeExport("listEvidenceLocker", "./listEvidenceLocker");
+safeExport("closeIncidentV1", "./closeIncidentV1");
 
 // --- Sessions ---
 safeExport("startFieldSessionV1", "./startFieldSessionV1");
@@ -56,6 +57,8 @@ safeExport("setEvidenceLabelV1", "./setEvidenceLabelV1");
 
 // Approvals
 safeExport("approveAndLockJobV1", "./approveAndLockJobV1");
+safeExport("approveJobV1", "./approveJobV1");
+safeExport("rejectJobV1", "./rejectJobV1");
 
 // Exports
 safeExport("exportIncidentPacketV1", "./exportIncidentPacketV1");

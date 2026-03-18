@@ -20,11 +20,7 @@ import {
   warnFunctionsBaseIfSuspicious,
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
-import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
-import { EvidenceLockerGrid } from "@/components/evidence/EvidenceLockerGrid";
-import { EvidenceViewerModal } from "@/components/evidence/EvidenceViewerModal";
-import { mapEvidenceToViewModel } from "@/components/evidence/evidence.adapters";
-import { sortEvidenceForViewer } from "@/components/evidence/evidence.sort";
+import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 
 
 
@@ -259,15 +255,15 @@ function labelChipColor(label: string) {
   const L = normLabel(label);
   // Cohesive system chips: dark base + subtle tint + quiet borders
   if (L === "DAMAGE") return "bg-red-500/12 border-red-400/20 text-red-200";
-  if (L === "SAFETY") return "bg-amber-400/12 border-amber-300/25 text-yellow-200";
+  if (L === "SAFETY") return "bg-amber-400/12 border-amber-300/25 text-amber-200";
   if (L === "DOCS") return "bg-sky-400/12 border-sky-300/25 text-sky-200";
   return "bg-white/6 border-white/12 text-gray-200";
 }
 
 function chipClass(kind: "actor" | "session" | "meta" = "meta") {
-  if (kind === "actor") return "px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.08] text-gray-200";
-  if (kind === "session") return "px-2 py-0.5 rounded-full bg-black/40 border border-white/[0.08] text-gray-300";
-  return "px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.08] text-gray-300";
+  if (kind === "actor") return "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-200";
+  if (kind === "session") return "px-2 py-0.5 rounded-full bg-black/40 border border-white/10 text-gray-300";
+  return "px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-300";
 }
 
 function jobStatusPill(status: string) {
@@ -275,7 +271,7 @@ function jobStatusPill(status: string) {
   if (s === "approved") return "bg-emerald-500/15 border-emerald-300/30 text-emerald-100";
   if (s === "rejected") return "bg-red-500/15 border-red-300/30 text-red-100";
   if (s === "in_progress") return "bg-blue-500/15 border-blue-300/30 text-blue-100";
-  if (s === "review") return "bg-yellow-500/6 border-yellow-500/20 text-yellow-100";
+  if (s === "review") return "bg-amber-500/15 border-amber-300/30 text-amber-100";
   if (s === "complete") return "bg-indigo-500/15 border-indigo-300/30 text-indigo-100";
   return "bg-white/8 border-white/15 text-gray-200";
 }
@@ -372,15 +368,6 @@ async function postJson<T>(url: string, body: any): Promise<T> {
 export default function IncidentClient({ incidentId }: { incidentId: string }) {
   const DEMO_RESET_CMD = "scripts/dev/reset_demo_incident.sh && scripts/dev/seed_demo_incident.sh";
   const functionsBase = getFunctionsBase();
-
-  useEffect(() => {
-    try {
-      const qs = String(window.location.search || "");
-      const on = qs.includes("debug=1");
-      document.body.setAttribute("data-peakops-debug", on ? "1" : "0");
-    } catch {}
-  }, []);
-
 useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
   }, [functionsBase]);
@@ -416,6 +403,38 @@ useEffect(() => {
   const [incidentStatus, setIncidentStatus] = useState<string>("open");
   const [incidentUpdatedAtSec, setIncidentUpdatedAtSec] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
+  const [pendingJumpToEvidenceMapping, setPendingJumpToEvidenceMapping] = useState(false);
+
+  function jumpToEvidenceMapping() {
+    try {
+      setPendingJumpToEvidenceMapping(true);
+      setActiveTab("evidence");
+      try { window.location.hash = "evidence-mapping"; } catch {}
+    } catch {}
+  }
+
+  useEffect(() => {
+    if (!pendingJumpToEvidenceMapping || activeTab !== "evidence") return;
+
+    const t = window.setTimeout(() => {
+      try {
+        const el =
+          evidenceMappingSectionRef.current ||
+          document.getElementById("evidence-mapping");
+
+        if (el && typeof (el).scrollIntoView === "function") {
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+
+        try { window.location.hash = "evidence-mapping"; } catch {}
+      } catch {}
+      setPendingJumpToEvidenceMapping(false);
+    }, 80);
+
+    return () => window.clearTimeout(t);
+  }, [pendingJumpToEvidenceMapping, activeTab]);
+
+
 // PHASE7_2_REQUPDATE_SYNC_V1
 
   const [arriving, setArriving] = useState(false);
@@ -435,14 +454,26 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
   const [addingEvidence, setAddingEvidence] = useState(false);
 
   const goAddEvidence = () => {
+    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
     try {
       // PEAKOPS_ADD_EVIDENCE_NAV_V1: Keep MVP behavior dead-simple + reliable.
       const url =
         `/incidents/${encodeURIComponent(String(incidentId || ""))}/add-evidence` +
         `?orgId=${encodeURIComponent(String(orgId || ""))}`;
       console.log("[AddEvidence] navigating:", url);
+      if (process.env.NODE_ENV !== "production") {
+        console.debug("[AddEvidence] nav_state", {
+          incidentId: String(incidentId || ""),
+          orgId: String(orgId || ""),
+          isClosed,
+          hasActiveFieldJobs,
+          currentJobId: String(currentJobId || ""),
+        });
+      }
       router.push(url);
     } catch (e) {
+      toast("Add evidence navigation failed.", 2800);
       console.error("[AddEvidence] navigation failed", e);
     }
   };
@@ -450,64 +481,107 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
 
   // V6_SESSION_HELPERS__WIRE
 async function markArrived() {
-  try {
-    setArriving(true);
-
-    if (String(incidentStatus).toLowerCase() === "closed") {
-      toast("Incident is closed (read-only).", 2600);
-      return;
-    }
-
+    // PEAKOPS_ARRIVE_RETRY_SESSION_V1
+    // If sessionId is missing or stale, create a new field session and retry once.
     const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
+    const base = functionsBase;
+    const org = (typeof orgId !== "undefined" && orgId) ? String(orgId) : "spokane-valley";
 
-    const res = await fetch(`/api/fn/startFieldSessionV1`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        orgId,
-        incidentId,
-        techUserId,
-        createdBy: "ui",
-      }),
-    });
+    if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
+    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
 
-    const out = await res.json().catch(() => ({}));
-    if (!res.ok || !out?.ok) {
-      throw new Error(out?.error || `startFieldSessionV1 failed (${res.status})`);
+    let sid = String(activeSessionId || "").trim();
+    if (!sid) {
+      // try last known session from storage (if any)
+      try { sid = String(localStorage.getItem("peakops_active_session_" + String(incidentId || "")) || "").trim(); } catch {}
     }
 
-    const sid = String(out?.sessionId || out?.id || "").trim();
-    if (!sid) throw new Error("startFieldSessionV1 returned no sessionId");
+    async function startSession(): Promise<string> {
+      const res = await fetch(`/api/fn/startFieldSessionV1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orgId: org, incidentId, createdBy: "ui", techUserId }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out?.ok || !out?.sessionId) {
+        throw new Error(out?.error || `startFieldSessionV1 failed (${res.status})`);
+      }
+      return String(out.sessionId);
+    }
+
+    async function postArrived(sessionId: string): Promise<any> {
+      const res = await fetch(`/api/fn/markArrivedV1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orgId: org, incidentId, sessionId: String(sessionId), updatedBy: "ui", techUserId }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out?.ok) {
+        const msg = out?.error || `markArrivedV1 failed (${res.status})`;
+        const err = new Error(msg);
+        (err as any).__status = res.status;
+        throw err;
+      }
+      return out;
+    }
 
     try {
-      localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid);
-    } catch {}
+      setArriving(true);
 
-    try {
-      setActiveSessionId(sid);
-    } catch {}
+      // Optimistic UI event id (stable across try/catch)
+      let __optId = "opt_arrived_" + Date.now();
+      try {
+        const __sid = sid || "";
+        if (__sid) {
+          setTimeline((prev: any) => ([
+            {
+              id: __optId,
+              type: "FIELD_ARRIVED",
+              actor: "ui",
+              sessionId: __sid,
+              occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
+              refId: null,
+              meta: { optimistic: true }
+            },
+            ...(Array.isArray(prev) ? prev : [])
+          ]));
+        }
+      } catch {}
 
-    setArrived(true);
-    toast("Arrived ✓", 1800);
+      // If no session yet, create one
+      if (!sid) {
+        sid = await startSession();
+        try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
+        try { setActiveSessionId(sid); } catch {}
+      }
 
-    try {
-      const evt = {
-        id: "opt_arrived_" + Date.now(),
-        type: "FIELD_ARRIVED",
-        actor: "ui",
-        sessionId: sid,
-        occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
-        refId: null,
-        meta: { optimistic: true },
-      };
-      setTimeline((prev: any) => [evt, ...(Array.isArray(prev) ? prev : [])]);
-    } catch {}
-  } catch (e: any) {
-    const msg = e?.message || String(e) || "markArrived failed";
-    toast("Arrive failed: " + msg, 3500);
-  } finally {
-    setArriving(false);
-  }
+      // First attempt
+      try {
+        await postArrived(sid);
+      } catch (e: any) {
+        const msg = String(e?.message || e || "");
+        // If stale session, recreate once and retry
+                  if ((e as any)?.__status == 404 || msg.toLowerCase().includes("session not found")) {
+          sid = await startSession();
+          try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
+          try { setActiveSessionId(sid); } catch {}
+          await postArrived(sid);
+        } else {
+          throw e;
+        }
+      }
+
+      setArrived(true);
+      toast("Arrived ✓", 1800);
+    } catch (e: any) {
+      const msg = e?.message || String(e) || "markArrived failed";
+      toast("Arrive failed: " + msg, 3500);
+      // OPTIMISTIC_FIELD_ARRIVED revert
+      try { setTimeline((prev: any) => (Array.isArray(prev) ? prev.filter((x:any) => x?.id !== __optId) : prev)); } catch {}
+      console.error(e);
+    } finally {
+      setArriving(false);
+    }
 }
 
   async function submitSession() {
@@ -534,7 +608,6 @@ async function markArrived() {
   }
 
   const router = useRouter();
-  const searchParams = useSearchParams();
   const orgId = "riverbend-electric";
   // Evidence + Timeline
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
@@ -795,7 +868,6 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   const [previewName, setPreviewName] = useState<string>("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [selectedEvidenceId, setSelectedEvidenceId] = useState<string>("");
-  const [pendingJumpEvidenceId, setPendingJumpEvidenceId] = useState<string>("");
   // PHASE5A_REQUEST_UPDATE_BANNER_V1
   // PHASE7_2_REQUPDATE_SYNC_V1
   // Supervisor "Request update" note:
@@ -877,74 +949,162 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       const id = String(eid || "").trim();
       if (!id) return;
 
+      // highlight immediately
       setSelectedEvidenceId(id);
-      setPendingJumpEvidenceId(id);
 
+      // PHASE4_2_CONTEXT_LOCK_V1
       try {
-        if (typeof setActiveTab === "function") setActiveTab("evidence");
+        setContextLockId(id);
+        window.setTimeout(() => { try { setContextLockId(null); } catch {} }, 800);
       } catch {}
 
+
+      // A) Vertical: bring Evidence section into view (not top)
       try {
-        const u = new URL(window.location.href);
-        u.searchParams.set("evidenceId", id);
-        window.history.replaceState({}, "", u.toString());
+        const anchor = document.getElementById("evidence");
+        if (anchor && "scrollIntoView" in anchor) {
+          (anchor as any).scrollIntoView({ behavior: "smooth", block: "center" });
+        }
       } catch {}
 
-      const tryScroll = () => {
+      // B) Horizontal: after layout settles, CENTER the tile in the scroller
+      window.setTimeout(() => {
         try {
-          const escaped = (globalThis as any).CSS?.escape ? (globalThis as any).CSS.escape(id) : id;
-          const selectors = [
-            `[data-evidence-id="${id}"]`,
-            `[data-evidence-id="${escaped}"]`,
-            `#evidence-card-${escaped}`,
-            `[data-evidence-ref="${id}"]`,
-          ];
+          const scroller = document.getElementById("evidenceScroller") as HTMLElement | null;
+          const tile = document.querySelector('[data-ev-id="' + id + '"]') as HTMLElement | null;
+          if (!tile) return;
 
-          for (const sel of selectors) {
-            const el = document.querySelector(sel) as HTMLElement | null;
-            if (el) {
-              try {
-                el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
-              } catch {}
-              try {
-                el.classList.add("ring-2", "ring-cyan-400/70");
-                setTimeout(() => {
-                  try { el.classList.remove("ring-2", "ring-cyan-400/70"); } catch {}
-                }, 1800);
-              } catch {}
-              return true;
-            }
+          if (scroller) {
+            const prevSnap = scroller.style.scrollSnapType || "";
+            const prevPadL = (scroller.style.scrollPaddingLeft || "");
+            const prevPadR = (scroller.style.scrollPaddingRight || "");
+            const prevAlign = (tile.style as any).scrollSnapAlign || "";
+
+            // Temporarily disable snap + add scroll-padding so "inline:center" can actually center
+            try { scroller.style.scrollSnapType = "none"; } catch {}
+
+            try {
+              const pad = Math.max(0, (scroller.clientWidth / 2) - (tile.offsetWidth / 2));
+              scroller.style.scrollPaddingLeft = pad + "px";
+              scroller.style.scrollPaddingRight = pad + "px";
+            } catch {}
+
+            // Force selected tile to prefer center snapping (while we center)
+            try { (tile.style as any).scrollSnapAlign = "center"; } catch {}
+
+            // Let browser do the centering (more reliable than manual math w/ snap)
+            try {
+              tile.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+            } catch {}
+
+            // Restore styles after it lands
+            window.setTimeout(() => {
+              try { scroller.style.scrollSnapType = prevSnap; } catch {}
+              try { scroller.style.scrollPaddingLeft = prevPadL; } catch {}
+              try { scroller.style.scrollPaddingRight = prevPadR; } catch {}
+              try { (tile.style as any).scrollSnapAlign = prevAlign; } catch {}
+            }, 550);
+          } else {
+            // fallback: still try to center
+            try { tile.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" }); } catch {}
           }
         } catch {}
-        return false;
-      };
+      }, 180);
+    } catch {}
+};
+// PHASE4_1_KEYNAV_V1
+  useEffect(() => {
+    if (!selectedEvidenceId) return;
+    if (previewOpen) return;
 
-      setTimeout(() => { tryScroll(); }, 0);
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          tryScroll();
-        });
-      });
-    } catch (e) {
-      console.warn("[incident] jumpToEvidence failed", e);
+    const onKey = (e: KeyboardEvent) => {
+      const k = e.key;
+      if (k !== "ArrowLeft" && k !== "ArrowRight" && k !== "Escape") return;
+
+      try { e.preventDefault(); } catch {}
+
+      if (k === "Escape") {
+        setSelectedEvidenceId("");
+        return;
+      }
+
+      const idx = (evidence || []).findIndex((ev: any) => String(ev?.id || "") === String(selectedEvidenceId || ""));
+      if (idx < 0) return;
+
+      const nextIdx = k === "ArrowRight"
+        ? Math.min(idx + 1, (evidence || []).length - 1)
+        : Math.max(idx - 1, 0);
+
+      const next = (evidence || [])[nextIdx];
+      if (!next || !next.id) return;
+
+      setSelectedEvidenceId(next.id);
+      jumpToEvidence(String(next.id));
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => {
+      try { window.removeEventListener("keydown", onKey); } catch {}
+    };
+  }, [selectedEvidenceId, previewOpen, evidence]);
+
+  const evidenceCount = evidence.length;
+  const latestEvidenceSec = evidence?.[0]?.storedAt?._seconds || evidence?.[0]?.createdAt?._seconds;
+  const lastActivity = useMemo(() => fmtAgo(latestEvidenceSec), [latestEvidenceSec]);
+  const selectableFieldJobs = useMemo(
+    () => (jobs || []).filter((j: any) => isFieldSelectableJob(j?.status)),
+    [jobs]
+  );
+  const jobsForMapping = selectableFieldJobs.length ? selectableFieldJobs : (jobs || []);
+  const showJobsDebugPanel = useMemo(() => {
+    try {
+      const demoMode = String(localStorage.getItem("peakops_demo_mode") || "") === "1";
+      const host = String(new URL(String(functionsBase || "")).hostname || "").toLowerCase();
+      const localHost = host === "localhost" || host === "127.0.0.1";
+      return demoMode || localHost;
+    } catch {
+      return false;
     }
-  };
+  }, [functionsBase]);
+  const rawJobsDebug = useMemo(
+    () =>
+      (jobs || []).map((j: any) => ({
+        id: String(j?.id || j?.jobId || ""),
+        title: String(j?.title || ""),
+        status: String(j?.status || ""),
+        reviewStatus: String(j?.reviewStatus || ""),
+        assignedOrgId: String(j?.assignedOrgId || ""),
+      })),
+    [jobs]
+  );
+  const normalizedJobStatuses = useMemo(
+    () =>
+      (jobs || []).map((j: any) => ({
+        id: String(j?.id || j?.jobId || ""),
+        title: String(j?.title || ""),
+        rawStatus: String(j?.status || ""),
+        norm: normalizeJobStatus(j?.status),
+      })),
+    [jobs]
+  );
+  const hasActiveFieldJobs = selectableFieldJobs.length > 0 || (jobs || []).length > 0;
 
-  const hasActiveFieldJobs = Array.isArray(jobs) && jobs.some((j: any) => isFieldSelectableJob(j?.status));
+  useEffect(() => {
+    const currentId = String(currentJobId || "").trim();
+    const existsInSelectable = selectableFieldJobs.some(
+      (j: any) => String(j?.id || j?.jobId || "") === currentId
+    );
+    if (currentId && existsInSelectable) return;
+    const firstSelectableId = String(selectableFieldJobs?.[0]?.id || selectableFieldJobs?.[0]?.jobId || "").trim();
+    if (firstSelectableId) setCurrentJobId(firstSelectableId);
+  }, [selectableFieldJobs, currentJobId]);
 
-const selectableFieldJobs = useMemo(
-  () => (Array.isArray(jobs) ? jobs.filter((j: any) => isFieldSelectableJob(j?.status)) : []),
-  [jobs]
-);
-
-const showJobsDebugPanel = false;
-const rawJobsDebug: any[] = [];
-const normalizedJobStatuses: any[] = [];
-
-const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
-
+  const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
   const isDemoMode = isDemoIncident(incidentId);
-
+  const isIncidentClosedError = (e: any) => {
+    const msg = String(e?.message || e || "").toLowerCase();
+    return msg.includes("incident_closed") || (msg.includes("409") && msg.includes("incident"));
+  };
   const actorUid = () => getActorUid();
   const actorRole = () => getActorRole();
   const actorEmail = () => String(localStorage.getItem("peakops_email") || "").trim();
@@ -1216,7 +1376,7 @@ const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
             const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
               orgId,
               incidentId,
-	      evidenceId,
+              evidenceId: id,
               jobId: jid,
             });
             if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
@@ -1404,27 +1564,15 @@ const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
       if (jb?.ok && Array.isArray(jb.docs)) {
         const docs = jb.docs;
         setJobs(docs);
-
-        const normalizedDocs = docs
-          .map((j: any) => ({
-            raw: j,
-            id: String(j?.id || j?.jobId || "").trim(),
-            status: String(j?.status || j?.rawStatus || "").trim().toLowerCase(),
-          }))
-          .filter((j: any) => j.id);
-
         const selectable = docs.filter((j: any) => isFieldSelectableJob(j?.status));
         const currentId = String(currentJobId || "").trim();
         const existsInSelectable = selectable.some((j: any) => String(j?.id || j?.jobId || "") === currentId);
         const firstSelectableId = String(selectable?.[0]?.id || selectable?.[0]?.jobId || "").trim();
-        const firstAnyId = String(normalizedDocs?.[0]?.id || "").trim();
-
         let effectiveJobId = currentId;
         if (!currentId || !existsInSelectable) {
-          const nextId = firstSelectableId || firstAnyId;
-          if (nextId) {
-            setCurrentJobId(nextId);
-            effectiveJobId = nextId;
+          if (firstSelectableId) {
+            setCurrentJobId(firstSelectableId);
+            effectiveJobId = firstSelectableId;
           } else {
             setCurrentJobId("");
             effectiveJobId = "";
@@ -1434,8 +1582,7 @@ const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
           console.debug("[jobs-refresh]", {
             jobsCount: docs.length,
             selectableJobsCount: selectable.length,
-            currentJobId: effectiveJobId || "",
-            firstJobId: firstSelectableId || "",
+                        firstJobId: firstSelectableId || "",
           });
         }
       }
@@ -1598,7 +1745,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
 
     await Promise.all(
       want.map(async (ev) => {
-        const ref = getBestEvidencePreviewRef(ev);
+        const ref = getBestEvidenceImageRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
         if (thumbUrl[ev.id] && thumbPathById[ev.id] === ref.storagePath) return;
 
@@ -1606,6 +1753,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
+            evidenceId: ev.id,
             storagePath: ref.storagePath,
             bucket: ref.bucket,
             expiresSec: getThumbExpiresSec(),
@@ -1664,6 +1812,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
+            evidenceId: id,
             storagePath: ref.storagePath,
             bucket: ref.bucket,
             expiresSec: getThumbExpiresSec(),
@@ -1717,7 +1866,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       setThumbDiagById((m) => ({ ...m, [id]: m[id] || "read_url_failed" }));
       return;
     }
-    const ref = getBestEvidencePreviewRef(ev);
+    const ref = getBestEvidenceImageRef(ev);
     if (!ref?.bucket || !ref?.storagePath) {
       setThumbErr((m) => ({ ...m, [id]: true }));
       setThumbDiagById((m) => ({ ...m, [id]: "missing_bucket_or_storagePath" }));
@@ -1738,6 +1887,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
     const out = await mintEvidenceReadUrl({
       orgId,
       incidentId,
+      evidenceId: id,
       bucket: ref.bucket,
       storagePath: ref.storagePath,
       expiresSec: getThumbExpiresSec(),
@@ -1875,12 +2025,12 @@ const t = setInterval(refresh, 60000);
       "shadow-[0_0_0_1px_rgba(251,191,36,0.18),0_14px_45px_rgba(0,0,0,0.55)] " +
       "text-black/90 hover:brightness-105 active:brightness-95 transition",
     secondary:
-      "py-3 rounded-xl bg-white/[0.04] border border-white/[0.08] text-gray-200 " +
+      "py-3 rounded-xl bg-white/5 border border-white/10 text-gray-200 " +
       "hover:bg-white/8 active:bg-white/10 transition",
     ghost:
-      "px-2 py-1 rounded bg-white/6 border border-white/12 text-gray-200 hover:bg-white/[0.08] transition text-xs",
+      "px-2 py-1 rounded bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-xs",
     jump:
-      "px-2 py-1 rounded-full bg-amber-400/12 border border-amber-300/25 text-yellow-200 " +
+      "px-2 py-1 rounded-full bg-amber-400/12 border border-amber-300/25 text-amber-200 " +
       "hover:bg-amber-400/18 transition text-xs",
   };
 
@@ -1962,7 +2112,7 @@ useEffect(() => {
     if (!v) return;
     setHi(v);
     toast("Evidence secured ✓");
-    const t = setTimeout(() => toast(""), 2200);
+    const t = setTimeout(() => toast(null), 2200);
     // Scroll tile into view (if present)
     setTimeout(() => {
       const el = document.querySelector(`[data-ev-id="${v}"]`);
@@ -1990,11 +2140,12 @@ useEffect(() => {
     toast("Opened preview");
     (async () => {
       try {
-        const ref = getBestEvidencePreviewRef(ev);
+        const ref = getBestEvidenceImageRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
         const resp = await mintEvidenceReadUrl({
           orgId,
           incidentId,
+          evidenceId: ev.id,
           storagePath: ref.storagePath,
           bucket: ref.bucket,
           expiresSec: getThumbExpiresSec(),
@@ -2113,7 +2264,11 @@ useEffect(() => {
   const _evidenceN = Array.isArray(evidence) ? evidence.filter((ev: any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath||"").includes("demo_placeholder")).length : 0;
   const _hasEvidence = _evidenceN >= 4;
   const _hasNotes = !!(notesSavedLocal || (Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "NOTES_SAVED")));
-  const _hasApproved = Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "FIELD_APPROVED");
+  const _hasApproved = Array.isArray(jobs) && jobs.length > 0 && jobs.every((j: any) => {
+    const rs = String(j?.reviewStatus || "").trim().toLowerCase();
+    const st = String(j?.status || "").trim().toLowerCase();
+    return rs === "approved" || st === "approved";
+  });
 
   // PHASE6_1_TIMERS_V1
   const _secForType = (ty: string): number | null => {
@@ -2149,12 +2304,12 @@ useEffect(() => {
   return (
     invalidIncidentRoute ? (
       <main className="min-h-screen bg-black text-white p-6">
-        <div className="max-w-2xl mx-auto rounded-2xl border border-yellow-500/20 bg-yellow-500/5 p-5">
-          <div className="text-sm text-yellow-100 font-semibold">Invalid incident URL</div>
-          <div className="mt-2 text-sm text-yellow-50/90">
+        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+          <div className="text-sm text-amber-100 font-semibold">Invalid incident URL</div>
+          <div className="mt-2 text-sm text-amber-50/90">
             This page was opened with a placeholder incident id (`/incidents/&lt;incidentId&gt;`).
           </div>
-          <div className="mt-3 text-xs text-yellow-100/80">
+          <div className="mt-3 text-xs text-amber-100/80">
             Open `/incidents/inc_demo` or a real incident id instead.
           </div>
         </div>
@@ -2184,24 +2339,11 @@ useEffect(() => {
       }}
     >
       
-      {/* PEAKOPS_DEBUG_TOGGLE_SAFE_V1 */}
-      <style>{`
-        body:not([data-peakops-debug="1"]) .peakops-debug-only { display: none !important; }
-      `}</style>
-
-{process.env.NODE_ENV !== "production" ? (
-                  <div className="rounded-lg border border-cyan-300/25 bg-cyan-500/10 p-2 text-[11px] text-cyan-100">
-                    <div><span className="peakops-debug-only">jobs.length:</span> {jobs.length}</div>
-                    <div>currentJobId: {String(currentJobId || "(empty)")}</div>
-                    <div>incidentId: {String(incidentId || "")}</div>
-                    <div>hasActiveFieldJobs: {String(hasActiveFieldJobs)}</div>
-                  </div>
-                ) : null}
       {/* Top bar */}
-      <div className="px-4 pt-4 pb-3 border-b border-white/[0.08] sticky top-0 bg-black/80 backdrop-blur z-10">
+      <div className="px-4 pt-4 pb-3 border-b border-white/10 sticky top-0 bg-black/80 backdrop-blur z-10">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.16em]r text-gray-400">Field Incident</div>
+            <div className="text-[11px] uppercase tracking-wider text-gray-400">Field Incident</div>
             <div className="text-xl font-semibold tracking-tight">{incidentId} • Riverbend Electric</div>
             <div className="mt-1 text-[11px]">
               <span className={"px-2 py-0.5 rounded-full border " + (isClosed ? "bg-red-500/15 border-red-400/30 text-red-100" : "bg-emerald-500/15 border-emerald-400/30 text-emerald-100")}>
@@ -2215,7 +2357,7 @@ useEffect(() => {
                   </span>
                   <button
                     type="button"
-                    className="ml-2 px-2 py-0.5 rounded-full border bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08]"
+                    className="ml-2 px-2 py-0.5 rounded-full border bg-white/6 border-white/12 text-gray-200 hover:bg-white/10"
                     onClick={() => { void copyDemoResetCommand(); }}
                     title="Copy deterministic demo reset command"
                   >
@@ -2227,43 +2369,49 @@ useEffect(() => {
           </div>
 
           <div className="flex items-center gap-2">
-        <button
+            <button
               type="button"
               className="px-2 py-1 rounded-full text-xs bg-purple-600/20 border border-purple-400/20 text-purple-100 hover:bg-purple-600/30 transition"
               title="Supervisor review + approve/lock"
               onClick={() => {
-  const id = String(incidentId || "");
-  if (!id || id.includes("${")) return;
-  router.push(`/incidents/${id}/review`);
-}}>
-              🛡 Review
+                const id = String(incidentId || "");
+                if (!id || id.includes("${")) return;
+                router.push(`/incidents/${id}/review`);
+              }}
+            >
+              Review
             </button>
             <button
               type="button"
-              className={"px-2 py-1 rounded-full text-xs border transition " + (isClosed ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed" : "bg-red-600/20 border-red-400/30 text-red-100 hover:bg-red-600/30")}
+              className={
+                "px-2 py-1 rounded-full text-xs border transition " +
+                (isClosed
+                  ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
+                  : "bg-red-600/20 border-red-400/30 text-red-100 hover:bg-red-600/30")
+              }
               disabled={isClosed || closingIncident}
               onClick={() => { try { closeIncident(); } catch {} }}
-              title={isClosed ? "Incident already closed" : "Set incident status to closed"}>
+              title={isClosed ? "Incident already closed" : "Set incident status to closed"}
+            >
               {closingIncident ? "Closing..." : "Close Incident"}
             </button>
             <button
               type="button"
               className="px-2 py-1 rounded-full text-xs bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 transition"
-              onClick={() => { try { router.push(`/incidents/${incidentId}/summary?orgId=${encodeURIComponent(String(orgId || ""))}`); } catch {} }}
+              onClick={() => { try { router.push(`/incidents/${incidentId}/summary`); } catch {} }}
               title="Open incident summary"
             >
               Summary
             </button>
-          
-      {/* PEAKOPS_UX_TOAST_RENDER_V1 */}
-      {toastMsg ? (
-        <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-20 z-50 px-3 py-2 rounded-xl bg-black/70 border border-white/[0.08] text-sm text-gray-100 backdrop-blur shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
-          {toastMsg}
+          </div>
         </div>
-      ) : null}
 
-</div>
-        </div>
+        {/* PEAKOPS_UX_TOAST_RENDER_V1 */}
+        {toastMsg ? (
+          <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-20 z-50 px-3 py-2 rounded-xl bg-black/70 border border-white/10 text-sm text-gray-100 backdrop-blur shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
+            {toastMsg}
+          </div>
+        ) : null}
         <div className="mt-3 flex items-center gap-2">
           {(["overview", "timeline", "evidence", "jobs"] as const).map((tab) => (
             <button
@@ -2273,7 +2421,7 @@ useEffect(() => {
                 "px-3 py-1.5 rounded-lg text-xs border transition " +
                 (activeTab === tab
                   ? "bg-cyan-500/20 border-cyan-300/35 text-cyan-100"
-                  : "bg-white/[0.04] border-white/[0.08] text-gray-300 hover:bg-white/[0.08]")
+                  : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10")
               }
               onClick={() => setActiveTab(tab)}
             >
@@ -2296,29 +2444,29 @@ useEffect(() => {
     return (
       <div className="space-y-3 mt-3">
         {req && (reqMsg || reqJobId) ? (
-          <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/5 px-4 py-3">
+          <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-[0.16em] text-yellow-200/90">Update requested</div>
-                <div className="text-sm text-yellow-100 mt-1 break-words">
+                <div className="text-[11px] uppercase tracking-wide text-amber-200/90">Update requested</div>
+                <div className="text-sm text-amber-100 mt-1 break-words">
                   {reqMsg ? reqMsg : "Supervisor requested an update."}
                 </div>
                 {reqJobId ? (
-                  <div className="text-xs text-yellow-200/80 mt-1">jobId: {reqJobId}</div>
+                  <div className="text-xs text-amber-200/80 mt-1">jobId: {reqJobId}</div>
                 ) : null}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-sm text-amber-50"
-                  onClick={() => { try { location.hash = "#timeline"; } catch {} }}
+                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-amber-50"
+                  onClick={() => { try { setTab("timeline"); } catch { try { location.hash="#timeline"; } catch {} } }}
                 >
                   View timeline
                 </button>
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-sm text-amber-50"
-                  onClick={() => { try { document.getElementById("evidence")?.scrollIntoView({ behavior: "smooth" }); } catch {} }}
+                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-amber-50"
+                  onClick={() => { try { setTab("evidence"); } catch { try { document.getElementById("evidence")?.scrollIntoView({behavior:"smooth"}); } catch {} } }}
                 >
                   Go to evidence
                 </button>
@@ -2327,10 +2475,10 @@ useEffect(() => {
           </div>
         ) : null}
 
-        <div className="rounded-2xl bg-white/[0.04] border border-white/[0.08] px-4 py-3">
+        <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-[0.16em] text-gray-400">My active job</div>
+              <div className="text-[11px] uppercase tracking-wide text-gray-400">My active job</div>
               <div className="text-sm text-gray-200 mt-1 truncate">
                 {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "No job selected")}
               </div>
@@ -2343,7 +2491,7 @@ useEffect(() => {
               {activeJobId ? (
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/[0.08] hover:bg-white/[0.08] text-sm text-gray-100"
+                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 hover:bg-white/10 text-sm text-gray-100"
                   onClick={() => {
                     try {
                       const url = `/jobs/${encodeURIComponent(String(activeJobId||""))}?incidentId=${encodeURIComponent(String(incidentId||""))}&orgId=${encodeURIComponent(String(orgId||""))}`;
@@ -2356,8 +2504,19 @@ useEffect(() => {
               ) : null}
               <button
                 type="button"
-                className="px-3 py-2 rounded-xl bg-white/6 border border-white/[0.08] hover:bg-white/[0.08] text-sm text-gray-100"
+                className={
+                  "px-3 py-2 rounded-xl border text-sm transition " +
+                  (isClosed
+                    ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
+                    : "bg-white/6 border-white/10 hover:bg-white/10 text-gray-100")
+                }
                 onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
+                disabled={isClosed}
+                title={
+                  isClosed
+                    ? "Incident is closed (read-only)"
+                    : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : "Add evidence")
+                }
               >
                 Add evidence
               </button>
@@ -2380,16 +2539,7 @@ useEffect(() => {
             <div className="font-semibold">Refresh failed</div>
             <div className="mt-1 break-all">{refreshError.message}</div>
             {refreshError.endpoint ? <div className="mt-1 break-all text-red-200/90">endpoint: {refreshError.endpoint}</div> : null}
-            {refreshError.base ? <div className="mt-1 break-all text-red-200/90">functionsBase: {refreshError.base}</div> : null}
             {refreshError.fallback ? <div className="mt-1 text-red-200/90">fallback: applied</div> : null}
-            {process.env.NODE_ENV !== "production" ? (
-              <div className="mt-1 text-red-200/90 break-all">
-                baseDebug: {(() => {
-                  const d = getFunctionsBaseDebugInfo();
-                  return `env=${d.envBase || "(unset)"} override=${d.overrideBase || "(unset)"} active=${d.activeBase || "(unset)"}`;
-                })()}
-              </div>
-            ) : null}
             {process.env.NODE_ENV !== "production" && getEnvFunctionsBase() ? (
               <div className="mt-1 text-red-200/90">envBase present, fallback disabled</div>
             ) : null}
@@ -2443,24 +2593,24 @@ useEffect(() => {
 {/* PHASE6_1_TIMERS_V1_RENDER */}
         {/* PHASE6_1_TIMERS_POLISH_V2 + PHASE6_2_ACTION_NEEDED_V1 */}
 {activeTab === "overview" ? (
-<div className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
+<div className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-3">
-    <div className="text-[11px] uppercase tracking-[0.16em] text-gray-400">Timers</div>
+    <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
     {_notesAgo === "—" ? (
-      <span className="text-[11px] px-2 py-0.5 rounded-full bg-yellow-500/6 border border-amber-300/25 text-yellow-100">
-        Notes needed
+      <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-300/25 text-amber-100">
+        Action needed: notes
       </span>
     ) : null}
   </div>
 
   <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
-    <div className="rounded-xl bg-black/30 border border-white/[0.08] px-3 py-2 sm:col-span-1">
-      <div className="text-[10px] uppercase tracking-[0.16em] text-gray-400">Arrival</div>
+    <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-1">
+      <div className="text-[10px] uppercase tracking-wide text-gray-400">Arrival</div>
       <div className="mt-1 text-base font-semibold text-gray-100">{_arrivalAgo}</div>
     </div>
 
-    <div className="rounded-xl bg-black/30 border border-white/[0.08] px-3 py-2 sm:col-span-2">
-      <div className="text-[10px] uppercase tracking-[0.16em] text-gray-400">Evidence</div>
+    <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-2">
+      <div className="text-[10px] uppercase tracking-wide text-gray-400">Evidence</div>
       <div className="mt-1 text-base font-semibold text-gray-100">{_evidenceAgo}</div>
     </div>
 
@@ -2468,10 +2618,10 @@ useEffect(() => {
       className={
         "rounded-xl border px-3 py-2 sm:col-span-2 " +
         (_notesAgo === "—"
-          ? "bg-yellow-500/5 border-amber-300/25"
-          : "bg-black/30 border-white/[0.08]")
+          ? "bg-amber-500/10 border-amber-300/25"
+          : "bg-black/30 border-white/10")
       }>
-      <div className={"text-[10px] uppercase tracking-[0.16em] " + (_notesAgo === "—" ? "text-yellow-200/80" : "text-gray-400")}>
+      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-amber-200/80" : "text-gray-400")}>
         Notes
       </div>
       <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-amber-50" : "text-gray-100")}>
@@ -2489,13 +2639,13 @@ useEffect(() => {
           <section className="rounded-2xl border border-amber-300/20 bg-amber-400/10 p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-[0.16em] text-yellow-200/80">
+                <div className="text-[11px] uppercase tracking-wide text-amber-200/80">
                   Supervisor requested an update
                 </div>
-                <div className="mt-1 text-sm text-yellow-50/90 whitespace-pre-wrap break-words">
+                <div className="mt-1 text-sm text-amber-50/90 whitespace-pre-wrap break-words">
                   {reqUpdateText}
                 </div>
-                <div className="mt-2 text-[11px] text-yellow-100/50">
+                <div className="mt-2 text-[11px] text-amber-100/50">
                   (V2 demo: stored locally on this device. Phase B will persist to Firestore + notify.)
                 </div>
               </div>
@@ -2503,7 +2653,7 @@ useEffect(() => {
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/[0.08] text-sm text-amber-50 hover:bg-white/[0.08]"
+                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-amber-50 hover:bg-white/10"
                   onClick={() => { try { loadReqUpdate(); } catch {} try { refresh(); } catch {} }}
                   title="Reload local request note"
                 >
@@ -2511,7 +2661,7 @@ useEffect(() => {
                 </button>
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-yellow-500/6 border border-amber-300/25 text-sm text-amber-50 hover:bg-yellow-500/8"
+                  className="px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-300/25 text-sm text-amber-50 hover:bg-amber-500/20"
                   onClick={() => {
                     clearReqUpdate();
                   }}
@@ -2526,30 +2676,30 @@ useEffect(() => {
 
 {/* Quick actions */}
         {activeTab === "evidence" ? (
-        <section ref={myJobSectionRef} className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
+        <section ref={myJobSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-2">
-    <div className="text-xs uppercase tracking-[0.16em] text-gray-400" id="evidence">Evidence</div>
+    <div className="text-xs uppercase tracking-wide text-gray-400" id="evidence">Evidence</div>
     <div className="flex items-center gap-2">
       <span className="text-xs text-gray-500">Latest {Math.min(12, evidence.length)}</span>
       {process.env.NODE_ENV !== "production" ? (
         <>
           <button
             type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/[0.04] text-[11px] text-gray-200 hover:bg-white/[0.08]"
+            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
             onClick={() => refreshVisibleThumbsDebounced()}
           >
             Refresh thumbnails
           </button>
           <button
             type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/[0.04] text-[11px] text-gray-200 hover:bg-white/[0.08]"
+            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
             onClick={() => forceRemintVisibleThumbs()}
           >
             Force remint URLs
           </button>
           <button
             type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/[0.04] text-[11px] text-gray-200 hover:bg-white/[0.08]"
+            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
             onClick={() => setThumbDebugOverlay((v) => !v)}
           >
             {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
@@ -2559,47 +2709,114 @@ useEffect(() => {
     </div>
   </div>
 
-  <div className="mt-3">
-    {(() => {
-      const viewerItems = sortEvidenceForViewer(
-        (evidence || [])
-          .filter((ev:any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath || "").includes("demo_placeholder"))
-          .map((ev:any) =>
-            mapEvidenceToViewModel({
-              ...ev,
-              incidentId,
-              jobId: ev?.evidence?.jobId ?? ev?.jobId ?? null,
-              label: Array.isArray(ev?.labels) && ev.labels.length ? String(ev.labels[0]) : null,
-              fileName: ev?.file?.originalName ?? null,
-              mimeType: ev?.file?.contentType ?? null,
-              uploadedAt: ev?.storedAt ?? null,
-              createdAt: ev?.createdAt ?? null,
-              thumbnailUrl: thumbUrl?.[ev.id] ? toInlineMediaUrl(thumbUrl[ev.id]) : null,
-              viewerUrl: thumbUrl?.[ev.id] ? toInlineMediaUrl(thumbUrl[ev.id]) : tileUrlFromEvidence(ev),
-            })
-          )
-      );
+  {/* Evidence rail centering depends on runway padding on #evidenceScroller. Keep that padding. */}
+  <div className="mt-3 -mx-1 overflow-x-auto px-[calc(50%-74px)] scroll-smooth scroll-pl-4 scroll-pr-4 sm:scroll-pl-[calc(50vw-74px)] sm:scroll-pr-[calc(50vw-74px)]" id="evidenceScroller"
+>
+    <div className="flex gap-2 snap-x snap-mandatory">
+      {(() => {
+        const list = (evidence || [])
+          .filter((ev:any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath || "").includes("demo_placeholder"));
+        const maxShow = 12;
+        const shown = list.slice(0, maxShow);
+        return (
+          <>
+            {shown.map((ev:any) => {
+              const u = thumbUrl[ev.id];
+              const labels = (ev.labels || []).map(normLabel);
+              const selected = selectedEvidenceId === ev.id;
+              const converting = isConvertingHeic(ev as EvidenceDoc);
+              const convStatus = String((ev as any)?.file?.conversionStatus || "").toLowerCase();
+              const uploadMissing = convStatus === "source_missing";
+              const conversionFailed = convStatus === "failed";
+              const conversionNoPreview = isHeicEvidence(ev as EvidenceDoc) && (convStatus === "n/a" || convStatus === "failed") && !String((ev as any)?.file?.thumbPath || "").trim() && !String((ev as any)?.file?.previewPath || "").trim();
+              const conversionError = String((ev as any)?.file?.conversionError || "").trim();
 
-      return (
-        <>
-          <EvidenceLockerGrid
-            items={viewerItems}
-            onSelect={(evidenceId) => setSelectedEvidenceId(evidenceId)}
-          />
+              return (
+                <button
+                  key={ev.id}
+                  data-ev-id={ev.id}
+                  className={
+                    "snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] relative rounded-xl overflow-hidden border " +
+                    (selected ? "border-indigo-300/95 border-2 ring-4 ring-indigo-500/40 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_12px_40px_rgba(0,0,0,0.55)]  scale-[1.02] transition-transform duration-150" : "border-white/10 ") +
+                    "bg-black/40 hover:border-white/25 transition"
+                  }
+                  onClick={() => openModal(ev)}
+                  title={ev.file?.originalName || ev.id}>
+                  {u ? (
+                    <img
+                      src={toInlineMediaUrl(u)}
+                      className="w-full h-full object-cover transition-transform duration-200 hover:scale-[1.04]"
+                      loading="lazy"
+                      onError={() => { void renewThumbOnce(ev, u); }}
+                    />
+                  ) : (
+                    thumbErr[ev.id] ? (
+                      <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-500">Unavailable</div>
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-400">Loading…</div>
+                    )
+                  )}
 
-          <EvidenceViewerModal
-            items={viewerItems}
-            selectedEvidenceId={selectedEvidenceId || null}
-            onSelect={(evidenceId) => setSelectedEvidenceId(evidenceId)}
-            onClose={() => setSelectedEvidenceId("")}
-          />
-        </>
-      );
-    })()}
+                  <div className="absolute top-2 left-2 flex flex-wrap gap-1">
+                    {labels.slice(0, 2).map((l:string) => (
+                      <span key={l} className={"text-[10px] px-2 py-0.5 rounded-full border " + labelChipColor(l)}>
+                        {l}
+                      </span>
+                    ))}
+                    {converting ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-400/15 border-amber-300/30 text-amber-100">
+                        Converting…
+                      </span>
+                    ) : null}
+                    {uploadMissing ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100">
+                        Upload not in storage yet
+                      </span>
+                    ) : null}
+                    {conversionFailed ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100" title={conversionError || "HEIC conversion failed"}>
+                        Convert failed
+                      </span>
+                    ) : null}
+                    {conversionNoPreview ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-gray-500/15 border-gray-300/30 text-gray-100">
+                        No preview
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="absolute bottom-2 left-2 right-2 text-[10px] text-gray-200/90 truncate bg-black/40 px-2 py-1 rounded">
+                    {(ev.file?.originalName || "evidence")}
+                  </div>
+                  {process.env.NODE_ENV !== "production" && thumbDiagById[String(ev?.id || "")] ? (
+                    <div className="absolute left-2 right-2 bottom-8 text-[10px] text-red-200 truncate bg-black/55 px-2 py-1 rounded border border-red-400/30">
+                      {thumbDiagById[String(ev?.id || "")]}
+                    </div>
+                  ) : null}
+                  {process.env.NODE_ENV !== "production" && thumbDebugOverlay ? (
+                    <div className="absolute left-2 right-2 top-8 text-[10px] text-cyan-100 bg-black/60 px-2 py-1 rounded border border-cyan-300/30">
+                      <div className="truncate">id={String(ev?.id || "")}</div>
+                      <div className="truncate">bucket={String(thumbBucketById[String(ev?.id || "")] || "")}</div>
+                      <div className="truncate">path={String(thumbPathById[String(ev?.id || "")] || "")}</div>
+                      <div className="truncate">mint_http={String(thumbStatusById[String(ev?.id || "")] || 0)}</div>
+                      <div className="truncate">mint_error={String(thumbMintErrorById[String(ev?.id || "")] || "-")}</div>
+                      <div className="truncate">probe_http={String(thumbProbeStatusById[String(ev?.id || "")] || "-")}</div>
+                      <div className="truncate">probe_error={String(thumbProbeErrorById[String(ev?.id || "")] || "-")}</div>
+                    </div>
+                  ) : null}
+                </button>
+              );
+            })}
+
+            
+          </>
+        );
+      })()}
+    </div>
   </div>
 
   <div className="mt-2 text-[11px] text-gray-500">
-    Click a tile to preview. Use arrow keys to move between evidence items.
+    Horizontal scroll. Tap a tile to preview. Timeline events will highlight related evidence.
   </div>
 </section>
         ) : null}
@@ -2610,184 +2827,69 @@ useEffect(() => {
             <div className="text-xs uppercase tracking-[0.16em] text-gray-400">My Job</div>
             <span className="text-xs text-gray-500">default for new evidence</span>
           </div>
+
           {(() => {
             const current = jobs.find((j: any) => String(j?.id || j?.jobId || "") === String(currentJobId || ""));
             const currentTitle = String(current?.title || current?.id || current?.jobId || "").trim();
             const currentStatus = jobStatusText(current?.status);
+
             return (
-              <div className="mt-3 space-y-2">
-                {process.env.NODE_ENV !== "production" ? (
-                  <div className="rounded-lg border border-cyan-300/25 bg-cyan-500/10 p-2 text-[11px] text-cyan-100">
-                    <div><span className="peakops-debug-only">jobs.length:</span> {jobs.length}</div>
-                    <div>currentJobId: {String(currentJobId || "(empty)")}</div>
-                    <div>incidentId: {String(incidentId || "")}</div>
-                    <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-all text-[10px] text-cyan-200/90">
-                    </pre>
-                  </div>
-                ) : null}
+              <div className="mt-3 space-y-3">
                 <select
                   className="w-full text-sm bg-black/40 border border-white/15 rounded-lg px-3 py-2"
-                  disabled={isClosed || jobsBusy || jobs.length === 0}
-                  value={currentJobId}
+                  disabled={isClosed || jobsBusy || jobsForMapping.length === 0}
+                  value={currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "")}
                   onChange={(e) => setCurrentJobId(String(e.target.value || ""))}
                 >
-                  <option value="">{jobs.length ? "Select job" : "No active jobs available"}</option>
-                  {jobs.map((j: any) => (
-                    <option key={String(j?.id || j?.jobId)} value={String(j?.id || j?.jobId)}>
-                      {String(j?.id || j?.jobId || "job")}: {String(j?.title || "(untitled)")} ({jobStatusText(j?.status)})
-                    </option>
-                  ))}
-                </select>
-                <div className="text-[11px] text-gray-500">
-                  Default for new evidence: {currentTitle ? `${currentTitle} (${currentStatus})` : "none selected"}
-                </div>
-                {jobs.length === 0 ? (
-                  <div className="rounded-lg border border-amber-300/25 bg-yellow-500/5 px-3 py-2 text-xs text-yellow-100">
-                    {jobs.length > 0 ? (
-                      <>
-                        <div>No active field jobs (open/in_progress). All jobs are complete/review/approved/rejected.</div>
-                        <div className="mt-2">
-                          <button
-                            type="button"
-                            className="px-2 py-1 rounded border bg-black/30 border-white/15 text-yellow-100 hover:bg-black/45"
-                            onClick={() => {
-                              if (isClosed) router.push(`/incidents/${incidentId}/review?orgId=${encodeURIComponent(String(orgId || ""))}`);
-                              else setShowCreateJob(true);
-                            }}
-                          >
-                            {isClosed ? "Go to Review" : "Create job"}
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <div>
-                        <div>No jobs yet.</div>
-                        <button
-                          type="button"
-                          className="mt-2 px-2 py-1 rounded border bg-black/30 border-white/15 text-yellow-100 hover:bg-black/45"
-                          onClick={() => setShowCreateJob(true)}
-                        >
-                          Create job
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="px-2 py-1 rounded text-xs border bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08]"
-                    onClick={() => openFieldJob(String(currentJobId || ""), { mapping: true })}
-                    disabled={!currentJobId}
-                  >
-                    Open evidence mapping
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className={"px-3 py-2 rounded-lg text-sm border " + (isClosed ? "bg-white/[0.04] border-white/[0.08] text-gray-500 cursor-not-allowed" : "bg-emerald-600/20 border-emerald-300/30 text-emerald-100 hover:bg-emerald-600/30")}
-                    disabled={isClosed || jobsBusy || !currentJobId || !hasActiveFieldJobs}
-                    onClick={() => { try { markCurrentJobComplete(); } catch {} }}
-                  >
-                    Mark Complete
-                  </button>
-                  {current ? (
-                    <span className={"text-[10px] px-2 py-0.5 rounded-full border " + jobStatusPill(jobStatusText(current?.status))}>
-                      {jobStatusText(current?.status)}
-                    </span>
+                  {jobsForMapping.length === 0 ? (
+                    <option value="">No active field jobs</option>
                   ) : null}
+                  {jobsForMapping.map((j: any) => {
+                    const jid = String(j?.id || j?.jobId || "").trim();
+                    if (!jid) return null;
+                    const title = String(j?.title || jid).trim();
+                    const status = jobStatusText(j?.status);
+                    return (
+                      <option key={jid} value={jid}>
+                        {title} ({status})
+                      </option>
+                    );
+                  })}
+                </select>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="px-3 py-2 rounded-lg text-sm border bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08] disabled:opacity-50"
+                    disabled={!(currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "").trim())}
+                    onClick={() => {
+                      try {
+                        const fallbackJobId = String(
+                          currentJobId ||
+                          jobsForMapping?.[0]?.id ||
+                          jobsForMapping?.[0]?.jobId ||
+                          ""
+                        ).trim();
+                        if (fallbackJobId) {
+                          setCurrentJobId(fallbackJobId);
+                        }
+                        jumpToEvidenceMapping();
+                      } catch {}
+                    }}
+                  >
+                    Jump to evidence mapping
+                  </button>
                 </div>
-                {current && String(currentStatus).toLowerCase() === "complete" ? (
-                  <div className="text-[11px] text-emerald-200/90">
-                    Ready for supervisor review.
-                  </div>
-                ) : null}
               </div>
             );
           })()}
-        </section>
-        ) : null}
 
-        {activeTab === "jobs" ? (
-        <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase tracking-[0.16em] text-gray-400">Jobs</div>
-            <span className="text-xs text-gray-500">{jobs.length} total</span>
-          </div>
-          {showJobsDebugPanel ? (
-            <details className="mt-2 text-[11px] text-gray-300">
-              <summary className="cursor-pointer select-none"><span className="peakops-debug-only">Jobs debug (raw listJobsV1 docs)</span></summary>
-              <pre className="mt-1 max-h-44 overflow-auto rounded bg-black/40 border border-white/[0.08] p-2 whitespace-pre-wrap break-words">
-                {JSON.stringify(rawJobsDebug, null, 2)}
-              </pre>
-            </details>
-          ) : null}
-          <div className="mt-3 space-y-2">
-            {jobs.length === 0 ? (
-              <div className="text-sm text-gray-400">No jobs yet. Create one to organize evidence.</div>
-            ) : jobs.map((j: any) => (
-              <div
-                key={String(j?.id || j?.jobId)}
-                onClick={() => openFieldJob(String(j?.id || j?.jobId || ""))}
-                className={
-                  "w-full rounded-lg border px-3 py-2 flex items-center justify-between gap-2 text-left " +
-                  (String(currentJobId || "") === String(j?.id || j?.jobId || "")
-                    ? "border-cyan-300/35 bg-cyan-500/10"
-                    : "border-white/[0.08] bg-black/30")
-                }
-              >
-                <div className="min-w-0">
-                  <div className="text-sm text-gray-100 truncate">{String(j?.title || "(untitled)")}</div>
-                  <div className="text-[11px] text-gray-400 truncate">
-                    {String(j?.assignedOrgId || "").trim() ? `assigned org: ${String(j?.assignedOrgId)}` : "unassigned"}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <select
-                    className="text-xs bg-black/50 border border-white/15 rounded px-2 py-1 min-w-[160px]"
-                    value={String(j?.assignedOrgId || "")}
-                    disabled={isClosed || jobsBusy}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      try { assignJobOrg(String(j?.id || j?.jobId || ""), String(e.target.value || "")); } catch {}
-                    }}
-                  >
-                    <option value="">Assign org...</option>
-                    {(orgOptionsWithFallback || []).map((o: any) => {
-                      const oid = String(o?.orgId || o?.id || "").trim();
-                      if (!oid) return null;
-                      const label = String(o?.name || oid);
-                      return <option key={oid} value={oid}>{label}</option>;
-                    })}
-                  </select>
-                  <span className={"text-[10px] px-2 py-0.5 rounded-full border " + jobStatusPill(jobStatusText(j?.status))}>
-                    {jobStatusText(j?.status)}
-                  </span>
-                  <button
-                    type="button"
-                    className="px-2 py-1 rounded text-xs border bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08]"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const jid = String(j?.id || j?.jobId || "").trim();
-                      if (!jid) return;
-                      const assignedOrg = String(j?.assignedOrgId || orgId || "").trim();
-                      router.push(
-                        `/jobs/${encodeURIComponent(jid)}?incidentId=${encodeURIComponent(incidentId)}&orgId=${encodeURIComponent(assignedOrg || orgId)}`
-                      );
-                    }}
-                  >
-                    Open
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
           {orgOptionsLoadError ? (
             <div className="mt-2 text-[11px] text-yellow-300">Org list failed to load</div>
           ) : orgOptionsLoaded && orgOptions.length === 0 ? (
             <div className="mt-2 text-[11px] text-gray-400">No orgs available</div>
           ) : null}
+
           {orgOptions.length === 0 && showOrgDevTools ? (
             <div className="mt-2 flex items-center gap-2 text-[11px]">
               <button
@@ -2808,12 +2910,14 @@ useEffect(() => {
               </button>
             </div>
           ) : null}
+
           {orgDebugJson ? (
             <details className="mt-2 text-[11px] text-gray-300">
               <summary className="cursor-pointer select-none">Org debug JSON</summary>
               <pre className="mt-1 max-h-44 overflow-auto rounded bg-black/40 border border-white/[0.08] p-2 whitespace-pre-wrap break-words">{orgDebugJson}</pre>
             </details>
           ) : null}
+
           <div className="mt-2 text-[11px] text-gray-500">
             Field view is simplified. Job status management is in Review.
           </div>
@@ -2821,14 +2925,14 @@ useEffect(() => {
         ) : null}
 
         {activeTab === "evidence" ? (
-        <section ref={evidenceMappingSectionRef} className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
+        <section ref={evidenceMappingSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase tracking-[0.16em] text-gray-400">Evidence to Job Mapping</div>
+            <div id="evidence-mapping" className="text-xs uppercase tracking-wide text-gray-400">Evidence to Job Mapping</div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500">Set `evidence.jobId`</span>
               <button
                 type="button"
-                className={"px-2 py-1 rounded text-xs border " + (isClosed || jobsBusy || !currentJobId ? "bg-white/[0.04] border-white/[0.08] text-gray-500 cursor-not-allowed" : "bg-cyan-600/20 border-cyan-300/30 text-cyan-100 hover:bg-cyan-600/30")}
+                className={"px-2 py-1 rounded text-xs border " + (isClosed || jobsBusy || !currentJobId ? "bg-white/5 border-white/10 text-gray-500 cursor-not-allowed" : "bg-cyan-600/20 border-cyan-300/30 text-cyan-100 hover:bg-cyan-600/30")}
                 disabled={isClosed || jobsBusy || !currentJobId}
                 onClick={() => { try { assignAllUnassignedToCurrentJob(); } catch {} }}
                 title={currentJobId ? "Assign all unassigned evidence to My Job" : "Select My Job first"}
@@ -2845,15 +2949,19 @@ useEffect(() => {
               const currentEvidenceJobId = getLinkedJobId(ev);
               const linkedJob = (jobs || []).find((j: any) => String(j?.id || j?.jobId || "") === currentEvidenceJobId);
               const eid = String(ev?.id || "").trim();
+              const evSec = Number(ev?.storedAt?._seconds || ev?.createdAt?._seconds || 0);
               const rowBusy = !!heicRowBusyById[eid];
               const rowDebug = String(heicRowDebugById[eid] || "");
               const evStoragePath = String(ev?.file?.storagePath || ev?.storagePath || "").trim();
               return (
-                <div key={eid} className="rounded-lg border border-white/[0.08] bg-black/30 px-3 py-2">
+                <div key={eid} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-sm text-gray-100 truncate">{String(ev?.file?.originalName || ev?.id || "evidence")}</div>
                       <div className="text-[11px] text-gray-400 truncate">evidenceId: {eid}</div>
+                      <div className="text-[10px] text-gray-500 truncate">
+                        {evSec ? `uploaded ${fmtAgo(evSec)}` : `id: …${eid ? eid.slice(-6) : "—"}`}
+                      </div>
                       <div className="text-[11px] text-cyan-200/85 truncate">
                         job: {linkedJob ? String(linkedJob?.title || linkedJob?.id || linkedJob?.jobId || "") : (currentEvidenceJobId || "(no job)")}
                       </div>
@@ -2903,7 +3011,7 @@ useEffect(() => {
                   {showOrgDevTools && rowDebug ? (
                     <details className="mt-2 text-[11px] text-gray-300">
                       <summary className="cursor-pointer select-none">HEIC debug JSON</summary>
-                      <pre className="mt-1 max-h-56 overflow-auto rounded bg-black/40 border border-white/[0.08] p-2 whitespace-pre-wrap break-words">
+                      <pre className="mt-1 max-h-56 overflow-auto rounded bg-black/40 border border-white/10 p-2 whitespace-pre-wrap break-words">
                         {rowDebug}
                       </pre>
                     </details>
@@ -2918,10 +3026,10 @@ useEffect(() => {
         {/* Timeline story */}
         
         {activeTab === "timeline" ? (
-        <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-[0.16em] text-gray-400">Timeline</div>
-            <span className="text-xs px-2 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] text-gray-300">Auto-log: On</span>
+            <div className="text-xs uppercase tracking-wide text-gray-400">Timeline</div>
+            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">Auto-log: On</span>
           </div>
 
           
@@ -2929,6 +3037,7 @@ useEffect(() => {
   items={timeline as any}
   onJumpToEvidence={jumpToEvidence}
   highlightId={selectedEvidenceId}
+  showHeader={false}
 />
         </section>
         ) : null}
@@ -2936,10 +3045,10 @@ useEffect(() => {
         {/* Notes section will remain below if you already inserted it elsewhere */}
         {/* Readiness Checklist */}
         {activeTab === "overview" ? (
-        <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-[0.16em] text-gray-400">Readiness</div>
-            <span className="text-xs px-2 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] text-gray-300">
+            <div className="text-xs uppercase tracking-wide text-gray-400">Readiness</div>
+            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">
               Live
             </span>
           </div>
@@ -2948,7 +3057,7 @@ useEffect(() => {
             const hasSession = timeline.some((t: any) => String(t.type) === "SESSION_STARTED" || String(t.type) === "FIELD_ARRIVED" || String(t.type) === "EVIDENCE_ADDED");
             const evidenceN = evidence.filter((ev: any) => !!ev.file?.storagePath && !String(ev.file?.storagePath||"").includes("demo_placeholder")).length;
             const hasEvidence = evidenceN >= 4;
-            const hasNotes = notesSavedLocal || timeline.some((t: any) => String(t.type) === "NOTES_SAVED"); const hasApproved = timeline.some((t: any) => String(t.type) === "FIELD_APPROVED");
+            const hasNotes = notesSavedLocal || timeline.some((t: any) => String(t.type) === "NOTES_SAVED"); const hasApproved = _hasApproved;
 
             const items = [
               ["Field session started", hasSession],
@@ -2968,7 +3077,7 @@ useEffect(() => {
 
                 <div className="grid gap-2">
                   {items.map(([label, ok]) => (
-                    <div key={String(label)} className="flex items-center justify-between rounded-lg bg-black/30 border border-white/[0.08] px-3 py-2">
+                    <div key={String(label)} className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
                       <div className="text-gray-200">{label}</div>
                       <div className={ok ? "text-green-300" : "text-gray-500"}>{ok ? "✓" : "—"}</div>
                     </div>
@@ -2984,7 +3093,7 @@ useEffect(() => {
       </div>
 
       {/* Bottom dock */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/[0.08]">
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/10">
         <div className="grid grid-cols-4 gap-2">
           {/* Arrive */}
           <button
@@ -2993,7 +3102,7 @@ useEffect(() => {
               "py-3 rounded-xl text-sm font-semibold border transition " +
               (arrived
                 ? "bg-emerald-500/15 border-emerald-300/25 text-emerald-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08]")
+                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
             }
             onClick={() => { try { markArrived(); } catch {} }}
             disabled={arrived || isClosed}
@@ -3008,14 +3117,14 @@ useEffect(() => {
               "py-3 rounded-xl text-sm font-semibold border transition " +
               (_hasEvidence
                 ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08]")
+                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
             }
             onClick={() => { try { goAddEvidence(); } catch {} }}
             disabled={isClosed}
             title={
               isClosed
                 ? "Incident is closed (read-only)"
-                : (_hasEvidence ? "Evidence captured (done)" : "Go to Evidence")
+                : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : (_hasEvidence ? "Evidence captured (done)" : "Go to Evidence"))
             }>
             Evidence
           </button>
@@ -3027,7 +3136,7 @@ useEffect(() => {
               "py-3 rounded-xl text-sm font-semibold border transition " +
               (_hasNotes
                 ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08]")
+                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
             }
             onClick={() => { try { router.push("/incidents/" + incidentId + "/notes"); } catch {} }}
             title={_hasNotes ? "Notes saved (done)" : "Write notes"}>
@@ -3041,7 +3150,7 @@ useEffect(() => {
               "w-full py-3 rounded-xl text-sm font-semibold border transition " +
               ((arrived && _hasEvidence && _hasNotes && !submitting && !isClosed)
                 ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
-                : "bg-white/[0.04] border-white/[0.08] text-gray-400 cursor-not-allowed")
+                : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
             }
             disabled={submitting || !arrived || !_hasEvidence || !_hasNotes || isClosed}
             title={
@@ -3063,8 +3172,8 @@ useEffect(() => {
 {/* Modal */}
       {showCreateJob ? (
         <div className="fixed inset-0 bg-black/70 backdrop-blur flex items-center justify-center p-6 z-50">
-          <div className="w-full max-w-lg rounded-2xl bg-black border border-white/[0.08] overflow-hidden">
-            <div className="flex items-center justify-between p-3 border-b border-white/[0.08]">
+          <div className="w-full max-w-lg rounded-2xl bg-black border border-white/10 overflow-hidden">
+            <div className="flex items-center justify-between p-3 border-b border-white/10">
               <div className="text-sm text-gray-200">Create Job</div>
               <button className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/15" onClick={() => setShowCreateJob(false)}>
                 Close
@@ -3072,19 +3181,19 @@ useEffect(() => {
             </div>
             <div className="p-3 space-y-3">
               <input
-                className="w-full px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-gray-200"
+                className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200"
                 placeholder="Job title"
                 value={jobTitle}
                 onChange={(e) => setJobTitle(e.target.value)}
               />
               <input
-                className="w-full px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-gray-200"
+                className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200"
                 placeholder="Assigned to (optional)"
                 value={jobAssignedTo}
                 onChange={(e) => setJobAssignedTo(e.target.value)}
               />
               <textarea
-                className="w-full px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-gray-200 min-h-24"
+                className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200 min-h-24"
                 placeholder="Notes (optional)"
                 value={jobNotes}
                 onChange={(e) => setJobNotes(e.target.value)}
@@ -3105,8 +3214,8 @@ useEffect(() => {
 {/* Modal */}
       {previewOpen ? (
         <div className="fixed inset-0 bg-black/70 backdrop-blur flex items-center justify-center p-6 z-50">
-          <div className="w-full max-w-3xl rounded-2xl bg-black border border-white/[0.08] overflow-hidden">
-            <div className="flex items-center justify-between p-3 border-b border-white/[0.08]">
+          <div className="w-full max-w-3xl rounded-2xl bg-black border border-white/10 overflow-hidden">
+            <div className="flex items-center justify-between p-3 border-b border-white/10">
               <div className="text-sm text-gray-200 truncate">{previewName}</div>
               <button
                 className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/15"
@@ -3115,7 +3224,7 @@ useEffect(() => {
               </button>
               {process.env.NODE_ENV !== "production" && selectedIsHeic && selectedMissingDerivatives ? (
                 <button
-                  className="text-xs px-2 py-1 rounded bg-yellow-500/8 border border-yellow-500/20 hover:bg-amber-500/30"
+                  className="text-xs px-2 py-1 rounded bg-amber-500/20 border border-amber-300/30 hover:bg-amber-500/30"
                   disabled={convertingHeic}
                   onClick={() => { try { convertSelectedHeicNow(); } catch {} }}
                   title="Dev fallback: run HEIC conversion now"
@@ -3143,11 +3252,11 @@ useEffect(() => {
 
               {/* PEAKOPS_V2_CAPTION_UI */}
               <div className="mt-3">
-                <div className="text-[11px] uppercase tracking-[0.16em] text-gray-400">Evidence label</div>
+                <div className="text-[11px] uppercase tracking-wide text-gray-400">Evidence label</div>
 
                 <div className="mt-2 flex items-center gap-2">
                   <input
-                    className="flex-1 px-3 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-sm text-gray-200 outline-none placeholder:text-gray-500"
+                    className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200 outline-none placeholder:text-gray-500"
                     placeholder="e.g., Pole base (wide), conductor break (close), panel label…"
                     value={getCaption(selectedEvidenceId)}
                     onChange={(e) => setCaption(selectedEvidenceId, e.target.value)}
@@ -3164,7 +3273,7 @@ useEffect(() => {
                   />
                   <button
                     type="button"
-                    className="px-3 py-2 rounded-xl bg-white/6 border border-white/12 text-gray-200 hover:bg-white/[0.08] transition text-sm"
+                    className="px-3 py-2 rounded-xl bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-sm"
                     onClick={() => setCaption(selectedEvidenceId, "")}
                     title="Clear label"
                   >
@@ -3187,7 +3296,7 @@ useEffect(() => {
       
     
       {toastMsg ? (
-        <div className="pointer-events-none fixed top-4 right-4 z-50 rounded-xl bg-black/70 border border-white/[0.08] px-4 py-3 text-sm text-gray-200 backdrop-blur">
+        <div className="pointer-events-none fixed top-4 right-4 z-50 rounded-xl bg-black/70 border border-white/10 px-4 py-3 text-sm text-gray-200 backdrop-blur">
           {toastMsg}
         </div>
       ) : null}

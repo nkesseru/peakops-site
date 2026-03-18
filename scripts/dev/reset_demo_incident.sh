@@ -1,8 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+find_firestore_port() {
+  for p in 8085 8087; do
+    if nc -z 127.0.0.1 "$p" 2>/dev/null; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ -n "${FIRESTORE_EMULATOR_HOST:-}" ]]; then
+  EMU_HOST="${FIRESTORE_EMULATOR_HOST%%:*}"
+  EMU_PORT="${FIRESTORE_EMULATOR_HOST##*:}"
+else
+  EMU_HOST="127.0.0.1"
+  EMU_PORT="$(find_firestore_port || true)"
+  if [[ -n "${EMU_PORT:-}" ]]; then
+    export FIRESTORE_EMULATOR_HOST="${EMU_HOST}:${EMU_PORT}"
+  fi
+fi
+
+if [[ -z "${EMU_PORT:-}" ]] || ! nc -z "${EMU_HOST}" "${EMU_PORT}" 2>/dev/null; then
+  echo "[reset-demo] FAIL: Firestore emulator is not listening on 8085 or 8087. Start emulators first."
+  exit 1
+fi
+
+echo "[reset-demo] Using FIRESTORE_EMULATOR_HOST=${EMU_HOST}:${EMU_PORT}"
+
 PROJECT_ID="${PROJECT_ID:-peakops-pilot}"
-FS_PORT="${FS_PORT:-8085}"
+FS_PORT="${FS_PORT:-${EMU_PORT:-8085}}"
 FN_PORT="${FN_PORT:-5002}"
 ORG_ID="${ORG_ID:-riverbend-electric}"
 INCIDENT_ID="${INCIDENT_ID:-inc_demo}"
@@ -48,6 +76,8 @@ delete_collection_docs() {
 say "Deleting incident subcollections for ${INCIDENT_ID}"
 delete_collection_docs "jobs"
 delete_collection_docs "evidence_locker"
+delete_collection_docs "timeline_events"
+delete_collection_docs "timelineEvents"
 delete_collection_docs "timeline"
 delete_collection_docs "conversion_jobs"
 

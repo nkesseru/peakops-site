@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+
 import {
   clearRememberedFunctionsBase,
   getEnvFunctionsBase,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
 
 type IncidentDoc = {
   id: string;
@@ -78,16 +80,6 @@ function fmtAgo(sec?: number) {
   return `${Math.floor(d / 86400)}d`;
 }
 
-function statusPill(status: string) {
-  const s = String(status || "").toLowerCase();
-  if (s === "approved") return "bg-emerald-500/15 border-emerald-300/30 text-emerald-100";
-  if (s === "rejected") return "bg-red-500/15 border-red-300/30 text-red-100";
-  if (s === "complete") return "bg-indigo-500/15 border-indigo-300/30 text-indigo-100";
-  if (s === "review") return "bg-amber-500/15 border-amber-300/30 text-amber-100";
-  if (s === "in_progress") return "bg-sky-500/15 border-sky-300/30 text-sky-100";
-  return "bg-white/8 border-white/15 text-gray-200";
-}
-
 export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const router = useRouter();
   const functionsBase = getFunctionsBase();
@@ -145,7 +137,10 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     return {} as Record<string, string>;
   }, [functionsBaseIsLocal, incidentId]);
 
-  const incidentStatus = String(incident?.status || "open");
+  const incidentStatus = normalizeIncidentStatusShared(incident?.status);
+  const packetEvidenceCount = evidence.length;
+  const packetJobCount = jobs.length;
+
 
   const statusCounts = useMemo(() => {
     const out: Record<string, number> = {
@@ -177,11 +172,17 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     [evidence]
   );
 
+  const liveEvidenceCount = Array.isArray(evidence) ? evidence.length : 0;
+  const liveJobsCount = Array.isArray(jobs) ? jobs.length : 0;
+
   const timelineHighlights = useMemo(() => {
-    const interesting = new Set(["job_completed", "job_approved", "job_rejected", "incident_closed", "FIELD_SUBMITTED", "EVIDENCE_ADDED"]);
+    const interesting = new Set(["job_completed", "job_approved", "job_rejected", "incident_closed", "field_submitted", "evidence_added"]);
     return (timeline || [])
-      .filter((t) => interesting.has(String(t.type || "")))
-      .slice(0, 12);
+      .filter((t) => {
+        const ty = String(t.type || "").toLowerCase();
+        return interesting.has(ty);
+      })
+      .slice(0, 50);
   }, [timeline]);
 
   async function refresh(retryAttempt = 0, baseOverride?: string, fallbackUsed = false) {
@@ -291,7 +292,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         setArtifactReady(false);
       } else {
         setArtifactUrl("");
-        setArtifactHint("No artifact yet. Click Download Artifact to generate it.");
+        setArtifactHint("No artifact yet. Click Artifact to generate it.");
         setArtifactReady(false);
       }
       setErrUrl("");
@@ -427,7 +428,6 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       setArtifactBusy(false);
     }
   }
-
 
   async function ensureArtifact() {
     const requestOrgId = String(orgId || "").trim();
@@ -745,7 +745,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
           <div className="flex items-center justify-between">
             <div className="text-xs uppercase tracking-wide text-gray-400">Incident Status</div>
-            <span className={"text-[11px] px-2 py-0.5 rounded-full border " + statusPill(incidentStatus)}>{incidentStatus}</span>
+            <span className={"text-[11px] px-2 py-0.5 rounded-full border " + incidentStatusPill(incidentStatus)}>{incidentStatusLabel(incidentStatus)}</span>
           </div>
           <div className="mt-3">
             <button
@@ -755,7 +755,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               onClick={() => { void handleArtifactDownload(); }}
               title={artifactHint}
             >
-              {artifactBusy ? "Preparing Artifact..." : "Download Artifact"}
+              {artifactBusy ? "Preparing Artifact..." : (artifactHint.toLowerCase().includes("ready") ? "Download Artifact" : artifactHint.toLowerCase().includes("building") ? "Artifact Building..." : "Generate Artifact")}
             </button>
             <div className="mt-2 text-xs text-gray-500">{artifactHint}</div>
             {lastArtifactFilename ? (
@@ -764,7 +764,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               </div>
             ) : null}
             <div className="mt-1 text-xs text-gray-500">
-              Packet counts: evidence {incident?.packetMeta?.evidenceCount ?? "—"} • jobs {incident?.packetMeta?.jobCount ?? "—"}
+              Packet counts: evidence {incident?.packetMeta?.evidenceCount ?? packetEvidenceCount} • jobs {incident?.packetMeta?.jobCount ?? packetJobCount}
             </div>
           </div>
         </section>
