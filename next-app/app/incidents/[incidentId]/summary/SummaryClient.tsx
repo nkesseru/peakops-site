@@ -685,7 +685,63 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     };
   }, []);
 
+
+  const truthMismatchReasons = useMemo(() => {
+    const reasons: string[] = [];
+
+    const packetMeta: any = (incident as any)?.packetMeta || {};
+    const packetJobCount = Number(packetMeta?.jobCount || 0);
+    const packetEvidenceCount = Number(packetMeta?.evidenceCount || 0);
+
+    const approvedJobs = (Array.isArray(jobs) ? jobs : []).filter((j: any) => {
+      const rs = String(j?.reviewStatus || "").toLowerCase();
+      const st = String(j?.status || "").toLowerCase();
+      return rs === "approved" || st === "approved";
+    });
+
+    const timelineCounts = (Array.isArray(timeline) ? timeline : []).reduce((acc: Record<string, number>, ev: any) => {
+      const ty = String(ev?.type || "").toLowerCase();
+      if (!ty) return acc;
+      acc[ty] = (acc[ty] || 0) + 1;
+      return acc;
+    }, {});
+
+    if (packetJobCount !== approvedJobs.length) {
+      reasons.push(`packet jobCount ${packetJobCount} != approved jobs ${approvedJobs.length}`);
+    }
+
+    if (packetEvidenceCount !== (Array.isArray(evidence) ? evidence.length : 0)) {
+      reasons.push(`packet evidenceCount ${packetEvidenceCount} != evidence rows ${(Array.isArray(evidence) ? evidence.length : 0)}`);
+    }
+
+    if ((timelineCounts["field_submitted"] || 0) < 1) {
+      reasons.push("missing field_submitted event");
+    }
+    if ((timelineCounts["incident_closed"] || 0) < 1) {
+      reasons.push("missing incident_closed event");
+    }
+    if ((timelineCounts["job_approved"] || 0) < 2) {
+      reasons.push("expected at least 2 job_approved events");
+    }
+
+    return reasons;
+  }, [incident, jobs, evidence, timeline]);
+
+  const truthError = truthMismatchReasons.length > 0
+    ? truthMismatchReasons.join(" • ")
+    : "";
+
   return (
+    <>
+      {truthError ? (
+        <div className="mb-4 rounded-xl border border-red-500/40 bg-red-950/40 p-4 text-red-100">
+          <div className="text-sm font-semibold">⚠ System inconsistency detected</div>
+          <div className="mt-2 text-sm">{truthError}</div>
+          <div className="mt-2 text-xs opacity-80">
+            Export should be treated as blocked until this mismatch is resolved.
+          </div>
+        </div>
+      ) : null}
     <main className="min-h-screen bg-black text-white p-4">
       <div className="max-w-6xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-3">
@@ -907,5 +963,6 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         {loading ? <div className="text-xs text-gray-500">Refreshing summary…</div> : null}
       </div>
     </main>
+    </>
   );
 }
