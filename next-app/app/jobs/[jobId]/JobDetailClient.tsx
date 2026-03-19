@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { getFunctionsBase } from "@/lib/functionsBase";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { incidentStatusLabel } from "@/lib/incidents/incidentStatus";
 
 type JobDoc = {
   id: string;
@@ -448,7 +449,7 @@ export default function JobDetailClient({
               {fmtStatus(job?.status)}
             </span>
             <span className="text-xs text-gray-400">incident: {incident?.title || incident?.id || incidentId || "-"}</span>
-            <span className="text-xs text-gray-400">incidentStatus: {String(incident?.status || "-")}</span>
+            <span className="text-xs text-gray-400">incidentStatus: {incident ? incidentStatusLabel(incident?.status) : "-"}</span>
           </div>
           <div className="text-xs text-gray-400">org: {orgId} · assignedOrg: {String(job?.assignedOrgId || "-")}</div>
         </section>
@@ -476,7 +477,20 @@ export default function JobDetailClient({
             ) : null}
           </div>
           <div className="flex items-center gap-2">
-            <input type="file" accept="image/*,.heic,.heif" onChange={onUpload} disabled={uploading} />
+            <label
+              htmlFor="job-detail-upload-input"
+              className={"px-3 py-1.5 rounded border text-xs " + (uploading ? "border-white/10 bg-white/5 text-gray-500 cursor-not-allowed" : "border-white/15 bg-white/5 text-gray-200 hover:bg-white/10 cursor-pointer")}
+            >
+              {uploading ? "Uploading..." : "Upload photo"}
+            </label>
+            <input
+              id="job-detail-upload-input"
+              type="file"
+              accept="image/*,.heic,.heif"
+              onChange={onUpload}
+              disabled={uploading}
+              className="hidden"
+            />
             <span className="text-xs text-gray-400">{uploadStatus}</span>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -485,7 +499,7 @@ export default function JobDetailClient({
               const src = String(thumbUrlByKey[key] || "").trim();
               return (
                 <div key={ev.id} className="rounded border border-white/10 bg-black/25 p-2">
-                  <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || ev.id)}</div>
+                  <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence")}</div>
                   {src ? (
                     <button
                       type="button"
@@ -493,7 +507,7 @@ export default function JobDetailClient({
                       onClick={() =>
                         setPreviewOpen({
                           src,
-                          name: String(ev?.file?.originalName || ev.id),
+                          name: String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence"),
                         })
                       }
                     >
@@ -504,7 +518,7 @@ export default function JobDetailClient({
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={src}
-                          alt={String(ev?.file?.originalName || ev.id)}
+                          alt={String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence")}
                           className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
                           onError={() => { void renewThumbOnce(ev, src); }}
                         />
