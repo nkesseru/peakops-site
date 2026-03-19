@@ -55,11 +55,13 @@ function isApprovedJob(job) {
 function getEvidenceJobId(ev) {
   const top = String(ev?.jobId || "").trim();
   if (top) return top;
-  return String(ev?.evidence?.jobId || "").trim();
+  const nested = String(ev?.evidence?.jobId || "").trim();
+  return nested || null;
 }
 function normalizeTimelineType(type) {
-  return String(type || "").toLowerCase();
+  return String(type || "").trim().toLowerCase();
 }
+
 
 exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
   try {
@@ -92,6 +94,38 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       return acc;
     }, {});
     const timelineNormalized = timeline.map((t) => ({ ...t, type: normalizeTimelineType(t?.type) }));
+
+
+    const timelineCounts = timelineNormalized.reduce((acc, ev) => {
+      const t = normalizeTimelineType(ev?.type);
+      if (!t) return acc;
+      acc[t] = Number(acc[t] || 0) + 1;
+      return acc;
+    }, {});
+
+    const truthMismatchReasons = [];
+
+    const unassigned = evidence.filter((ev) => !getEvidenceJobId(ev));
+    if (unassigned.length > 0) {
+      truthMismatchReasons.push(`${unassigned.length} evidence items unassigned`);
+    }
+    if ((timelineCounts["field_submitted"] || 0) < 1) {
+      truthMismatchReasons.push("missing field_submitted");
+    }
+    if ((timelineCounts["incident_closed"] || 0) < 1) {
+      truthMismatchReasons.push("missing incident_closed");
+    }
+    if ((timelineCounts["job_approved"] || 0) < approvedJobs.length) {
+      truthMismatchReasons.push("missing job_approved events");
+    }
+
+    if (truthMismatchReasons.length > 0) {
+      return j(res, 409, {
+        ok: false,
+        error: "truth_mismatch",
+        reasons: truthMismatchReasons,
+      });
+    }
 
     const bucketObj = getStorage().bucket();
     const bucket = bucketObj.name;
