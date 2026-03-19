@@ -142,3 +142,5 @@ firebase.deploy.functions_clean.json
 # Canonical env contract: keep template, ignore local values
 next-app/.env.local
 !next-app/.env.local.example
+peakops_*.sh
+*.bak
