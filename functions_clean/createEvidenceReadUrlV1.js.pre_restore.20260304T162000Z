@@ -1,0 +1,215 @@
+require("./_emu_bootstrap");
+const { onRequest } = require("firebase-functions/v2/https");
+const admin = require("firebase-admin");
+const { getStorage } = require("firebase-admin/storage");
+
+if (!admin.apps.length) admin.initializeApp();
+
+function j(res, status, body) {
+  res.status(status).set("content-type", "application/json").send(JSON.stringify(body));
+}
+
+function isEmulatorRuntime() {
+  return (
+    String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
+    !!process.env.FIREBASE_EMULATOR_HUB ||
+    !!process.env.FIREBASE_STORAGE_EMULATOR_HOST
+  );
+}
+
+function trim(v) {
+  return String(v || "").trim();
+}
+
+function flipBucketFamily(b) {
+  const n = trim(b);
+  if (!n) return "";
+  if (n.endsWith(".firebasestorage.app")) return n.replace(/\.firebasestorage\.app$/i, ".appspot.com");
+  if (n.endsWith(".appspot.com")) return n.replace(/\.appspot\.com$/i, ".firebasestorage.app");
+  return "";
+}
+
+function projectId() {
+  return trim(process.env.GCLOUD_PROJECT || process.env.FIREBASE_PROJECT_ID || "");
+}
+
+function buildMediaUrl(baseKind, bucket, storagePath) {
+  const b = encodeURIComponent(bucket);
+  const p = encodeURIComponent(storagePath);
+  if (baseKind === "v0") return `http://127.0.0.1:9199/v0/b/${b}/o/${p}?alt=media`;
+  return `http://127.0.0.1:9199/download/storage/v1/b/${b}/o/${p}?alt=media`;
+}
+
+function buildEmulatorBucketCandidates({ requestedBucket, adminDefaultBucket }) {
+  const out = [];
+  const req = trim(requestedBucket);
+  if (req) {
+    out.push(req);
+    const reqFlip = flipBucketFamily(req);
+    if (reqFlip) out.push(reqFlip);
+  }
+
+  const envA = trim(process.env.FIREBASE_STORAGE_BUCKET || "");
+  if (envA) {
+    out.push(envA);
+    const envAFlip = flipBucketFamily(envA);
+    if (envAFlip) out.push(envAFlip);
+  }
+
+  const envB = trim(process.env.STORAGE_BUCKET || "");
+  if (envB) {
+    out.push(envB);
+    const envBFlip = flipBucketFamily(envB);
+    if (envBFlip) out.push(envBFlip);
+  }
+
+  const adm = trim(adminDefaultBucket);
+  if (adm) {
+    out.push(adm);
+    const admFlip = flipBucketFamily(adm);
+    if (admFlip) out.push(admFlip);
+  }
+
+  const pid = projectId();
+  if (pid) {
+    out.push(`${pid}.firebasestorage.app`);
+    out.push(`${pid}.appspot.com`);
+  }
+  return Array.from(new Set(out.filter(Boolean)));
+}
+
+async function probeHttpRange(url) {
+  try {
+    const r = await fetch(url, { method: "GET", headers: { Range: "bytes=0-0" }, cache: "no-store" });
+    return Number(r.status || 0);
+  } catch {
+    return 0;
+  }
+}
+
+exports.createEvidenceReadUrlV1 = onRequest({ cors: true }, async (req, res) => {
+  try {
+    if (req.method !== "POST") return j(res, 405, { ok: false, error: "POST required" });
+
+    const body = req.body || {};
+    const orgId = trim(body.orgId);
+    const incidentId = trim(body.incidentId);
+    const storagePath = trim(body.storagePath);
+    const requestedBucket = trim(body.bucket);
+    const debug = body && body.debug === true;
+
+    if (!orgId || !incidentId) return j(res, 400, { ok: false, error: "orgId and incidentId required" });
+    if (!storagePath) return j(res, 400, { ok: false, error: "missing_storagePath" });
+
+    if (isEmulatorRuntime() && !process.env.FIREBASE_STORAGE_EMULATOR_HOST) {
+      process.env.FIREBASE_STORAGE_EMULATOR_HOST = "127.0.0.1:9199";
+    }
+
+    const adminDefaultBucket = (() => {
+      try {
+        return trim(getStorage().bucket().name);
+      } catch {
+        return "";
+      }
+    })();
+
+    // Emulator branch: use discovered buckets + working endpoint shape
+    if (isEmulatorRuntime()) {
+      const candidates = buildEmulatorBucketCandidates({
+        requestedBucket,
+        adminDefaultBucket,
+      });
+      const tried = [];
+
+      for (const b of candidates) {
+        const urlDownload = buildMediaUrl("storage", b, storagePath);
+        const codeDownload = await probeHttpRange(urlDownload);
+        tried.push({ bucket: b, url: urlDownload, http: codeDownload });
+        if (codeDownload === 200 || codeDownload === 206) {
+          return j(res, 200, {
+            ok: true,
+            orgId,
+            incidentId,
+            bucket: b,
+            storagePath,
+            url: urlDownload,
+            emulator: true,
+            ...(debug ? { details: { tried } } : {}),
+          });
+        }
+
+        const urlV0 = buildMediaUrl("v0", b, storagePath);
+        const codeV0 = await probeHttpRange(urlV0);
+        tried.push({ bucket: b, url: urlV0, http: codeV0 });
+        if (codeV0 === 200 || codeV0 === 206) {
+          return j(res, 200, {
+            ok: true,
+            orgId,
+            incidentId,
+            bucket: b,
+            storagePath,
+            url: urlV0,
+            emulator: true,
+            ...(debug ? { details: { tried } } : {}),
+          });
+        }
+      }
+
+      return j(res, 404, {
+        ok: false,
+        error: "object_not_found",
+        orgId,
+        incidentId,
+        bucket: requestedBucket || adminDefaultBucket || "",
+        storagePath,
+        emulator: true,
+        details: debug ? { tried } : { tried },
+      });
+    }
+
+    // Production branch: signed URL (unchanged intent)
+    const pid = projectId();
+    const resolvedBucket =
+      requestedBucket ||
+      trim(process.env.FIREBASE_STORAGE_BUCKET || process.env.STORAGE_BUCKET || "") ||
+      adminDefaultBucket ||
+      (pid ? `${pid}.appspot.com` : "");
+
+    if (!resolvedBucket) return j(res, 400, { ok: false, error: "bucket_missing" });
+
+    const bucket = getStorage().bucket(resolvedBucket);
+    const file = bucket.file(storagePath);
+    const [exists] = await file.exists();
+    if (!exists) return j(res, 404, { ok: false, error: "object_not_found", bucket: bucket.name, storagePath });
+
+    const [url] = 
+  // PEAKOPS_EMULATOR_READURL_PATCH_v1
+  // When running against Firebase Storage emulator, do NOT return GCS signed URLs.
+  // Return a direct emulator URL: http://<host>/v0/b/<bucket>/o/<path>?alt=media
+  const _emuHost = process.env.FIREBASE_STORAGE_EMULATOR_HOST;
+  const _isEmu = !!_emuHost || process.env.FUNCTIONS_EMULATOR === "true";
+  if (_isEmu) {
+    const host = _emuHost || "127.0.0.1:9199";
+    const encPath = encodeURIComponent(storagePath);
+    const readUrl = `http://${host}/v0/b/${bucket}/o/${encPath}?alt=media`;
+    return res.status(200).json({
+      ok: true,
+      bucket,
+      storagePath,
+      readUrl,
+      mode: "emulator_direct",
+      expiresSec: expiresSec || 3600,
+    });
+  }
+
+await file.getSignedUrl({
+      version: "v4",
+      action: "read",
+      expires: Date.now() + 15 * 60 * 1000,
+    });
+
+    return j(res, 200, { ok: true, orgId, incidentId, bucket: bucket.name, storagePath, url });
+  } catch (e) {
+    return j(res, 500, { ok: false, error: String(e?.message || e) });
+  }
+});

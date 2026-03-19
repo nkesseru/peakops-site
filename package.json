@@ -1,11 +1,38 @@
 {
-  "name": "my-app",
+  "name": "peakops-api",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "stop": "pkill -f node || true",
-    "dev": "npm run stop && node --env-file=.env functions/server.mjs",
-    "seed": "node scripts/seedFirestore.mjs",
-    "deploy:db": "firebase deploy --only firestore:rules,firestore:indexes"
-  }
+    "start": "node functions/server.mjs",
+    "test:contracts": "bash scripts/dev/contracts_stack_up_fixed.sh car_abc123 cust_acme_001 v1",
+    "dev": "cd next-app && pnpm dev",
+    "next:restart": "cd next-app && set -a; [ -f .env.local ] && . ./.env.local; set +a; pnpm run dev:local",
+    "build": "next build",
+    "ui": "lsof -ti :3001 | xargs -r kill -9 || true; cd next-app && PORT=3001 NEXT_DISABLE_TURBOPACK=1 npm run dev",
+    "ui:kill": "pkill -f \"next dev\" || true && rm -f next-app/.next/dev/lock",
+    "dev:bootstrap:functions-clean": "bash scripts/dev/bootstrap_functions_clean.sh",
+    "seed:orgs:demo": "node scripts/dev/seed_orgs_demo.js",
+    "demo:kill": "bash scripts/dev/kill_demo_ports.sh",
+    "demo:boot": "bash scripts/dev/demo_up.sh",
+    "demo:reset": "bash scripts/dev/reset_demo.sh"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.10.0",
+    "@google-cloud/storage": "^7.17.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.7.0",
+    "helmet": "^7.1.0",
+    "json-logic-js": "^2.0.5",
+    "pdfkit": "^0.15.0",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  },
+  "packageManager": "pnpm@10.29.3+sha512.498e1fb4cca5aa06c1dcf2611e6fafc50972ffe7189998c409e90de74566444298ffe43e6cd2acdc775ba1aa7cc5e092a8b7054c811ba8c5770f84693d33d2dc"
 }

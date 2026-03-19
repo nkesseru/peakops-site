@@ -1,6 +1,6 @@
 // setClaims.mjs — Firebase Admin v12 ESM
 import fs from 'fs';
-import { initializeApp, cert } from 'firebase-admin/app';
+import { initializeApp, cert, applicationDefault } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 
 function loadSA() {
@@ -15,7 +15,11 @@ function loadSA() {
 
 const sa = loadSA();
 console.log('Admin Project:', sa.project_id);       // 👈 DIAGNOSTIC
-initializeApp({ credential: cert(sa), projectId: sa.project_id });
+const useAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE);
+initializeApp({
+  credential: useAdc ? applicationDefault() : cert(sa),
+  projectId: sa.project_id
+});
 
 const [uid, orgId, role] = process.argv.slice(2);
 if (!uid || !orgId || !role) {

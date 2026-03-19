@@ -22,7 +22,11 @@
 
 # misc
 .DS_Store
+key.one
+pem.check
 *.pem
+*.key
+*.p12
 
 # debug
 npm-debug.log*
@@ -58,3 +62,85 @@ service-account.json
 *.pem
 *.p12
 
+# Node / build
+node_modules/
+.next/
+dist/
+
+# Env / secrets
+.env
+.env.local
+service-account.json
+ingest-fns/service-account.json
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+.logs/
+firebase-debug.log
+firestore-debug.log
+
+# local logs/debug
+.logs/
+firebase-debug.log
+firestore-debug.log
+unzipped_*/
+resp_inc_*.json
+
+# --- Local logs / emulator junk ---
+.logs/
+firebase-debug.log
+firestore-debug.log
+*-debug.log
+
+# --- Evidence ZIP artifacts ---
+peakops_evidence_*.zip
+unzipped_*/
+
+# --- Temp scratch / dumps ---
+.tmp_*.json
+list_inc_*.json
+resp_*.json
+
+# --- Next app backups created during patching ---
+next-app/src/app/admin/incidents/[id]/page.tsx.bak*
+next-app/src/app/admin/incidents/[id]/page.tsx.bak.*
+next-app/src/app/admin/incidents/[id]/page.tsx.bak_*
+
+.logs/
+firebase-debug.log
+firestore-debug.log
+
+# local dev noise
+.logs/
+**/*.bak_*
+**/*.bak.*
+peakops_*packet_*.zip
+peakops_regpacket_*.zip
+next-app/package-lock.json
+
+# Secret hygiene (credentials JSON)
+serviceAccount.json
+service-account.json
+sa.json
+sa-peakops.json
+ingest-fns/service-account.json
+next-app/service-account.json
+*service-account*.json
+*serviceAccount*.json
+sa*.json
+.secrets/
+
+# One True Stack local-only archives / scratch
+archive/local-only/
+archive/local-only/**
+firebase.emu.min.json
+firebase.deploy.functions_clean.json
+
+# Canonical env contract: keep template, ignore local values
+next-app/.env.local
+!next-app/.env.local.example
+peakops_*.sh
+*.bak

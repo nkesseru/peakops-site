@@ -1,16 +1,9 @@
 {
-  "firestore": {
-    "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
-  },
-  "storage": [
-    {
-      "target": "rules",
-      "rules": "storage.rules"
-    }
-  ],
-  "functions": {
-    "source": "ingest-fns",
-    "runtime": "nodejs20"
+  "functions": { "source": "functions_clean" },
+  "storage": { "rules": "firebase/storage.rules" },
+  "emulators": {
+    "functions":  { "host": "127.0.0.1", "port": 5004 },
+    "firestore":  { "host": "127.0.0.1", "port": 8087, "websocketPort": 9154 },
+    "storage":    { "host": "127.0.0.1", "port": 9199 }
   }
 }

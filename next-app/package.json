@@ -1,0 +1,41 @@
+{
+  "name": "next-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 3001",
+    "dev:local": "lsof -tiTCP:3001 -sTCP:LISTEN | xargs -r kill -9 || true; rm -rf .next; next dev --hostname 127.0.0.1 --port 3001",
+    "dev:clean": "lsof -tiTCP:3001 -sTCP:LISTEN | xargs -r kill -9 || true && rm -rf .next && pnpm run dev:local",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "ui": "cd next-app && PORT=3001 npm run dev",
+    "ui:kill": "pkill -f \"next dev\" || true && rm -f next-app/.next/dev/lock",
+    "dev:kill": "lsof -tiTCP:3001 -sTCP:LISTEN | xargs -r kill -9 || true"
+  },
+  "dependencies": {
+    "@uiw/react-json-view": "2.0.0-alpha.40",
+    "firebase-admin": "^13.6.0",
+    "idb-keyval": "^6.2.2",
+    "jszip": "^3.10.1",
+    "next": "16.0.3",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "react-json-view": "^1.21.3",
+    "react-json-view-lite": "^2.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.17",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "autoprefixer": "^10.4.22",
+    "babel-plugin-react-compiler": "1.0.0",
+    "baseline-browser-mapping": "^2.10.0",
+    "eslint": "^9",
+    "eslint-config-next": "16.0.3",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.17",
+    "typescript": "^5"
+  }
+}

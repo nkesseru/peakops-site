@@ -1,0 +1,12 @@
+[
+  {
+    "id": "t_packet_generated",
+    "type": "PACKET_GENERATED",
+    "title": "Packet generated",
+    "message": "Immutable incident packet generated.",
+    "occurredAt": "2026-01-12T16:26:48.3NZ",
+    "createdAt": "2026-01-12T16:26:48.3NZ",
+    "orgId": "org_001",
+    "incidentId": "inc_TEST"
+  }
+]

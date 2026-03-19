@@ -1,0 +1,212 @@
+"use client";
+
+// --- Mint cache (dev/runtime) ---
+// Prevents runaway re-mint loops from hammering /api/fn/createEvidenceReadUrlV1.
+const __PEAKOPS_MINT_CACHE: Record<string, { url: string; at: number }> = {};
+const __PEAKOPS_MINT_TTL_MS = 30_000; // keep short so refresh can still work
+export type EvidenceImageRefKind = "thumbnailPath" | "thumbPath" | "previewPath" | "original";
+
+export type EvidenceImageRef = {
+  kind: EvidenceImageRefKind;
+  bucket: string;
+  storagePath: string;
+};
+
+export function getThumbExpiresSec(): number {
+  // Default 15m; can be overridden via NEXT_PUBLIC_THUMB_EXPIRES_SEC
+  const raw = String(process.env.NEXT_PUBLIC_THUMB_EXPIRES_SEC || "").trim();
+  const n = raw ? Number(raw) : NaN;
+  if (Number.isFinite(n) && n >= 30 && n <= 86400) return Math.floor(n);
+  return 900;
+}
+
+export function logThumbEvent(event: string, details: any = {}): void {
+  // Dev-only logging; safe no-op in prod
+  if (process.env.NODE_ENV === "production") return;
+  try {
+    // eslint-disable-next-line no-console
+    console.warn("[thumb]", event, details);
+  } catch {
+    // ignore
+  }
+}
+
+function pickStr(...vals: any[]): string {
+  for (const v of vals) {
+    const s = String(v ?? "").trim();
+    if (s) return s;
+  }
+  return "";
+}
+
+function getDot(obj: any, dotted: string): string {
+  const direct = String(obj?.[dotted] ?? "").trim();
+  if (direct) return direct;
+  const parts = dotted.split(".");
+  let cur = obj;
+  for (const p of parts) {
+    if (!cur || typeof cur !== "object") return "";
+    cur = cur[p];
+  }
+  return String(cur ?? "").trim();
+}
+
+export function getBestEvidenceImageRef(ev: any): EvidenceImageRef | null {
+  if (!ev) return null;
+
+  // Prefer derivative thumbnail paths if present, else original
+  const bucket = pickStr(
+    getDot(ev, "file.bucket"),
+    ev?.file?.bucket,
+    ev?.bucket
+  );
+
+  const thumbnailPath = pickStr(
+    getDot(ev, "file.thumbnailPath"),
+    ev?.file?.thumbnailPath
+  );
+
+  const thumbPath = pickStr(
+    getDot(ev, "file.thumbPath"),
+    ev?.file?.thumbPath,
+    getDot(ev, "file.derivatives.thumb.storagePath"),
+    ev?.file?.derivatives?.thumb?.storagePath
+  );
+
+  const previewPath = pickStr(
+    getDot(ev, "file.previewPath"),
+    ev?.file?.previewPath,
+    getDot(ev, "file.derivatives.preview.storagePath"),
+    ev?.file?.derivatives?.preview?.storagePath
+  );
+
+  const storagePath = pickStr(
+    thumbnailPath,
+    thumbPath,
+    previewPath,
+    getDot(ev, "file.storagePath"),
+    ev?.file?.storagePath,
+    ev?.storagePath
+  );
+
+  if (!bucket || !storagePath) {
+    logThumbEvent("ref_missing", { evidenceId: ev?.id || ev?.evidenceId || "", bucket, storagePath });
+    return null;
+  }
+
+  const kind: EvidenceImageRefKind =
+    thumbnailPath ? "thumbnailPath" :
+    thumbPath ? "thumbPath" :
+    previewPath ? "previewPath" :
+    "original";
+
+  return { kind, bucket, storagePath };
+}
+
+export async function mintEvidenceReadUrl(
+  input: {
+  // --- cache/inflight guard (prevents re-mint storms) ---
+  const cacheKey = `${String(evidenceId || "")}::${String(kind || "")}`;
+  const hit = __PEAKOPS_MINT_CACHE[cacheKey];
+  if (hit && (Date.now() - hit.at) < __PEAKOPS_MINT_TTL_MS) {
+    return { ok: true, url: hit.url, status: 200, mintHttp: 200, mintError: "cache_hit" };
+  }
+  const inflight = __PEAKOPS_MINT_INFLIGHT[cacheKey];
+  if (inflight) return inflight;
+  const __run = (async () => {
+
+    try {
+      const p = __run();
+      __PEAKOPS_MINT_INFLIGHT[cacheKey] = p;
+      return await p;
+    } finally {
+      delete __PEAKOPS_MINT_INFLIGHT[cacheKey];
+    }
+ orgId: string; incidentId: string; bucket: string; storagePath: string; expiresSec?: number },
+  headers?: Record<string, string>
+): Promise<{ ok: boolean; url?: string; error?: string; status?: number; details?: any; mintHttp?: number; mintError?: string }> {
+  // cache guard (avoid re-mint storms)
+  const cacheKey = `${String(evidenceId || "")}::${String(kind || "")}`;
+  const hit = __PEAKOPS_MINT_CACHE[cacheKey];
+  if (hit && (Date.now() - hit.at) < __PEAKOPS_MINT_TTL_MS) {
+    return { ok: true, url: hit.url, status: 200, mintHttp: 200, mintError: "cache_hit" };
+  }
+
+  try {
+    const expiresSec = Number(input.expiresSec || getThumbExpiresSec());
+    const body = {
+      orgId: input.orgId,
+      incidentId: input.incidentId,
+      bucket: input.bucket,
+      storagePath: input.storagePath,
+      expiresSec,
+    };
+
+    const res = await fetch("/api/fn/createEvidenceReadUrlV1", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(headers || {}) },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+
+    const txt = await res.text().catch(() => "");
+    let out: any = {};
+    try {
+      out = txt ? JSON.parse(txt) : {};
+    } catch {
+      return { ok: false, error: "upstream_non_json", status: res.status, details: { raw: txt.slice(0, 300) }, mintHttp: res.status, mintError: "upstream_non_json" };
+    }
+
+    const mintedUrl = String(out?.url || "").trim();
+    if (!(res.ok && out?.ok === true && mintedUrl)) {
+      return {
+        ok: false,
+        error: String(out?.error || "read_url_failed"),
+        status: res.status,
+        details: out?.details ?? out ?? null,
+        mintHttp: res.status,
+        mintError: String(out?.error || "read_url_failed"),
+      };
+    }
+
+    // HARD GUARD: never allow storageProxy to be emitted from this helper
+    if (mintedUrl.includes("/api/storageProxy")) {
+      return {
+        ok: false,
+        error: "invalid_minted_url_storageProxy",
+        status: 410,
+        details: { mintedUrl },
+        mintHttp: res.status,
+        mintError: "invalid_minted_url_storageProxy",
+      };
+    }
+
+    // cache-bust so tiles don’t get stuck on stale 404/old content
+    const url = `${mintedUrl}${mintedUrl.includes("?") ? "&" : "?"}v=${Date.now()}`;
+
+    return {
+      ok: true,
+      url,
+      status: res.status,
+      details: out?.details ?? null,
+      mintHttp: res.status,
+      mintError: "",
+    };
+  } catch (e: any) {
+    return { ok: false, error: "network_or_parse_error", status: 0, details: String(e?.message || e), mintHttp: 0, mintError: "network_or_parse_error" };
+  }
+}
+
+
+  })();
+export async function probeMintedThumbUrl(url: string): Promise<{ ok: boolean; status: number; error?: string }> {
+  // Optional tiny probe (dev only)
+  if (!url) return { ok: false, status: 0, error: "empty_url" };
+  try {
+    const res = await fetch(url, { method: "GET", headers: { Range: "bytes=0-0" }, cache: "no-store" });
+    const ok = res.status === 200 || res.status === 206;
+    return { ok, status: res.status };
+  } catch (e: any) {
+    return { ok: false, status: 0, error: String(e?.message || e) };
+  }
+}

@@ -1,14 +1,17 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.rebuildCarbonSummary = exports.rebuildYesterdaySummary = exports.onCarbonEventCreated = exports.computeCarbonLite = void 0;
 // ingest-fns/src/carbonLite.ts
-import { onCall, HttpsError } from "firebase-functions/v2/https";
-import { onDocumentCreated } from "firebase-functions/v2/firestore";
-import { onSchedule } from "firebase-functions/v2/scheduler";
-import { setGlobalOptions, logger } from "firebase-functions/v2";
-import { initializeApp, getApps } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-setGlobalOptions({ region: "us-central1", maxInstances: 10 });
-if (getApps().length === 0)
-    initializeApp();
-const db = getFirestore();
+const https_1 = require("firebase-functions/v2/https");
+const firestore_1 = require("firebase-functions/v2/firestore");
+const scheduler_1 = require("firebase-functions/v2/scheduler");
+const v2_1 = require("firebase-functions/v2");
+const app_1 = require("firebase-admin/app");
+const firestore_2 = require("firebase-admin/firestore");
+(0, v2_1.setGlobalOptions)({ region: "us-central1", maxInstances: 10 });
+if ((0, app_1.getApps)().length === 0)
+    (0, app_1.initializeApp)();
+const db = (0, firestore_2.getFirestore)();
 const DEFAULT_FACTORS = {
     road_kg_per_mile: {
         light_gas: 0.40,
@@ -32,7 +35,7 @@ async function resolveFactors(orgId, input) {
             orgFactors = snap.data() ?? {};
     }
     catch (e) {
-        logger.warn("carbonLite: unable to read org factors", e);
+        v2_1.logger.warn("carbonLite: unable to read org factors", e);
     }
     const vehicleKey = input.vehicle_type ?? "unknown";
     const idleKey = input.idle_fuel ?? "unknown";
@@ -49,7 +52,7 @@ async function resolveFactors(orgId, input) {
 }
 function assertOrg(input) {
     if (!input?.orgId)
-        throw new HttpsError("invalid-argument", "orgId is required");
+        throw new https_1.HttpsError("invalid-argument", "orgId is required");
 }
 function toDateOnlyUTC(d) {
     const y = d.getUTCFullYear();
@@ -72,7 +75,7 @@ function calculateCO2e(input, factors) {
         total_kg,
     };
 }
-export const computeCarbonLite = onCall(async (req) => {
+exports.computeCarbonLite = (0, https_1.onCall)(async (req) => {
     const data = req.data;
     assertOrg(data);
     const factors = await resolveFactors(data.orgId, data);
@@ -96,19 +99,19 @@ export const computeCarbonLite = onCall(async (req) => {
         activity_end_iso: data.activity_end_iso ?? null,
         day_key_utc: dayKey,
         notes: data.notes ?? null,
-        created_at: FieldValue.serverTimestamp(),
+        created_at: firestore_2.FieldValue.serverTimestamp(),
     };
     const ref = await db.collection(`orgs/${data.orgId}/carbon_estimates`).add(payload);
     await db.doc(`orgs/${data.orgId}/carbon_daily_summaries/${dayKey}`).set({
-        total_kg: FieldValue.increment(calc.total_kg),
-        road_kg: FieldValue.increment(calc.road_kg),
-        idle_kg: FieldValue.increment(calc.idle_kg),
-        grid_kg: FieldValue.increment(calc.grid_kg),
-        updated_at: FieldValue.serverTimestamp(),
+        total_kg: firestore_2.FieldValue.increment(calc.total_kg),
+        road_kg: firestore_2.FieldValue.increment(calc.road_kg),
+        idle_kg: firestore_2.FieldValue.increment(calc.idle_kg),
+        grid_kg: firestore_2.FieldValue.increment(calc.grid_kg),
+        updated_at: firestore_2.FieldValue.serverTimestamp(),
     }, { merge: true });
     return { id: ref.id, ...payload };
 });
-export const onCarbonEventCreated = onDocumentCreated("orgs/{orgId}/carbon_events/{eventId}", async (event) => {
+exports.onCarbonEventCreated = (0, firestore_1.onDocumentCreated)("orgs/{orgId}/carbon_events/{eventId}", async (event) => {
     const orgId = event.params.orgId;
     const data = event.data?.data();
     if (!data)
@@ -145,19 +148,19 @@ export const onCarbonEventCreated = onDocumentCreated("orgs/{orgId}/carbon_event
         activity_start_iso: start.toISOString(),
         activity_end_iso: inputs.activity_end_iso ?? null,
         day_key_utc: dayKey,
-        created_at: FieldValue.serverTimestamp(),
+        created_at: firestore_2.FieldValue.serverTimestamp(),
     };
     const ref = await db.collection(`orgs/${orgId}/carbon_estimates`).add(estimate);
     await db.doc(`orgs/${orgId}/carbon_daily_summaries/${dayKey}`).set({
-        total_kg: FieldValue.increment(calc.total_kg),
-        road_kg: FieldValue.increment(calc.road_kg),
-        idle_kg: FieldValue.increment(calc.idle_kg),
-        grid_kg: FieldValue.increment(calc.grid_kg),
-        updated_at: FieldValue.serverTimestamp(),
+        total_kg: firestore_2.FieldValue.increment(calc.total_kg),
+        road_kg: firestore_2.FieldValue.increment(calc.road_kg),
+        idle_kg: firestore_2.FieldValue.increment(calc.idle_kg),
+        grid_kg: firestore_2.FieldValue.increment(calc.grid_kg),
+        updated_at: firestore_2.FieldValue.serverTimestamp(),
     }, { merge: true });
-    logger.info(`carbonLite: computed from event ${event.params.eventId} -> estimate ${ref.id}`);
+    v2_1.logger.info(`carbonLite: computed from event ${event.params.eventId} -> estimate ${ref.id}`);
 });
-export const rebuildYesterdaySummary = onSchedule("0 8 * * *", async (event) => {
+exports.rebuildYesterdaySummary = (0, scheduler_1.onSchedule)("0 8 * * *", async (event) => {
     const now = new Date();
     const y = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const dayKey = toDateOnlyUTC(y);
@@ -183,15 +186,15 @@ export const rebuildYesterdaySummary = onSchedule("0 8 * * *", async (event) => 
             idle_kg: +idle.toFixed(3),
             grid_kg: +grid.toFixed(3),
             total_kg: +total.toFixed(3),
-            rebuilt_at: FieldValue.serverTimestamp(),
+            rebuilt_at: firestore_2.FieldValue.serverTimestamp(),
         }, { merge: true });
     }
-    logger.info("carbonLite: rebuilt yesterday summaries", { dayKey });
+    v2_1.logger.info("carbonLite: rebuilt yesterday summaries", { dayKey });
 });
-export const rebuildCarbonSummary = onCall(async (req) => {
+exports.rebuildCarbonSummary = (0, https_1.onCall)(async (req) => {
     const { orgId, start_day_utc, end_day_utc } = req.data || {};
     if (!orgId || !start_day_utc || !end_day_utc) {
-        throw new HttpsError("invalid-argument", "orgId, start_day_utc, end_day_utc are required");
+        throw new https_1.HttpsError("invalid-argument", "orgId, start_day_utc, end_day_utc are required");
     }
     const estSnap = await db
         .collection(`orgs/${orgId}/carbon_estimates`)
@@ -215,7 +218,7 @@ export const rebuildCarbonSummary = onCall(async (req) => {
             idle_kg: +b.idle.toFixed(3),
             grid_kg: +b.grid.toFixed(3),
             total_kg: +b.total.toFixed(3),
-            rebuilt_at: FieldValue.serverTimestamp(),
+            rebuilt_at: firestore_2.FieldValue.serverTimestamp(),
         }, { merge: true });
     }
     return { ok: true, days_updated: Array.from(buckets.keys()).sort() };

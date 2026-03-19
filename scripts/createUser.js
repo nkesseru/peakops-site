@@ -9,7 +9,11 @@ function loadSA() {
   if (sa.private_key?.includes('\\n')) sa.private_key = sa.private_key.replace(/\\n/g,'\n');
   return sa;
 }
-admin.initializeApp({ credential: admin.credential.cert(loadSA()) });
+const sa = loadSA();
+const useAdc = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.K_SERVICE);
+admin.initializeApp({
+  credential: useAdc ? admin.credential.applicationDefault() : admin.credential.cert(sa),
+});
 
 (async () => {
   const [email, password] = process.argv.slice(2);

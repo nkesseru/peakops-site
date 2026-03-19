@@ -1,36 +1,189 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PeakOps One True Stack
 
-## Getting Started
+Canonical runtime contract:
 
-First, run the development server:
+- Frontend: `next-app`
+- Functions: `functions_clean`
+- Firebase config: root `firebase.json`
+
+Anything else (root `app/`, root `components/`, `functions/`, alternate firebase config files) is non-canonical and should not be used for demo boot.
+
+## Local Environment Contract
+
+Use `next-app/.env.local` (template at `next-app/.env.local.example`):
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NEXT_PUBLIC_ENV=local
+NEXT_PUBLIC_FUNCTIONS_BASE=http://127.0.0.1:5002/peakops-pilot/us-central1
+NEXT_PUBLIC_TECH_USER_ID=tech_web
+# Optional: enable direct signed PUT in local dev (default is proxy fallback path)
+# NEXT_PUBLIC_USE_SIGNED_PUT=1
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Start Commands (Canonical)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Start emulators:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+firebase emulators:start --project peakops-pilot --config firebase.json --only functions,firestore,ui
+```
 
-## Learn More
+2. Seed deterministic demo data (incident + evidence):
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+scripts/dev/seed_demo_incident.sh
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+3. Start Next app:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+cd next-app
+pnpm run dev:local
+```
 
-## Deploy on Vercel
+If you see `EADDRINUSE`, run:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+pnpm run dev:clean
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+3.5. Enable direct browser PUT to signed GCS URLs (one-time per bucket):
+
+```bash
+cd ..
+scripts/dev/set_bucket_cors.sh
+```
+
+Dev mode choices:
+- Simplest local dev (default): leave `NEXT_PUBLIC_USE_SIGNED_PUT` unset; uploads use `uploadEvidenceProxyV1`.
+- Production-like local dev: set `NEXT_PUBLIC_USE_SIGNED_PUT=1` and run `scripts/dev/set_bucket_cors.sh`; signed PUT is used first, with automatic proxy fallback on failure.
+
+4. Run smoke test:
+
+```bash
+cd ..
+scripts/dev/smoke.sh
+```
+
+Zsh paste fix (so inline `# comments` do not break pasted commands):
+
+```bash
+source scripts/dev/zsh_setup.sh
+```
+
+Or persist once:
+
+```bash
+echo 'setopt interactivecomments' >> ~/.zshrc
+```
+
+## Demo Bootstrap (Deterministic)
+
+### Demo reset
+```bash
+scripts/dev/demo_bootstrap.sh
+open http://127.0.0.1:3001/incidents/inc_demo
+```
+
+Use this flow to guarantee seeded demo data every time:
+
+1. Start emulators:
+
+```bash
+firebase emulators:start --project peakops-pilot --config firebase.json --only functions,firestore,ui
+```
+
+2. Seed demo incident + evidence:
+
+```bash
+scripts/dev/seed_demo_incident.sh
+```
+
+3. Start Next (separate terminal):
+
+```bash
+cd next-app
+pnpm run dev:local
+```
+
+4. Run smoke checks:
+
+```bash
+cd ..
+scripts/dev/smoke.sh
+```
+
+## Drift Guardrails
+
+- Run repo doctor before major edits:
+
+```bash
+scripts/dev/repo_doctor.sh
+```
+
+- Before demos, enforce strict drift checks:
+
+```bash
+scripts/dev/repo_doctor.sh --strict
+```
+
+## Health Dashboard
+
+Use the health dashboard to verify runtime health before demos:
+
+1. Start emulators + Next app.
+2. Open `http://127.0.0.1:3001/admin/health`.
+3. Click `Run Checks` to refresh checks for Environment, Functions, Storage/Uploads, HEIC Stack, and Demo Data readiness.
+
+- Enable repo hook guardrails once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+- Scan for leaked private keys:
+
+```bash
+scripts/dev/secret_scan.sh
+```
+
+- Smoke test validates:
+  - emulator and next ports are listening
+  - `next-app/.env.local` points at local functions emulator
+  - `listEvidenceLocker` responds with `{ ok: true }` and `count > 0` for seeded demo incident
+
+## Notes
+
+- `firebase.json` is the single source of emulator ports.
+- If local experimentation is needed, use `archive/local-only/` for scratch artifacts.
+- Avoid adding new runtime entrypoints outside canonical folders.
+
+## Signed PUT CORS Verification
+
+1. Get a signed upload URL:
+
+```bash
+BASE="http://127.0.0.1:5002/peakops-pilot/us-central1"
+curl -s -X POST "${BASE}/createEvidenceUploadUrlV1" \
+  -H 'content-type: application/json' \
+  -d '{"orgId":"riverbend-electric","incidentId":"inc_demo","sessionId":"ses_demo","originalName":"cors_test.jpg","contentType":"image/jpeg"}' \
+  | jq
+```
+
+2. Browser test (from `http://127.0.0.1:3001` devtools):
+
+```js
+await fetch(uploadUrl, {
+  method: "PUT",
+  headers: { "content-type": "image/jpeg" },
+  body: new Blob(["cors-ok"], { type: "image/jpeg" })
+})
+```
+
+3. Curl test (expect HTTP 200/201):
+
+```bash
+curl -i -X PUT "$UPLOAD_URL" \
+  -H 'content-type: image/jpeg' \
+  --data-binary 'cors-ok'
+```

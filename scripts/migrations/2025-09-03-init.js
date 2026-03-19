@@ -19,11 +19,7 @@ function initAdmin() {
     return admin.app();
   }
 
-  // 2) Fallback to ADC only if envs missing
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    admin.initializeApp({ credential: admin.credential.applicationDefault() });
-    return admin.app();
-  }
-
-  throw new Error('Missing creds: set FIREBASE_* envs or GOOGLE_APPLICATION_CREDENTIALS');
+  // 2) Final fallback: ADC
+  admin.initializeApp({ credential: admin.credential.applicationDefault() });
+  return admin.app();
 }

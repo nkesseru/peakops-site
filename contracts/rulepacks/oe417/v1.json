@@ -1,0 +1,21 @@
+{
+  "version": "v1",
+  "filingType": "OE_417",
+  "rules": [
+    {
+      "code": "oe417.location.state.required",
+      "when": { "statusIn": ["ACTIVE", "MITIGATED", "CLOSED"] },
+      "require": { "field": "location.state" },
+      "message": "OE-417 requires incident location state",
+      "severity": "ERROR"
+    }
+  ],
+  "evidenceRequirements": [
+    {
+      "code": "oe417.evidence.situationReport",
+      "type": "DOCUMENT",
+      "message": "OE-417 recommends a situation report document",
+      "severity": "INFO"
+    }
+  ]
+}

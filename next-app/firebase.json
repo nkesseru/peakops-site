@@ -1,0 +1,32 @@
+{
+  "functions": {
+    "source": "../functions_clean"
+  },
+  "emulators": {
+    "hub": {
+      "host": "127.0.0.1",
+      "port": 4400
+    },
+    "functions": {
+      "host": "127.0.0.1",
+      "port": 5004
+    },
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8087
+    },
+    "logging": {
+      "host": "127.0.0.1",
+      "port": 4500
+    },
+    "storage": {
+      "host": "127.0.0.1",
+      "port": 9199
+    },
+    "ui": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 4000
+    }
+  }
+}
