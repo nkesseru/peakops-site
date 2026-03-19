@@ -47,6 +47,19 @@ function runZip(cwd, outZip) {
     });
   });
 }
+function isApprovedJob(job) {
+  const rs = String(job?.reviewStatus || "").trim().toLowerCase();
+  const st = String(job?.status || "").trim().toLowerCase();
+  return rs === "approved" || st === "approved";
+}
+function getEvidenceJobId(ev) {
+  const top = String(ev?.jobId || "").trim();
+  if (top) return top;
+  return String(ev?.evidence?.jobId || "").trim();
+}
+function normalizeTimelineType(type) {
+  return String(type || "").toLowerCase();
+}
 
 exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
   try {
@@ -72,6 +85,13 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     const jobs = jobsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     const evidence = evSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     const timeline = tlSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const approvedJobs = jobs.filter((j) => isApprovedJob(j));
+    const evidenceByJob = evidence.reduce((acc, ev) => {
+      const key = getEvidenceJobId(ev) || "unassigned";
+      acc[key] = Number(acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const timelineNormalized = timeline.map((t) => ({ ...t, type: normalizeTimelineType(t?.type) }));
 
     const bucketObj = getStorage().bucket();
     const bucket = bucketObj.name;
@@ -83,7 +103,7 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     await writeJson(path.join(workDir, "incident.json"), incident);
     await writeJson(path.join(workDir, "jobs.json"), jobs);
     await writeJson(path.join(workDir, "evidence_locker.json"), evidence);
-    await writeJson(path.join(workDir, "timeline_events.json"), timeline);
+    await writeJson(path.join(workDir, "timeline_events.json"), timelineNormalized);
 
     const downloaded = [];
     const skipped = [];
@@ -116,7 +136,8 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       incidentId,
       generatedAt: new Date().toISOString(),
       bucket,
-      counts: { jobs: jobs.length, evidence: evidence.length, timeline: timeline.length },
+      counts: { jobs: approvedJobs.length, evidence: evidence.length, timeline: timelineNormalized.length },
+      evidenceByJob,
       downloaded,
       skipped,
       emulator: isEmu(),
@@ -143,10 +164,10 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         bucket,
         storagePath: outStoragePath,
         exportedAt: new Date().toISOString(),
-        evidenceCount: downloaded.length + skipped.length,
+        evidenceCount: evidence.length,
         exportedCount: downloaded.length,
         skippedCount: skipped.length,
-        jobCount: Array.isArray(jobs) ? jobs.length : 0,
+        jobCount: approvedJobs.length,
       },
       updatedAt: new Date().toISOString(),
     }, { merge: true });
