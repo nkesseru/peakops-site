@@ -624,6 +624,32 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     }
   }
 
+  function openEvidenceFromAction(target: any) {
+    try {
+      if (!target) {
+        toast("No evidence available yet.", 2200);
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[review-view-evidence] missing target evidence");
+        }
+        return;
+      }
+      if (typeof openEvidence !== "function") {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[review-view-evidence] openEvidence handler missing");
+        }
+        toast("Evidence handler unavailable.", 2200);
+        return;
+      }
+      void openEvidence(target);
+    } catch (e: any) {
+      const msg = String(e?.message || e || "view_evidence_failed");
+      toast("View evidence failed: " + msg, 2600);
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[review-view-evidence] failed", e);
+      }
+    }
+  }
+
   async function refresh(retryAttempt = 0, baseOverride?: string, fallbackUsed = false): Promise<JobDoc[]> {
     const base = String(baseOverride || functionsBase || "").trim();
     if (!base) return [];
@@ -1303,31 +1329,8 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
               type="button"
               className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
               onClick={() => {
-                try {
-                  const target = (visibleEvidence || [])[0];
-                  if (!target) {
-                    toast("No evidence available yet.", 2200);
-                    if (process.env.NODE_ENV !== "production") {
-                      console.warn("[review-view-evidence] missing target evidence");
-                    }
-                    return;
-                  }
-                  if (typeof openEvidence !== "function") {
-                    if (process.env.NODE_ENV !== "production") {
-                      console.warn("[review-view-evidence] openEvidence handler missing");
-                    }
-                    toast("Evidence handler unavailable.", 2200);
-                    return;
-                  }
-                  setReqOpen(false);
-                  void openEvidence(target);
-                } catch (e: any) {
-                  const msg = String(e?.message || e || "view_evidence_failed");
-                  toast("View evidence failed: " + msg, 2600);
-                  if (process.env.NODE_ENV !== "production") {
-                    console.warn("[review-view-evidence] failed", e);
-                  }
-                }
+                setReqOpen(false);
+                openEvidenceFromAction((visibleEvidence || [])[0]);
               }}
             >
               View evidence
@@ -1720,7 +1723,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                         (selectedEvidenceId === id ? "border-blue-400/40 ring-2 ring-blue-500/20 " : "border-white/10 ") +
                         "bg-black/40 hover:border-white/25 hover:scale-[1.015] hover:bg-black/50 transition-all duration-150"
                       }
-                      onClick={() => openEvidence(ev)}
+                      onClick={() => openEvidenceFromAction(ev)}
                       title={name}
                     >
                       {u ? (
