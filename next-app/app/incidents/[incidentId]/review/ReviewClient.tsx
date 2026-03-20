@@ -1302,7 +1302,33 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <button
               type="button"
               className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
-              onClick={() => { setReqOpen(false); }}
+              onClick={() => {
+                try {
+                  const target = (visibleEvidence || [])[0];
+                  if (!target) {
+                    toast("No evidence available yet.", 2200);
+                    if (process.env.NODE_ENV !== "production") {
+                      console.warn("[review-view-evidence] missing target evidence");
+                    }
+                    return;
+                  }
+                  if (typeof openEvidence !== "function") {
+                    if (process.env.NODE_ENV !== "production") {
+                      console.warn("[review-view-evidence] openEvidence handler missing");
+                    }
+                    toast("Evidence handler unavailable.", 2200);
+                    return;
+                  }
+                  setReqOpen(false);
+                  void openEvidence(target);
+                } catch (e: any) {
+                  const msg = String(e?.message || e || "view_evidence_failed");
+                  toast("View evidence failed: " + msg, 2600);
+                  if (process.env.NODE_ENV !== "production") {
+                    console.warn("[review-view-evidence] failed", e);
+                  }
+                }
+              }}
             >
               View evidence
             </button>

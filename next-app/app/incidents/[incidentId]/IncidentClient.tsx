@@ -404,6 +404,29 @@ useEffect(() => {
   const [incidentUpdatedAtSec, setIncidentUpdatedAtSec] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
   const [pendingJumpToEvidenceMapping, setPendingJumpToEvidenceMapping] = useState(false);
+  const setTab = (tab: "overview" | "timeline" | "evidence" | "jobs") => {
+    setActiveTab(tab);
+    try {
+      const nextHash = `#${tab}`;
+      if (window.location.hash !== nextHash) {
+        window.history.replaceState(null, "", nextHash);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    const applyHashTab = () => {
+      try {
+        const raw = String(window.location.hash || "").replace(/^#/, "").trim().toLowerCase();
+        if (raw === "overview" || raw === "timeline" || raw === "evidence" || raw === "jobs") {
+          setActiveTab(raw as "overview" | "timeline" | "evidence" | "jobs");
+        }
+      } catch {}
+    };
+    applyHashTab();
+    window.addEventListener("hashchange", applyHashTab);
+    return () => window.removeEventListener("hashchange", applyHashTab);
+  }, []);
 
   function jumpToEvidenceMapping() {
     try {
@@ -2423,7 +2446,7 @@ useEffect(() => {
                   ? "bg-cyan-500/20 border-cyan-300/35 text-cyan-100"
                   : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10")
               }
-              onClick={() => setActiveTab(tab)}
+              onClick={() => setTab(tab)}
             >
               {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Evidence" : "Jobs"}
             </button>
