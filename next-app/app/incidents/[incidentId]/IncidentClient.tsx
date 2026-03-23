@@ -411,6 +411,9 @@ useEffect(() => {
       const nextHash = `#${tab}`;
       if (window.location.hash !== nextHash) {
         window.history.replaceState(null, "", nextHash);
+        if (window.location.hash !== nextHash) {
+          window.location.hash = tab;
+        }
       }
     } catch {}
   };
@@ -884,6 +887,8 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   const [thumbDebugOverlay, setThumbDebugOverlay] = useState(false);
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
   const thumbRefreshDebounceRef = useRef<any>(null);
+  const refreshInflightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
 
   // PEAKOPS_THUMBS_C2_V1: per-evidence thumb error flag
   const [thumbErr, setThumbErr] = useState<Record<string, boolean>>({});
@@ -973,9 +978,11 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     try {
       const id = String(eid || "").trim();
       if (!id) return;
+      console.warn("[timeline-jump] jumpToEvidence received", { id });
 
       // highlight immediately
       setSelectedEvidenceId(id);
+      setTab("evidence");
 
       // PHASE4_2_CONTEXT_LOCK_V1
       try {
@@ -995,6 +1002,10 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       // B) Horizontal: after layout settles, CENTER the tile in the scroller
       window.setTimeout(() => {
         try {
+          const anchor = document.getElementById("evidence");
+          if (anchor && "scrollIntoView" in anchor) {
+            (anchor as any).scrollIntoView({ behavior: "smooth", block: "center" });
+          }
           const scroller = document.getElementById("evidenceScroller") as HTMLElement | null;
           const tile = document.querySelector('[data-ev-id="' + id + '"]') as HTMLElement | null;
           if (!tile) return;
@@ -1523,6 +1534,11 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   async function refresh(retryAttempt = 0, baseOverride?: string, fallbackUsed = false) {
     const base = String(baseOverride || functionsBase || "").trim();
     if (!base) return;
+    if (refreshInflightRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+    refreshInflightRef.current = true;
     if (process.env.NODE_ENV !== "production") {
       console.debug("[inc-refresh] start", { incidentId, orgId, functionsBase: base, fallbackUsed });
     }
@@ -1675,7 +1691,12 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       setTimeout(() => {
         try {
           const latest = (ev.docs || []).filter((x:any) => x?.file?.storagePath);
-          latest.forEach((x:any) => {
+          const retryCandidates = latest.filter((x: any) => {
+            const id = String(x?.id || "");
+            return !!id && !!thumbErr?.[id];
+          });
+          if (!retryCandidates.length) return;
+          retryCandidates.forEach((x:any) => {
             const id = String(x?.id || "");
             if (!id) return;
             if (thumbErr?.[id]) {
@@ -1683,7 +1704,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
               setThumbErr((m:any) => ({ ...m, [id]: false }));
             }
           });
-          retryThumbs(latest);
+          retryThumbs(retryCandidates as any);
         } catch {}
       }, 800);
 
@@ -1761,6 +1782,11 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       setDataStatus("error");
     } finally {
       setLoading(false);
+      refreshInflightRef.current = false;
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        void refresh();
+      }
     }
   }
 
@@ -2084,7 +2110,8 @@ return () => clearInterval(t);
   }, [evidence, incidentId]);
 
   useEffect(() => {
-    if (process.env.NODE_ENV === "production") return;
+    const debugHeic = process.env.NODE_ENV !== "production" && String(process.env.NEXT_PUBLIC_PEAKOPS_DEBUG || "") === "1";
+    if (!debugHeic) return;
     (evidence || []).forEach((ev: any) => {
       const f: any = ev?.file || {};
       const hasThumb = !!String(f?.thumbPath || "").trim();
@@ -2140,10 +2167,6 @@ useEffect(() => {
     }, 120);
     return () => clearTimeout(t);
   }, [sp]);
-useEffect(() => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [evidence]);
-
   function scrollToEvidence(eid: string) {
     try {
       const el = document.getElementById(`ev-${eid}`);
@@ -2162,6 +2185,9 @@ useEffect(() => {
       try {
         const ref = getBestEvidenceImageRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
+        const samePath = String(thumbPathById[ev.id] || "") === String(ref.storagePath || "");
+        const sameBucket = String(thumbBucketById[ev.id] || "") === String(ref.bucket || "");
+        if (u && samePath && sameBucket) return;
         const resp = await mintEvidenceReadUrl({
           orgId,
           incidentId,
@@ -3054,7 +3080,12 @@ useEffect(() => {
           
 <TimelinePanel
   items={timeline as any}
-  onJumpToEvidence={jumpToEvidence}
+  onJumpToEvidence={(refId: string) => {
+    if (process.env.NODE_ENV !== "production") {
+      console.debug("[timeline-jump] onJumpToEvidence invoked", { refId });
+    }
+    jumpToEvidence(refId);
+  }}
   highlightId={selectedEvidenceId}
 />
         </section>
