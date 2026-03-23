@@ -200,7 +200,7 @@ setMeta(j);
     return (
       <div key={n.path} style={{ marginLeft: depth * 10 }}>
         <div
-          style={{ rowStyle }}
+          style={rowStyle}
           onClick={() => {
             if (n.isDir) setExpanded((s)=>({ ...s, [n.path]: !isOpen }));
             else setSelectedPath(n.path);
@@ -241,7 +241,7 @@ setMeta(j);
         </div>
 
         <div style={{ display:"flex", gap: 10, alignItems:"center", flexWrap:"wrap" }}>
-          <AdminNav orgId={orgId} contractId={contractId} versionId={versionId} />
+          <AdminNav contractId={contractId} versionId={versionId} />
           <button onClick={load} disabled={busy} style={ghostBtn()}>{busy ? "Loading…" : "Refresh"}</button>
           <button onClick={downloadZip} disabled={!meta?.zipBase64} style={ghostBtn()}>Download ZIP</button>
         </div>
@@ -301,8 +301,6 @@ setMeta(j);
             <JsonCodeBlock
               value={selectedText}
               title="Preview"
-              subtitle={selectedPath}
-              maxHeight={720}
               defaultWrap={true}
             />
           ) : (

@@ -1295,7 +1295,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                         const j = (rows || []).find((x: any) => String(x?.id || x?.jobId || "") === String(jid || ""));
                         const st = String(j?.status || "").toLowerCase();
                         const rs = String(j?.reviewStatus || "").toLowerCase();
-                        return st === "approved" || rs === "approved" || !!j?.locked;
+                        return st === "approved" || rs === "approved";
                       });
                       toast("Selected job approved + locked ✓", 1800);
                     } catch (e: any) {

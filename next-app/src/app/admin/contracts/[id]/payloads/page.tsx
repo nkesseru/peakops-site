@@ -49,7 +49,7 @@ export default function AdminContractPayloads() {
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
       {/*__ADMIN_NAV__*/}
       <div style={{ marginTop: 10 }}>
-        <AdminNav orgId={orgId} contractId={contractId} payloadId={typeof payloadId !== "undefined" ? payloadId : undefined} versionId={"v1"} />
+        <AdminNav contractId={contractId} versionId={"v1"} />
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>

@@ -25,7 +25,7 @@ function btn(primary: boolean): React.CSSProperties {
 }
 
 
-  async function handleCreateIncidentV1() {
+  async function handleCreateIncidentV1(orgId: string) {
     try {
       const r = await fetch("/api/fn/createIncidentV1", {
         method: "POST",
@@ -158,7 +158,7 @@ export default function AdminIncidentDetail() {
   const stepsCount = useMemo(() => wf?.workflow?.steps?.length || 0, [wf]);
 
   async function load() {
-    setBusy(true);
+    setBusy("load");
     setErr("");
     try {
       const url =
@@ -180,7 +180,7 @@ export default function AdminIncidentDetail() {
       setWf(null);
       setErr(String(e?.message || e));
     } finally {
-      setBusy(false);
+      setBusy("");
     }
   }
 
@@ -190,7 +190,7 @@ export default function AdminIncidentDetail() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
-      <AdminNav orgId={orgId} />
+      <AdminNav />
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <div>
@@ -202,11 +202,11 @@ export default function AdminIncidentDetail() {
 
         
 <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-  <BackendBadge orgId={orgId} incidentId={incidentId} />
-  <button style={pill(false)} onClick={load} disabled={busy}>
+  <BackendBadge ok={true} label="Backend" />
+  <button style={pill(false)} onClick={load} disabled={!!busy}>
           {busy ? "Loading…" : "Refresh"}
         </button>
-        <button style={pill(false)} onClick={handleCreateIncidentV1}>
+        <button style={pill(false)} onClick={() => handleCreateIncidentV1(orgId)}>
           + Create New Incident
         </button>
 </div>
@@ -260,7 +260,7 @@ export default function AdminIncidentDetail() {
 
 
 <TimelinePreviewMock orgId={orgId} incidentId={incidentId} />
-<FilingMetaStub incident={wf?.incident} />
+<FilingMetaStub />
 {/* PACKET_STATE_STUB */}
 </div>
       </div>

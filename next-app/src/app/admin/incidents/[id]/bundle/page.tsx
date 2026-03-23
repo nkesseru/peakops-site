@@ -391,9 +391,9 @@ async function handleGeneratePacket() {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            zipSha256: String(zipSha256),
-            zipSize: Number(zipSize || 0),
-            zipGeneratedAt: String(zipGeneratedAt || new Date().toISOString()),
+            zipSha256: String(actual || ""),
+            zipSize: Number(buf.byteLength || 0),
+            zipGeneratedAt: String(packetMeta?.generatedAt || new Date().toISOString()),
             verifiedAt: new Date().toISOString(),
             verifiedBy: "ui",
           }),

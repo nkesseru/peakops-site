@@ -44,7 +44,7 @@ export default function AdminContractsList() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
-      <AdminNav orgId={orgId} />
+      <AdminNav />
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>Admin · Contracts</h1>
         <div style={{ fontSize: 12, opacity: 0.75 }}>Org: {mono(orgId)}</div>

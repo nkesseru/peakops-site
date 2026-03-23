@@ -499,7 +499,7 @@ export default function JobDetailClient({
               const src = String(thumbUrlByKey[key] || "").trim();
               return (
                 <div key={ev.id} className="rounded border border-white/10 bg-black/25 p-2">
-                  <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence")}</div>
+                  <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || ev?.id || "Untitled evidence")}</div>
                   {src ? (
                     <button
                       type="button"
@@ -507,7 +507,7 @@ export default function JobDetailClient({
                       onClick={() =>
                         setPreviewOpen({
                           src,
-                          name: String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence"),
+                          name: String(ev?.file?.originalName || ev?.id || "Untitled evidence"),
                         })
                       }
                     >
@@ -518,7 +518,7 @@ export default function JobDetailClient({
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={src}
-                          alt={String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence")}
+                          alt={String(ev?.file?.originalName || ev?.id || "Untitled evidence")}
                           className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
                           onError={() => { void renewThumbOnce(ev, src); }}
                         />

@@ -158,7 +158,7 @@ export default function PayloadEditor() {
           {err && <div style={{ marginTop: 8, color: "crimson", fontWeight: 900 }}>{err}</div>}
         </div>
 
-        <AdminNav orgId={orgId} contractId={contractId} />
+        <AdminNav contractId={contractId} />
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <button onClick={load} disabled={busy} style={btn()}>

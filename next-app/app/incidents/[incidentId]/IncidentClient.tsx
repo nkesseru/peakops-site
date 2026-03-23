@@ -548,11 +548,12 @@ async function markArrived() {
       return out;
     }
 
+    let __optId = "";
     try {
       setArriving(true);
 
       // Optimistic UI event id (stable across try/catch)
-      let __optId = "opt_arrived_" + Date.now();
+      __optId = "opt_arrived_" + Date.now();
       try {
         const __sid = sid || "";
         if (__sid) {
@@ -1399,7 +1400,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
             const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
               orgId,
               incidentId,
-              evidenceId: id,
+              evidenceId,
               jobId: jid,
             });
             if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
@@ -1776,7 +1777,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
-            evidenceId: ev.id,
             storagePath: ref.storagePath,
             bucket: ref.bucket,
             expiresSec: getThumbExpiresSec(),
@@ -1835,7 +1835,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
-            evidenceId: id,
             storagePath: ref.storagePath,
             bucket: ref.bucket,
             expiresSec: getThumbExpiresSec(),
@@ -1898,8 +1897,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
     setThumbRetryById((m) => ({ ...m, [id]: retryN + 1 }));
     if (process.env.NODE_ENV !== "production") {
       logThumbEvent("img_error", {
-        evidenceId: id,
-        kind: ref.kind,
+          kind: ref.kind,
         bucket: ref.bucket,
         storagePath: ref.storagePath,
         src: currentSrc,
@@ -1910,7 +1908,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
     const out = await mintEvidenceReadUrl({
       orgId,
       incidentId,
-      evidenceId: id,
       bucket: ref.bucket,
       storagePath: ref.storagePath,
       expiresSec: getThumbExpiresSec(),
@@ -1970,7 +1967,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       [id]: `${showFail ? "" : "retrying:"}mint_http=${mintStatus} mint_error=${mintErr}${mintDetails ? `:${mintDetails}` : ""} probe_http=- probe_error=-`,
     }));
     logThumbEvent("retry_fail", {
-      evidenceId: id,
       kind: ref.kind,
       storagePath: ref.storagePath,
       status: mintStatus,
@@ -2135,7 +2131,7 @@ useEffect(() => {
     if (!v) return;
     setHi(v);
     toast("Evidence secured ✓");
-    const t = setTimeout(() => toast(null), 2200);
+    const t = setTimeout(() => toast(""), 2200);
     // Scroll tile into view (if present)
     setTimeout(() => {
       const el = document.querySelector(`[data-ev-id="${v}"]`);
@@ -2168,7 +2164,6 @@ useEffect(() => {
         const resp = await mintEvidenceReadUrl({
           orgId,
           incidentId,
-          evidenceId: ev.id,
           storagePath: ref.storagePath,
           bucket: ref.bucket,
           expiresSec: getThumbExpiresSec(),
@@ -3060,7 +3055,6 @@ useEffect(() => {
   items={timeline as any}
   onJumpToEvidence={jumpToEvidence}
   highlightId={selectedEvidenceId}
-  showHeader={false}
 />
         </section>
         ) : null}

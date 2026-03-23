@@ -190,7 +190,7 @@ export default function AdminContractDetail() {
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
-      <AdminNav orgId={orgId} contractId={contractId} versionId={versionId} />
+      <AdminNav contractId={contractId} versionId={versionId} />
 
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
