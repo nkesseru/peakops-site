@@ -884,6 +884,8 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const selectedJobInReview = selectedJobReviewStatus === "review";
   const selectedJobApproved = selectedJobReviewStatus === "approved";
   const noReviewablesApproved = !hasReviewableJob && latestTerminalStatus === "approved";
+  const queuePositionDisplay = hasReviewableJob ? queuePositionLabel : "0 / 0";
+  const queueNavEnabled = hasReviewableJob;
   const selectedJobEvidence = useMemo(() => {
     const sid = String(selectedJobId || "");
     if (!sid) return [];
@@ -1215,8 +1217,8 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500">Review Queue</div>
-              <div className="mt-1 text-sm text-gray-200">Position {queuePositionLabel}</div>
-              {queuePositionLabel === "Not in queue" ? null : (
+              <div className="mt-1 text-sm text-gray-200">Position {queuePositionDisplay}</div>
+              {!queueNavEnabled || queuePositionDisplay === "Not in queue" ? null : (
                 <div className="text-xs text-gray-500 mt-1">{queueRemaining} remaining after this</div>
               )}
             </div>
@@ -1225,7 +1227,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
               <button
                 type="button"
                 className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm disabled:opacity-50"
-                disabled={!prevIncident}
+                disabled={!queueNavEnabled || !prevIncident}
                 onClick={() => {
                   if (!prevIncident?.incidentId) return;
                   router.push(`/incidents/${encodeURIComponent(String(prevIncident.incidentId))}/review`);
@@ -1237,7 +1239,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
               <button
                 type="button"
                 className="px-3 py-2 rounded-xl bg-blue-600/18 border border-blue-400/20 text-sm text-blue-100 hover:bg-blue-600/25 disabled:opacity-50"
-                disabled={!nextIncident}
+                disabled={!queueNavEnabled || !nextIncident}
                 onClick={() => {
                   if (!nextIncident?.incidentId) return;
                   router.push(`/incidents/${encodeURIComponent(String(nextIncident.incidentId))}/review`);
