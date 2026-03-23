@@ -405,6 +405,7 @@ useEffect(() => {
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
   const [pendingJumpToEvidenceMapping, setPendingJumpToEvidenceMapping] = useState(false);
   const setTab = (tab: "overview" | "timeline" | "evidence" | "jobs") => {
+    if (previewOpen) setPreviewOpen(false);
     setActiveTab(tab);
     try {
       const nextHash = `#${tab}`;
