@@ -313,8 +313,13 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
   // PEAKOPS_REVIEW_QUEUE_V1
   const [queueItems, setQueueItems] = useState<Array<{ incidentId: string; orgId: string }>>([]);
+  const enableDashboardQueue = String(process.env.NEXT_PUBLIC_REVIEW_QUEUE_DASHBOARD || "") === "1";
 
   useEffect(() => {
+    if (!enableDashboardQueue) {
+      setQueueItems([]);
+      return;
+    }
     let dead = false;
     (async () => {
       try {
@@ -333,7 +338,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       }
     })();
     return () => { dead = true; };
-  }, []);
+  }, [enableDashboardQueue]);
 
   const queueIndex = useMemo(() => {
     return queueItems.findIndex((x) => String(x.incidentId) === String(incidentId || ""));
