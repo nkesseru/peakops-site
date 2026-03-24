@@ -347,7 +347,7 @@ const hot = !!(highlightId && ref && highlightId === ref);
                             <button
                               type="button"
                               className={"px-2 py-1 rounded-lg text-xs bg-white/5 border border-white/10 hover:bg-white/10 active:bg-white/15 focus:outline-none focus:ring-2 focus:ring-indigo-400/40 " + (highlightId && ref && highlightId === ref ? "ring-2 ring-indigo-400/40 border-indigo-300/50" : "")}
-                              onClick={(e:any) => { try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {} if (process.env.NODE_ENV !== "production") { console.debug("[timeline-jump] button click", { refId: ref }); } onJumpToEvidence?.(ref); }}
+                              onClick={(e:any) => { try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {} onJumpToEvidence?.(ref); }}
                               title="Jump to related evidence"
                             >
                               Jump

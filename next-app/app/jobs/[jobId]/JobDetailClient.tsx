@@ -117,6 +117,7 @@ export default function JobDetailClient({
   const [thumbProbeErrorById, setThumbProbeErrorById] = useState<Record<string, string>>({});
   const [thumbPathById, setThumbPathById] = useState<Record<string, string>>({});
   const [thumbBucketById, setThumbBucketById] = useState<Record<string, string>>({});
+  const [thumbBrokenById, setThumbBrokenById] = useState<Record<string, boolean>>({});
   const [thumbDebugOverlay, setThumbDebugOverlay] = useState(false);
   const [previewOpen, setPreviewOpen] = useState<{ src: string; name: string } | null>(null);
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
@@ -191,7 +192,7 @@ export default function JobDetailClient({
       for (const ev of evidence) {
         const ref = getBestEvidencePreviewRef(ev);
         const key = String(ev.id || "").trim();
-        if (!ref?.storagePath || !ref?.bucket || thumbUrlByKey[key]) continue;
+        if (!ref?.storagePath || !ref?.bucket || thumbUrlByKey[key] || thumbBrokenById[key]) continue;
         try {
           if (isDev) {
             console.debug("[job-thumb-readurl]", {
@@ -213,6 +214,7 @@ export default function JobDetailClient({
           if (cancelled) return;
           if (out?.ok && out?.url) {
             setThumbUrlByKey((m) => ({ ...m, [key]: String(out.url) }));
+            setThumbBrokenById((m) => ({ ...m, [key]: false }));
             setThumbRetryById((m) => ({ ...m, [key]: 0 }));
             setThumbPathById((m) => ({ ...m, [key]: String(ref.storagePath) }));
             setThumbBucketById((m) => ({ ...m, [key]: String(ref.bucket) }));
@@ -239,7 +241,7 @@ export default function JobDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [evidence, incidentId, orgId, thumbUrlByKey]);
+  }, [evidence, incidentId, orgId, thumbUrlByKey, thumbBrokenById]);
 
   async function renewThumbOnce(ev: EvidenceDoc, currentSrc: string) {
     const id = String(ev?.id || "").trim();
@@ -282,6 +284,7 @@ export default function JobDetailClient({
       const sep = out.url.includes("?") ? "&" : "?";
       const fresh = `${out.url}${sep}v=${Date.now()}`;
       setThumbUrlByKey((m) => ({ ...m, [id]: fresh }));
+      setThumbBrokenById((m) => ({ ...m, [id]: false }));
       setThumbRetryById((m) => ({ ...m, [id]: 0 }));
       setThumbPathById((m) => ({ ...m, [id]: String(ref.storagePath) }));
       setThumbBucketById((m) => ({ ...m, [id]: String(ref.bucket) }));
@@ -497,10 +500,11 @@ export default function JobDetailClient({
             {evidence.map((ev) => {
               const key = String(ev.id || "").trim();
               const src = String(thumbUrlByKey[key] || "").trim();
+              const thumbBroken = !!thumbBrokenById[key];
               return (
                 <div key={ev.id} className="rounded border border-white/10 bg-black/25 p-2">
                   <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || ev?.id || "Untitled evidence")}</div>
-                  {src ? (
+                  {src && !thumbBroken ? (
                     <button
                       type="button"
                       className="mt-1 block w-full text-left cursor-pointer group"
@@ -520,7 +524,12 @@ export default function JobDetailClient({
                           src={src}
                           alt={String(ev?.file?.originalName || ev?.id || "Untitled evidence")}
                           className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
-                          onError={() => { void renewThumbOnce(ev, src); }}
+                          onError={() => {
+                            setThumbBrokenById((m) => ({ ...m, [key]: true }));
+                            if (!isEmulatorThumbMode && Number(thumbRetryById[key] || 0) < 1) {
+                              void renewThumbOnce(ev, src);
+                            }
+                          }}
                         />
                       </div>
                     </button>
