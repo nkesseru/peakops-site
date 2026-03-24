@@ -887,6 +887,7 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   const [thumbDebugOverlay, setThumbDebugOverlay] = useState(false);
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
   const thumbRefreshDebounceRef = useRef<any>(null);
+  const thumbMintInflightRef = useRef<Record<string, boolean>>({});
   const refreshInflightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
 
@@ -1791,15 +1792,19 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
 
   // Prefetch signed thumbnail URLs for latest 12 evidence items
   async function prefetchThumbs(latest: EvidenceDoc[]) {
-    const want = latest.filter((x) => x.file?.storagePath);
+    const want = latest.filter((x) => x.file?.storagePath).slice(0, 12);
 
     await Promise.all(
       want.map(async (ev) => {
+        const id = String(ev?.id || "");
         const ref = getBestEvidenceImageRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
-        if (thumbUrl[ev.id] && thumbPathById[ev.id] === ref.storagePath) return;
+        if (!id) return;
+        if (thumbUrl[id] && thumbPathById[id] === ref.storagePath) return;
+        if (thumbMintInflightRef.current[id]) return;
 
         try {
+          thumbMintInflightRef.current[id] = true;
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
@@ -1808,27 +1813,29 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
             expiresSec: getThumbExpiresSec(),
           });
           if (resp?.ok && resp.url) {
-            setThumbUrl((m) => ({ ...m, [ev.id]: resp.url! }));
-            setThumbPathById((m) => ({ ...m, [ev.id]: ref.storagePath }));
-            setThumbBucketById((m) => ({ ...m, [ev.id]: ref.bucket }));
-            setThumbRetryById((m) => ({ ...m, [ev.id]: 0 }));
+            setThumbUrl((m) => ({ ...m, [id]: resp.url! }));
+            setThumbPathById((m) => ({ ...m, [id]: ref.storagePath }));
+            setThumbBucketById((m) => ({ ...m, [id]: ref.bucket }));
+            setThumbRetryById((m) => ({ ...m, [id]: 0 }));
             setThumbDiagById((m) => {
-              if (!m[ev.id]) return m;
+              if (!m[id]) return m;
               const n = { ...m };
-              delete n[ev.id];
+              delete n[id];
               return n;
             });
-            setThumbStatusById((m) => ({ ...m, [ev.id]: Number(resp?.status || 200) }));
-            setThumbMintErrorById((m) => ({ ...m, [ev.id]: "-" }));
-            setThumbProbeStatusById((m) => ({ ...m, [ev.id]: 0 }));
-            setThumbProbeErrorById((m) => ({ ...m, [ev.id]: "-" }));
-            setThumbErr((m) => ({ ...m, [ev.id]: false }));
+            setThumbStatusById((m) => ({ ...m, [id]: Number(resp?.status || 200) }));
+            setThumbMintErrorById((m) => ({ ...m, [id]: "-" }));
+            setThumbProbeStatusById((m) => ({ ...m, [id]: 0 }));
+            setThumbProbeErrorById((m) => ({ ...m, [id]: "-" }));
+            setThumbErr((m) => ({ ...m, [id]: false }));
           }
         } catch (e) {
-          console.warn("thumb prefetch failed", ev.id, e);
-          setThumbDiagById((m) => ({ ...m, [ev.id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
-          setThumbMintErrorById((m) => ({ ...m, [ev.id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
-          setThumbErr((m) => ({ ...m, [ev.id]: true }));
+          console.warn("thumb prefetch failed", id, e);
+          setThumbDiagById((m) => ({ ...m, [id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
+          setThumbMintErrorById((m) => ({ ...m, [id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
+          setThumbErr((m) => ({ ...m, [id]: true }));
+        } finally {
+          thumbMintInflightRef.current[id] = false;
         }
       })
     );
@@ -1856,8 +1863,10 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
         if (!hadErr && hasUrl && samePath) {
           continue;
         }
+        if (thumbMintInflightRef.current[id]) continue;
 
         try {
+          thumbMintInflightRef.current[id] = true;
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
@@ -1893,6 +1902,8 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
           setThumbDiagById((m: any) => ({ ...m, [id]: String(e?.message || e || "thumb_retry_failed") }));
           setThumbMintErrorById((m: any) => ({ ...m, [id]: String(e?.message || e || "thumb_retry_failed") }));
           setThumbErr((m: any) => ({ ...m, [id]: true }));
+        } finally {
+          thumbMintInflightRef.current[id] = false;
         }
       }
     } catch {
@@ -2174,19 +2185,19 @@ useEffect(() => {
   }
 
   function openModal(ev: EvidenceDoc) {
-    const u = thumbUrl[ev.id];
+    const id = String(ev?.id || "");
     setPreviewName(ev.file?.originalName || ev.id);
-    setPreviewUrl(u || "");
+    setPreviewUrl("");
     setSelectedEvidenceId(ev.id);
     setPreviewOpen(true);
     toast("Opened preview");
     (async () => {
       try {
+        if (!id) return;
         const ref = getBestEvidenceImageRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
-        const samePath = String(thumbPathById[ev.id] || "") === String(ref.storagePath || "");
-        const sameBucket = String(thumbBucketById[ev.id] || "") === String(ref.bucket || "");
-        if (u && samePath && sameBucket) return;
+        if (thumbMintInflightRef.current[id]) return;
+        thumbMintInflightRef.current[id] = true;
         const resp = await mintEvidenceReadUrl({
           orgId,
           incidentId,
@@ -2196,6 +2207,9 @@ useEffect(() => {
         });
         if (resp?.ok && resp.url) setPreviewUrl(resp.url);
       } catch {}
+      finally {
+        if (id) thumbMintInflightRef.current[id] = false;
+      }
     })();
   }
 

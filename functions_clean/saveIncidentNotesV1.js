@@ -6,7 +6,7 @@ if (!admin.apps.length) admin.initializeApp();
 const db = getFirestore();
 
 async function emitTimelineEvent({ orgId, incidentId, type, actor, sessionId, refId, meta }) {
-  const col = db.collection(`orgs/${orgId}/incidents/${incidentId}/timeline_events`);
+  const col = db.collection("incidents").doc(incidentId).collection("timeline_events");
   await col.add({
     orgId,
     incidentId,
@@ -42,7 +42,7 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
     const siteNotes = String(b.siteNotes || "");
     const updatedBy = String(b.updatedBy || "ui");
 
-    const ref = db.doc(`orgs/${orgId}/incidents/${incidentId}/notes/main`);
+    const ref = db.doc(`incidents/${incidentId}/notes/main`);
     await ref.set(
       {
         incidentNotes,

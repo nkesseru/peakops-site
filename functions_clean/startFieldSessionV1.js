@@ -31,7 +31,7 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     const requestedBy = String(body.requestedBy || "ui");
 
     const db = getFirestore();
-    const base = db.collection("orgs").doc(orgId).collection("incidents").doc(incidentId);
+    const base = db.collection("incidents").doc(incidentId);
     const incRef = db.collection("incidents").doc(incidentId);
     const incSnap = await incRef.get();
     const inc = incSnap.exists ? (incSnap.data() || {}) : {};

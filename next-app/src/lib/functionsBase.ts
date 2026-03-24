@@ -1,5 +1,5 @@
-const DEV_FUNCTIONS_BASE = "http://127.0.0.1:5002/peakops-pilot/us-central1";
-const DEV_FALLBACK_FUNCTIONS_BASE = "http://127.0.0.1:5002/peakops-pilot/us-central1";
+const DEV_FUNCTIONS_BASE = "http://127.0.0.1:5004/peakops-pilot/us-central1";
+const DEV_FALLBACK_FUNCTIONS_BASE = "http://127.0.0.1:5004/peakops-pilot/us-central1";
 const SESSION_BASE_KEY = "peakops_functions_base_override";
 let warnedPortMismatch = false;
 
@@ -11,8 +11,8 @@ function normalizeLocalFunctionsBase(v: string) {
   const b = trimTrailingSlash(String(v || "").trim());
   if (!b || !isLocalDev()) return b;
   return b
-    .replace("://127.0.0.1:5004/", "://127.0.0.1:5002/")
-    .replace("://localhost:5004/", "://localhost:5002/");
+    .replace("://127.0.0.1:5001/", "://127.0.0.1:5004/")
+    .replace("://localhost:5001/", "://localhost:5004/");
 }
 
 function isLocalDev() {
@@ -110,7 +110,7 @@ export function warnFunctionsBaseIfSuspicious(base: string) {
   const b = trimTrailingSlash(String(base || ""));
   if (!b) return;
   warnedPortMismatch = true;
-  if (!b.includes(":5002/")) {
-    console.warn(`[functionsBase] using ${b}. Expected local emulator proxy is :5002.`);
+  if (!b.includes(":5004/")) {
+    console.warn(`[functionsBase] using ${b}. Expected local emulator proxy is :5004.`);
   }
 }

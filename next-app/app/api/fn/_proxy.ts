@@ -1,10 +1,22 @@
+function isLocalDev() {
+  return process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ENV === "local";
+}
+
+function normalizeLocalFunctionsBase(v: string): string {
+  const b = String(v || "").replace(/\/+$/, "");
+  if (!b || !isLocalDev()) return b;
+  return b
+    .replace("://127.0.0.1:5001/", "://127.0.0.1:5004/")
+    .replace("://localhost:5001/", "://localhost:5004/");
+}
+
 export function functionsBase(): string {
   // Prefer env override, else default emulator
   const base =
     process.env.NEXT_PUBLIC_FUNCTIONS_BASE ||
     process.env.FUNCTIONS_BASE ||
     "http://127.0.0.1:5004/peakops-pilot/us-central1";
-  return String(base).replace(/\/+$/, "");
+  return normalizeLocalFunctionsBase(String(base));
 }
 
 function copyHeaders(req: Request): Record<string, string> {

@@ -340,7 +340,7 @@ useEffect(() => {
       <div className="mb-4">
         <div className="text-[11px] uppercase tracking-wider text-gray-400">Add Evidence</div>
         <div className="text-lg font-semibold">
-          Incident {incidentId.slice(-6)}
+          Incident {incidentId}
         </div>
         <div className="text-xs text-cyan-200/90 mt-1">
           My job: {mounted ? (selectedJobId || "(auto-selecting…)") : "…"}
@@ -396,7 +396,7 @@ useEffect(() => {
             Open Camera
           </button>
 
-          <input
+                  <input
             id="pick"
             ref={fileInputRef}
             type="file"
@@ -408,32 +408,29 @@ useEffect(() => {
               }
               addPickedFiles(e.target.files);
             }}
-            className="hidden"
+            className="sr-only"
             disabled={busy || sessionBusy || !sessionId}
           />
-          <button
-            type="button"
-            className="w-full py-5 flex items-center justify-center border-2 border-dashed border-white/20 rounded-xl text-gray-200 active:border-white/40"
-            disabled={busy || sessionBusy || !sessionId}
+          <label
+            htmlFor="pick"
+            className={
+              "w-full py-5 flex items-center justify-center border-2 border-dashed border-white/20 rounded-xl text-gray-200 active:border-white/40 " +
+              ((busy || sessionBusy || !sessionId) ? "opacity-50 pointer-events-none" : "cursor-pointer")
+            }
             onClick={() => {
               if (process.env.NODE_ENV !== "production") {
                 console.warn("[add-evidence]", {
-                  step: "click",
+                  step: "label_click",
                   disabled: busy || sessionBusy || !sessionId,
                   hasInput: !!fileInputRef.current,
                   isUserGesture: true,
                   ts: Date.now(),
                 });
               }
-              if (busy || sessionBusy || !sessionId) return;
-              fileInputRef.current?.click();
-              if (process.env.NODE_ENV !== "production") {
-                console.warn("[add-evidence]", { step: "input_click", ts: Date.now() });
-              }
             }}
           >
             Pick multiple photos/videos
-          </button>
+          </label>         
 
           {items.length ? (
             <div className="rounded-xl border border-white/10 bg-white/5 p-3">
