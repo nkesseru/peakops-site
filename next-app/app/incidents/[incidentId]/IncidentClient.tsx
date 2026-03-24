@@ -435,7 +435,7 @@ useEffect(() => {
   function jumpToEvidenceMapping() {
     try {
       setPendingJumpToEvidenceMapping(true);
-      setActiveTab("evidence");
+      setTab("evidence");
       try { window.location.hash = "evidence-mapping"; } catch {}
     } catch {}
   }
@@ -978,7 +978,6 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     try {
       const id = String(eid || "").trim();
       if (!id) return;
-      console.warn("[timeline-jump] jumpToEvidence received", { id });
 
       // highlight immediately
       setSelectedEvidenceId(id);
@@ -2504,14 +2503,14 @@ useEffect(() => {
                 <button
                   type="button"
                   className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-amber-50"
-                  onClick={() => { try { setTab("timeline"); } catch { try { location.hash="#timeline"; } catch {} } }}
+                  onClick={() => { setTab("timeline"); }}
                 >
                   View timeline
                 </button>
                 <button
                   type="button"
                   className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-amber-50"
-                  onClick={() => { try { setTab("evidence"); } catch { try { document.getElementById("evidence")?.scrollIntoView({behavior:"smooth"}); } catch {} } }}
+                  onClick={() => { setTab("evidence"); }}
                 >
                   Go to evidence
                 </button>
@@ -3020,7 +3019,7 @@ useEffect(() => {
                       <option value="">(no job)</option>
                       {jobs.map((j: any) => (
                         <option key={String(j?.id || j?.jobId)} value={String(j?.id || j?.jobId)}>
-                          {String(j?.id || j?.jobId || "job")}: {String(j?.title || "(untitled)")} ({jobStatusText(j?.status)})
+                          {String(j?.title || "(untitled)")} ({jobStatusText(j?.status)})
                         </option>
                       ))}
                     </select>
@@ -3080,12 +3079,7 @@ useEffect(() => {
           
 <TimelinePanel
   items={timeline as any}
-  onJumpToEvidence={(refId: string) => {
-    if (process.env.NODE_ENV !== "production") {
-      console.debug("[timeline-jump] onJumpToEvidence invoked", { refId });
-    }
-    jumpToEvidence(refId);
-  }}
+  onJumpToEvidence={jumpToEvidence}
   highlightId={selectedEvidenceId}
 />
         </section>
