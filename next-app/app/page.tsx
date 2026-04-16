@@ -1,75 +1,118 @@
-"use client";
+import Link from "next/link";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-
-const DEMO_INCIDENT_ID = "inc_demo";
-
-function inferRecentIncidentId(): string {
-  try {
-    const direct = String(localStorage.getItem("peakops_last_incident_id") || "").trim();
-    if (direct) return direct;
-
-    const fromSessionKey = Object.keys(localStorage)
-      .filter((k) => k.startsWith("peakops_active_session_"))
-      .map((k) => k.replace("peakops_active_session_", "").trim())
-      .find(Boolean);
-    return String(fromSessionKey || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-export default function HomePage() {
-  const router = useRouter();
-  const isDev = process.env.NODE_ENV !== "production";
-  const [incidentId, setIncidentId] = useState("");
-
-  const devTarget = useMemo(() => {
-    const inferred = inferRecentIncidentId();
-    return inferred || DEMO_INCIDENT_ID;
-  }, []);
-
-  useEffect(() => {
-    if (!isDev) return;
-    router.replace(`/incidents/${encodeURIComponent(devTarget)}`);
-  }, [isDev, devTarget, router]);
-
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    const id = String(incidentId || "").trim();
-    if (!id) return;
-    router.push(`/incidents/${encodeURIComponent(id)}`);
-  }
-
-  if (isDev) {
-    return (
-      <main style={{ padding: 20 }}>
-        <h1 style={{ margin: 0, fontSize: 20 }}>Opening Incident…</h1>
-        <p style={{ opacity: 0.75, marginTop: 8 }}>
-          Redirecting to <code>{devTarget}</code>
-        </p>
-      </main>
-    );
-  }
-
+export default function RootPage() {
   return (
-    <main style={{ padding: 20, maxWidth: 680 }}>
-      <h1 style={{ marginTop: 0 }}>Open an Incident</h1>
-      <p style={{ opacity: 0.8 }}>
-        Paste an incident ID to open the field incident page.
+    <main
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "radial-gradient(circle at 30% 20%, #0f172a, #0b0f19 70%)",
+        fontFamily:
+          'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        padding: 24,
+      }}
+    >
+      {/* Wordmark */}
+      <div
+        style={{
+          fontSize: 13,
+          fontWeight: 700,
+          letterSpacing: "0.18em",
+          color: "#94a3b8",
+          textTransform: "uppercase" as const,
+          marginBottom: 12,
+        }}
+      >
+        PeakOps
+      </div>
+
+      {/* Value proposition */}
+      <h1
+        style={{
+          fontSize: 28,
+          fontWeight: 700,
+          color: "#f1f5f9",
+          textAlign: "center",
+          margin: "0 0 8px",
+          lineHeight: 1.3,
+        }}
+      >
+        Operational records built in real time.
+      </h1>
+      <p
+        style={{
+          fontSize: 14,
+          color: "#64748b",
+          textAlign: "center",
+          maxWidth: 460,
+          lineHeight: 1.5,
+          margin: "0 0 40px",
+        }}
+      >
+        PeakOps turns field work into audit-ready, filing-ready records without
+        reconstruction.
       </p>
-      <form onSubmit={onSubmit} style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <input
-          value={incidentId}
-          onChange={(e) => setIncidentId(e.target.value)}
-          placeholder="inc_..."
-          style={{ flex: 1, padding: "8px 10px" }}
-        />
-        <button type="submit" style={{ padding: "8px 12px" }}>
-          Open
-        </button>
-      </form>
+
+      {/* CTAs */}
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          flexWrap: "wrap",
+          justifyContent: "center",
+        }}
+      >
+        <Link
+          href="/admin/login"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "12px 28px",
+            borderRadius: 8,
+            background: "linear-gradient(135deg, #3b82f6, #22c55e)",
+            color: "#0b1120",
+            fontSize: 14,
+            fontWeight: 600,
+            textDecoration: "none",
+            minWidth: 160,
+          }}
+        >
+          Operator Login
+        </Link>
+        <span
+          aria-disabled="true"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "12px 28px",
+            borderRadius: 8,
+            border: "1px solid #1e293b",
+            background: "rgba(15, 23, 42, 0.4)",
+            color: "#475569",
+            fontSize: 14,
+            fontWeight: 500,
+            minWidth: 160,
+            cursor: "default",
+          }}
+        >
+          Contractor Access
+        </span>
+      </div>
+
+      {/* Subtle internal access */}
+      <div style={{ marginTop: 64, fontSize: 11, color: "#334155" }}>
+        <Link
+          href="/admin/login"
+          style={{ color: "#334155", textDecoration: "none" }}
+        >
+          Internal
+        </Link>
+      </div>
     </main>
   );
 }
