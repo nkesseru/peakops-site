@@ -259,7 +259,7 @@ const [timelineLoaded, setTimelineLoaded] = useState(false);
 
 useEffect(() => {
   if (!orgId || !incidentId) return;
-  fetch(`/api/fn/getTimelineEvents?orgId=${orgId}&incidentId=${incidentId}&limit=50`)
+  fetch(`/api/fn/getTimelineEventsV1?orgId=${orgId}&incidentId=${incidentId}&limit=50`)
     .then(r => r.json())
     .then(j => {
       if (j?.ok && Array.isArray(j.docs)) {
@@ -372,7 +372,7 @@ useEffect(() => {
         out.notes.push(`Timeline OK: ${eventCount} events (meta).`);
       } else {
         const tUrl =
-          `/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}` +
+          `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(orgId)}` +
           `&incidentId=${encodeURIComponent(incidentId)}&limit=1`;
         const tRes = await fetch(tUrl, { method: "GET" });
         const tTxt = await tRes.text();
