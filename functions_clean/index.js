@@ -17,11 +17,14 @@ safeExport("healthzV1", "./healthzV1");
 
 // --- Incident core ---
 safeExport("getIncidentV1", "./getIncidentV1");
+safeExport("listIncidentsV1", "./listIncidentsV1");
+safeExport("createIncidentV1", "./createIncidentV1");
 safeExport("getTimelineEventsV1", "./getTimelineEventsV1");
 safeExport("listEvidenceLocker", "./listEvidenceLocker");
 safeExport("closeIncidentV1", "./closeIncidentV1");
 
 // --- Sessions ---
+safeExport("markArrivedV1", "./markArrivedV1", "markArrivedV1");
 safeExport("startFieldSessionV1", "./startFieldSessionV1");
 safeExport("submitFieldSessionV1", "./submitFieldSessionV1");
 

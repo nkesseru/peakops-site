@@ -39,8 +39,14 @@ export default function AdminQueuePage() {
       const out = await jget(`/api/fn/listSubmitQueue?orgId=${encodeURIComponent(orgId)}`);
       if (!out.ok) throw new Error(out.error || "listSubmitQueue failed");
       setJobs(out.jobs || []);
-    } catch (e:any) { setErr(e.message || String(e)); }
-    finally { setBusy(null); }
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      setErr(
+        msg.includes("does not exist")
+          ? "This module requires backend services that are not deployed in this environment."
+          : msg,
+      );
+    } finally { setBusy(null); }
   }
 
   async function tick(dryRun: boolean) {

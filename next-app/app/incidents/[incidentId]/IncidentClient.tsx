@@ -24,7 +24,46 @@ import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenc
 
 
 
+function StageBar({ stage }: { stage: string }) {
+  const steps = [
+    { key: "arrive", label: "Arrive" },
+    { key: "evidence", label: "Evidence" },
+    { key: "notes", label: "Notes" },
+    { key: "submit", label: "Submit" },
+    { key: "review", label: "Review" },
+    { key: "done", label: "Done" },
+  ];
 
+  return (
+    <div className="flex items-center gap-2 text-xs mb-4">
+      {steps.map((s, i) => {
+        const active = stage === s.key;
+        const done = steps.findIndex(x => x.key === stage) > i;
+
+        return (
+          <div key={s.key} className="flex items-center gap-2">
+            <div
+              className={
+                "px-3 py-1 rounded-full border " +
+                (done
+                  ? "bg-green-500/20 border-green-400 text-green-200"
+                  : active
+                  ? "bg-indigo-500/20 border-indigo-400 text-indigo-200"
+                  : "bg-white/5 border-white/10 text-gray-400")
+              }
+            >
+              {done ? "✓ " : ""}
+              {s.label}
+            </div>
+            {i < steps.length - 1 && (
+              <div className="w-4 h-[1px] bg-white/20" />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 
 // PEAKOPS_ACTIVE_JOB_CARD_V1
@@ -255,7 +294,7 @@ function labelChipColor(label: string) {
   const L = normLabel(label);
   // Cohesive system chips: dark base + subtle tint + quiet borders
   if (L === "DAMAGE") return "bg-red-500/12 border-red-400/20 text-red-200";
-  if (L === "SAFETY") return "bg-amber-400/12 border-amber-300/25 text-amber-200";
+  if (L === "SAFETY") return "bg-amber-400/12 border-indigo-400/20 text-indigo-200";
   if (L === "DOCS") return "bg-sky-400/12 border-sky-300/25 text-sky-200";
   return "bg-white/6 border-white/12 text-gray-200";
 }
@@ -271,7 +310,7 @@ function jobStatusPill(status: string) {
   if (s === "approved") return "bg-emerald-500/15 border-emerald-300/30 text-emerald-100";
   if (s === "rejected") return "bg-red-500/15 border-red-300/30 text-red-100";
   if (s === "in_progress") return "bg-blue-500/15 border-blue-300/30 text-blue-100";
-  if (s === "review") return "bg-amber-500/15 border-amber-300/30 text-amber-100";
+  if (s === "review") return "bg-indigo-500/15 border-indigo-400/20 text-indigo-100";
   if (s === "complete") return "bg-indigo-500/15 border-indigo-300/30 text-indigo-100";
   return "bg-white/8 border-white/15 text-gray-200";
 }
@@ -365,13 +404,61 @@ async function postJson<T>(url: string, body: any): Promise<T> {
   return JSON.parse(txt) as T;
 }
 
+function FlowStageBar({ stage }: { stage: "arrive" | "evidence" | "notes" | "submit" | "review" | "done" }) {
+  const steps = [
+    { key: "arrive", label: "Arrive" },
+    { key: "evidence", label: "Evidence" },
+    { key: "notes", label: "Notes" },
+    { key: "submit", label: "Submit" },
+    { key: "review", label: "Review" },
+    { key: "done", label: "Done" },
+  ] as const;
+
+  return (
+    <div className="px-4 pt-4 pb-3 bg-black/80 backdrop-blur border-b border-white/10">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-gray-500 mb-2">Workflow</div>
+      <div className="text-xs text-gray-400 mb-3">
+        Step: <span className="text-white font-medium capitalize">{stage}</span>
+      </div>
+
+      <div className="flex items-center gap-2 text-xs overflow-x-auto">
+        {steps.map((s, i) => {
+          const active = stage === s.key;
+          const done = steps.findIndex(x => x.key === stage) > i;
+
+          return (
+            <div key={s.key} className="flex items-center gap-2">
+              <div
+                className={
+                  "px-3 py-1 rounded-full border whitespace-nowrap transition-colors " +
+                  (done
+                    ? "bg-green-500/10 border-green-400/30 text-green-200"
+                    : active
+                    ? "bg-indigo-500/20 border-indigo-400 text-indigo-200"
+                    : "bg-white/5 border-white/10 text-gray-400")
+                }
+              >
+                {done ? "✓ " : ""}{s.label}
+              </div>
+              {i < steps.length - 1 && (
+                <div className={"w-4 h-[1px] " + (done ? "bg-green-400/70" : "bg-white/20")} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function IncidentClient({ incidentId }: { incidentId: string }) {
   const DEMO_RESET_CMD = "scripts/dev/reset_demo_incident.sh && scripts/dev/seed_demo_incident.sh";
   const functionsBase = getFunctionsBase();
 useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
   }, [functionsBase]);
-  const invalidIncidentRoute = useMemo(() => {
+  
+const invalidIncidentRoute = useMemo(() => {
     const raw = String(incidentId || "").trim();
     if (!raw) return true;
     const s = raw.toLowerCase();
@@ -402,6 +489,7 @@ useEffect(() => {
   const [closingIncident, setClosingIncident] = useState(false);
   const [incidentStatus, setIncidentStatus] = useState<string>("open");
   const [incidentUpdatedAtSec, setIncidentUpdatedAtSec] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
   const [pendingJumpToEvidenceMapping, setPendingJumpToEvidenceMapping] = useState(false);
   const setTab = (tab: "overview" | "timeline" | "evidence" | "jobs") => {
@@ -430,6 +518,11 @@ useEffect(() => {
     applyHashTab();
     window.addEventListener("hashchange", applyHashTab);
     return () => window.removeEventListener("hashchange", applyHashTab);
+  }, []);
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(t);
   }, []);
 
   function jumpToEvidenceMapping() {
@@ -589,7 +682,7 @@ async function markArrived() {
       } catch (e: any) {
         const msg = String(e?.message || e || "");
         // If stale session, recreate once and retry
-                  if ((e as any)?.__status == 404 || msg.toLowerCase().includes("session not found")) {
+        if ((e as any)?.__status == 404 || msg.toLowerCase().includes("session not found")) {
           sid = await startSession();
           try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
           try { setActiveSessionId(sid); } catch {}
@@ -599,11 +692,47 @@ async function markArrived() {
         }
       }
 
+      // Ensure the UI reflects arrival even on a fresh session where no optimistic
+      // FIELD_ARRIVED event was inserted before startSession().
+      try {
+        const confirmedId = __optId || ("arrived_" + Date.now());
+        setTimeline((prev: any) => {
+          const list = Array.isArray(prev) ? prev : [];
+          const alreadyHasArrival = list.some((x: any) =>
+            String(x?.type || "") === "FIELD_ARRIVED" &&
+            String(x?.sessionId || "") === String(sid || "")
+          );
+          if (alreadyHasArrival) {
+            return list.map((x: any) =>
+              x?.id === __optId
+                ? {
+                    ...x,
+                    id: confirmedId,
+                    meta: { ...(x?.meta || {}), optimistic: false }
+                  }
+                : x
+            );
+          }
+          return [
+            {
+              id: confirmedId,
+              type: "FIELD_ARRIVED",
+              actor: "ui",
+              sessionId: String(sid || ""),
+              occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
+              refId: null,
+              meta: { optimistic: false }
+            },
+            ...list.filter((x: any) => x?.id !== __optId)
+          ];
+        });
+      } catch {}
+
       setArrived(true);
       toast("Arrived ✓", 1800);
     } catch (e: any) {
       const msg = e?.message || String(e) || "markArrived failed";
-      toast("Arrive failed: " + msg, 3500);
+      toast("Arrival failed: " + msg, 3500);
       // OPTIMISTIC_FIELD_ARRIVED revert
       try { setTimeline((prev: any) => (Array.isArray(prev) ? prev.filter((x:any) => x?.id !== __optId) : prev)); } catch {}
       console.error(e);
@@ -612,21 +741,91 @@ async function markArrived() {
     }
 }
 
+  function isSessionMissingError(e: any) {
+    const msg = String(e?.message || e || "").toLowerCase();
+    return (e as any)?.__status === 404 || msg.includes("session not found");
+  }
+
+  function getSubmitSessionCandidates(): string[] {
+    const out: string[] = [];
+    const push = (v: any) => {
+      const s = String(v || "").trim();
+      if (s && !out.includes(s)) out.push(s);
+    };
+
+    try { push(typeof getActiveSessionId === "function" ? getActiveSessionId() : ""); } catch {}
+    try { push(localStorage.getItem("peakops_active_session_" + String(incidentId || ""))); } catch {}
+
+    for (const ev of (Array.isArray(evidence) ? evidence : [])) {
+      push((ev as any)?.sessionId);
+      push((ev as any)?.evidence?.sessionId);
+    }
+
+    for (const ev of (Array.isArray(timeline) ? timeline : [])) {
+      push((ev as any)?.sessionId);
+    }
+
+    push(activeSessionId);
+    return out;
+  }
+
+  async function postSubmitFieldSession(sessionId: string) {
+    return await postJson("/api/fn/submitFieldSessionV1", {
+      orgId: orgId,
+      incidentId,
+      sessionId: String(sessionId || "").trim(),
+      updatedBy: "ui",
+    });
+  }
+
   async function submitSession() {
+    toast("DEBUG: submitSession entered", 1200);
     if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
-    const sid = String(activeSessionId || "").trim();
+
+    let sid = getSubmitSessionCandidates()[0] || "";
     if (!sid) return toast("No active session yet — add evidence first.", 3000);
-    const ok = window.confirm("Submit this session? This locks the field visit for supervisor review.");
+
+    const ok = true;
     if (!ok) return;
+
     try {
       setSubmitting(true);
-      const out: any = await postJson("/api/fn/submitFieldSessionV1", { orgId: orgId,
-        incidentId,
-        sessionId: sid,
-        updatedBy: "ui",
+
+      console.warn("[submitSession] initial candidates", {
+        activeSessionId,
+        chosen: sid,
+        candidates: getSubmitSessionCandidates(),
       });
-      if (!out?.ok) throw new Error(out?.error || "submit failed");
+
+      try {
+        const out: any = await postSubmitFieldSession(sid);
+        if (!out?.ok) throw new Error(out?.error || "submit failed");
+      } catch (e: any) {
+        if (!isSessionMissingError(e)) throw e;
+
+        await refresh().catch(() => {});
+
+        const candidatesAfterRefresh = getSubmitSessionCandidates();
+        const retrySid = candidatesAfterRefresh.find((x) => String(x || "").trim() && String(x) !== String(sid)) || "";
+
+        console.warn("[submitSession] retry after stale session", {
+          staleSessionId: sid,
+          candidatesAfterRefresh,
+          retrySid,
+        });
+
+        if (!retrySid) throw e;
+
+        sid = retrySid;
+        try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
+        try { setActiveSessionId(sid); } catch {}
+
+        const out: any = await postSubmitFieldSession(sid);
+        if (!out?.ok) throw new Error(out?.error || "submit failed");
+      }
+
       toast("Session submitted ✓", 2200);
+      await refresh();
     } catch (e: any) {
       const msg = (e && (e.message || String(e))) || "submit failed";
       toast("Submit failed: " + msg, 3500);
@@ -829,30 +1028,14 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
       toast("Arrived ✓", 1500);
     } catch (e: any) {
       const msg = (e && (e.message || String(e))) || "markArrived failed";
-      toast(`Arrive failed: ${msg}`, 3500);
+      toast(`Arrival failed: ${msg}`, 3500);
     } finally {
       setArriving(false);
     }
   };
 
   const v6SubmitSession = async () => {
-    try {
-      setSubmitting(true);
-      const sid = getActiveSessionId();
-      if (!sid) throw new Error("sessionId missing — add evidence / start a session first.");
-      const out: any = await postJson(`/api/fn/submitFieldSessionV1`, { orgId: orgId,
-        incidentId,
-        sessionId: sid,
-        updatedBy: "ui",
-      });
-      if (!out?.ok) throw new Error(out?.error || "submit failed");
-      toast("Session submitted ✓", 2000);
-    } catch (e: any) {
-      const msg = (e && (e.message || String(e))) || "submit failed";
-      toast(`Submit failed: ${msg}`, 3500);
-    } finally {
-      setSubmitting(false);
-    }
+    await submitSession();
   };
   // V6_SESSION_HELPERS__END
 
@@ -1183,20 +1366,76 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     }
   }
 
+  async function resetDemoNow() {
+    try {
+      toast("Resetting demo…", 1500);
+
+      try {
+        const sidKey = "peakops_active_session_" + String(incidentId || "");
+        const jobKey = "peakops_current_job_" + String(incidentId || "").trim();
+        localStorage.removeItem(sidKey);
+        localStorage.removeItem(jobKey);
+        sessionStorage.removeItem(sidKey);
+        sessionStorage.removeItem(jobKey);
+      } catch {}
+      try { setActiveSessionId(""); } catch {}
+      try { setCurrentJobId(""); } catch {}
+      try { setIncidentStatus("open"); } catch {}
+      try { setTimeline([] as any); } catch {}
+      try { setEvidence([] as any); } catch {}
+
+      const res = await fetch("/api/dev/reset-demo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        cache: "no-store",
+      });
+
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out?.ok) {
+        throw new Error(out?.error || "reset-demo failed");
+      }
+
+      try { await refresh(); } catch {}
+      await new Promise((r) => setTimeout(r, 900));
+
+      const resetUrl = `/incidents/${encodeURIComponent(String(incidentId || "inc_demo"))}?reset=${Date.now()}`;
+      try {
+        window.location.href = resetUrl;
+      } catch {
+        try {
+          window.location.assign(resetUrl);
+        } catch {
+          location.reload();
+        }
+      }
+    } catch (e: any) {
+      toast("Demo reset failed: " + String(e?.message || e), 3500);
+    }
+  }
+
   async function closeIncident() {
+    toast("DEBUG: closeIncident entered", 1200);
     if (isClosed) {
       toast("Incident already closed.", 1800);
       return;
     }
-    const ok = window.confirm("Close this incident? This sets read-only mode.");
-    if (!ok) return;
+    const requestOrgId = String(orgId || "").trim();
+    if (!requestOrgId || !incidentId) {
+      toast("Close failed: missing org/incident context.", 3200);
+      return;
+    }
+    const ok = true;
+    if (!ok) {
+      toast("Close canceled.", 1400);
+      return;
+    }
     try {
       setClosingIncident(true);
       const res = await fetch("/api/fn/closeIncidentV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          orgId,
+          orgId: requestOrgId,
           incidentId,
           closedBy: "ui",
           actorRole: actorRole(),
@@ -2086,7 +2325,7 @@ const t = setInterval(refresh, 60000);
     ghost:
       "px-2 py-1 rounded bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-xs",
     jump:
-      "px-2 py-1 rounded-full bg-amber-400/12 border border-amber-300/25 text-amber-200 " +
+      "px-2 py-1 rounded-full bg-amber-400/12 border border-indigo-400/20 text-indigo-200 " +
       "hover:bg-amber-400/18 transition text-xs",
   };
 
@@ -2322,6 +2561,7 @@ useEffect(() => {
   const _evidenceN = Array.isArray(evidence) ? evidence.filter((ev: any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath||"").includes("demo_placeholder")).length : 0;
   const _hasEvidence = _evidenceN >= 4;
   const _hasNotes = !!(notesSavedLocal || (Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "NOTES_SAVED")));
+  const _hasSubmitted = Array.isArray(timeline) && timeline.some((t: any) => String(t?.type || "").toLowerCase() === "field_submitted");
   const _hasApproved = Array.isArray(jobs) && jobs.length > 0 && jobs.every((j: any) => {
     const rs = String(j?.reviewStatus || "").trim().toLowerCase();
     const st = String(j?.status || "").trim().toLowerCase();
@@ -2345,7 +2585,25 @@ useEffect(() => {
 
   const _arrivalSec = _secForType("FIELD_ARRIVED");
   const _notesSec = _secForType("NOTES_SAVED");
+  const hasArrival = !!_arrivalSec || !!_hasSession;
+const hasEvidence = !!_hasEvidence;
+const hasNotes = !!_hasNotes;
 
+// For now, treat "submitted" as the same as having enough evidence + notes.
+// We can refine this later to use a dedicated FIELD_SUBMITTED event.
+const isSubmitted = hasNotes;
+
+// Approved = all jobs approved/locked
+const isApproved = !!_hasApproved;
+  const currentStage = useMemo(() => {
+    if (!hasArrival) return "arrive";
+    if (!hasEvidence && !hasNotes) return "evidence";
+    if (!hasNotes) return "notes";
+    if (!isSubmitted) return "submit";
+    if (!isApproved) return "review";
+    return "done";
+  }, [hasArrival, hasEvidence, hasNotes, isSubmitted, isApproved]);
+  
   // Prefer timeline event; fallback to latest evidence timestamp if needed
   const _evidenceSecFromTL = _secForType("EVIDENCE_ADDED");
   const _evidenceSecFromDocs =
@@ -2362,12 +2620,13 @@ useEffect(() => {
   return (
     invalidIncidentRoute ? (
       <main className="min-h-screen bg-black text-white p-6">
-        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
-          <div className="text-sm text-amber-100 font-semibold">Invalid incident URL</div>
-          <div className="mt-2 text-sm text-amber-50/90">
+        <FlowStageBar stage={currentStage} />
+        <div className="max-w-2xl mx-auto rounded-2xl border border-indigo-400/20 bg-indigo-500/10 p-5">
+          <div className="text-sm text-indigo-100 font-semibold">Invalid incident URL</div>
+          <div className="mt-2 text-sm text-indigo-100/90">
             This page was opened with a placeholder incident id (`/incidents/&lt;incidentId&gt;`).
           </div>
-          <div className="mt-3 text-xs text-amber-100/80">
+          <div className="mt-3 text-xs text-indigo-100/80">
             Open `/incidents/inc_demo` or a real incident id instead.
           </div>
         </div>
@@ -2396,30 +2655,59 @@ useEffect(() => {
         } catch {}
       }}
     >
-      
+      <FlowStageBar stage={currentStage} />
       {/* Top bar */}
       <div className="px-4 pt-4 pb-3 border-b border-white/10 sticky top-0 bg-black/80 backdrop-blur z-10">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-wider text-gray-400">Field Incident</div>
-            <div className="text-xl font-semibold tracking-tight">{incidentId} • Riverbend Electric</div>
-            <div className="mt-1 text-[11px]">
-              <span className={"px-2 py-0.5 rounded-full border " + (isClosed ? "bg-red-500/15 border-red-400/30 text-red-100" : "bg-emerald-500/15 border-emerald-400/30 text-emerald-100")}>
-                status: {incidentStatus || "open"}
+          <div className="space-y-1">
+            <div className="text-xs uppercase tracking-[0.18em] text-gray-500 font-semibold">Field Incident</div>
+            <div className="text-2xl font-semibold tracking-tight text-white">{incidentId} • Riverbend Electric</div>
+            <div className="mt-2 flex items-center gap-3 text-xs">
+              <span className="text-gray-500">Status</span>
+              <span className={"px-2 py-0.5 rounded-full border font-medium " + (isClosed ? "bg-red-500/15 border-red-400/30 text-red-100" : "bg-emerald-500/15 border-emerald-400/30 text-emerald-100")}>
+                {String(incidentStatus || "open").toUpperCase()}
               </span>
-              <span className="ml-2 text-gray-400">updated: {incidentUpdatedAtSec ? fmtAgo(incidentUpdatedAtSec) : "—"}</span>
-              {isDemoMode ? (
+              <span className="ml-2 text-gray-500">
+                Updated <span className="text-gray-300 font-medium">{incidentUpdatedAtSec ? fmtAgo(incidentUpdatedAtSec) : "—"}</span>
+              </span>
+                           {isDemoMode ? (
                 <>
-                  <span className="ml-2 px-2 py-0.5 rounded-full border bg-blue-500/15 border-blue-300/30 text-blue-100">
-                    Demo Mode
-                  </span>
                   <button
                     type="button"
-                    className="ml-2 px-2 py-0.5 rounded-full border bg-white/6 border-white/12 text-gray-200 hover:bg-white/10"
-                    onClick={() => { void copyDemoResetCommand(); }}
-                    title="Copy deterministic demo reset command"
+                    className="ml-2 px-2 py-0.5 rounded-full border bg-emerald-500/15 border-emerald-300/30 text-emerald-100 hover:bg-emerald-500/25"
+                    onClick={() => { void resetDemoNow(); }}
+                    title="Fully reset demo data and reload clean"
                   >
-                    Reset demo (copy command)
+                    Reset demo now
+                  </button>
+                  <button
+                    type="button"
+                    className="ml-2 px-2 py-0.5 rounded-full border bg-cyan-500/15 border-cyan-300/30 text-cyan-100 hover:bg-cyan-500/25"
+                    onClick={async () => {
+                      try {
+                        toast("Seeding demo evidence…", 1500);
+
+                        const res = await fetch("/api/dev/seed-demo-evidence", {
+                          method: "POST",
+                          cache: "no-store",
+                        });
+
+                        const out = await res.json().catch(() => ({}));
+
+                        if (!res.ok || !out?.ok) {
+                          throw new Error(out?.error || "seed-demo-evidence failed");
+                        }
+
+                        toast(`Seeded ${out.count} demo evidence`, 2200);
+                        window.location.reload();
+                      } catch (e: any) {
+                        toast("Seed failed: " + (e?.message || String(e)), 3500);
+                        console.error(e);
+                      }
+                    }}
+                    title="Seed 5 clean demo evidence items for testing"
+                  >
+                    Seed demo evidence
                   </button>
                 </>
               ) : null}
@@ -2427,6 +2715,7 @@ useEffect(() => {
           </div>
 
           <div className="flex items-center gap-2">
+
             <button
               type="button"
               className="px-2 py-1 rounded-full text-xs bg-purple-600/20 border border-purple-400/20 text-purple-100 hover:bg-purple-600/30 transition"
@@ -2439,20 +2728,13 @@ useEffect(() => {
             >
               Review
             </button>
-            <button
-              type="button"
-              className={
-                "px-2 py-1 rounded-full text-xs border transition " +
-                (isClosed
-                  ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
-                  : "bg-red-600/20 border-red-400/30 text-red-100 hover:bg-red-600/30")
-              }
-              disabled={isClosed || closingIncident}
-              onClick={() => { try { closeIncident(); } catch {} }}
-              title={isClosed ? "Incident already closed" : "Set incident status to closed"}
-            >
-              {closingIncident ? "Closing..." : "Close Incident"}
-            </button>
+            {isClosed ? (
+              <span className="text-[10px] text-gray-400">Incident closed</span>
+            ) : _hasApproved ? (
+              <span className="text-[10px] text-emerald-200">Approved by supervisor</span>
+            ) : _hasSubmitted ? (
+              <span className="text-[10px] text-amber-200">Submitted for supervisor review</span>
+            ) : null}
             <button
               type="button"
               className="px-2 py-1 rounded-full text-xs bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 transition"
@@ -2483,7 +2765,7 @@ useEffect(() => {
               }
               onClick={() => setTab(tab)}
             >
-              {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Evidence" : "Jobs"}
+              {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Evidence" : "Field Jobs"}
             </button>
           ))}
         </div>
@@ -2502,28 +2784,28 @@ useEffect(() => {
     return (
       <div className="space-y-3 mt-3">
         {req && (reqMsg || reqJobId) ? (
-          <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3">
+          <div className="rounded-2xl border border-indigo-400/20 bg-indigo-500/10 px-4 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wide text-amber-200/90">Update requested</div>
-                <div className="text-sm text-amber-100 mt-1 break-words">
+                <div className="text-[11px] uppercase tracking-wide text-indigo-200/90">Update requested</div>
+                <div className="text-sm text-indigo-100 mt-1 break-words">
                   {reqMsg ? reqMsg : "Supervisor requested an update."}
                 </div>
                 {reqJobId ? (
-                  <div className="text-xs text-amber-200/80 mt-1">jobId: {reqJobId}</div>
+                  <div className="text-xs text-indigo-200/80 mt-1">jobId: {reqJobId}</div>
                 ) : null}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-amber-50"
+                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-indigo-100"
                   onClick={() => { setTab("timeline"); }}
                 >
                   View timeline
                 </button>
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-amber-50"
+                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-indigo-100"
                   onClick={() => { setTab("evidence"); }}
                 >
                   Go to evidence
@@ -2536,12 +2818,12 @@ useEffect(() => {
         <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wide text-gray-400">My active job</div>
-              <div className="text-sm text-gray-200 mt-1 truncate">
+              <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">My active job</div>
+              <div className="text-lg font-medium text-white mt-1 truncate">
                 {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "No job selected")}
               </div>
               <div className="text-xs text-gray-400 mt-1">
-                status: <span className="text-gray-200">{jobStatus || "n/a"}</span>
+                Status: <span className="text-gray-200 font-medium">{String(jobStatus || "n/a").toUpperCase()}</span>
                 {locked ? <span className="ml-2 text-emerald-200">• locked</span> : null}
               </div>
             </div>
@@ -2569,7 +2851,7 @@ useEffect(() => {
                     : "bg-white/6 border-white/10 hover:bg-white/10 text-gray-100")
                 }
                 onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
-                disabled={isClosed}
+                disabled={isClosed || !hasActiveFieldJobs}
                 title={
                   isClosed
                     ? "Incident is closed (read-only)"
@@ -2631,6 +2913,21 @@ useEffect(() => {
 {/* PEAKOPS: removed big Open Notes bar */}
 {/* PEAKOPS_NEXTBESTACTION_V1_RENDER */}
         {activeTab === "overview" ? (
+          _hasSubmitted ? (
+            <section className="rounded-2xl border p-3 border-blue-400/20 bg-blue-500/10">
+              <div className="text-[11px] uppercase tracking-wide text-blue-200/80">Submitted for supervisor review</div>
+              <div className="mt-3">
+                <button
+                  type="button"
+                  className="w-full py-4 rounded-xl border text-lg font-semibold transition shadow-[0_10px_30px_rgba(0,0,0,0.45)] bg-blue-600/70 border-blue-300/30 text-white hover:bg-blue-500"
+                  onClick={() => { try { router.push(`/incidents/${incidentId}/review`); } catch {} }}
+                  title="Open Supervisor Review"
+                >
+                  ✓ Go to Review
+                </button>
+              </div>
+            </section>
+          ) : (
 		<NextBestAction
 	  arrived={arrived}
 	  hasSession={_hasSession}
@@ -2644,8 +2941,9 @@ useEffect(() => {
       goAddEvidence();
     }}
   onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
-  onSubmitSession={() => { if (!isClosed) { try { submitSession(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
+  onSubmitSession={() => { if (!isClosed) { void submitSession(); } else toast("Incident is closed (read-only).", 2600); }}
 />
+          )
         ) : null}
 
 {/* PHASE6_1_TIMERS_V1_RENDER */}
@@ -2654,11 +2952,22 @@ useEffect(() => {
 <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-3">
     <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
-    {_notesAgo === "—" ? (
-      <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-300/25 text-amber-100">
-        Action needed: notes
-      </span>
-    ) : null}
+    <div className="flex items-center gap-2">
+      {!_hasEvidence ? (
+        <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/12 border border-amber-300/25 text-amber-100">
+          No evidence yet — add photos or explain in notes
+        </span>
+      ) : null}
+      {_hasNotes ? (
+        <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-400/20 text-indigo-100">
+          Notes complete
+        </span>
+      ) : currentStage === "notes" ? (
+        <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-400/20 text-indigo-100">
+          Add notes to continue
+        </span>
+      ) : null}
+    </div>
   </div>
 
   <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
@@ -2668,7 +2977,7 @@ useEffect(() => {
     </div>
 
     <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-2">
-      <div className="text-[10px] uppercase tracking-wide text-gray-400">Evidence</div>
+      <div className="text-[10px] uppercase tracking-wide text-gray-400" >Evidence</div>
       <div className="mt-1 text-base font-semibold text-gray-100">{_evidenceAgo}</div>
     </div>
 
@@ -2676,13 +2985,13 @@ useEffect(() => {
       className={
         "rounded-xl border px-3 py-2 sm:col-span-2 " +
         (_notesAgo === "—"
-          ? "bg-amber-500/10 border-amber-300/25"
+          ? "bg-indigo-500/10 border-indigo-400/20"
           : "bg-black/30 border-white/10")
       }>
-      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-amber-200/80" : "text-gray-400")}>
+      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-indigo-200/80" : "text-gray-400")}>
         Notes
       </div>
-      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-amber-50" : "text-gray-100")}>
+      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-indigo-100" : "text-gray-100")}>
         {_notesAgo}
       </div>
     </div>
@@ -2697,13 +3006,13 @@ useEffect(() => {
           <section className="rounded-2xl border border-amber-300/20 bg-amber-400/10 p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wide text-amber-200/80">
+                <div className="text-[11px] uppercase tracking-wide text-indigo-200/80">
                   Supervisor requested an update
                 </div>
-                <div className="mt-1 text-sm text-amber-50/90 whitespace-pre-wrap break-words">
+                <div className="mt-1 text-sm text-indigo-100/90 whitespace-pre-wrap break-words">
                   {reqUpdateText}
                 </div>
-                <div className="mt-2 text-[11px] text-amber-100/50">
+                <div className="mt-2 text-[11px] text-indigo-100/50">
                   (V2 demo: stored locally on this device. Phase B will persist to Firestore + notify.)
                 </div>
               </div>
@@ -2711,7 +3020,7 @@ useEffect(() => {
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-amber-50 hover:bg-white/10"
+                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-indigo-100 hover:bg-white/10"
                   onClick={() => { try { loadReqUpdate(); } catch {} try { refresh(); } catch {} }}
                   title="Reload local request note"
                 >
@@ -2719,7 +3028,7 @@ useEffect(() => {
                 </button>
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-300/25 text-sm text-amber-50 hover:bg-amber-500/20"
+                  className="px-3 py-2 rounded-xl bg-indigo-500/15 border border-indigo-400/20 text-sm text-indigo-100 hover:bg-amber-500/20"
                   onClick={() => {
                     clearReqUpdate();
                   }}
@@ -2736,7 +3045,7 @@ useEffect(() => {
         {activeTab === "evidence" ? (
         <section ref={myJobSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-2">
-    <div className="text-xs uppercase tracking-wide text-gray-400" id="evidence">Evidence</div>
+    <div className="text-xs uppercase tracking-wide text-gray-400" id="evidence" >Evidence</div>
     <div className="flex items-center gap-2">
       <span className="text-xs text-gray-500">Latest {Math.min(12, evidence.length)}</span>
       {process.env.NODE_ENV !== "production" ? (
@@ -2822,7 +3131,7 @@ useEffect(() => {
                       </span>
                     ))}
                     {converting ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-400/15 border-amber-300/30 text-amber-100">
+                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-400/15 border-indigo-400/20 text-indigo-100">
                         Converting…
                       </span>
                     ) : null}
@@ -2884,6 +3193,16 @@ useEffect(() => {
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs uppercase tracking-[0.16em] text-gray-400">My Job</div>
             <span className="text-xs text-gray-500">default for new evidence</span>
+          </div>
+          <div className="mt-1 text-[11px] text-gray-500">Only active field jobs appear here. Completed jobs move to Review. Evidence mapping can still span the incident.</div>
+          <div className="mt-1 text-xs text-gray-600">
+            {(() => {
+              const reviewReadyCount = (jobs || []).filter((j: any) => {
+                const s = normalizeJobStatus(j?.status);
+                return s !== "open" && s !== "in_progress" && s !== "assigned";
+              }).length;
+              return reviewReadyCount > 0 ? `${reviewReadyCount} job${reviewReadyCount === 1 ? "" : "s"} ready in Review` : "";
+            })()}
           </div>
 
           {(() => {
@@ -3001,6 +3320,12 @@ useEffect(() => {
           </div>
           <div className="mt-1 text-[11px] text-gray-500">
             Optional. New evidence auto-attaches to My Job.
+          </div>
+          <div className="mt-1 text-[11px] text-gray-500">
+            Evidence can be assigned to any job in this incident.
+          </div>
+          <div className="mt-1 text-[11px] text-gray-600">
+            Field Jobs only shows active jobs. Completed jobs appear in Review.
           </div>
           <div className="mt-3 space-y-2">
             {(evidence || []).slice(0, 25).map((ev: any) => {
@@ -3124,12 +3449,21 @@ useEffect(() => {
             ];
 
             const ready = hasSession && hasEvidence && hasNotes;
+            const bannerLabel = isClosed
+              ? "Incident closed"
+              : hasApproved
+              ? "Approved by supervisor"
+              : _hasSubmitted
+              ? "Submitted for supervisor review"
+              : (ready ? "Ready for supervisor review" : "Not ready yet");
 
             return (
               <div className="mt-3 space-y-2 text-sm">
-                <div className={"rounded-xl p-3 border " + (ready ? "bg-green-700/15 border-green-400/20" : "bg-amber-700/10 border-amber-400/20")}>
-                  <div className="font-semibold">{ready ? "Ready for supervisor review" : "Not ready yet"}</div>
-                  <div className="text-xs text-gray-400 mt-1">This is computed from live events + evidence.</div>
+                <div className={"rounded-xl p-3 border " + (ready ? "bg-green-700/15 border-green-400/20" : "bg-amber-700/10 border-indigo-400/20")}>
+                  <div className="font-semibold">{bannerLabel}</div>
+                  {!isClosed && !hasApproved && !_hasSubmitted ? (
+                    <div className="text-xs text-gray-400 mt-1">This is computed from live events + evidence.</div>
+                  ) : null}
                 </div>
 
                 <div className="grid gap-2">
@@ -3201,28 +3535,39 @@ useEffect(() => {
           </button>
 
           {/* Submit */}
-          <button
-            type="button"
-            className={
-              "w-full py-3 rounded-xl text-sm font-semibold border transition " +
-              ((arrived && _hasEvidence && _hasNotes && !submitting && !isClosed)
-                ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
-                : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
-            }
-            disabled={submitting || !arrived || !_hasEvidence || !_hasNotes || isClosed}
-            title={
-              isClosed
-                ? "Incident is closed (read-only)"
-                : (arrived && _hasEvidence && _hasNotes)
-                ? "Submit session for supervisor review"
-                : "Complete Arrive + Evidence + Notes first"
-            }
-            onClick={(e) => {
-              try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {}
-              try { submitSession(); } catch {}
-            }}>
-            Submit
-          </button>
+          {_hasSubmitted ? (
+            <div className="w-full">
+              <div className="text-[11px] text-blue-200/80 mb-1">Submitted for supervisor review</div>
+              <button
+                type="button"
+                className="w-full py-3 rounded-xl text-sm font-semibold border transition bg-blue-600/20 border-blue-300/25 text-blue-50 hover:bg-blue-600/30"
+                onClick={() => { try { router.push(`/incidents/${incidentId}/review`); } catch {} }}
+                title="Open Supervisor Review"
+              >
+                ✓ Submitted → Go to Review
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className={
+                "w-full py-3 rounded-xl text-sm font-semibold border transition " +
+                ((hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed)
+                  ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
+                  : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
+              }
+              disabled={submitting || !hasArrival || (!(_hasEvidence || _hasNotes)) || isClosed}
+              title={
+                isClosed
+                  ? "Incident is closed (read-only)"
+                  : (hasArrival && (_hasEvidence || _hasNotes))
+                  ? "Submit session for supervisor review"
+                  : !hasArrival ? "Mark arrival first" : !(_hasEvidence || _hasNotes) ? "Add evidence or explain in notes" : "Ready to submit"
+              }
+              onClick={() => { void submitSession(); }}>
+              Submit
+            </button>
+          )}
         </div>
       </div>
 
@@ -3281,7 +3626,7 @@ useEffect(() => {
               </button>
               {process.env.NODE_ENV !== "production" && selectedIsHeic && selectedMissingDerivatives ? (
                 <button
-                  className="text-xs px-2 py-1 rounded bg-amber-500/20 border border-amber-300/30 hover:bg-amber-500/30"
+                  className="text-xs px-2 py-1 rounded bg-amber-500/20 border border-indigo-400/20 hover:bg-amber-500/30"
                   disabled={convertingHeic}
                   onClick={() => { try { convertSelectedHeicNow(); } catch {} }}
                   title="Dev fallback: run HEIC conversion now"

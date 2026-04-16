@@ -1,4 +1,5 @@
-// src/app/admin/stormwatch/page.tsx
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getAdminDb } from "@/lib/firebaseAdmin";
 
@@ -57,9 +58,15 @@ function healthBadgeClass(status: OrgHealthStatus) {
 export default async function StormwatchPage({
   searchParams,
 }: {
-  searchParams?: { org?: string };
+  searchParams: Promise<{ org?: string }>;
 }) {
-  const selectedOrgId = searchParams?.org || "";
+  const cookieStore = await cookies();
+  if (cookieStore.get("stormwatch-auth")?.value !== "ok") {
+    redirect("/admin/login?redirectTo=/admin/stormwatch");
+  }
+
+  const params = await searchParams;
+  const selectedOrgId = params?.org || "";
 
   const db = getAdminDb();
 

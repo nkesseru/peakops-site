@@ -387,6 +387,8 @@ export default function JobDetailClient({
         actorEmail: actorEmail(),
       });
       await refresh();
+      if (incidentId) router.push(`/incidents/${encodeURIComponent(incidentId)}`);
+      else router.back();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {

@@ -54,8 +54,7 @@ exports.markArrivedV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 409, { ok: false, error: "invalid_transition", detail: `unsupported incident.status=${incStatus}` });
     }
     const sessionRef =
-      db.collection("orgs").doc(orgId)
-        .collection("incidents").doc(incidentId)
+      db.collection("incidents").doc(incidentId)
         .collection("fieldSessions").doc(sessionId);
 
     // Only set arrival once (idempotent-ish)

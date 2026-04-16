@@ -2,12 +2,10 @@
 
 type Props = {
   arrived?: boolean;
-
   hasSession: boolean;
   hasEvidence: boolean;
   hasNotes: boolean;
   hasApproved: boolean;
-
   onOpenNotes: () => void;
   onAddEvidence: () => void;
   onMarkArrived?: () => void;
@@ -15,109 +13,99 @@ type Props = {
 };
 
 export default function NextBestAction(props: Props) {
-  const { hasSession, hasEvidence, hasNotes, hasApproved, arrived } = props;
+  const {
+    arrived,
+    hasSession,
+    hasEvidence,
+    hasNotes,
+    hasApproved,
+    onOpenNotes,
+    onAddEvidence,
+    onMarkArrived,
+    onSubmitSession,
+  } = props;
 
-  let title = "Next best action";
-  let desc = "Keep moving the incident toward supervisor-ready.";
-  let cta = "Add evidence";
-  let action: "add" | "notes" | "submit" = "add";
-  let tone = "border-white/10 bg-white/5";
+  const currentStage =
+    !hasSession && !arrived ? "arrive" :
+    !hasEvidence && !hasNotes ? "evidence" :
+    !hasNotes ? "notes" :
+    !hasApproved ? "submit" :
+    "review";
 
-  if (!hasEvidence) {
-    title = "Capture evidence";
-    desc = "Add at least 4 photos/docs so the record is defensible.";
-    cta = "Add evidence";
-    action = "add";
-    tone = "border-amber-300/20 bg-amber-400/10";
-  } else if (!hasNotes) {
-    title = "Write the notes";
-    desc = "One clean summary + key site details. This makes the record ‘audit-safe’.";
-    cta = "Open notes";
-    action = "notes";
-    tone = "border-amber-300/20 bg-amber-400/10";
-  } else if (!hasSession) {
-    title = "Start a field session";
-    desc = "Drop one evidence item to create the session timeline anchor.";
-    cta = "Add evidence";
-    action = "add";
-    tone = "border-amber-300/20 bg-amber-400/10";
-  } else if (!hasApproved) {
-    title = "Finish the field visit";
-    desc = "Mark arrival (if needed), then submit session for supervisor review.";
-    cta = "Submit session";
-    action = "submit";
-    tone = "border-green-400/20 bg-green-500/10";
-  } else {
-    title = "Supervisor approved";
-    desc = "This session is locked + ready for filing/export steps.";
-    cta = "Open notes";
-    action = "notes";
-    tone = "border-green-400/20 bg-green-500/10";
+  const title =
+    currentStage === "arrive" ? "Start the field visit" :
+    currentStage === "evidence" ? "Capture evidence" :
+    currentStage === "notes" ? "Add notes" :
+    currentStage === "submit" ? "Ready to submit" :
+    "Supervisor approval complete";
+
+  const desc =
+    currentStage === "arrive" ? "Check in on site to begin the field visit." :
+    currentStage === "evidence" ? "Add enough evidence to continue, or explain the exception in notes." :
+    currentStage === "notes" ? "Add notes to continue. This is your explanation fallback if no photos were captured." :
+    currentStage === "submit" ? "Submit session" :
+    "Approved. Ready to close.";
+
+  const cta =
+    currentStage === "arrive" ? "Mark arrived" :
+    currentStage === "evidence" ? "Add evidence" :
+    currentStage === "notes" ? "Add notes" :
+    currentStage === "submit" ? "Submit session" :
+    "Approved & locked";
+
+  const disabled = currentStage === "review";
+
+  const tone =
+    currentStage === "review"
+      ? "border-green-400/20 bg-green-500/10"
+      : currentStage === "submit"
+      ? "border-emerald-400/20 bg-emerald-500/10"
+      : "border-indigo-400/20 bg-indigo-500/10";
+
+  function handlePrimary() {
+    if (currentStage === "arrive") {
+      try { onMarkArrived?.(); } catch {}
+      return;
+    }
+    if (currentStage === "evidence") {
+      onAddEvidence();
+      return;
+    }
+    if (currentStage === "notes") {
+      onOpenNotes();
+      return;
+    }
+    if (currentStage === "submit") {
+      onSubmitSession();
+      return;
+    }
   }
-
-  const onClick = () => {
-    if (action === "notes") return props.onOpenNotes();
-    if (action === "submit") return props.onSubmitSession();
-    return props.onAddEvidence();
-  };
-
-  const btnClass =
-    "w-full py-4 rounded-xl border text-lg font-semibold shadow-[0_10px_30px_rgba(0,0,0,0.45)] active:translate-y-[1px] transition";
-
-  const primaryCtaClass =
-    btnClass + " bg-white/8 border-white/12 text-white hover:bg-white/10 hover:border-white/20 active:bg-white/12";
-
-  const notesClass =
-    btnClass + " bg-blue-600/20 border-blue-400/20 text-blue-100 hover:bg-blue-600/25 hover:border-blue-300/30";
-
-  const submitClass =
-    btnClass + " bg-emerald-600/20 border-emerald-400/20 text-emerald-100 hover:bg-emerald-600/25 hover:border-emerald-300/30";
-
-  const arrivedClass =
-    btnClass + " bg-emerald-600/10 border-emerald-400/15 text-emerald-100 hover:bg-emerald-600/15";
 
   return (
     <section className={"rounded-2xl border p-3 " + tone}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-wide text-gray-400">{title}</div>
-          <div className="text-sm text-gray-200 truncate">{desc}</div>
-        </div>
+      <div className="text-[11px] uppercase tracking-wide text-gray-400">{title}</div>
+      <div className="mt-1 text-sm text-gray-100">{desc}</div>
 
-        {/* Right-side CTA for compact layouts (kept simple) */}
+      <div className="mt-3">
         <button
           type="button"
-          className={"px-3 py-2 rounded-xl bg-white/8 border border-white/12 text-gray-100 hover:bg-white/10 active:bg-white/15 text-sm whitespace-nowrap " + (cta === "Submit session" ? "hidden" : "")}
-          onClick={onClick}
+          className={
+            "w-full py-4 rounded-xl border text-lg font-semibold transition shadow-[0_10px_30px_rgba(0,0,0,0.45)] " +
+            (disabled
+              ? "bg-white/5 border-white/10 text-white/40 cursor-not-allowed"
+              : currentStage === "submit"
+              ? "bg-emerald-600/80 border-emerald-400/30 text-white hover:bg-emerald-500"
+              : "bg-white/8 border-white/12 text-white hover:bg-white/10 hover:border-white/20")
+          }
+          disabled={disabled}
+          onClick={() => {
+            if (disabled) return;
+            handlePrimary();
+          }}
         >
-          {cta}
+          {currentStage === "arrive" && arrived ? "✓ Arrived" : cta}
         </button>
       </div>
-
-      {/* Big dock-style CTA(s) when we're in "Submit session" mode */}
-      {cta === "Submit session" ? (
-        <div className="mt-3 grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            className={arrivedClass}
-            onClick={() => {
-              try {
-                props.onMarkArrived?.();
-              } catch {}
-            }}
-            disabled={!!arrived || !props.onMarkArrived}
-            title={arrived ? "Already marked arrived" : "Mark arrival (optional)"}
-          >
-            ✓ Mark arrived
-          </button>
-
-          <button type="button" className={submitClass} onClick={props.onSubmitSession}>
-            Submit session
-          </button>
-        </div>
-      ) : null}
-
-      {/* (Optional) If you want the BIG buttons always (like before), we can move these into IncidentClient’s bottom dock later. */}
     </section>
   );
 }

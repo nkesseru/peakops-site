@@ -43,15 +43,37 @@ export async function proxy(req: Request, name: string): Promise<Response> {
     body = await req.arrayBuffer();
   }
 
-  const upstream = await fetch(target, {
-    method,
-    headers,
-    body: body ? Buffer.from(body) : undefined,
-    // keep things deterministic in dev
-    cache: "no-store",
-  });
+  let upstream: globalThis.Response;
+  try {
+    upstream = await fetch(target, {
+      method,
+      headers,
+      body: body ? Buffer.from(body) : undefined,
+      // keep things deterministic in dev
+      cache: "no-store",
+    });
+  } catch (e: any) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: "Functions backend unreachable",
+        detail: String(e?.message || e),
+      }),
+      { status: 502, headers: { "content-type": "application/json" } },
+    );
+  }
 
-  // Stream response back
+  // If upstream returned non-JSON, wrap as JSON so callers can safely r.json()
+  const ct = upstream.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    const text = await upstream.text();
+    return new Response(
+      JSON.stringify({ ok: false, error: text || `Upstream returned ${upstream.status}` }),
+      { status: upstream.status, headers: { "content-type": "application/json" } },
+    );
+  }
+
+  // Stream JSON response back
   const respHeaders = new Headers();
   upstream.headers.forEach((v, k) => respHeaders.set(k, v));
 

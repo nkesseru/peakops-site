@@ -32,7 +32,12 @@ export default function AdminContractsList() {
       if (!j?.ok) throw new Error(j?.error || "getContractsV1 failed");
       setDocs(Array.isArray(j.docs) ? j.docs : []);
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      const msg = String(e?.message || e);
+      setErr(
+        msg.includes("does not exist")
+          ? "This module requires backend services that are not deployed in this environment."
+          : msg,
+      );
     } finally {
       setBusy(false);
     }

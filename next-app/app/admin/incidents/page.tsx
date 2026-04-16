@@ -11,9 +11,19 @@ export default function AdminIncidentsPage() {
 
   async function refresh() {
     setErr(null);
-    const res = await fetch(`/api/fn/listIncidents?orgId=${encodeURIComponent(orgId)}`);
-    const j = await res.json();
-    setData(j);
+    try {
+      const res = await fetch(`/api/fn/listIncidentsV1?orgId=${encodeURIComponent(orgId)}`);
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error || "listIncidentsV1 failed");
+      setData(j);
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      setErr(
+        msg.includes("does not exist")
+          ? "This module requires backend services that are not deployed in this environment."
+          : msg,
+      );
+    }
   }
 
   useEffect(() => { refresh(); }, []);
@@ -23,7 +33,7 @@ export default function AdminIncidentsPage() {
     setErr(null);
     try {
       const incidentId = `inc_${Math.random().toString(36).slice(2, 8)}`;
-      const res = await fetch(`/api/fn/createIncident`, {
+      const res = await fetch(`/api/fn/createIncidentV1`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -35,7 +45,7 @@ export default function AdminIncidentsPage() {
         }),
       });
       const j = await res.json();
-      if (!j.ok) throw new Error(j.error || "createIncident failed");
+      if (!j.ok) throw new Error(j.error || "createIncidentV1 failed");
       await refresh();
     } catch (e: any) {
       setErr(e?.message ?? String(e));

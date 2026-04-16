@@ -35,7 +35,16 @@ export default function UsagePage() {
     setErr(null);
     const r = await fetch(`/api/fn/listUsageEvents?orgId=${encodeURIComponent(orgId)}`);
     const j = await r.json();
-    if (!j.ok) { setErr(j.error || "listUsageEvents failed"); setData(null); return; }
+    if (!j.ok) {
+      const msg = j.error || "listUsageEvents failed";
+      setErr(
+        msg.includes("does not exist")
+          ? "This module requires backend services that are not deployed in this environment."
+          : msg,
+      );
+      setData(null);
+      return;
+    }
     setData(j);
   }
 

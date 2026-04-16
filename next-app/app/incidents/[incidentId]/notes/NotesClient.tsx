@@ -78,6 +78,9 @@ setMsg("");
       } catch {}
 ;
       setTimeout(() => setMsg(""), 1800);
+      if (updatedBy === "ui_manual" && incidentId) {
+        router.push(`/incidents/${encodeURIComponent(String(incidentId))}?notesSaved=1`);
+      }
     } catch (e: any) {
       setMsg((e && (e.message || String(e))) || "save failed");
     } finally {
@@ -109,7 +112,8 @@ setMsg("");
       </div>
 
       <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
-        <div className="text-xs uppercase tracking-wide text-gray-400 mb-2">Incident Notes</div>
+        <div className="text-xs uppercase tracking-wide text-gray-400">Incident Notes (this visit)</div>
+        <div className="text-[11px] text-gray-500 mt-1 mb-2">Used for this visit only. Clears when the incident resets.</div>
         <textarea
           className="w-full min-h-[160px] bg-black/30 border border-white/10 rounded-xl p-3 text-sm outline-none"
           placeholder="What happened? Key decisions, summary, impact..."
@@ -119,7 +123,8 @@ setMsg("");
       </section>
 
       <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
-        <div className="text-xs uppercase tracking-wide text-gray-400 mb-2">Site Notes</div>
+        <div className="text-xs uppercase tracking-wide text-gray-300">Site Notes (saved for this location)</div>
+        <div className="text-[11px] text-gray-300/85 mt-1 mb-2">Saved for this location for future visits. Use for access, safety, lockup, and recurring site instructions.</div>
         <textarea
           className="w-full min-h-[160px] bg-black/30 border border-white/10 rounded-xl p-3 text-sm outline-none"
           placeholder="Access info, hazards, panel location, gate codes, customer instructions..."
