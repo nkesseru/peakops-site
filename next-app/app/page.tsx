@@ -9,35 +9,48 @@ export default function RootPage() {
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        background: "radial-gradient(circle at 30% 20%, #0f172a, #0b0f19 70%)",
+        background: "radial-gradient(ellipse at 50% 0%, #111 0%, #000 70%)",
         fontFamily:
           'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         padding: 24,
       }}
     >
+      {/* Eyebrow */}
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: 500,
+          letterSpacing: "0.14em",
+          color: "#666",
+          textTransform: "uppercase" as const,
+          marginBottom: 10,
+        }}
+      >
+        Operational Record System
+      </div>
+
       {/* Wordmark */}
       <div
         style={{
-          fontSize: 13,
+          fontSize: 22,
           fontWeight: 700,
-          letterSpacing: "0.18em",
-          color: "#94a3b8",
-          textTransform: "uppercase" as const,
-          marginBottom: 12,
+          letterSpacing: "0.22em",
+          color: "#C8A84E",
+          marginBottom: 24,
         }}
       >
-        PeakOps
+        PEAKOPS
       </div>
 
-      {/* Value proposition */}
+      {/* Headline */}
       <h1
         style={{
-          fontSize: 28,
-          fontWeight: 700,
-          color: "#f1f5f9",
+          fontSize: 26,
+          fontWeight: 600,
+          color: "#fff",
           textAlign: "center",
           margin: "0 0 8px",
-          lineHeight: 1.3,
+          lineHeight: 1.35,
         }}
       >
         Operational records built in real time.
@@ -45,11 +58,11 @@ export default function RootPage() {
       <p
         style={{
           fontSize: 14,
-          color: "#64748b",
+          color: "#777",
           textAlign: "center",
-          maxWidth: 460,
-          lineHeight: 1.5,
-          margin: "0 0 40px",
+          maxWidth: 440,
+          lineHeight: 1.6,
+          margin: "0 0 36px",
         }}
       >
         PeakOps turns field work into audit-ready, filing-ready records without
@@ -60,9 +73,9 @@ export default function RootPage() {
       <div
         style={{
           display: "flex",
-          gap: 12,
-          flexWrap: "wrap",
-          justifyContent: "center",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 10,
         }}
       >
         <Link
@@ -71,14 +84,15 @@ export default function RootPage() {
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            padding: "12px 28px",
-            borderRadius: 8,
-            background: "linear-gradient(135deg, #3b82f6, #22c55e)",
-            color: "#0b1120",
+            padding: "12px 32px",
+            borderRadius: 6,
+            background: "#C8A84E",
+            color: "#000",
             fontSize: 14,
             fontWeight: 600,
             textDecoration: "none",
-            minWidth: 160,
+            minWidth: 200,
+            letterSpacing: "0.02em",
           }}
         >
           Operator Login
@@ -89,29 +103,59 @@ export default function RootPage() {
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            padding: "12px 28px",
-            borderRadius: 8,
-            border: "1px solid #1e293b",
-            background: "rgba(15, 23, 42, 0.4)",
-            color: "#475569",
+            padding: "12px 32px",
+            borderRadius: 6,
+            border: "1px solid #222",
+            background: "transparent",
+            color: "#555",
             fontSize: 14,
             fontWeight: 500,
-            minWidth: 160,
+            minWidth: 200,
             cursor: "default",
           }}
         >
           Contractor Access
         </span>
+        <p
+          style={{
+            fontSize: 11,
+            color: "#444",
+            textAlign: "center",
+            maxWidth: 320,
+            lineHeight: 1.5,
+            margin: "2px 0 0",
+          }}
+        >
+          Portal access is being finalized. Contact your administrator if you
+          need access.
+        </p>
       </div>
 
-      {/* Subtle internal access */}
-      <div style={{ marginTop: 64, fontSize: 11, color: "#334155" }}>
-        <Link
-          href="/admin/login"
-          style={{ color: "#334155", textDecoration: "none" }}
-        >
-          Internal
-        </Link>
+      {/* Trust line */}
+      <p
+        style={{
+          fontSize: 12,
+          color: "#555",
+          textAlign: "center",
+          marginTop: 48,
+          letterSpacing: "0.01em",
+        }}
+      >
+        Built for field operations, infrastructure, and compliance-sensitive
+        teams.
+      </p>
+
+      {/* Footer microcopy */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: 24,
+          fontSize: 10,
+          color: "#333",
+          letterSpacing: "0.02em",
+        }}
+      >
+        Secure access to operational records and workflows.
       </div>
     </main>
   );
