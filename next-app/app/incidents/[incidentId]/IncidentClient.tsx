@@ -2978,14 +2978,16 @@ const isApproved = !!_hasApproved;
 
 {/* Quick actions */}
         {activeTab === "evidence" ? (
-        <section ref={myJobSectionRef} style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
+        <section ref={myJobSectionRef} style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#C8A84E" }} id="evidence">Evidence</span>
-      <span style={{ fontSize: 10, color: "#6f6f6f" }}>{evidence.length} item{evidence.length !== 1 ? "s" : ""}</span>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+      <h2 id="evidence" style={{ margin: 0, fontSize: 13, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#f5f5f5" }}>Evidence</h2>
+      <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", lineHeight: 1.6 }}>
+        {evidence.length} {evidence.length === 1 ? "item" : "items"}
+      </span>
     </div>
-    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-      <button type="button" style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", fontSize: 10, fontWeight: 600, cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer" }} disabled={isClosed || !hasActiveFieldJobs} onClick={() => { try { goAddEvidence(); } catch {} }}>+ Add</button>
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <button type="button" style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer", opacity: (isClosed || !hasActiveFieldJobs) ? 0.5 : 1 }} disabled={isClosed || !hasActiveFieldJobs} onClick={() => { try { goAddEvidence(); } catch {} }}>+ Add evidence</button>
       {process.env.NODE_ENV !== "production" ? (
         <details style={{ display: "inline" }}>
           <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f", padding: "2px 6px" }}>Dev</summary>
@@ -3000,12 +3002,39 @@ const isApproved = !!_hasApproved;
   </div>
 
   {evidence.length === 0 ? (
-    <div style={{ marginTop: 10, padding: "16px 0", textAlign: "center" }}>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ margin: "0 auto 8px" }}><rect x="3" y="3" width="18" height="18" rx="3" stroke="#333" strokeWidth="1.5"/><circle cx="8.5" cy="9" r="1.5" fill="#333"/><path d="M3 16l5-5 3 3 4-5 6 7" stroke="#333" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-      <div style={{ fontSize: 12, color: "#6f6f6f" }}>No evidence captured yet</div>
-      <button type="button" style={{ marginTop: 8, padding: "8px 16px", borderRadius: 6, border: "none", background: "#C8A84E", color: "#000", fontSize: 12, fontWeight: 700, cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer" }} disabled={isClosed || !hasActiveFieldJobs} onClick={() => { try { goAddEvidence(); } catch {} }}>
-        Add Evidence
+    <div style={{ marginTop: 14, padding: "20px 8px 10px", textAlign: "center" }}>
+      <div style={{ width: 44, height: 44, margin: "0 auto 12px", borderRadius: 10, border: "1px solid #1c1c1c", background: "#050505", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="#6f6f6f" strokeWidth="1.5"/><circle cx="8.5" cy="9" r="1.5" fill="#6f6f6f"/><path d="M3 16l5-5 3 3 4-5 6 7" stroke="#6f6f6f" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>No evidence yet</div>
+      <div style={{ marginTop: 4, fontSize: 12, color: "#6f6f6f", lineHeight: 1.5, maxWidth: 300, marginLeft: "auto", marginRight: "auto" }}>
+        Photos and files you capture in the field will attach to your active job and appear here.
+      </div>
+      <button
+        type="button"
+        style={{
+          marginTop: 14,
+          padding: "12px 22px",
+          borderRadius: 8,
+          border: "none",
+          background: (isClosed || !hasActiveFieldJobs) ? "#1c1c1c" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
+          color: (isClosed || !hasActiveFieldJobs) ? "#6f6f6f" : "#050505",
+          fontSize: 13,
+          fontWeight: 800,
+          letterSpacing: "0.02em",
+          cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer",
+          boxShadow: (isClosed || !hasActiveFieldJobs) ? "none" : "0 2px 12px rgba(200,168,78,0.20)",
+        }}
+        disabled={isClosed || !hasActiveFieldJobs}
+        onClick={() => { try { goAddEvidence(); } catch {} }}
+      >
+        + Add Evidence
       </button>
+      {(isClosed || !hasActiveFieldJobs) ? (
+        <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f" }}>
+          {isClosed ? "Incident is closed (read-only)." : "Waiting for an active field job."}
+        </div>
+      ) : null}
     </div>
   ) : (
   <>
@@ -3105,8 +3134,11 @@ const isApproved = !!_hasApproved;
     </div>
   </div>
 
-  <div style={{ marginTop: 6, fontSize: 10, color: "#6f6f6f" }}>
-    Tap to preview. Scroll for more.
+  <div style={{ marginTop: 8, fontSize: 10, color: "#6f6f6f", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+    <span>Tap any tile to preview. Scroll for more.</span>
+    {evidence.length > 12 ? (
+      <span style={{ color: "#b3b3b3" }}>Showing 12 of {evidence.length}</span>
+    ) : null}
   </div>
   </>
   )}
@@ -3214,15 +3246,18 @@ const isApproved = !!_hasApproved;
         ) : null}
 
         {activeTab === "evidence" ? (
-        <section ref={evidenceMappingSectionRef} style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
+        <section ref={evidenceMappingSectionRef} style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-            <span id="evidence-mapping" style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Evidence Mapping</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+              <h2 id="evidence-mapping" style={{ margin: 0, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#f5f5f5" }}>Evidence Mapping</h2>
+              <span style={{ fontSize: 10, color: "#6f6f6f" }}>job assignment</span>
+            </div>
             <button
               type="button"
               style={{
-                padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: (isClosed || jobsBusy || !currentJobId) ? "not-allowed" : "pointer",
-                border: (isClosed || jobsBusy || !currentJobId) ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.3)",
-                background: (isClosed || jobsBusy || !currentJobId) ? "#101010" : "rgba(200,168,78,0.08)",
+                padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", cursor: (isClosed || jobsBusy || !currentJobId) ? "not-allowed" : "pointer",
+                border: (isClosed || jobsBusy || !currentJobId) ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
+                background: (isClosed || jobsBusy || !currentJobId) ? "#101010" : "rgba(200,168,78,0.1)",
                 color: (isClosed || jobsBusy || !currentJobId) ? "#6f6f6f" : "#C8A84E",
               }}
               disabled={isClosed || jobsBusy || !currentJobId}
@@ -3232,9 +3267,15 @@ const isApproved = !!_hasApproved;
               Assign all to My Job
             </button>
           </div>
-          <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.4 }}>
+          <div style={{ marginTop: 6, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
             New evidence auto-attaches to your active job. Completed jobs appear in Review.
           </div>
+          {(evidence || []).length === 0 ? (
+            <div style={{ marginTop: 12, padding: "14px 10px", borderRadius: 8, border: "1px dashed #1c1c1c", background: "#050505", textAlign: "center", fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+              Nothing to map yet. Evidence you add will show up here with a job selector.
+            </div>
+          ) : null}
+          {(evidence || []).length > 0 ? (
           <div className="mt-3 space-y-2">
             {(evidence || []).slice(0, 25).map((ev: any) => {
               const currentEvidenceJobId = getLinkedJobId(ev);
@@ -3311,6 +3352,7 @@ const isApproved = !!_hasApproved;
               );
             })}
           </div>
+          ) : null}
         </section>
         ) : null}
 
