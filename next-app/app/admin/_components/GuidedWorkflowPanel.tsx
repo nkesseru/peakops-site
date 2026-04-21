@@ -23,8 +23,8 @@ function autoEmblem(): React.ReactNode {
     width: 22,
     height: 22,
     borderRadius: 8,
-    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-    background: "color-mix(in oklab, CanvasText 6%, transparent)",
+    border: "1px solid #1a1a1a",
+    background: "#0a0a0a",
   };
 
   if (AUTO_EMBLEM_STYLE === "ai") {
@@ -64,34 +64,26 @@ function autoEmblem(): React.ReactNode {
 }
 
 function bannerTone(level: "OK" | "WARN" | "ERR") {
-  if (level === "OK") return { bd: "1px solid color-mix(in oklab, lime 24%, transparent)", bg: "color-mix(in oklab, lime 12%, transparent)" };
-  if (level === "ERR") return { bd: "1px solid color-mix(in oklab, crimson 26%, transparent)", bg: "color-mix(in oklab, crimson 12%, transparent)" };
-  return { bd: "1px solid color-mix(in oklab, orange 26%, transparent)", bg: "color-mix(in oklab, orange 12%, transparent)" };
+  if (level === "OK") return { bd: "1px solid rgba(200,168,78,0.3)", bg: "rgba(200,168,78,0.08)" };
+  if (level === "ERR") return { bd: "1px solid rgba(239,68,68,0.3)", bg: "rgba(239,68,68,0.08)" };
+  return { bd: "1px solid rgba(234,179,8,0.3)", bg: "rgba(234,179,8,0.08)" };
 }
 
 function statusAccent(st: StepStatus): string {
-  if (st === "DONE") return "color-mix(in oklab, lime 55%, CanvasText)";
-  if (st === "DOING") return "color-mix(in oklab, orange 60%, CanvasText)";
-  return "color-mix(in oklab, CanvasText 28%, transparent)";
+  if (st === "DONE") return "#C8A84E";
+  if (st === "DOING") return "#eab308";
+  return "#222";
 }
 
 function statusPillStyle(st: StepStatus): React.CSSProperties {
-  const bg =
-    st === "DONE" ? "color-mix(in oklab, lime 18%, transparent)" :
-    st === "DOING" ? "color-mix(in oklab, orange 16%, transparent)" :
-    "color-mix(in oklab, CanvasText 6%, transparent)";
-  const bd =
-    st === "DONE" ? "1px solid color-mix(in oklab, lime 26%, transparent)" :
-    st === "DOING" ? "1px solid color-mix(in oklab, orange 24%, transparent)" :
-    "1px solid color-mix(in oklab, CanvasText 18%, transparent)";
   return {
     padding: "4px 10px",
-    borderRadius: 999,
-    border: bd,
-    background: bg,
-    color: "CanvasText",
-    fontSize: 12,
-    fontWeight: 900,
+    borderRadius: 4,
+    border: st === "DONE" ? "1px solid rgba(200,168,78,0.3)" : st === "DOING" ? "1px solid rgba(234,179,8,0.3)" : "1px solid #1a1a1a",
+    background: st === "DONE" ? "rgba(200,168,78,0.12)" : st === "DOING" ? "rgba(234,179,8,0.10)" : "#0a0a0a",
+    color: st === "DONE" ? "#C8A84E" : st === "DOING" ? "#eab308" : "#666",
+    fontSize: 11,
+    fontWeight: 600,
     cursor: "pointer",
     userSelect: "none",
   };
@@ -133,22 +125,22 @@ function safeParseJson(text: string): { ok: true; value: any } | { ok: false; er
 
 function card(): React.CSSProperties {
   return {
-    border: "1px solid color-mix(in oklab, CanvasText 14%, transparent)",
-    borderRadius: 14,
-    background: "color-mix(in oklab, CanvasText 3%, transparent)",
-    padding: 12,
+    border: "1px solid #1a1a1a",
+    borderRadius: 8,
+    background: "#0a0a0a",
+    padding: 14,
   };
 }
 
 function pill(active: boolean): React.CSSProperties {
   return {
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-    background: active ? "color-mix(in oklab, CanvasText 10%, transparent)" : "transparent",
-    color: "CanvasText",
-    fontSize: 12,
-    fontWeight: 800,
+    padding: "5px 10px",
+    borderRadius: 4,
+    border: active ? "1px solid rgba(200,168,78,0.3)" : "1px solid #1a1a1a",
+    background: active ? "rgba(200,168,78,0.12)" : "#0a0a0a",
+    color: active ? "#C8A84E" : "#888",
+    fontSize: 11,
+    fontWeight: 600,
     cursor: "pointer",
     userSelect: "none",
   };
@@ -156,14 +148,14 @@ function pill(active: boolean): React.CSSProperties {
 
 function banner(level: AutoLevel): React.CSSProperties {
   const base: React.CSSProperties = {
-    borderRadius: 14,
-    padding: 12,
-    border: "1px solid color-mix(in oklab, CanvasText 14%, transparent)",
-    background: "color-mix(in oklab, CanvasText 3%, transparent)",
+    borderRadius: 8,
+    padding: 14,
+    border: "1px solid #1a1a1a",
+    background: "#0a0a0a",
   };
-  if (level === "CRITICAL") return { ...base, border: "1px solid color-mix(in oklab, red 35%, transparent)", background: "color-mix(in oklab, red 10%, transparent)" };
-  if (level === "WARN") return { ...base, border: "1px solid color-mix(in oklab, orange 35%, transparent)", background: "color-mix(in oklab, orange 10%, transparent)" };
-  if (level === "INFO") return { ...base, border: "1px solid color-mix(in oklab, dodgerblue 35%, transparent)", background: "color-mix(in oklab, dodgerblue 8%, transparent)" };
+  if (level === "CRITICAL") return { ...base, border: "1px solid rgba(239,68,68,0.3)", background: "rgba(239,68,68,0.06)" };
+  if (level === "WARN") return { ...base, border: "1px solid rgba(234,179,8,0.3)", background: "rgba(234,179,8,0.06)" };
+  if (level === "INFO") return { ...base, border: "1px solid rgba(200,168,78,0.25)", background: "rgba(200,168,78,0.06)" };
   return base;
 }
 
@@ -244,6 +236,7 @@ const { orgId, incidentId } = props;
   // Derived flags (declare once, after wf exists)
 
   const [autoLevel, setAutoLevel] = useState<AutoLevel>("");
+  const [expandedStep, setExpandedStep] = useState<string | null>(null);
 
 /*__TIMELINE_AUTO_WIRE_V1__*/
 type TimelineEvent = {
@@ -278,6 +271,7 @@ useEffect(() => {
 }, [timelineLoaded, timeline.length]);
 
   const [autoNotes, setAutoNotes] = useState<string[]>([]);
+  const [autoChecks, setAutoChecks] = useState<CheckState | null>(null);
   const [autoBusy, setAutoBusy] = useState(false);
 
   const [localStatus, setLocalStatus] = useState<Record<string, StepStatus>>(() =>
@@ -357,15 +351,15 @@ useEffect(() => {
       const bParsed = safeParseJson(bTxt || "");
       const bundle = bParsed.ok ? bParsed.value : null;
 
-      const undefined = bundle?.undefined || bundle?.doc || bundle?.data || null;
+      const inc = bundle?.incident || bundle?.doc || bundle?.data || null;
 
-      const title = String(undefined?.title || "").trim();
-      const startTime = undefined?.startTime || undefined?.createdAt || null;
+      const title = String(inc?.title || "").trim();
+      const startTime = inc?.startTime || inc?.createdAt || null;
       out.baselineOk = !!(incidentId && title && startTime);
       out.notes.push(out.baselineOk ? "Baseline OK: title + startTime present." : "Baseline missing: add title + startTime (Intake).");
 
       // Timeline check: meta or events exist
-      const timelineMeta = bundle?.timelineMeta || undefined?.timelineMeta || null;
+      const timelineMeta = bundle?.timelineMeta || inc?.timelineMeta || null;
       const eventCount = Number(timelineMeta?.eventCount || 0);
       if (eventCount > 0) {
         out.timelineOk = true;
@@ -383,13 +377,13 @@ useEffect(() => {
       }
 
       // Filings check: filingsMeta or filings array
-      const filingsMeta = undefined?.filingsMeta || null;
+      const filingsMeta = inc?.filingsMeta || null;
       const filings = Array.isArray(bundle?.filings) ? bundle.filings : [];
       out.filingsOk = !!(filingsMeta?.generatedAt || filings.length > 0);
       out.notes.push(out.filingsOk ? `Filings OK: ${filings.length || "meta"} present.` : "Filings missing: run Generate Filings.");
 
-      // Packet check: packetMeta present on undefined (earned export)
-      const packetMeta = undefined?.packetMeta || bundle?.packetMeta || null;
+      // Packet check: packetMeta present on incident (earned export)
+      const packetMeta = inc?.packetMeta || bundle?.packetMeta || null;
       out.packetOk = !!(packetMeta?.packetHash || packetMeta?.hash);
       out.notes.push(out.packetOk ? "Packet OK: packetMeta present." : "Packet not ready yet (run Export Packet).");
 
@@ -412,6 +406,7 @@ useEffect(() => {
       const c = await runAutoChecks();
       setAutoLevel(c.level);
       setAutoNotes(c.notes);
+      setAutoChecks(c);
 
       // Auto-advance (forward only)
       if (c.baselineOk) setStatus("intake", "DONE", "Intake marked DONE (baseline valid).");
@@ -432,129 +427,146 @@ useEffect(() => {
 
   return (
     <div style={card()}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-        <div>
-          <div style={{ fontWeight: 950 }}>Guided Workflow</div>
-
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{ fontWeight: 700, fontSize: 13, color: "#fff" }}>Workflow</span>
+          <span style={{ fontSize: 10, color: "#555" }}>{donePct}%</span>
+        </div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <button onClick={resetLocalWorkflow} style={{ border: "1px solid #1a1a1a", background: "transparent", borderRadius: 4, padding: "4px 8px", fontSize: 10, fontWeight: 600, cursor: "pointer", color: "#555" }} title="Reset local cache">Reset</button>
+          <button onClick={refreshAll} disabled={busy || autoBusy} style={{ ...pill(false), padding: "4px 8px", fontSize: 10 }}>{(busy || autoBusy) ? "…" : "Re-check"}</button>
+        </div>
+      </div>
 {workflowMissingDerived && (
-  <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 12, background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.25)", fontSize: 12 }}>
-    Workflow engine not active yet — running in manual mode. (This is OK in dev.)
+  <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 4, background: "rgba(234,179,8,0.06)", border: "1px solid rgba(234,179,8,0.2)", fontSize: 10, color: "#eab308" }}>
+    Manual mode — workflow engine not active.
   </div>
 )}
-          <div style={{ fontSize: 12, opacity: 0.75 }}>
-            {steps.length} steps · {donePct}% complete
+
+      {autoChecks && (
+        <div style={{ marginTop: 12, border: "1px solid #1a1a1a", borderRadius: 8, background: "#050505", overflow: "hidden" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderBottom: "1px solid #111" }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: "#fff" }}>Status Checks</span>
+            <span style={{ fontSize: 10, color: "#444" }}>{new Date().toLocaleTimeString()}</span>
           </div>
-        </div>
 
-        <button onClick={refreshAll} disabled={busy || autoBusy} style={pill(false)}>
-          <button
-            onClick={resetLocalWorkflow}
-            style={{ marginRight: 10, border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.06)", borderRadius: 999, padding: "8px 10px", fontSize: 12, cursor: "pointer" }}
-            title="Clears local workflow cache for this incident and reloads"
-          >
-            Reset Local
-          </button>
-
-          {(busy || autoBusy) ? "Checking…" : "Re-check"}
-        </button>
-      </div>
-
-      {(autoLevel || autoNotes.length > 0) && (
-        <div style={{ marginTop: 10, ...banner(autoLevel) }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-            <div style={{ fontWeight: 950 }}>
-              {autoLevel ? `Auto-checks: ${levelLabel(autoLevel)}` : "Auto-checks"}
-            </div>
-      <details style={{ marginTop: 10, opacity: 0.95 }}>
-        <summary style={{ cursor: "pointer", fontWeight: 900, opacity: 0.9 }}>
-          Revision history (local)
-        </summary>
-        {hist.length === 0 ? (
-          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>No actions yet.</div>
-        ) : (
-          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
-            {hist.slice().reverse().map((h, i) => (
-              <div
-                key={String(h.ts) + ":" + i}
-                style={{
-                  border: "1px solid color-mix(in oklab, CanvasText 14%, transparent)",
-                  borderRadius: 12,
-                  padding: "8px 10px",
-                  background: "color-mix(in oklab, CanvasText 3%, transparent)",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  alignItems: "baseline",
-                }}
-              >
-                <div style={{ fontSize: 12, opacity: 0.9 }}>
-                  <span style={{ fontWeight: 950 }}>{h.mode}</span>{" "}
-                  <span style={{ opacity: 0.75 }}>step</span>{" "}
-                  <span style={{ fontWeight: 950 }}>{h.stepKey}</span>{" "}
-                  <span style={{ opacity: 0.75 }}>→</span>{" "}
-                  <span style={{ fontWeight: 950 }}>{h.to}</span>
-                  {h.from ? <span style={{ opacity: 0.6 }}> (was {h.from})</span> : null}
-                </div>
-                <div style={{ fontSize: 11, opacity: 0.6 }}>{new Date(h.ts).toLocaleString()}</div>
+          {[
+            { label: "Baseline", desc: "Title and start time present", ok: autoChecks.baselineOk },
+            { label: "Timeline", desc: "Timeline events generated", ok: autoChecks.timelineOk },
+            { label: "Filings", desc: "Filing records generated", ok: autoChecks.filingsOk },
+            { label: "Packet", desc: "Export packet ready for download", ok: autoChecks.packetOk },
+          ].map((row) => (
+            <div key={row.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", borderBottom: "1px solid #111" }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#ddd" }}>{row.label}</div>
+                <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{row.desc}</div>
               </div>
-            ))}
-          </div>
-        )}
-      </details>
-
-            <div style={{ fontSize: 12, opacity: 0.75 }}>
-              {new Date().toLocaleTimeString()}
+              <span style={{
+                fontSize: 10,
+                fontWeight: 600,
+                padding: "3px 8px",
+                borderRadius: 4,
+                background: row.ok ? "rgba(34,197,94,0.12)" : "rgba(234,179,8,0.10)",
+                border: row.ok ? "1px solid rgba(34,197,94,0.25)" : "1px solid rgba(234,179,8,0.25)",
+                color: row.ok ? "#4ade80" : "#fbbf24",
+              }}>
+                {row.ok ? "DONE" : "MISSING"}
+              </span>
             </div>
-          </div>
+          ))}
 
-          {autoNotes.length > 0 && (
-            <ul style={{ margin: "8px 0 0 0", paddingLeft: 18, display: "grid", gap: 6, fontSize: 12, opacity: 0.9 }}>
-              {autoNotes.slice(0, 10).map((t, i) => (
-                <li key={i} style={{ color: autoLevel === "CRITICAL" ? "crimson" : "CanvasText" }}>{t}</li>
-              ))}
-            </ul>
-          )}
+          <details style={{ padding: "8px 14px" }}>
+            <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: 10, color: "#444" }}>
+              History ({hist.length})
+            </summary>
+            {hist.length === 0 ? (
+              <div style={{ marginTop: 6, fontSize: 10, color: "#333" }}>No actions yet.</div>
+            ) : (
+              <div style={{ marginTop: 6, display: "grid", gap: 3 }}>
+                {hist.slice().reverse().slice(0, 10).map((h, i) => (
+                  <div key={String(h.ts) + ":" + i} style={{ fontSize: 10, color: "#555" }}>
+                    <span style={{ color: "#888" }}>{h.mode}</span> {h.stepKey} → <span style={{ color: "#888" }}>{h.to}</span>
+                    {h.from ? <span> (was {h.from})</span> : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </details>
         </div>
       )}
 
       {err && !workflowMissingDerived && (
-        <div style={{ marginTop: 10, color: "crimson", fontWeight: 900 }}>
+        <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 6, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: "#fca5a5", fontSize: 12 }}>
           {err}
         </div>
       )}
 
-      {!err && steps.length === 0 && (
-        <div style={{ marginTop: 10, opacity: 0.75 }}>No workflow steps.</div>
-      )}
-
       {!err && steps.length > 0 && (
-        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+        <div style={{ marginTop: 8, border: "1px solid #1a1a1a", borderRadius: 6, overflow: "hidden" }}>
           {steps.map((s, idx) => {
             const st = s.status || "TODO";
+            const key = String(s.key || idx);
+            const isExpanded = expandedStep === key;
             return (
-              <div key={String(s.key || idx)} style={{ ...card(), borderLeft: `6px solid ${statusAccent(st as any)}` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                  <div style={{ fontWeight: 950 }}>
-                    {idx + 1}. {s.title || s.key}
+              <div key={key} style={{ borderBottom: idx < steps.length - 1 ? "1px solid #111" : "none", background: "#050505" }}>
+                <div
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 12px", cursor: "pointer" }}
+                  onClick={() => setExpandedStep(isExpanded ? null : key)}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 6, height: 6, borderRadius: 3, background: statusAccent(st as any), flexShrink: 0 }} />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: st === "DONE" ? "#C8A84E" : st === "DOING" ? "#eab308" : "#888" }}>
+                      {s.title || s.key}
+                    </span>
                   </div>
-                  <span style={statusPillStyle(st as any)}>{st}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: st === "DONE" ? "#4ade80" : st === "DOING" ? "#eab308" : "#444" }}>
+                      {st}
+                    </span>
+                    <span style={{ fontSize: 9, color: "#333", transition: "transform 0.15s", transform: isExpanded ? "rotate(90deg)" : "none" }}>&#9654;</span>
+                  </div>
                 </div>
-
-                {s.hint && <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>{s.hint}</div>}
-
-                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-                  <button style={pill(st === "TODO")} onClick={() => setStatus(String(s.key), "TODO")}>TODO</button>
-                  <button style={pill(st === "DOING")} onClick={() => setStatus(String(s.key), "DOING")}>DOING</button>
-                  <button style={pill(st === "DONE")} onClick={() => setStatus(String(s.key), "DONE")}>DONE</button>
-                </div>
-
-                <div style={{ marginTop: 8, fontSize: 11, opacity: 0.7 }}>
-                  Saved locally so techs don’t lose their place.
-                </div>
+                {isExpanded && (
+                  <div style={{ padding: "4px 12px 8px", display: "flex", gap: 4, alignItems: "center" }}>
+                    <span style={{ fontSize: 10, color: "#555", marginRight: 4 }}>Override:</span>
+                    {(["TODO", "DOING", "DONE"] as StepStatus[]).map((opt) => (
+                      <button
+                        key={opt}
+                        onClick={() => { setStatus(key, opt); setExpandedStep(null); }}
+                        style={{
+                          padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: "pointer",
+                          border: st === opt ? "1px solid rgba(200,168,78,0.3)" : "1px solid #1a1a1a",
+                          background: st === opt ? "rgba(200,168,78,0.12)" : "transparent",
+                          color: st === opt ? "#C8A84E" : "#666",
+                        }}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
+      )}
+
+      {/* Compact audit trail */}
+      {hist.length > 0 && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: "pointer", fontSize: 10, fontWeight: 600, color: "#444" }}>
+            Activity ({hist.length})
+          </summary>
+          <div style={{ marginTop: 4, display: "grid", gap: 2, maxHeight: 120, overflowY: "auto" }}>
+            {hist.slice().reverse().slice(0, 15).map((h, i) => (
+              <div key={String(h.ts) + ":" + i} style={{ fontSize: 10, color: "#555", padding: "2px 0" }}>
+                <span style={{ color: h.mode === "AUTO" ? "#4ade80" : "#C8A84E" }}>{h.mode}</span>{" "}
+                {h.stepKey} → {h.to}
+                <span style={{ color: "#333", marginLeft: 6 }}>{new Date(h.ts).toLocaleTimeString()}</span>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
     </div>
   );

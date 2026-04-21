@@ -10,8 +10,14 @@ exports.getIncidentBundleV1 = onRequest({ cors: true }, async (req, res) => {
     const incidentId = String(req.query.incidentId || "");
     if (!orgId || !incidentId) return res.status(400).json({ ok: false, error: "Missing orgId/incidentId" });
 
-    const incidentRef = db.collection("incidents").doc(incidentId);
-    const snap = await incidentRef.get();
+    let incidentRef = db.doc(`orgs/${orgId}/incidents/${incidentId}`);
+    let snap = await incidentRef.get();
+
+    if (!snap.exists) {
+      incidentRef = db.collection("incidents").doc(incidentId);
+      snap = await incidentRef.get();
+    }
+
     if (!snap.exists) return res.status(404).json({ ok: false, error: "Incident not found" });
 
     const incident = snap.data() || {};

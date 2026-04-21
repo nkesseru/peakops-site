@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 export default function AdminIncidentsPage() {
@@ -56,51 +56,74 @@ export default function AdminIncidentsPage() {
 
   const incidents = useMemo(() => data?.incidents ?? [], [data]);
 
-  return (
-    <div style={{ padding: 24, fontFamily: "system-ui" }}>
-      <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Admin · Incidents</h1>
+  const inputStyle: React.CSSProperties = {
+    padding: "8px 12px",
+    borderRadius: 6,
+    border: "1px solid #1a1a1a",
+    background: "#050505",
+    color: "#ddd",
+    fontSize: 13,
+  };
+  const btnStyle: React.CSSProperties = {
+    padding: "8px 14px",
+    borderRadius: 6,
+    border: "1px solid #1a1a1a",
+    background: "#0a0a0a",
+    color: "#ccc",
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
+  };
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
-        <label>Org:</label>
+  return (
+    <div style={{ padding: "28px 24px", fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', color: "#fff", minHeight: "calc(100vh - 44px)", background: "#000" }}>
+      <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: "#fff" }}>Incidents</h1>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: "#666" }}>Org</span>
         <input
           value={orgId}
           onChange={(e) => setOrgId(e.target.value)}
-          style={{ padding: 8, border: "1px solid #ccc", borderRadius: 8 }}
+          style={inputStyle}
         />
-        <button onClick={refresh} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          Refresh
-        </button>
-        <button disabled={busy} onClick={createTest} style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid #ccc" }}>
-          {busy ? "Creating..." : "Create test incident"}
+        <button onClick={refresh} style={btnStyle}>Refresh</button>
+        <button disabled={busy} onClick={createTest} style={{ ...btnStyle, background: "#C8A84E", color: "#000", border: "none" }}>
+          {busy ? "Creating..." : "Create Incident"}
         </button>
       </div>
 
-      {err && <pre style={{ marginTop: 12, color: "crimson" }}>{err}</pre>}
+      {err && <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 8, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.25)", color: "#fca5a5", fontSize: 12 }}>{err}</div>}
 
-      <div style={{ marginTop: 18 }}>
+      <div style={{ marginTop: 20, display: "grid", gap: 8 }}>
         {incidents.length === 0 ? (
-          <div style={{ opacity: 0.7 }}>No incidents yet.</div>
+          <div style={{ color: "#555", fontSize: 13 }}>No incidents yet.</div>
         ) : (
-          <ul style={{ display: "grid", gap: 10, padding: 0, listStyle: "none" }}>
-            {incidents.map((it: any) => (
-              <li key={it.id} style={{ border: "1px solid #e5e5e5", borderRadius: 12, padding: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-                  <div>
-                    <div style={{ fontWeight: 800 }}>{it.title ?? it.id}</div>
-                    <div style={{ fontSize: 12, opacity: 0.7 }}>
-                      {it.id} · {it.status ?? "?"} · updatedAt: {it.updatedAt ?? "?"}
-                    </div>
-                  </div>
-                  <Link
-                    href={`/admin/incidents/${encodeURIComponent(it.id)}?orgId=${encodeURIComponent(orgId)}`}
-                    style={{ alignSelf: "center", textDecoration: "none" }}
-                  >
-                    View →
-                  </Link>
+          incidents.map((it: any) => (
+            <Link
+              key={it.id}
+              href={`/admin/incidents/${encodeURIComponent(it.id)}?orgId=${encodeURIComponent(orgId)}`}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+                padding: "14px 16px",
+                borderRadius: 8,
+                border: "1px solid #1a1a1a",
+                background: "#0a0a0a",
+                textDecoration: "none",
+                color: "#fff",
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{it.title ?? it.id}</div>
+                <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>
+                  {it.id} · {it.status ?? "?"} · {it.updatedAt ?? "—"}
                 </div>
-              </li>
-            ))}
-          </ul>
+              </div>
+              <span style={{ fontSize: 12, color: "#C8A84E", fontWeight: 600 }}>View →</span>
+            </Link>
+          ))
         )}
       </div>
     </div>

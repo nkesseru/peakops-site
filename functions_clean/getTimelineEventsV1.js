@@ -40,10 +40,15 @@ exports.getTimelineEventsV1 = onRequest(async (req, res) => {
 
     if (!orgId || !incidentId) return send(res, 400, { ok: false, error: "Missing orgId/incidentId" });
 
-    const incRef = db.collection("incidents").doc(incidentId);
+    let incRef = db.doc(`orgs/${orgId}/incidents/${incidentId}`);
+    let incSnap = await incRef.get();
+
+    if (!incSnap.exists) {
+      incRef = db.collection("incidents").doc(incidentId);
+      incSnap = await incRef.get();
+    }
 
     // Optional: check org match if the doc exists
-    const incSnap = await incRef.get();
     if (incSnap.exists) {
       const data = incSnap.data() || {};
       if (!isDemoBypass(req) && data.orgId && String(data.orgId) !== orgId) {

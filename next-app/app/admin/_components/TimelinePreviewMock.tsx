@@ -15,24 +15,15 @@ type ApiResp =
   | { ok: true; orgId: string; incidentId: string; count: number; docs: TimelineDoc[] }
   | { ok: false; error: string };
 
-function frame(): React.CSSProperties {
-  return {
-    border: "1px solid color-mix(in oklab, CanvasText 14%, transparent)",
-    borderRadius: 14,
-    background: "color-mix(in oklab, CanvasText 3%, transparent)",
-    padding: 12,
-  };
-}
-
 function pill(): React.CSSProperties {
   return {
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid color-mix(in oklab, CanvasText 18%, transparent)",
-    background: "color-mix(in oklab, CanvasText 6%, transparent)",
-    color: "CanvasText",
-    fontSize: 12,
-    fontWeight: 800,
+    padding: "4px 8px",
+    borderRadius: 4,
+    border: "1px solid #1a1a1a",
+    background: "#0a0a0a",
+    color: "#888",
+    fontSize: 10,
+    fontWeight: 600,
     cursor: "pointer",
     userSelect: "none",
   };
@@ -79,7 +70,7 @@ export default function TimelinePreviewMock(props: { orgId: string; incidentId: 
     setErr("");
     try {
       const url =
-        `/api/fn/getTimelineEvents?orgId=${encodeURIComponent(orgId)}` +
+        `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(orgId)}` +
         `&incidentId=${encodeURIComponent(incidentId)}` +
         `&limit=200`;
 
@@ -95,7 +86,7 @@ export default function TimelinePreviewMock(props: { orgId: string; incidentId: 
       }
 
       const j = parsed.v as ApiResp;
-      if ((j as any)?.ok === false) throw new Error(String((j as any)?.error || "getTimelineEvents failed"));
+      if ((j as any)?.ok === false) throw new Error(String((j as any)?.error || "getTimelineEventsV1 failed"));
 
       const list = Array.isArray((j as any)?.docs) ? ((j as any).docs as TimelineDoc[]) : [];
       setDocs(list);
@@ -129,59 +120,45 @@ export default function TimelinePreviewMock(props: { orgId: string; incidentId: 
   const showFallback = !view && !err;
 
   return (
-    <details style={{ marginTop: 10 }} open={false}>
-      <summary style={{ cursor: "pointer", fontWeight: 900, opacity: 0.9 }}>
-        Timeline Preview {showFallback ? "(mock)" : ""}
-      </summary>
-
-      <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-        <div style={{ fontSize: 12, opacity: 0.7 }}>
-          {err
-            ? "Error loading timeline."
-            : view
-              ? `${view.sorted.length} events · oldest → newest`
-              : "No events yet — showing mock preview."}
+    <div style={{ border: "1px solid #1a1a1a", borderRadius: 8, background: "#0a0a0a", padding: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ fontWeight: 700, fontSize: 13, color: "#fff" }}>Timeline</span>
+          <span style={{ fontSize: 10, color: "#555" }}>
+            {err ? "Error" : view ? `${view.sorted.length} events` : showFallback ? "Mock" : "—"}
+          </span>
         </div>
         <button onClick={load} disabled={busy} style={pill()}>
-          {busy ? "Loading…" : "Refresh"}
+          {busy ? "…" : "Refresh"}
         </button>
       </div>
 
       {err && (
-        <div style={{ marginTop: 10, color: "crimson", fontWeight: 900 }}>
+        <div style={{ marginTop: 6, padding: "6px 10px", borderRadius: 4, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#fca5a5", fontSize: 11 }}>
           {err}
         </div>
       )}
 
-      <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-        {(view?.sorted || (showFallback ? FALLBACK : [])).map((ev, i) => {
-          const ms = toMs(ev.occurredAt) ?? toMs(ev.createdAt);
-          const label =
-            view?.base != null
-              ? relLabel(ms, view.base)
-              : (typeof ev.occurredAt === "string" && ev.occurredAt.startsWith("T+"))
-                ? ev.occurredAt
-                : "";
+      {(view?.sorted || (showFallback ? FALLBACK : [])).length > 0 && (
+        <div style={{ marginTop: 8, border: "1px solid #1a1a1a", borderRadius: 6, overflow: "hidden", maxHeight: 200, overflowY: "auto" }}>
+          {(view?.sorted || (showFallback ? FALLBACK : [])).map((ev, i, arr) => {
+            const ms = toMs(ev.occurredAt) ?? toMs(ev.createdAt);
+            const label =
+              view?.base != null
+                ? relLabel(ms, view.base)
+                : (typeof ev.occurredAt === "string" && ev.occurredAt.startsWith("T+"))
+                  ? ev.occurredAt
+                  : "";
 
-          return (
-            <div key={String(ev.id || i)} style={frame()}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-                <div style={{ fontWeight: 950 }}>{ev.title || ev.type || ev.id}</div>
-                <div style={{ fontSize: 12, opacity: 0.6 }}>{label}</div>
+            return (
+              <div key={String(ev.id || i)} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "6px 10px", borderBottom: i < arr.length - 1 ? "1px solid #111" : "none", background: "#050505" }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "#ccc" }}>{ev.title || ev.type || ev.id}</span>
+                <span style={{ fontSize: 10, color: "#444" }}>{label}</span>
               </div>
-              {ev.message && (
-                <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
-                  {ev.message}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ marginTop: 8, fontSize: 11, opacity: 0.7 }}>
-        Read-only preview. Timeline becomes “real” once we wire generation + incident reads.
-      </div>
-    </details>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

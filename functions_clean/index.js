@@ -69,6 +69,7 @@ safeExport("rejectJobV1", "./rejectJobV1");
 
 // Exports
 safeExport("exportIncidentPacketV1", "./exportIncidentPacketV1");
+safeExport("getIncidentPacketMetaV1", "./getIncidentPacketMetaV1");
 
 // Supervisor Requests
 safeExport("createSupervisorRequestV1", "./createSupervisorRequestV1");

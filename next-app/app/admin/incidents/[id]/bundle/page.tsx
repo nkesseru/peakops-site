@@ -4,8 +4,28 @@ import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import JSZip from "jszip";
+import { mintEvidenceReadUrl, getBestEvidenceImageRef, getBestEvidencePreviewRef } from "@/lib/evidence/signedThumb";
 
 type ToastKind = "ok" | "warn" | "err";
+type EvidenceItem = {
+  id: string;
+  storedAt?: string;
+  jobId?: string;
+  label?: string;
+  labels?: string[];
+  file?: {
+    storagePath?: string;
+    bucket?: string;
+    contentType?: string;
+    originalName?: string;
+    fileName?: string;
+    thumbPath?: string;
+    thumbnailPath?: string;
+    previewPath?: string;
+    derivatives?: { thumb?: { storagePath?: string }; preview?: { storagePath?: string } };
+  };
+  evidence?: { jobId?: string };
+};
 type PacketMeta = {
   packetHash: string | null;
   exportedAt: string | null;
@@ -23,22 +43,21 @@ type PacketMetaResp =
 
 function btn(primary: boolean): React.CSSProperties {
   return {
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: primary ? "rgba(34,197,94,0.18)" : "rgba(255,255,255,0.06)",
-    color: "inherit",
-    padding: "9px 12px",
-    borderRadius: 999,
-    fontWeight: 800,
+    border: primary ? "none" : "1px solid #1a1a1a",
+    background: primary ? "#C8A84E" : "#0a0a0a",
+    color: primary ? "#000" : "#ccc",
+    padding: "9px 14px",
+    borderRadius: 6,
+    fontWeight: 600,
     fontSize: 12,
     cursor: "pointer",
-    opacity: 1,
   };
 }
 function card(): React.CSSProperties {
   return {
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(255,255,255,0.04)",
-    borderRadius: 14,
+    border: "1px solid #1a1a1a",
+    background: "#0a0a0a",
+    borderRadius: 8,
     padding: 16,
   };
 }
@@ -76,6 +95,7 @@ export default function BundlePage() {
     void loadPacketMeta();
     void hydrateZipVerification();
     void hydrateLock();
+    void loadEvidence();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, incidentId]);
 
@@ -93,6 +113,9 @@ export default function BundlePage() {
   // Bootstrap: keep badges sticky across hard refresh
   const [immutable, setImmutable] = useState<boolean>(false);
   const [zipVerified, setZipVerified] = useState<boolean>(false);
+  const [evidenceItems, setEvidenceItems] = useState<EvidenceItem[]>([]);
+  const [evidenceUrls, setEvidenceUrls] = useState<Record<string, string>>({});
+  const [evidenceBusy, setEvidenceBusy] = useState(false);
 
   
 
@@ -149,9 +172,9 @@ const [manifestBusy, setManifestBusy] = useState<boolean>(false);
           filingsCount: typeof pm.filingsCount === "number" ? pm.filingsCount : null,
           timelineCount: typeof pm.timelineCount === "number" ? pm.timelineCount : null,
           source: pm.source ?? "getIncidentPacketMetaV1",
-          generatedAt: null,
-          zipSha256: null,
-          zipSize: null,
+          generatedAt: pm.zipGeneratedAt ?? pm.generatedAt ?? null,
+          zipSha256: pm.zipSha256 ?? null,
+          zipSize: typeof pm.zipSize === "number" ? pm.zipSize : null,
         });
         return;
       }
@@ -249,6 +272,53 @@ async function hydrateZipVerification() {
 }
 
 
+  async function loadEvidence() {
+    setEvidenceBusy(true);
+    try {
+      const r = await fetch(
+        `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`
+      );
+      const j = await r.json().catch(() => null);
+      if (!j?.ok) return;
+      const items: EvidenceItem[] = Array.isArray(j.docs) ? j.docs : [];
+      setEvidenceItems(items);
+
+      // Mint thumbnail URLs in parallel
+      const urls: Record<string, string> = {};
+      await Promise.all(
+        items.map(async (ev) => {
+          const ref = getBestEvidenceImageRef(ev as any);
+          if (!ref?.storagePath || !ref?.bucket) return;
+          try {
+            const result = await mintEvidenceReadUrl({
+              orgId,
+              incidentId,
+              storagePath: ref.storagePath,
+              bucket: ref.bucket,
+            });
+            if (result?.ok && result.url) urls[ev.id] = result.url;
+          } catch { /* skip */ }
+        })
+      );
+      setEvidenceUrls(urls);
+    } catch { /* swallow */ }
+    finally { setEvidenceBusy(false); }
+  }
+
+  async function openEvidenceFull(ev: EvidenceItem) {
+    const ref = getBestEvidencePreviewRef(ev as any);
+    if (!ref?.storagePath || !ref?.bucket) return;
+    try {
+      const result = await mintEvidenceReadUrl({
+        orgId,
+        incidentId,
+        storagePath: ref.storagePath,
+        bucket: ref.bucket,
+      });
+      if (result?.ok && result.url) window.open(result.url, "_blank");
+    } catch { /* skip */ }
+  }
+
   async function persistZipMeta(zm: { zipSha256: string; zipSize: number; zipGeneratedAt: string }) {
     try {
       const u = `/api/fn/persistZipVerificationV1`;
@@ -341,10 +411,11 @@ async function handleGeneratePacket() {
     if (busyAction) return;
     try {
       setBusyAction("Generate");
-      const u =
-        `/api/fn/exportIncidentPacketV1?orgId=${encodeURIComponent(orgId)}` +
-        `&incidentId=${encodeURIComponent(incidentId)}&requestedBy=ui`;
-      const r = await fetch(u, { method: "GET" });
+      const r = await fetch(`/api/fn/exportIncidentPacketV1`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId, incidentId, requestedBy: "ui" }),
+      });
       const pj = await safeJson<any>(r);
       if (!pj.ok) throw new Error(`export non-json: ${pj.err}`);
       if (pj.v?.ok === false) throw new Error(String(pj.v?.error || `export failed (HTTP ${r.status})`));
@@ -353,6 +424,8 @@ async function handleGeneratePacket() {
       else pushToast("Packet exported ✅", "ok");
 
       await loadPacketMeta();
+      await hydrateZipVerification();
+      await hydrateLock();
     } catch (e: any) {
       pushToast(`Generate failed: ${String(e?.message || e)}`, "err");
     } finally {
@@ -384,13 +457,12 @@ async function handleGeneratePacket() {
 
       // Persist "ZIP Verified" into Firestore so it survives refresh/restart
       try {
-        const u =
-          `/api/fn/persistZipVerificationV1?orgId=${encodeURIComponent(orgId)}` +
-          `&incidentId=${encodeURIComponent(incidentId)}`;
-        await fetch(u, {
+        const pr = await fetch(`/api/fn/persistZipVerificationV1`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
+            orgId,
+            incidentId,
             zipSha256: String(actual || ""),
             zipSize: Number(buf.byteLength || 0),
             zipGeneratedAt: String(packetMeta?.generatedAt || new Date().toISOString()),
@@ -398,8 +470,14 @@ async function handleGeneratePacket() {
             verifiedBy: "ui",
           }),
         });
-      } catch {
-        // ignore persistence failure in UI flow
+        const pj = await pr.json().catch(() => null);
+        if (pj?.ok) {
+          setZipVerified(true);
+        } else {
+          pushToast(`ZIP verified locally but persist failed: ${pj?.error || "unknown"}`, "warn");
+        }
+      } catch (pe: any) {
+        pushToast(`ZIP verified locally but persist failed: ${String(pe?.message || pe)}`, "warn");
       }
 
 
@@ -478,33 +556,32 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
   const badgeStyle = (ok: boolean): React.CSSProperties => ({
     display: "inline-flex",
     alignItems: "center",
-    gap: 6,
+    gap: 4,
     padding: "4px 10px",
-    borderRadius: 999,
-    fontSize: 12,
-    fontWeight: 800,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: ok ? "rgba(34,197,94,0.18)" : "rgba(255,255,255,0.06)",
-    marginLeft: 8,
+    borderRadius: 6,
+    fontSize: 11,
+    fontWeight: 600,
+    border: ok ? "1px solid rgba(200,168,78,0.3)" : "1px solid #1a1a1a",
+    background: ok ? "rgba(200,168,78,0.12)" : "#0a0a0a",
+    color: ok ? "#C8A84E" : "#555",
+    marginLeft: 6,
   });
 
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
+    <div style={{ padding: "28px 24px", fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', color: "#fff", minHeight: "calc(100vh - 44px)", background: "#000" }}>
       {/* Toast overlay */}
-      <div style={{ position: "fixed", right: 18, top: 18, zIndex: 9999, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ position: "fixed", right: 18, top: 56, zIndex: 9999, display: "flex", flexDirection: "column", gap: 8 }}>
         {toasts.map((t) => (
           <div
             key={t.id}
             style={{
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.12)",
-              background:
-                t.kind === "ok" ? "rgba(34,197,94,0.20)" :
-                t.kind === "warn" ? "rgba(234,179,8,0.20)" :
-                "rgba(239,68,68,0.20)",
+              padding: "10px 14px",
+              borderRadius: 8,
+              border: t.kind === "ok" ? "1px solid rgba(200,168,78,0.3)" : t.kind === "warn" ? "1px solid rgba(234,179,8,0.25)" : "1px solid rgba(239,68,68,0.25)",
+              background: t.kind === "ok" ? "rgba(200,168,78,0.12)" : t.kind === "warn" ? "rgba(234,179,8,0.12)" : "rgba(239,68,68,0.12)",
+              color: t.kind === "ok" ? "#C8A84E" : t.kind === "warn" ? "#fbbf24" : "#fca5a5",
               fontSize: 12,
-              fontWeight: 800,
+              fontWeight: 600,
               maxWidth: 360,
             }}
           >
@@ -513,55 +590,57 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
         ))}
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontSize: 28, fontWeight: 950 }}>
-            Immutable Incident Artifact
-            <span style={badgeStyle(true)}>✓ Canonical</span>
-            <span style={badgeStyle(immutable)}> {immutable ? "✓" : "—"} Immutable</span>
-            <span style={badgeStyle(zipVerified)}> {zipVerified ? "✓" : "—"} ZIP Verified</span>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>
+            Incident Artifact
           </div>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>
-            Org: <b>{orgId}</b> · Incident: <b>{incidentId}</b>
+          <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <span style={badgeStyle(true)}>Canonical</span>
+            <span style={badgeStyle(immutable)}>{immutable ? "Immutable" : "Mutable"}</span>
+            <span style={badgeStyle(zipVerified)}>{zipVerified ? "ZIP Verified" : "ZIP Unverified"}</span>
+          </div>
+          <div style={{ fontSize: 11, color: "#666", marginTop: 6 }}>
+            {orgId} · {incidentId}
           </div>
         </div>
         <button onClick={loadPacketMeta} style={btn(false)}>Refresh</button>
       </div>
 
       {err && (
-        <div style={{ marginTop: 10, color: "crimson", fontWeight: 900 }}>
+        <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 8, background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.25)", color: "#fca5a5", fontSize: 12 }}>
           {err}
         </div>
       )}
 
-      <div style={{ marginTop: 14, ...card() }}>
-        <div style={{ fontWeight: 950, marginBottom: 6 }}>Packet Meta</div>
+      <div style={{ marginTop: 16, ...card() }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Packet Meta</div>
 
-        <div style={{ fontSize: 12, opacity: 0.85, lineHeight: 1.7 }}>
-          packetHash: <span style={{ opacity: 0.95 }}>{packetMeta?.packetHash || "—"}</span>{" "}
-          <button onClick={handleCopyHash} disabled={!!busyAction || immutable} style={{ ...btn(false), padding: "6px 10px", marginLeft: 8 }}>
-            Copy Hash
-          </button>
-          <br />
-          sizeBytes: <span style={{ opacity: 0.95 }}>{packetMeta?.sizeBytes != null ? String(packetMeta.sizeBytes) : "—"}</span>
-          <br />
-          exportedAt: <span style={{ opacity: 0.95 }}>{packetMeta?.exportedAt || "—"}</span>
-          <br />
-          filingsCount: <span style={{ opacity: 0.95 }}>{packetMeta?.filingsCount != null ? String(packetMeta.filingsCount) : "—"}</span>
-          <br />
-          timelineCount: <span style={{ opacity: 0.95 }}>{packetMeta?.timelineCount != null ? String(packetMeta.timelineCount) : "—"}</span>
-          <br />
-          source: <span style={{ opacity: 0.95 }}>{packetMeta?.source || "—"}</span>
-          <br />
-          <br />
-          zipSha256: <span style={{ opacity: 0.95 }}>{packetMeta?.zipSha256 || "—"}</span>
-          <br />
-          zipSize: <span style={{ opacity: 0.95 }}>{packetMeta?.zipSize != null ? String(packetMeta.zipSize) : "—"}</span>
-          <br />
-          zipGeneratedAt: <span style={{ opacity: 0.95 }}>{packetMeta?.generatedAt || "—"}</span>
+        <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: "4px 12px", fontSize: 12 }}>
+          <span style={{ color: "#666" }}>packetHash</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: "#ccc", fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{packetMeta?.packetHash || "—"}</span>
+            <button onClick={handleCopyHash} disabled={!!busyAction || immutable} style={{ ...btn(false), padding: "4px 8px", fontSize: 11 }}>Copy</button>
+          </span>
+          <span style={{ color: "#666" }}>sizeBytes</span>
+          <span style={{ color: "#ccc" }}>{packetMeta?.sizeBytes != null ? String(packetMeta.sizeBytes) : "—"}</span>
+          <span style={{ color: "#666" }}>exportedAt</span>
+          <span style={{ color: "#ccc" }}>{packetMeta?.exportedAt || "—"}</span>
+          <span style={{ color: "#666" }}>filingsCount</span>
+          <span style={{ color: "#ccc" }}>{packetMeta?.filingsCount != null ? String(packetMeta.filingsCount) : "—"}</span>
+          <span style={{ color: "#666" }}>timelineCount</span>
+          <span style={{ color: "#ccc" }}>{packetMeta?.timelineCount != null ? String(packetMeta.timelineCount) : "—"}</span>
+          <span style={{ color: "#666" }}>source</span>
+          <span style={{ color: "#ccc" }}>{packetMeta?.source || "—"}</span>
+          <span style={{ color: "#666" }}>zipSha256</span>
+          <span style={{ color: "#ccc", fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{packetMeta?.zipSha256 || "—"}</span>
+          <span style={{ color: "#666" }}>zipSize</span>
+          <span style={{ color: "#ccc" }}>{packetMeta?.zipSize != null ? String(packetMeta.zipSize) : "—"}</span>
+          <span style={{ color: "#666" }}>zipGeneratedAt</span>
+          <span style={{ color: "#ccc" }}>{packetMeta?.generatedAt || "—"}</span>
         </div>
 
-        <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button onClick={handleGeneratePacket} disabled={!!busyAction || immutable} style={btn(true)}>
             {busyAction ? "Working…" : "Generate Packet"}
           </button>
@@ -591,8 +670,14 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
           </button>
         </div>
 
-        <div style={{ marginTop: 8, fontSize: 11, opacity: 0.75 }}>
-          Packet = canonical “shareable artifact” for audits + evidence. Bundle = packet.zip + bundle_manifest.json.
+        {!immutable && !zipVerified && (
+          <div style={{ marginTop: 8, fontSize: 11, color: "rgba(250,204,21,0.8)" }}>
+            Verify ZIP integrity before finalizing. Click &quot;Verify ZIP&quot; above.
+          </div>
+        )}
+
+        <div style={{ marginTop: 10, fontSize: 11, color: "#444" }}>
+          Packet = canonical shareable artifact for audits + evidence. Bundle = packet.zip + bundle_manifest.json.
         </div>
       </div>
 
@@ -621,6 +706,72 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
             <pre style={{ fontSize: 12, opacity: 0.9, whiteSpace: "pre-wrap" }}>
 {manifestItems.map((f) => `${f.ok ? "✓" : "—"} ${f.path}  ${f.bytes ?? "?"}  ${f.sha256 ?? "—"}`).join("")}
             </pre>
+          </div>
+        )}
+      </div>
+
+      {/* Evidence Review */}
+      <div style={{ marginTop: 14, ...card() }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>Evidence Review</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "#555" }}>{evidenceItems.length} items</span>
+            <button onClick={loadEvidence} disabled={evidenceBusy} style={btn(false)}>
+              {evidenceBusy ? "Loading…" : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        {evidenceItems.length === 0 && !evidenceBusy && (
+          <div style={{ color: "#555", fontSize: 12 }}>No evidence items found for this incident.</div>
+        )}
+
+        {evidenceItems.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
+            {evidenceItems.map((ev) => {
+              const thumbUrl = evidenceUrls[ev.id];
+              const label = ev.label || (Array.isArray(ev.labels) ? ev.labels[0] : "") || "";
+              const fileName = ev.file?.originalName || ev.file?.fileName || "";
+              const jobId = ev.jobId || ev.evidence?.jobId || "";
+              const isImage = (ev.file?.contentType || "").startsWith("image/");
+              const storedAt = ev.storedAt ? new Date(ev.storedAt).toLocaleString() : "";
+
+              return (
+                <div
+                  key={ev.id}
+                  onClick={() => openEvidenceFull(ev)}
+                  style={{
+                    border: "1px solid #1a1a1a",
+                    borderRadius: 6,
+                    background: "#050505",
+                    overflow: "hidden",
+                    cursor: "pointer",
+                  }}
+                >
+                  {/* Thumbnail area */}
+                  <div style={{ width: "100%", height: 96, background: "#0a0a0a", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                    {thumbUrl && isImage ? (
+                      <img
+                        src={thumbUrl}
+                        alt={label || fileName || ev.id}
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      />
+                    ) : (
+                      <span style={{ fontSize: 10, color: "#333" }}>{isImage ? "Loading…" : (ev.file?.contentType || "file")}</span>
+                    )}
+                  </div>
+
+                  {/* Metadata */}
+                  <div style={{ padding: "6px 8px" }}>
+                    {label && <div style={{ fontSize: 11, fontWeight: 600, color: "#ccc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>}
+                    {fileName && !label && <div style={{ fontSize: 10, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileName}</div>}
+                    {!label && !fileName && <div style={{ fontSize: 10, color: "#555" }}>{ev.id.slice(0, 12)}</div>}
+                    {jobId && <div style={{ fontSize: 9, color: "#C8A84E", marginTop: 2 }}>Job: {jobId.slice(0, 16)}</div>}
+                    {storedAt && <div style={{ fontSize: 9, color: "#444", marginTop: 1 }}>{storedAt}</div>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -415,38 +415,30 @@ function FlowStageBar({ stage }: { stage: "arrive" | "evidence" | "notes" | "sub
   ] as const;
 
   return (
-    <div className="px-4 pt-4 pb-3 bg-black/80 backdrop-blur border-b border-white/10">
-      <div className="text-[10px] uppercase tracking-[0.18em] text-gray-500 mb-2">Workflow</div>
-      <div className="text-xs text-gray-400 mb-3">
-        Step: <span className="text-white font-medium capitalize">{stage}</span>
-      </div>
-
-      <div className="flex items-center gap-2 text-xs overflow-x-auto">
+    <div style={{ padding: "7px 16px", background: "#050505", borderBottom: "1px solid #1c1c1c", display: "flex", alignItems: "center", gap: 4, overflowX: "auto" }}>
         {steps.map((s, i) => {
           const active = stage === s.key;
           const done = steps.findIndex(x => x.key === stage) > i;
-
           return (
-            <div key={s.key} className="flex items-center gap-2">
-              <div
-                className={
-                  "px-3 py-1 rounded-full border whitespace-nowrap transition-colors " +
-                  (done
-                    ? "bg-green-500/10 border-green-400/30 text-green-200"
-                    : active
-                    ? "bg-indigo-500/20 border-indigo-400 text-indigo-200"
-                    : "bg-white/5 border-white/10 text-gray-400")
-                }
-              >
-                {done ? "✓ " : ""}{s.label}
+            <div key={s.key} style={{ display: "flex", alignItems: "center" }}>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 4,
+                padding: "5px 12px", borderRadius: 6, whiteSpace: "nowrap",
+                fontSize: 11, fontWeight: active ? 700 : 600,
+                color: active ? "#C8A84E" : done ? "#22c55e" : "#b3b3b3",
+                background: active ? "transparent" : done ? "transparent" : "#101010",
+                border: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
+                borderLeft: done ? "2px solid #22c55e" : undefined,
+              }}>
+                {done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                {s.label}
               </div>
               {i < steps.length - 1 && (
-                <div className={"w-4 h-[1px] " + (done ? "bg-green-400/70" : "bg-white/20")} />
+                <div style={{ width: 8, height: 1, background: done ? "rgba(34,197,94,0.3)" : "#1c1c1c" }} />
               )}
             </div>
           );
         })}
-      </div>
     </div>
   );
 }
@@ -462,7 +454,11 @@ const invalidIncidentRoute = useMemo(() => {
     const raw = String(incidentId || "").trim();
     if (!raw) return true;
     const s = raw.toLowerCase();
-    return s === "<incidentid>" || s === "%3cincidentid%3e" || s.includes("<incidentid>");
+    return (
+      s === "<incidentid>" || s === "%3cincidentid%3e" || s.includes("<incidentid>") ||
+      s === "[incidentid]" || s === "{incidentid}" || s === "incidentid" ||
+      s === ":incidentid" || s === "undefined" || s === "null"
+    );
   }, [incidentId]);
 
   useEffect(() => {
@@ -488,6 +484,7 @@ const invalidIncidentRoute = useMemo(() => {
   const [submitting, setSubmitting] = useState(false);
   const [closingIncident, setClosingIncident] = useState(false);
   const [incidentStatus, setIncidentStatus] = useState<string>("open");
+  const [incidentTitle, setIncidentTitle] = useState<string>("");
   const [incidentUpdatedAtSec, setIncidentUpdatedAtSec] = useState<number | null>(null);
   const [nowTick, setNowTick] = useState(Date.now());
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
@@ -1814,6 +1811,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
           0
         );
         setIncidentStatus(st || "open");
+        setIncidentTitle(String(inc?.doc?.title || "").trim());
         setIncidentUpdatedAtSec(updatedSec || null);
         const nextOrg = String(inc?.doc?.orgId || "").trim();
         if (nextOrg) requestOrgId = nextOrg;
@@ -2619,21 +2617,22 @@ const isApproved = !!_hasApproved;
 
   return (
     invalidIncidentRoute ? (
-      <main className="min-h-screen bg-black text-white p-6">
-        <FlowStageBar stage={currentStage} />
-        <div className="max-w-2xl mx-auto rounded-2xl border border-indigo-400/20 bg-indigo-500/10 p-5">
-          <div className="text-sm text-indigo-100 font-semibold">Invalid incident URL</div>
-          <div className="mt-2 text-sm text-indigo-100/90">
-            This page was opened with a placeholder incident id (`/incidents/&lt;incidentId&gt;`).
+      <main style={{ minHeight: "100vh", background: "#050505", color: "#f5f5f5", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", color: "#C8A84E", marginBottom: 16 }}>PEAKOPS</div>
+        <div style={{ maxWidth: 400, width: "100%", border: "1px solid #1c1c1c", background: "#0b0b0b", borderRadius: 8, padding: 20, textAlign: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>Invalid incident URL</div>
+          <div style={{ fontSize: 12, color: "#6f6f6f", marginTop: 8, lineHeight: 1.5 }}>
+            This page requires a valid incident ID in the URL.
           </div>
-          <div className="mt-3 text-xs text-indigo-100/80">
-            Open `/incidents/inc_demo` or a real incident id instead.
+          <div style={{ fontSize: 11, color: "#6f6f6f", marginTop: 12, fontFamily: "ui-monospace, monospace" }}>
+            /incidents/inc_demo
           </div>
         </div>
       </main>
     ) : (
     <main
-      className="min-h-screen bg-black text-white"
+      className="min-h-screen text-white"
+      style={{ background: "#050505" }}
       onPointerDownCapture={(ev) => {
         if (process.env.NODE_ENV === "production") return;
         try {
@@ -2657,32 +2656,39 @@ const isApproved = !!_hasApproved;
     >
       <FlowStageBar stage={currentStage} />
       {/* Top bar */}
-      <div className="px-4 pt-4 pb-3 border-b border-white/10 sticky top-0 bg-black/80 backdrop-blur z-10">
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1">
-            <div className="text-xs uppercase tracking-[0.18em] text-gray-500 font-semibold">Field Incident</div>
-            <div className="text-2xl font-semibold tracking-tight text-white">{incidentId} • Riverbend Electric</div>
-            <div className="mt-2 flex items-center gap-3 text-xs">
-              <span className="text-gray-500">Status</span>
-              <span className={"px-2 py-0.5 rounded-full border font-medium " + (isClosed ? "bg-red-500/15 border-red-400/30 text-red-100" : "bg-emerald-500/15 border-emerald-400/30 text-emerald-100")}>
+      <div style={{ padding: "10px 16px", borderBottom: "1px solid #1c1c1c", position: "sticky", top: 0, background: "rgba(5,5,5,0.95)", backdropFilter: "blur(8px)", zIndex: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#C8A84E" }}>PEAKOPS</span>
+              <span style={{
+                padding: "1px 6px", borderRadius: 3, fontWeight: 600, fontSize: 9,
+                border: isClosed ? "1px solid #1c1c1c" : "1px solid rgba(34,197,94,0.2)",
+                background: isClosed ? "#0b0b0b" : "rgba(34,197,94,0.06)",
+                color: isClosed ? "#6f6f6f" : "#22c55e",
+              }}>
                 {String(incidentStatus || "open").toUpperCase()}
               </span>
-              <span className="ml-2 text-gray-500">
-                Updated <span className="text-gray-300 font-medium">{incidentUpdatedAtSec ? fmtAgo(incidentUpdatedAtSec) : "—"}</span>
-              </span>
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#f5f5f5", marginTop: 2 }}>{incidentTitle || incidentId}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, fontSize: 10, color: "#6f6f6f", flexWrap: "wrap" }}>
+              {incidentTitle ? <span style={{ fontFamily: "ui-monospace, monospace" }}>{incidentId}</span> : null}
+              {incidentTitle ? <span>·</span> : null}
+              <span>{orgId}</span>
+              {incidentUpdatedAtSec ? <span>· {fmtAgo(incidentUpdatedAtSec)}</span> : null}
                            {isDemoMode ? (
                 <>
                   <button
                     type="button"
-                    className="ml-2 px-2 py-0.5 rounded-full border bg-emerald-500/15 border-emerald-300/30 text-emerald-100 hover:bg-emerald-500/25"
+                    style={{ marginLeft: 8, padding: "1px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }}
                     onClick={() => { void resetDemoNow(); }}
                     title="Fully reset demo data and reload clean"
                   >
-                    Reset demo now
+                    Reset
                   </button>
                   <button
                     type="button"
-                    className="ml-2 px-2 py-0.5 rounded-full border bg-cyan-500/15 border-cyan-300/30 text-cyan-100 hover:bg-cyan-500/25"
+                    style={{ marginLeft: 4, padding: "1px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }}
                     onClick={async () => {
                       try {
                         toast("Seeding demo evidence…", 1500);
@@ -2718,7 +2724,7 @@ const isApproved = !!_hasApproved;
 
             <button
               type="button"
-              className="px-2 py-1 rounded-full text-xs bg-purple-600/20 border border-purple-400/20 text-purple-100 hover:bg-purple-600/30 transition"
+              style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", color: "#C8A84E" }}
               title="Supervisor review + approve/lock"
               onClick={() => {
                 const id = String(incidentId || "");
@@ -2729,15 +2735,15 @@ const isApproved = !!_hasApproved;
               Review
             </button>
             {isClosed ? (
-              <span className="text-[10px] text-gray-400">Incident closed</span>
+              <span style={{ fontSize: 10, color: "#6f6f6f" }}>Incident closed</span>
             ) : _hasApproved ? (
-              <span className="text-[10px] text-emerald-200">Approved by supervisor</span>
+              <span style={{ fontSize: 10, color: "#22c55e" }}>Approved</span>
             ) : _hasSubmitted ? (
-              <span className="text-[10px] text-amber-200">Submitted for supervisor review</span>
+              <span style={{ fontSize: 10, color: "#C8A84E" }}>Submitted</span>
             ) : null}
             <button
               type="button"
-              className="px-2 py-1 rounded-full text-xs bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 transition"
+              style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3" }}
               onClick={() => { try { router.push(`/incidents/${incidentId}/summary`); } catch {} }}
               title="Open incident summary"
             >
@@ -2748,24 +2754,24 @@ const isApproved = !!_hasApproved;
 
         {/* PEAKOPS_UX_TOAST_RENDER_V1 */}
         {toastMsg ? (
-          <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-20 z-50 px-3 py-2 rounded-xl bg-black/70 border border-white/10 text-sm text-gray-100 backdrop-blur shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
+          <div style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", top: 72, zIndex: 50, padding: "8px 14px", borderRadius: 6, background: "rgba(11,11,11,0.95)", border: "1px solid #1c1c1c", fontSize: 12, color: "#b3b3b3", backdropFilter: "blur(8px)", pointerEvents: "none" }}>
             {toastMsg}
           </div>
         ) : null}
-        <div className="mt-3 flex items-center gap-2">
+        <div style={{ marginTop: 10, display: "flex", gap: 4 }}>
           {(["overview", "timeline", "evidence", "jobs"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
-              className={
-                "px-3 py-1.5 rounded-lg text-xs border transition " +
-                (activeTab === tab
-                  ? "bg-cyan-500/20 border-cyan-300/35 text-cyan-100"
-                  : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10")
-              }
+              style={{
+                padding: "5px 12px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                border: activeTab === tab ? "1px solid rgba(200,168,78,0.35)" : "1px solid #1a1a1a",
+                background: activeTab === tab ? "rgba(200,168,78,0.1)" : "transparent",
+                color: activeTab === tab ? "#C8A84E" : "#6f6f6f",
+              }}
               onClick={() => setTab(tab)}
             >
-              {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Evidence" : "Field Jobs"}
+              {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Evidence" : "Jobs"}
             </button>
           ))}
         </div>
@@ -2784,54 +2790,45 @@ const isApproved = !!_hasApproved;
     return (
       <div className="space-y-3 mt-3">
         {req && (reqMsg || reqJobId) ? (
-          <div className="rounded-2xl border border-indigo-400/20 bg-indigo-500/10 px-4 py-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wide text-indigo-200/90">Update requested</div>
-                <div className="text-sm text-indigo-100 mt-1 break-words">
+          <div style={{ borderRadius: 8, border: "1px solid rgba(200,168,78,0.25)", background: "rgba(200,168,78,0.06)", padding: "10px 14px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Update requested</div>
+                <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4, wordBreak: "break-word" }}>
                   {reqMsg ? reqMsg : "Supervisor requested an update."}
                 </div>
-                {reqJobId ? (
-                  <div className="text-xs text-indigo-200/80 mt-1">jobId: {reqJobId}</div>
-                ) : null}
+                {reqJobId ? <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>Job: {reqJobId}</div> : null}
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-indigo-100"
-                  onClick={() => { setTab("timeline"); }}
-                >
-                  View timeline
-                </button>
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-indigo-100"
-                  onClick={() => { setTab("evidence"); }}
-                >
-                  Go to evidence
-                </button>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button type="button" style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", fontSize: 11, cursor: "pointer" }} onClick={() => { setTab("evidence"); }}>Evidence</button>
               </div>
             </div>
           </div>
         ) : null}
 
-        <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">My active job</div>
-              <div className="text-lg font-medium text-white mt-1 truncate">
-                {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "No job selected")}
+        <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "10px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f" }}>Active Job</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#f5f5f5", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "Waiting for assignment")}
               </div>
-              <div className="text-xs text-gray-400 mt-1">
-                Status: <span className="text-gray-200 font-medium">{String(jobStatus || "n/a").toUpperCase()}</span>
-                {locked ? <span className="ml-2 text-emerald-200">• locked</span> : null}
+              <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>
+                {activeJobId ? (
+                  <>
+                    {String(jobStatus || "n/a").toUpperCase()}
+                    {locked ? <span style={{ color: "#22c55e", marginLeft: 6 }}>Locked</span> : null}
+                  </>
+                ) : (
+                  "A job will appear when the incident is set up"
+                )}
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
               {activeJobId ? (
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 hover:bg-white/10 text-sm text-gray-100"
+                  style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
                   onClick={() => {
                     try {
                       const url = `/jobs/${encodeURIComponent(String(activeJobId||""))}?incidentId=${encodeURIComponent(String(incidentId||""))}&orgId=${encodeURIComponent(String(orgId||""))}`;
@@ -2839,26 +2836,19 @@ const isApproved = !!_hasApproved;
                     } catch (e) { console.error(e); }
                   }}
                 >
-                  Open job
+                  Open
                 </button>
               ) : null}
               <button
                 type="button"
-                className={
-                  "px-3 py-2 rounded-xl border text-sm transition " +
-                  (isClosed
-                    ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
-                    : "bg-white/6 border-white/10 hover:bg-white/10 text-gray-100")
-                }
+                style={{
+                  padding: "6px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer",
+                  border: "none", background: (isClosed || !hasActiveFieldJobs) ? "#0b0b0b" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: (isClosed || !hasActiveFieldJobs) ? "#6f6f6f" : "#050505",
+                }}
                 onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
                 disabled={isClosed || !hasActiveFieldJobs}
-                title={
-                  isClosed
-                    ? "Incident is closed (read-only)"
-                    : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : "Add evidence")
-                }
               >
-                Add evidence
+                + Evidence
               </button>
             </div>
           </div>
@@ -2873,213 +2863,140 @@ const isApproved = !!_hasApproved;
 
       </div>
 
-      <div className={"p-4 space-y-4 " + (contextLockId ? "opacity-[0.94] transition-opacity" : "")}>
-        {refreshError ? (
-          <div className="rounded-xl border border-red-400/30 bg-red-500/10 text-red-100 text-xs px-3 py-2">
-            <div className="font-semibold">Refresh failed</div>
-            <div className="mt-1 break-all">{refreshError.message}</div>
-            {refreshError.endpoint ? <div className="mt-1 break-all text-red-200/90">endpoint: {refreshError.endpoint}</div> : null}
-            {refreshError.fallback ? <div className="mt-1 text-red-200/90">fallback: applied</div> : null}
-            {process.env.NODE_ENV !== "production" && getEnvFunctionsBase() ? (
-              <div className="mt-1 text-red-200/90">envBase present, fallback disabled</div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
-              <button
-                type="button"
-                className="mt-2 px-2 py-1 rounded border border-red-300/30 bg-black/30 hover:bg-black/50 text-[11px]"
-                onClick={() => {
-                  clearRememberedFunctionsBase();
-                  try {
-                    const envBase = getEnvFunctionsBase();
-                    if (envBase) sessionStorage.setItem("peakops_last_functions_base_reset", envBase);
-                  } catch {}
-                  location.reload();
-                }}
-              >
-                Reset connection
-              </button>
-            ) : null}
-            {refreshError.status ? <div className="mt-1">status: {refreshError.status}</div> : null}
-            {refreshError.body ? (
-              <details className="mt-1">
-                <summary className="cursor-pointer">response body</summary>
-                <pre className="mt-1 whitespace-pre-wrap break-words">{String(refreshError.body || "").slice(0, 500)}</pre>
-              </details>
-            ) : null}
-          </div>
-        ) : null}
-        
-              
-{/* PEAKOPS: removed big Open Notes bar */}
-{/* PEAKOPS_NEXTBESTACTION_V1_RENDER */}
-        {activeTab === "overview" ? (
-          _hasSubmitted ? (
-            <section className="rounded-2xl border p-3 border-blue-400/20 bg-blue-500/10">
-              <div className="text-[11px] uppercase tracking-wide text-blue-200/80">Submitted for supervisor review</div>
-              <div className="mt-3">
-                <button
-                  type="button"
-                  className="w-full py-4 rounded-xl border text-lg font-semibold transition shadow-[0_10px_30px_rgba(0,0,0,0.45)] bg-blue-600/70 border-blue-300/30 text-white hover:bg-blue-500"
-                  onClick={() => { try { router.push(`/incidents/${incidentId}/review`); } catch {} }}
-                  title="Open Supervisor Review"
-                >
-                  ✓ Go to Review
-                </button>
-              </div>
-            </section>
-          ) : (
-		<NextBestAction
-	  arrived={arrived}
-	  hasSession={_hasSession}
-	  hasEvidence={_hasEvidence}
-	  hasNotes={_hasNotes}
-	  hasApproved={_hasApproved}
-	  onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
-	  onAddEvidence={() => {
-      if (isClosed) return toast("Incident is closed (read-only).", 2600);
-      if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
-      goAddEvidence();
-    }}
-  onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
-  onSubmitSession={() => { if (!isClosed) { void submitSession(); } else toast("Incident is closed (read-only).", 2600); }}
-/>
-          )
-        ) : null}
+      <div className={"p-3 " + (contextLockId ? "opacity-[0.94] transition-opacity" : "")} style={{ display: "grid", gap: 8 }}>
 
-{/* PHASE6_1_TIMERS_V1_RENDER */}
-        {/* PHASE6_1_TIMERS_POLISH_V2 + PHASE6_2_ACTION_NEEDED_V1 */}
+{/* Overview 2-column layout */}
 {activeTab === "overview" ? (
-<div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-  <div className="flex items-center justify-between gap-3">
-    <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
-    <div className="flex items-center gap-2">
-      {!_hasEvidence ? (
-        <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/12 border border-amber-300/25 text-amber-100">
-          No evidence yet — add photos or explain in notes
-        </span>
+  <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(200px, 2fr)", gap: 8, alignItems: "start" }}>
+    {/* LEFT: Primary action */}
+    <div style={{ display: "grid", gap: 8 }}>
+      {_hasSubmitted ? (
+        <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#22c55e" }}>Submitted for review</div>
+          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>Session submitted. Waiting for supervisor approval.</div>
+          <div style={{ marginTop: 10 }}>
+            <button type="button" style={{ width: "100%", padding: "14px 0", borderRadius: 8, border: "none", background: "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: "#050505", fontSize: 16, fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 12px rgba(200,168,78,0.20)" }} onClick={() => { try { router.push(`/incidents/${incidentId}/review`); } catch {} }}>
+              Go to Review
+            </button>
+          </div>
+        </section>
+      ) : (
+        <NextBestAction
+          arrived={arrived}
+          hasSession={_hasSession}
+          hasEvidence={_hasEvidence}
+          hasNotes={_hasNotes}
+          hasApproved={_hasApproved}
+          evidenceCount={evidenceCount}
+          onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
+          onAddEvidence={() => {
+            if (isClosed) return toast("Incident is closed (read-only).", 2600);
+            if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
+            goAddEvidence();
+          }}
+          onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
+          onSubmitSession={() => { if (!isClosed) { void submitSession(); } else toast("Incident is closed (read-only).", 2600); }}
+        />
+      )}
+
+      {reqUpdateText ? (
+        <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#101010", padding: "10px 12px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Update requested</span>
+            <button type="button" style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }} onClick={() => { clearReqUpdate(); }}>Dismiss</button>
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: "#b3b3b3", lineHeight: 1.4 }}>{reqUpdateText}</div>
+        </div>
       ) : null}
-      {_hasNotes ? (
-        <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-400/20 text-indigo-100">
-          Notes complete
-        </span>
-      ) : currentStage === "notes" ? (
-        <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-400/20 text-indigo-100">
-          Add notes to continue
-        </span>
+    </div>
+
+    {/* RIGHT: Status + Timers + Sync */}
+    <div style={{ display: "grid", gap: 8 }}>
+      {/* Timers */}
+      <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "10px 14px" }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f", marginBottom: 8 }}>Field Timing</div>
+        <div style={{ display: "grid", gap: 0 }}>
+          {[
+            { label: "Arrival", value: _arrivalAgo, empty: _arrivalAgo === "—", emptyText: "Not started" },
+            { label: "Evidence", value: _evidenceAgo, empty: _evidenceAgo === "—", emptyText: "No evidence" },
+            { label: "Notes", value: _notesAgo, empty: _notesAgo === "—", emptyText: "No notes" },
+          ].map((t, i) => (
+            <div key={t.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "7px 0", borderBottom: i < 2 ? "1px solid #1c1c1c" : "none" }}>
+              <span style={{ fontSize: 12, fontWeight: 500, color: "#b3b3b3" }}>{t.label}</span>
+              <span style={{ fontSize: 16, fontWeight: 800, color: t.empty ? "#C8A84E" : "#f5f5f5" }}>{t.empty ? t.emptyText : t.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Sync state */}
+      {refreshError ? (
+        <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", overflow: "hidden", display: "flex" }}>
+          <div style={{ width: 3, flexShrink: 0, background: "rgba(220,60,60,0.4)" }} />
+          <div style={{ flex: 1, padding: "8px 12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 10, fontWeight: 600, color: "#b3b3b3" }}>Offline</span>
+              {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
+                <button type="button" style={{ padding: "2px 6px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }} onClick={() => { clearRememberedFunctionsBase(); location.reload(); }}>Retry</button>
+              ) : null}
+            </div>
+            <details style={{ marginTop: 4 }}>
+              <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f" }}>Details</summary>
+              <div style={{ marginTop: 4, fontSize: 9, color: "#6f6f6f", wordBreak: "break-all" }}>
+                {refreshError.message}
+                {refreshError.endpoint ? <div>endpoint: {refreshError.endpoint}</div> : null}
+                {refreshError.status ? <div>status: {refreshError.status}</div> : null}
+              </div>
+            </details>
+          </div>
+        </div>
       ) : null}
     </div>
   </div>
-
-  <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
-    <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-1">
-      <div className="text-[10px] uppercase tracking-wide text-gray-400">Arrival</div>
-      <div className="mt-1 text-base font-semibold text-gray-100">{_arrivalAgo}</div>
-    </div>
-
-    <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-2">
-      <div className="text-[10px] uppercase tracking-wide text-gray-400" >Evidence</div>
-      <div className="mt-1 text-base font-semibold text-gray-100">{_evidenceAgo}</div>
-    </div>
-
-    <div
-      className={
-        "rounded-xl border px-3 py-2 sm:col-span-2 " +
-        (_notesAgo === "—"
-          ? "bg-indigo-500/10 border-indigo-400/20"
-          : "bg-black/30 border-white/10")
-      }>
-      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-indigo-200/80" : "text-gray-400")}>
-        Notes
-      </div>
-      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-indigo-100" : "text-gray-100")}>
-        {_notesAgo}
-      </div>
-    </div>
-  </div>
-</div>
 ) : null}
 
-
-        
-        {/* PHASE5A_REQUEST_UPDATE_BANNER_V1 */}
-        {activeTab === "overview" && reqUpdateText ? (
-          <section className="rounded-2xl border border-amber-300/20 bg-amber-400/10 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wide text-indigo-200/80">
-                  Supervisor requested an update
-                </div>
-                <div className="mt-1 text-sm text-indigo-100/90 whitespace-pre-wrap break-words">
-                  {reqUpdateText}
-                </div>
-                <div className="mt-2 text-[11px] text-indigo-100/50">
-                  (V2 demo: stored locally on this device. Phase B will persist to Firestore + notify.)
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-indigo-100 hover:bg-white/10"
-                  onClick={() => { try { loadReqUpdate(); } catch {} try { refresh(); } catch {} }}
-                  title="Reload local request note"
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl bg-indigo-500/15 border border-indigo-400/20 text-sm text-indigo-100 hover:bg-amber-500/20"
-                  onClick={() => {
-                    clearReqUpdate();
-                  }}
-                  title="Clear this request note (local only)"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-          </section>
-        ) : null}
+{/* Non-overview content continues below */}
+{activeTab !== "overview" && refreshError ? (
+  <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "8px 12px", fontSize: 10, color: "#b3b3b3" }}>
+    Offline: {refreshError.message}
+  </div>
+) : null}
 
 {/* Quick actions */}
         {activeTab === "evidence" ? (
-        <section ref={myJobSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
-  <div className="flex items-center justify-between gap-2">
-    <div className="text-xs uppercase tracking-wide text-gray-400" id="evidence" >Evidence</div>
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-500">Latest {Math.min(12, evidence.length)}</span>
+        <section ref={myJobSectionRef} style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
+  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#C8A84E" }} id="evidence">Evidence</span>
+      <span style={{ fontSize: 10, color: "#6f6f6f" }}>{evidence.length} item{evidence.length !== 1 ? "s" : ""}</span>
+    </div>
+    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+      <button type="button" style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", fontSize: 10, fontWeight: 600, cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer" }} disabled={isClosed || !hasActiveFieldJobs} onClick={() => { try { goAddEvidence(); } catch {} }}>+ Add</button>
       {process.env.NODE_ENV !== "production" ? (
-        <>
-          <button
-            type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-            onClick={() => refreshVisibleThumbsDebounced()}
-          >
-            Refresh thumbnails
-          </button>
-          <button
-            type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-            onClick={() => forceRemintVisibleThumbs()}
-          >
-            Force remint URLs
-          </button>
-          <button
-            type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-            onClick={() => setThumbDebugOverlay((v) => !v)}
-          >
-            {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
-          </button>
-        </>
+        <details style={{ display: "inline" }}>
+          <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f", padding: "2px 6px" }}>Dev</summary>
+          <div style={{ position: "absolute", zIndex: 20, background: "#0b0b0b", border: "1px solid #1c1c1c", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+            <button type="button" style={{ padding: "3px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "transparent", color: "#6f6f6f", fontSize: 9, cursor: "pointer", textAlign: "left" }} onClick={() => refreshVisibleThumbsDebounced()}>Refresh thumbs</button>
+            <button type="button" style={{ padding: "3px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "transparent", color: "#6f6f6f", fontSize: 9, cursor: "pointer", textAlign: "left" }} onClick={() => forceRemintVisibleThumbs()}>Force remint</button>
+            <button type="button" style={{ padding: "3px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "transparent", color: "#6f6f6f", fontSize: 9, cursor: "pointer", textAlign: "left" }} onClick={() => setThumbDebugOverlay((v) => !v)}>{thumbDebugOverlay ? "Hide debug" : "Show debug"}</button>
+          </div>
+        </details>
       ) : null}
     </div>
   </div>
 
-  {/* Evidence rail centering depends on runway padding on #evidenceScroller. Keep that padding. */}
-  <div className="mt-3 -mx-1 overflow-x-auto px-[calc(50%-74px)] scroll-smooth scroll-pl-4 scroll-pr-4 sm:scroll-pl-[calc(50vw-74px)] sm:scroll-pr-[calc(50vw-74px)]" id="evidenceScroller"
->
-    <div className="flex gap-2 snap-x snap-mandatory">
+  {evidence.length === 0 ? (
+    <div style={{ marginTop: 10, padding: "16px 0", textAlign: "center" }}>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style={{ margin: "0 auto 8px" }}><rect x="3" y="3" width="18" height="18" rx="3" stroke="#333" strokeWidth="1.5"/><circle cx="8.5" cy="9" r="1.5" fill="#333"/><path d="M3 16l5-5 3 3 4-5 6 7" stroke="#333" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      <div style={{ fontSize: 12, color: "#6f6f6f" }}>No evidence captured yet</div>
+      <button type="button" style={{ marginTop: 8, padding: "8px 16px", borderRadius: 6, border: "none", background: "#C8A84E", color: "#000", fontSize: 12, fontWeight: 700, cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer" }} disabled={isClosed || !hasActiveFieldJobs} onClick={() => { try { goAddEvidence(); } catch {} }}>
+        Add Evidence
+      </button>
+    </div>
+  ) : (
+  <>
+  <div style={{ marginTop: 8, marginLeft: -4, marginRight: -4, overflowX: "auto" }} id="evidenceScroller">
+    <div className="flex gap-2 snap-x snap-mandatory" style={{ padding: "0 4px" }}>
       {(() => {
         const list = (evidence || [])
           .filter((ev:any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath || "").includes("demo_placeholder"));
@@ -3103,9 +3020,9 @@ const isApproved = !!_hasApproved;
                   key={ev.id}
                   data-ev-id={ev.id}
                   className={
-                    "snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] relative rounded-xl overflow-hidden border " +
-                    (selected ? "border-indigo-300/95 border-2 ring-4 ring-indigo-500/40 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_12px_40px_rgba(0,0,0,0.55)]  scale-[1.02] transition-transform duration-150" : "border-white/10 ") +
-                    "bg-black/40 hover:border-white/25 transition"
+                    "snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] relative rounded-lg overflow-hidden border transition " +
+                    (selected ? "border-[#C8A84E] border-2 ring-2 ring-[#C8A84E]/30 shadow-[0_0_0_1px_rgba(200,168,78,0.2),0_8px_24px_rgba(0,0,0,0.5)] scale-[1.02]" : "border-[#1a1a1a] ") +
+                    "bg-[#050505] hover:border-[#333]"
                   }
                   onClick={() => openModal(ev)}
                   title={ev.file?.originalName || ev.id}>
@@ -3131,28 +3048,20 @@ const isApproved = !!_hasApproved;
                       </span>
                     ))}
                     {converting ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-400/15 border-indigo-400/20 text-indigo-100">
-                        Converting…
-                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "rgba(200,168,78,0.15)", border: "1px solid rgba(200,168,78,0.3)", color: "#C8A84E" }}>Converting…</span>
                     ) : null}
                     {uploadMissing ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100">
-                        Upload not in storage yet
-                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "#0b0b0b", border: "1px solid #1c1c1c", color: "#b3b3b3" }}>Missing</span>
                     ) : null}
                     {conversionFailed ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100" title={conversionError || "HEIC conversion failed"}>
-                        Convert failed
-                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "#0b0b0b", border: "1px solid #1c1c1c", color: "#b3b3b3" }} title={conversionError || "HEIC conversion failed"}>Failed</span>
                     ) : null}
                     {conversionNoPreview ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-gray-500/15 border-gray-300/30 text-gray-100">
-                        No preview
-                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "#0b0b0b", border: "1px solid #1c1c1c", color: "#6f6f6f" }}>No preview</span>
                     ) : null}
                   </div>
 
-                  <div className="absolute bottom-2 left-2 right-2 text-[10px] text-gray-200/90 truncate bg-black/40 px-2 py-1 rounded">
+                  <div style={{ position: "absolute", bottom: 6, left: 6, right: 6, fontSize: 9, color: "#b3b3b3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", background: "rgba(5,5,5,0.7)", padding: "2px 6px", borderRadius: 3 }}>
                     {(ev.file?.originalName || "evidence")}
                   </div>
                   {process.env.NODE_ENV !== "production" && thumbDiagById[String(ev?.id || "")] ? (
@@ -3182,20 +3091,22 @@ const isApproved = !!_hasApproved;
     </div>
   </div>
 
-  <div className="mt-2 text-[11px] text-gray-500">
-    Horizontal scroll. Tap a tile to preview. Timeline events will highlight related evidence.
+  <div style={{ marginTop: 6, fontSize: 10, color: "#6f6f6f" }}>
+    Tap to preview. Scroll for more.
   </div>
+  </>
+  )}
 </section>
         ) : null}
 
         {activeTab === "jobs" ? (
-        <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase tracking-[0.16em] text-gray-400">My Job</div>
-            <span className="text-xs text-gray-500">default for new evidence</span>
+        <section style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>My Job</span>
+            <span style={{ fontSize: 10, color: "#6f6f6f" }}>default for new evidence</span>
           </div>
-          <div className="mt-1 text-[11px] text-gray-500">Only active field jobs appear here. Completed jobs move to Review. Evidence mapping can still span the incident.</div>
-          <div className="mt-1 text-xs text-gray-600">
+          <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.4 }}>Active field jobs appear here. Completed jobs move to Review.</div>
+          <div style={{ marginTop: 2, fontSize: 11, color: "#b3b3b3" }}>
             {(() => {
               const reviewReadyCount = (jobs || []).filter((j: any) => {
                 const s = normalizeJobStatus(j?.status);
@@ -3211,9 +3122,9 @@ const isApproved = !!_hasApproved;
             const currentStatus = jobStatusText(current?.status);
 
             return (
-              <div className="mt-3 space-y-3">
+              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
                 <select
-                  className="w-full text-sm bg-black/40 border border-white/15 rounded-lg px-3 py-2"
+                  style={{ width: "100%", fontSize: 13, background: "#101010", border: "1px solid #1c1c1c", borderRadius: 6, padding: "8px 10px", color: "#f5f5f5" }}
                   disabled={isClosed || jobsBusy || jobsForMapping.length === 0}
                   value={currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "")}
                   onChange={(e) => setCurrentJobId(String(e.target.value || ""))}
@@ -3234,98 +3145,81 @@ const isApproved = !!_hasApproved;
                   })}
                 </select>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="px-3 py-2 rounded-lg text-sm border bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08] disabled:opacity-50"
-                    disabled={!(currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "").trim())}
-                    onClick={() => {
-                      try {
-                        const fallbackJobId = String(
-                          currentJobId ||
-                          jobsForMapping?.[0]?.id ||
-                          jobsForMapping?.[0]?.jobId ||
-                          ""
-                        ).trim();
-                        if (fallbackJobId) {
-                          setCurrentJobId(fallbackJobId);
-                        }
-                        jumpToEvidenceMapping();
-                      } catch {}
-                    }}
-                  >
-                    Jump to evidence mapping
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  style={{ padding: "8px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, border: "1px solid #1c1c1c", background: "#101010", color: "#b3b3b3", cursor: "pointer" }}
+                  disabled={!(currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "").trim())}
+                  onClick={() => {
+                    try {
+                      const fallbackJobId = String(
+                        currentJobId ||
+                        jobsForMapping?.[0]?.id ||
+                        jobsForMapping?.[0]?.jobId ||
+                        ""
+                      ).trim();
+                      if (fallbackJobId) {
+                        setCurrentJobId(fallbackJobId);
+                      }
+                      jumpToEvidenceMapping();
+                    } catch {}
+                  }}
+                >
+                  Jump to evidence mapping
+                </button>
               </div>
             );
           })()}
 
           {orgOptionsLoadError ? (
-            <div className="mt-2 text-[11px] text-yellow-300">Org list failed to load</div>
+            <div style={{ marginTop: 8, fontSize: 11, color: "#C8A84E" }}>Org list failed to load</div>
           ) : orgOptionsLoaded && orgOptions.length === 0 ? (
-            <div className="mt-2 text-[11px] text-gray-400">No orgs available</div>
+            <div style={{ marginTop: 8, fontSize: 11, color: "#6f6f6f" }}>No orgs available</div>
           ) : null}
 
           {orgOptions.length === 0 && showOrgDevTools ? (
-            <div className="mt-2 flex items-center gap-2 text-[11px]">
-              <button
-                type="button"
-                className="underline text-cyan-200 disabled:text-gray-500"
-                onClick={() => { try { debugOrgs(); } catch {} }}
-                disabled={orgDebugBusy}
-              >
-                {orgDebugBusy ? "Debug orgs..." : "Debug orgs"}
-              </button>
-              <button
-                type="button"
-                className="underline text-cyan-200 disabled:text-gray-500"
-                onClick={() => { try { seedOrgsDev(); } catch {} }}
-                disabled={orgSeedBusy}
-              >
-                {orgSeedBusy ? "Seeding..." : "Seed orgs (dev)"}
-              </button>
-            </div>
-          ) : null}
-
-          {orgDebugJson ? (
-            <details className="mt-2 text-[11px] text-gray-300">
-              <summary className="cursor-pointer select-none">Org debug JSON</summary>
-              <pre className="mt-1 max-h-44 overflow-auto rounded bg-black/40 border border-white/[0.08] p-2 whitespace-pre-wrap break-words">{orgDebugJson}</pre>
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 10, color: "#6f6f6f" }}>Dev tools</summary>
+              <div style={{ marginTop: 4, display: "flex", gap: 8 }}>
+                <button type="button" style={{ fontSize: 10, color: "#6f6f6f", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }} onClick={() => { try { debugOrgs(); } catch {} }} disabled={orgDebugBusy}>{orgDebugBusy ? "Loading..." : "Debug orgs"}</button>
+                <button type="button" style={{ fontSize: 10, color: "#6f6f6f", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }} onClick={() => { try { seedOrgsDev(); } catch {} }} disabled={orgSeedBusy}>{orgSeedBusy ? "Seeding..." : "Seed orgs"}</button>
+              </div>
             </details>
           ) : null}
 
-          <div className="mt-2 text-[11px] text-gray-500">
+          {orgDebugJson ? (
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 10, color: "#6f6f6f" }}>Debug JSON</summary>
+              <pre style={{ marginTop: 4, maxHeight: 160, overflow: "auto", borderRadius: 6, background: "#101010", border: "1px solid #1c1c1c", padding: 8, whiteSpace: "pre-wrap", wordBreak: "break-all", fontSize: 10, color: "#b3b3b3" }}>{orgDebugJson}</pre>
+            </details>
+          ) : null}
+
+          <div style={{ marginTop: 8, fontSize: 11, color: "#6f6f6f" }}>
             Field view is simplified. Job status management is in Review.
           </div>
         </section>
         ) : null}
 
         {activeTab === "evidence" ? (
-        <section ref={evidenceMappingSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div id="evidence-mapping" className="text-xs uppercase tracking-wide text-gray-400">Evidence to Job Mapping</div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">Set `evidence.jobId`</span>
-              <button
-                type="button"
-                className={"px-2 py-1 rounded text-xs border " + (isClosed || jobsBusy || !currentJobId ? "bg-white/5 border-white/10 text-gray-500 cursor-not-allowed" : "bg-cyan-600/20 border-cyan-300/30 text-cyan-100 hover:bg-cyan-600/30")}
-                disabled={isClosed || jobsBusy || !currentJobId}
-                onClick={() => { try { assignAllUnassignedToCurrentJob(); } catch {} }}
-                title={currentJobId ? "Assign all unassigned evidence to My Job" : "Select My Job first"}
-              >
-                Assign all unassigned to My Job
-              </button>
-            </div>
+        <section ref={evidenceMappingSectionRef} style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span id="evidence-mapping" style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Evidence Mapping</span>
+            <button
+              type="button"
+              style={{
+                padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: (isClosed || jobsBusy || !currentJobId) ? "not-allowed" : "pointer",
+                border: (isClosed || jobsBusy || !currentJobId) ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.3)",
+                background: (isClosed || jobsBusy || !currentJobId) ? "#101010" : "rgba(200,168,78,0.08)",
+                color: (isClosed || jobsBusy || !currentJobId) ? "#6f6f6f" : "#C8A84E",
+              }}
+              disabled={isClosed || jobsBusy || !currentJobId}
+              onClick={() => { try { assignAllUnassignedToCurrentJob(); } catch {} }}
+              title={currentJobId ? "Assign all unassigned evidence to My Job" : "Select My Job first"}
+            >
+              Assign all to My Job
+            </button>
           </div>
-          <div className="mt-1 text-[11px] text-gray-500">
-            Optional. New evidence auto-attaches to My Job.
-          </div>
-          <div className="mt-1 text-[11px] text-gray-500">
-            Evidence can be assigned to any job in this incident.
-          </div>
-          <div className="mt-1 text-[11px] text-gray-600">
-            Field Jobs only shows active jobs. Completed jobs appear in Review.
+          <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.4 }}>
+            New evidence auto-attaches to your active job. Completed jobs appear in Review.
           </div>
           <div className="mt-3 space-y-2">
             {(evidence || []).slice(0, 25).map((ev: any) => {
@@ -3409,13 +3303,13 @@ const isApproved = !!_hasApproved;
         {/* Timeline story */}
         
         {activeTab === "timeline" ? (
-        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Timeline</div>
-            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">Auto-log: On</span>
+        <section style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Timeline</span>
+            <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#101010", color: "#6f6f6f" }}>Auto-log</span>
           </div>
 
-          
+
 <TimelinePanel
   items={timeline as any}
   onJumpToEvidence={jumpToEvidence}
@@ -3424,147 +3318,67 @@ const isApproved = !!_hasApproved;
         </section>
         ) : null}
 
-        {/* Notes section will remain below if you already inserted it elsewhere */}
-        {/* Readiness Checklist */}
-        {activeTab === "overview" ? (
-        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Readiness</div>
-            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">
-              Live
-            </span>
-          </div>
-
-          {(() => {
-            const hasSession = timeline.some((t: any) => String(t.type) === "SESSION_STARTED" || String(t.type) === "FIELD_ARRIVED" || String(t.type) === "EVIDENCE_ADDED");
-            const evidenceN = evidence.filter((ev: any) => !!ev.file?.storagePath && !String(ev.file?.storagePath||"").includes("demo_placeholder")).length;
-            const hasEvidence = evidenceN >= 4;
-            const hasNotes = notesSavedLocal || timeline.some((t: any) => String(t.type) === "NOTES_SAVED"); const hasApproved = _hasApproved;
-
-            const items = [
-              ["Field session started", hasSession],
-              ["Evidence captured (4+)", hasEvidence],
-              ["Notes saved", hasNotes],
-              ["Supervisor approved", hasApproved],
-            ];
-
-            const ready = hasSession && hasEvidence && hasNotes;
-            const bannerLabel = isClosed
-              ? "Incident closed"
-              : hasApproved
-              ? "Approved by supervisor"
-              : _hasSubmitted
-              ? "Submitted for supervisor review"
-              : (ready ? "Ready for supervisor review" : "Not ready yet");
-
-            return (
-              <div className="mt-3 space-y-2 text-sm">
-                <div className={"rounded-xl p-3 border " + (ready ? "bg-green-700/15 border-green-400/20" : "bg-amber-700/10 border-indigo-400/20")}>
-                  <div className="font-semibold">{bannerLabel}</div>
-                  {!isClosed && !hasApproved && !_hasSubmitted ? (
-                    <div className="text-xs text-gray-400 mt-1">This is computed from live events + evidence.</div>
-                  ) : null}
-                </div>
-
-                <div className="grid gap-2">
-                  {items.map(([label, ok]) => (
-                    <div key={String(label)} className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
-                      <div className="text-gray-200">{label}</div>
-                      <div className={ok ? "text-green-300" : "text-gray-500"}>{ok ? "✓" : "—"}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
-        </section>
-        ) : null}
+        {/* Readiness — consolidated into the NextBestAction card above */}
 
         <div className="h-20" />
       </div>
 
       {/* Bottom dock */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/10">
-        <div className="grid grid-cols-4 gap-2">
-          {/* Arrive */}
-          <button
-            type="button"
-            className={
-              "py-3 rounded-xl text-sm font-semibold border transition " +
-              (arrived
-                ? "bg-emerald-500/15 border-emerald-300/25 text-emerald-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
-            }
-            onClick={() => { try { markArrived(); } catch {} }}
-            disabled={arrived || isClosed}
-            title={isClosed ? "Incident is closed (read-only)" : (arrived ? "Arrived (done)" : "Mark arrival")}>
-            Arrive
-          </button>
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 16px 12px", background: "rgba(5,5,5,0.96)", borderTop: "1px solid #1c1c1c", backdropFilter: "blur(12px)", zIndex: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+          {[
+            { label: "Arrive", done: arrived, onClick: () => { try { markArrived(); } catch {} }, disabled: arrived || isClosed },
+            { label: "Evidence", done: _hasEvidence, onClick: () => { try { goAddEvidence(); } catch {} }, disabled: isClosed },
+            { label: "Notes", done: _hasNotes, onClick: () => { try { router.push("/incidents/" + incidentId + "/notes"); } catch {} }, disabled: false },
+          ].map((b) => (
+            <button
+              key={b.label}
+              type="button"
+              disabled={b.disabled}
+              onClick={b.onClick}
+              style={{
+                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: b.disabled ? "not-allowed" : "pointer",
+                borderLeft: b.done ? "2px solid #22c55e" : "none",
+                borderRight: "none", borderTop: "none", borderBottom: "none",
+                background: b.done ? "rgba(34,197,94,0.06)" : "#101010",
+                color: b.done ? "#22c55e" : b.disabled ? "#6f6f6f" : "#f5f5f5",
+                boxShadow: b.done ? "none" : "inset 0 -1px 0 rgba(255,255,255,0.03)",
+                outline: b.done ? "none" : "1px solid #1c1c1c",
+              }}
+            >
+              {b.done && <span style={{ marginRight: 4 }}>&#10003;</span>}
+              {b.label}
+            </button>
+          ))}
 
-          {/* Evidence */}
-          <button
-            type="button"
-            className={
-              "py-3 rounded-xl text-sm font-semibold border transition " +
-              (_hasEvidence
-                ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
-            }
-            onClick={() => { try { goAddEvidence(); } catch {} }}
-            disabled={isClosed}
-            title={
-              isClosed
-                ? "Incident is closed (read-only)"
-                : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : (_hasEvidence ? "Evidence captured (done)" : "Go to Evidence"))
-            }>
-            Evidence
-          </button>
-
-          {/* Notes */}
-          <button
-            type="button"
-            className={
-              "py-3 rounded-xl text-sm font-semibold border transition " +
-              (_hasNotes
-                ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
-            }
-            onClick={() => { try { router.push("/incidents/" + incidentId + "/notes"); } catch {} }}
-            title={_hasNotes ? "Notes saved (done)" : "Write notes"}>
-            Notes
-          </button>
-
-          {/* Submit */}
           {_hasSubmitted ? (
-            <div className="w-full">
-              <div className="text-[11px] text-blue-200/80 mb-1">Submitted for supervisor review</div>
-              <button
-                type="button"
-                className="w-full py-3 rounded-xl text-sm font-semibold border transition bg-blue-600/20 border-blue-300/25 text-blue-50 hover:bg-blue-600/30"
-                onClick={() => { try { router.push(`/incidents/${incidentId}/review`); } catch {} }}
-                title="Open Supervisor Review"
-              >
-                ✓ Submitted → Go to Review
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => { try { router.push(`/incidents/${incidentId}/review`); } catch {} }}
+              style={{
+                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: "pointer",
+                border: "none",
+                background: "linear-gradient(180deg, #9A7E2A 0%, #B89A3E 100%)",
+                color: "#050505",
+                boxShadow: "0 2px 8px rgba(200,168,78,0.15), inset 0 1px 0 rgba(255,255,255,0.08)",
+              }}
+            >
+              Review
+            </button>
           ) : (
             <button
               type="button"
-              className={
-                "w-full py-3 rounded-xl text-sm font-semibold border transition " +
-                ((hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed)
-                  ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
-                  : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
-              }
               disabled={submitting || !hasArrival || (!(_hasEvidence || _hasNotes)) || isClosed}
-              title={
-                isClosed
-                  ? "Incident is closed (read-only)"
-                  : (hasArrival && (_hasEvidence || _hasNotes))
-                  ? "Submit session for supervisor review"
-                  : !hasArrival ? "Mark arrival first" : !(_hasEvidence || _hasNotes) ? "Add evidence or explain in notes" : "Ready to submit"
-              }
-              onClick={() => { void submitSession(); }}>
+              onClick={() => { void submitSession(); }}
+              style={{
+                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: (submitting || !hasArrival || (!(_hasEvidence || _hasNotes)) || isClosed) ? "not-allowed" : "pointer",
+                border: "none",
+                background: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "linear-gradient(180deg, #9A7E2A 0%, #B89A3E 100%)" : "#101010",
+                color: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "#050505" : "#6f6f6f",
+                boxShadow: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "0 2px 8px rgba(200,168,78,0.15), inset 0 1px 0 rgba(255,255,255,0.08)" : "inset 0 -1px 0 rgba(255,255,255,0.03)",
+                outline: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "none" : "1px solid #1c1c1c",
+              }}
+            >
               Submit
             </button>
           )}

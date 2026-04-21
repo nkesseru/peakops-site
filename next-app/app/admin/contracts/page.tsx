@@ -48,63 +48,61 @@ export default function AdminContractsList() {
   const count = useMemo(() => docs.length, [docs]);
 
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui", color: "CanvasText" }}>
-      <AdminNav />
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900 }}>Admin · Contracts</h1>
-        <div style={{ fontSize: 12, opacity: 0.75 }}>Org: {mono(orgId)}</div>
-      </div>
+    <div style={{ padding: "28px 24px", fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', color: "#fff", minHeight: "calc(100vh - 44px)", background: "#000" }}>
+      <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Contracts</h1>
+      <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>Org: {mono(orgId)}</div>
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14, alignItems: "center" }}>
         <button
           onClick={load}
           disabled={busy}
-          style={{
-            padding: "8px 12px",
-            borderRadius: 12,
-            border: "1px solid color-mix(in oklab, CanvasText 20%, transparent)",
-            background: "color-mix(in oklab, CanvasText 6%, transparent)",
-            cursor: busy ? "not-allowed" : "pointer",
-          }}
+          style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid #1a1a1a", background: "#0a0a0a", color: "#ccc", fontSize: 12, fontWeight: 600, cursor: busy ? "not-allowed" : "pointer" }}
         >
           {busy ? "Loading…" : "Refresh"}
         </button>
-
-        {!err && <div style={{ opacity: 0.8 }}>Contracts: <b>{count}</b></div>}
-        {err && <div style={{ color: "crimson", fontWeight: 900 }}>{err}</div>}
+        {!err && <span style={{ fontSize: 12, color: "#666" }}>Contracts: <b style={{ color: "#ccc" }}>{count}</b></span>}
       </div>
 
-      <div style={{ marginTop: 14, border: "1px solid color-mix(in oklab, CanvasText 12%, transparent)", borderRadius: 14, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "220px 180px 120px 120px 1fr", gap: 0, padding: "10px 12px", fontSize: 12, opacity: 0.75, borderBottom: "1px solid color-mix(in oklab, CanvasText 12%, transparent)" }}>
-          <div>ID</div><div>Contract #</div><div>Type</div><div>Status</div><div>Customer</div>
+      {err && (
+        <div style={{ marginTop: 16, padding: "20px 24px", borderRadius: 8, border: "1px solid #1a1a1a", background: "#0a0a0a", textAlign: "center" }}>
+          <div style={{ fontSize: 13, color: "#777", lineHeight: 1.6 }}>{err}</div>
         </div>
+      )}
 
-        {docs.map((d: any) => (
-          <a
-            key={d.id}
-            href={`/admin/contracts/${encodeURIComponent(d.id)}?orgId=${encodeURIComponent(orgId)}`}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "220px 180px 120px 120px 1fr",
-              padding: "12px 12px",
-              textDecoration: "none",
-              color: "CanvasText",
-              borderBottom: "1px solid color-mix(in oklab, CanvasText 10%, transparent)",
-              background: "color-mix(in oklab, CanvasText 2%, transparent)",
-            }}
-          >
-            <div style={{ fontWeight: 800 }}>{mono(String(d.id))}</div>
-            <div style={{ fontWeight: 900 }}>{String(d.contractNumber || "—")}</div>
-            <div>{String(d.type || "—")}</div>
-            <div>{String(d.status || "—")}</div>
-            <div>{mono(String(d.customerId || "—"))}</div>
-          </a>
-        ))}
+      {!err && (
+        <div style={{ marginTop: 16, border: "1px solid #1a1a1a", borderRadius: 8, overflow: "hidden" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "220px 180px 120px 120px 1fr", gap: 0, padding: "10px 14px", fontSize: 11, color: "#666", borderBottom: "1px solid #1a1a1a", background: "#050505" }}>
+            <div>ID</div><div>Contract #</div><div>Type</div><div>Status</div><div>Customer</div>
+          </div>
 
-        {docs.length === 0 && !err && (
-          <div style={{ padding: 12, opacity: 0.7 }}>No contracts found.</div>
-        )}
-      </div>
+          {docs.map((d: any) => (
+            <a
+              key={d.id}
+              href={`/admin/contracts/${encodeURIComponent(d.id)}?orgId=${encodeURIComponent(orgId)}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "220px 180px 120px 120px 1fr",
+                padding: "12px 14px",
+                textDecoration: "none",
+                color: "#ccc",
+                borderBottom: "1px solid #111",
+                background: "#0a0a0a",
+                fontSize: 13,
+              }}
+            >
+              <div style={{ fontWeight: 600, color: "#C8A84E", fontFamily: "ui-monospace, monospace", fontSize: 11 }}>{String(d.id)}</div>
+              <div style={{ fontWeight: 600 }}>{String(d.contractNumber || "—")}</div>
+              <div style={{ color: "#888" }}>{String(d.type || "—")}</div>
+              <div style={{ color: "#888" }}>{String(d.status || "—")}</div>
+              <div style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: "#888" }}>{String(d.customerId || "—")}</div>
+            </a>
+          ))}
+
+          {docs.length === 0 && (
+            <div style={{ padding: "16px 14px", color: "#555", fontSize: 13 }}>No contracts found.</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
