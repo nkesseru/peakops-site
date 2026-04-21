@@ -602,7 +602,7 @@ async function markArrived() {
     // If sessionId is missing or stale, create a new field session and retry once.
     const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
     const base = functionsBase;
-    const org = (typeof orgId !== "undefined" && orgId) ? String(orgId) : "spokane-valley";
+    const org = String(orgId || "").trim();
 
     if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
     if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
@@ -832,7 +832,10 @@ async function markArrived() {
   }
 
   const router = useRouter();
-  const orgId = "riverbend-electric";
+  // orgId is the single source of truth for this page: URL query param only.
+  // No hardcoded default, no localStorage cache, no doc-based override.
+  const orgSp = useSearchParams();
+  const orgId = String(orgSp?.get?.("orgId") || "").trim();
   // Evidence + Timeline
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
@@ -1782,7 +1785,15 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     setRefreshError(null);
 
     try {
-      let requestOrgId = String(orgId || "").trim() || "riverbend-electric";
+      // Single source of truth: URL query param captured at component top.
+      // No fallback, no doc-based override — if URL has no orgId, we abort.
+      const requestOrgId = String(orgId || "").trim();
+      if (!requestOrgId) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[inc-refresh] missing orgId in URL — aborting refresh");
+        }
+        return;
+      }
       const failHttp = (name: string, url: string, status: number, body: string) => {
         const err: any = new Error(`${name} failed (${status})`);
         err.endpoint = url;
@@ -1813,56 +1824,59 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         setIncidentStatus(st || "open");
         setIncidentTitle(String(inc?.doc?.title || "").trim());
         setIncidentUpdatedAtSec(updatedSec || null);
-        const nextOrg = String(inc?.doc?.orgId || "").trim();
-        if (nextOrg) requestOrgId = nextOrg;
       }
 
-      const jobsUrl =
-        `/api/fn/listJobsV1?orgId=${encodeURIComponent(requestOrgId)}` +
-        `&incidentId=${encodeURIComponent(incidentId)}&limit=50` +
-        `&actorUid=${encodeURIComponent(actorUid())}&actorRole=${encodeURIComponent(actorRole())}`;
-      const jobsBody = await fetchTextOrThrow("listJobsV1", jobsUrl);
-      if (process.env.NODE_ENV !== "production") {
-        let jobsCount = 0;
-        let statuses: string[] = [];
-        try {
-          const parsed = jobsBody ? JSON.parse(jobsBody) : {};
-          const docs = Array.isArray(parsed?.docs) ? parsed.docs : [];
-          jobsCount = docs.length;
-          statuses = docs.map((j: any) => String(j?.status || ""));
-        } catch {}
-        console.debug("[inc-refresh] jobs", {
-          httpStatus: 200,
-          ok: true,
-          count: jobsCount,
-          statuses,
-        });
-      }
-      const jb = jobsBody ? JSON.parse(jobsBody) : {};
-      if (jb?.ok && Array.isArray(jb.docs)) {
-        const docs = jb.docs;
-        setJobs(docs);
-        const selectable = docs.filter((j: any) => isFieldSelectableJob(j?.status));
-        const currentId = String(currentJobId || "").trim();
-        const existsInSelectable = selectable.some((j: any) => String(j?.id || j?.jobId || "") === currentId);
-        const firstSelectableId = String(selectable?.[0]?.id || selectable?.[0]?.jobId || "").trim();
-        let effectiveJobId = currentId;
-        if (!currentId || !existsInSelectable) {
-          if (firstSelectableId) {
-            setCurrentJobId(firstSelectableId);
-            effectiveJobId = firstSelectableId;
-          } else {
-            setCurrentJobId("");
-            effectiveJobId = "";
+      // Jobs (GET-only, non-fatal — empty jobs list should not kill the field page)
+      try {
+        const jobsUrl =
+          `/api/fn/listJobsV1?orgId=${encodeURIComponent(requestOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}&limit=50` +
+          `&actorUid=${encodeURIComponent(actorUid())}&actorRole=${encodeURIComponent(actorRole())}`;
+        const jobsRes = await fetch(jobsUrl);
+        const jobsBody = await jobsRes.text();
+        if (!jobsRes.ok) {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[inc-refresh] jobs fetch failed (non-fatal)", {
+              httpStatus: jobsRes.status,
+              body: String(jobsBody || "").slice(0, 200),
+            });
+          }
+        } else {
+          const jb = jobsBody ? JSON.parse(jobsBody) : {};
+          if (process.env.NODE_ENV !== "production") {
+            const docs = Array.isArray(jb?.docs) ? jb.docs : [];
+            console.debug("[inc-refresh] jobs", {
+              httpStatus: jobsRes.status,
+              ok: !!jb?.ok,
+              count: docs.length,
+              statuses: docs.map((j: any) => String(j?.status || "")),
+            });
+          }
+          if (jb?.ok && Array.isArray(jb.docs)) {
+            const docs = jb.docs;
+            setJobs(docs);
+            const selectable = docs.filter((j: any) => isFieldSelectableJob(j?.status));
+            const currentId = String(currentJobId || "").trim();
+            const existsInSelectable = selectable.some((j: any) => String(j?.id || j?.jobId || "") === currentId);
+            const firstSelectableId = String(selectable?.[0]?.id || selectable?.[0]?.jobId || "").trim();
+            if (!currentId || !existsInSelectable) {
+              if (firstSelectableId) {
+                setCurrentJobId(firstSelectableId);
+              } else {
+                setCurrentJobId("");
+              }
+            }
+            if (process.env.NODE_ENV !== "production") {
+              console.debug("[jobs-refresh]", {
+                jobsCount: docs.length,
+                selectableJobsCount: selectable.length,
+                firstJobId: firstSelectableId || "",
+              });
+            }
           }
         }
-        if (process.env.NODE_ENV !== "production") {
-          console.debug("[jobs-refresh]", {
-            jobsCount: docs.length,
-            selectableJobsCount: selectable.length,
-                        firstJobId: firstSelectableId || "",
-          });
-        }
+      } catch (jobsErr) {
+        if (process.env.NODE_ENV !== "production") console.warn("[inc-refresh] jobs fetch failed (non-fatal)", jobsErr);
       }
 
       const orgsUrl =
@@ -1894,73 +1908,73 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         setOrgOptionsLoaded(true);
       }
 
-      // Evidence (GET-only)
-      const evUrl =
-        `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(requestOrgId)}` +
-        `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
-      const evBody = await fetchTextOrThrow("listEvidenceLocker", evUrl);
-      if (process.env.NODE_ENV !== "production") {
-        let evidenceCount = 0;
-        let evOk = false;
-        try {
-          const parsed = evBody ? JSON.parse(evBody) : {};
-          const docs = Array.isArray(parsed?.docs) ? parsed.docs : [];
-          evidenceCount = docs.length;
-          evOk = !!parsed?.ok;
-        } catch {}
-        console.debug("[inc-refresh] evidence", {
-          httpStatus: 200,
-          ok: evOk,
-          count: evidenceCount,
-        });
-      }
-      const ev = evBody ? JSON.parse(evBody) : {};
-
-      if (ev?.ok && Array.isArray(ev.docs)) {
-        setEvidence(ev.docs);
-        
-      prefetchThumbs(ev.docs);
-      // PHASE3_THUMBS_RETRY_SCHEDULED: re-try failed thumbs once
-        
-
-      // PEAKOPS_THUMBS_RETRY_EFFECT_V1
-      // Retry failed thumbs once after a short delay (keeps the rail feeling “alive”)
-      setTimeout(() => {
-        try {
-          const latest = (ev.docs || []).filter((x:any) => x?.file?.storagePath);
-          const retryCandidates = latest.filter((x: any) => {
-            const id = String(x?.id || "");
-            return !!id && !!thumbErr?.[id];
-          });
-          if (!retryCandidates.length) return;
-          retryCandidates.forEach((x:any) => {
-            const id = String(x?.id || "");
-            if (!id) return;
-            if (thumbErr?.[id]) {
-              // clear the error so prefetchThumbs will try again
-              setThumbErr((m:any) => ({ ...m, [id]: false }));
-            }
-          });
-          retryThumbs(retryCandidates as any);
-        } catch {}
-      }, 800);
-
-if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId)) {
-          setSelectedEvidenceId("");
+      // Evidence (GET-only, non-fatal)
+      try {
+        const evUrl =
+          `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(requestOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
+        const evRes = await fetch(evUrl);
+        const evBody = await evRes.text();
+        if (process.env.NODE_ENV !== "production") {
+          let evidenceCount = 0;
+          let evOk = false;
+          try {
+            const parsed = evBody ? JSON.parse(evBody) : {};
+            const docs = Array.isArray(parsed?.docs) ? parsed.docs : [];
+            evidenceCount = docs.length;
+            evOk = !!parsed?.ok;
+          } catch {}
+          console.debug("[inc-refresh] evidence", { httpStatus: evRes.status, ok: evOk, count: evidenceCount });
         }
+        if (evRes.ok) {
+          const ev = evBody ? JSON.parse(evBody) : {};
+          if (ev?.ok && Array.isArray(ev.docs)) {
+            setEvidence(ev.docs);
+            prefetchThumbs(ev.docs);
+            setTimeout(() => {
+              try {
+                const latest = (ev.docs || []).filter((x:any) => x?.file?.storagePath);
+                const retryCandidates = latest.filter((x: any) => {
+                  const id = String(x?.id || "");
+                  return !!id && !!thumbErr?.[id];
+                });
+                if (!retryCandidates.length) return;
+                retryCandidates.forEach((x:any) => {
+                  const id = String(x?.id || "");
+                  if (!id) return;
+                  if (thumbErr?.[id]) {
+                    setThumbErr((m:any) => ({ ...m, [id]: false }));
+                  }
+                });
+                retryThumbs(retryCandidates as any);
+              } catch {}
+            }, 800);
+            if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId)) {
+              setSelectedEvidenceId("");
+            }
+          }
+        }
+      } catch (evErr) {
+        if (process.env.NODE_ENV !== "production") console.warn("[inc-refresh] evidence fetch failed (non-fatal)", evErr);
       }
 
-      // Timeline (GET-only)
-      const tlUrl =
-        `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(requestOrgId)}` +
-        `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
-      const tlBody = await fetchTextOrThrow("getTimelineEventsV1", tlUrl);
-      const tl = tlBody ? JSON.parse(tlBody) : {};
-
-      if (tl?.ok && Array.isArray(tl.docs)) {
-        const docs: TimelineDoc[] = tl.docs.slice();
-        docs.sort((a, b) => (b.occurredAt?._seconds || 0) - (a.occurredAt?._seconds || 0));
-        setTimeline(docs.filter((x) => x.type !== "DEBUG_EVENT"));
+      // Timeline (GET-only, non-fatal)
+      try {
+        const tlUrl =
+          `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(requestOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
+        const tlRes = await fetch(tlUrl);
+        const tlBody = await tlRes.text();
+        if (tlRes.ok) {
+          const tl = tlBody ? JSON.parse(tlBody) : {};
+          if (tl?.ok && Array.isArray(tl.docs)) {
+            const docs: TimelineDoc[] = tl.docs.slice();
+            docs.sort((a, b) => (b.occurredAt?._seconds || 0) - (a.occurredAt?._seconds || 0));
+            setTimeline(docs.filter((x) => x.type !== "DEBUG_EVENT"));
+          }
+        }
+      } catch (tlErr) {
+        if (process.env.NODE_ENV !== "production") console.warn("[inc-refresh] timeline fetch failed (non-fatal)", tlErr);
       }
 
       setDataStatus("live");
