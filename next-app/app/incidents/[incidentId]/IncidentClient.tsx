@@ -21,6 +21,8 @@ import {
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { deriveFieldIncidentStatus } from "@/lib/workflow/fieldIncidentStatus";
+import { hasUsableOrgId, incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
 
 
 
@@ -427,8 +429,10 @@ function FlowStageBar({ stage }: { stage: "arrive" | "evidence" | "notes" | "sub
                 fontSize: 11, fontWeight: active ? 700 : 600,
                 color: active ? "#C8A84E" : done ? "#22c55e" : "#b3b3b3",
                 background: active ? "transparent" : done ? "transparent" : "#101010",
-                border: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
-                borderLeft: done ? "2px solid #22c55e" : undefined,
+                borderTop: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
+                borderRight: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
+                borderBottom: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
+                borderLeft: active ? "1px solid #C8A84E" : done ? "2px solid #22c55e" : "1px solid #1c1c1c",
               }}>
                 {done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                 {s.label}
@@ -475,7 +479,7 @@ const invalidIncidentRoute = useMemo(() => {
   useEffect(() => {
     try { outboxFlushSupervisorRequests(); } catch {}
 
-    const onFocus = () => syncNotesSavedLocal();
+    const onFocus = () => { syncNotesSavedLocal(); syncArrivedLocal(); };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [incidentId]);
@@ -572,9 +576,16 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
 
   const goAddEvidence = () => {
     if (isClosed) return toast("Incident is closed (read-only).", 2600);
-    if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
+    // PEAKOPS_CAPTURE_WITHOUT_JOB_V1
+    // Evidence capture no longer requires an active field job.
+    // Backend (addEvidenceV1) treats jobId as optional: when omitted, the doc
+    // saves at the incident level and can be assigned to a job later.
+    // PEAKOPS_NAV_ORGID_GUARD: never navigate to /add-evidence with an empty
+    // orgId — that produces "?orgId=" which breaks downstream refresh.
+    if (!hasUsableOrgId(orgId)) {
+      return toast("Missing orgId in URL — reload /incidents/<id>?orgId=<your-org>", 3500);
+    }
     try {
-      // PEAKOPS_ADD_EVIDENCE_NAV_V1: Keep MVP behavior dead-simple + reliable.
       const url =
         `/incidents/${encodeURIComponent(String(incidentId || ""))}/add-evidence` +
         `?orgId=${encodeURIComponent(String(orgId || ""))}`;
@@ -602,9 +613,21 @@ async function markArrived() {
     // If sessionId is missing or stale, create a new field session and retry once.
     const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
     const base = functionsBase;
-    const org = String(orgId || "").trim();
+    // PEAKOPS_ARRIVE_ORGID_REFRESH_V1
+    // Derive orgId at click time: prefer the closure (useSearchParams), then
+    // re-read window.location.search as a live fallback. No hardcoded default —
+    // if URL genuinely has no orgId we bail with a clear toast instead of firing
+    // a POST that the backend would reject with "orgId required".
+    let org = String(orgId || "").trim();
+    if (!org && typeof window !== "undefined") {
+      try {
+        const usp = new URLSearchParams(window.location.search);
+        org = String(usp.get("orgId") || "").trim();
+      } catch {}
+    }
 
     if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
+    if (!org) return toast("Missing orgId in URL — reload /incidents/<id>?orgId=<your-org>", 3500);
     if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
 
     let sid = String(activeSessionId || "").trim();
@@ -614,7 +637,10 @@ async function markArrived() {
     }
 
     async function startSession(): Promise<string> {
-      const res = await fetch(`/api/fn/startFieldSessionV1`, {
+      // orgId in both query string (parity with getTimelineEventsV1) and body
+      // (markArrivedV1 / startFieldSessionV1 read from body via mustStr).
+      const url = `/api/fn/startFieldSessionV1?orgId=${encodeURIComponent(org)}`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: org, incidentId, createdBy: "ui", techUserId }),
@@ -627,7 +653,8 @@ async function markArrived() {
     }
 
     async function postArrived(sessionId: string): Promise<any> {
-      const res = await fetch(`/api/fn/markArrivedV1`, {
+      const url = `/api/fn/markArrivedV1?orgId=${encodeURIComponent(org)}`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: org, incidentId, sessionId: String(sessionId), updatedBy: "ui", techUserId }),
@@ -726,6 +753,11 @@ async function markArrived() {
       } catch {}
 
       setArrived(true);
+      // PEAKOPS_ARRIVED_STICKY_V1: persist so remounts (notes save, tab nav,
+      // reload) don't regress the readiness/CTA state when the backend timeline
+      // fetch returns empty.
+      try { localStorage.setItem("peakops_arrived_" + String(incidentId || ""), "1"); } catch {}
+      setArrivedLocal(true);
       toast("Arrived ✓", 1800);
     } catch (e: any) {
       const msg = e?.message || String(e) || "markArrived failed";
@@ -988,6 +1020,25 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
       // ignore
     }
   };
+
+  // PEAKOPS_ARRIVED_STICKY_V1: fallback-only sticky local flag for arrival.
+  // Backend is the primary source of truth — emitTimelineEvent and
+  // getTimelineEventsV1 now share functions_clean/_incidentPath.js, so the
+  // write/read subcollections always agree and the timeline round-trips
+  // FIELD_ARRIVED correctly on refresh. This sticky flag remains as a safety
+  // net for eventual-consistency windows and offline-first behavior only. Do
+  // not rely on it as the primary signal; read `hasArrival` instead.
+  const [arrivedLocal, setArrivedLocal] = useState<boolean>(false);
+
+  const syncArrivedLocal = () => {
+    try {
+      const k = "peakops_arrived_" + String(incidentId);
+      const v = localStorage.getItem(k);
+      setArrivedLocal(!!v);
+    } catch {
+      // ignore
+    }
+  };
 // Global hook for cross-page optimistic events (e.g., Notes → NOTEs_SAVED)
   useEffect(() => {
     try {
@@ -1025,6 +1076,8 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
       });
       if (!out?.ok) throw new Error(out?.error || "markArrived failed");
       setArrived(true);
+      try { localStorage.setItem("peakops_arrived_" + String(incidentId || ""), "1"); } catch {}
+      setArrivedLocal(true);
       toast("Arrived ✓", 1500);
     } catch (e: any) {
       const msg = (e && (e.message || String(e))) || "markArrived failed";
@@ -2304,8 +2357,9 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
 
   useEffect(() => {
     refresh();
-    
+
     syncNotesSavedLocal();
+    syncArrivedLocal();
 const t = setInterval(refresh, 60000);
 
   // === ZIP PACK v3: micro-feedback helpers ===
@@ -2412,7 +2466,11 @@ return () => clearInterval(t);
       };
 
       setTimeline((prev: any) => (Array.isArray(prev) ? [opt, ...prev] : [opt]));
-      router.replace(`/incidents/${incidentId}`, { scroll: false } as any);
+      // PEAKOPS_NOTES_SAVED_ORGID_V1: preserve orgId when stripping ?notesSaved=1.
+      // Losing orgId from the URL makes refresh() abort (per single-source-of-truth
+      // rule), which is why arrival state regressed after a notes save.
+      const nextUrl = `/incidents/${incidentId}?orgId=${encodeURIComponent(String(orgId || "").trim())}`;
+      router.replace(nextUrl, { scroll: false } as any);
     } catch {}
   }, [sp, incidentId]);
 useEffect(() => {
@@ -2568,66 +2626,74 @@ useEffect(() => {
     return out;
   }, [timeline]);
 
-  // PEAKOPS_NEXTBESTACTION_V1
-  const _hasSession = Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "SESSION_STARTED" || String(t?.type) === "FIELD_ARRIVED" || String(t?.type) === "EVIDENCE_ADDED");
-  const _evidenceN = Array.isArray(evidence) ? evidence.filter((ev: any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath||"").includes("demo_placeholder")).length : 0;
-  const _hasEvidence = _evidenceN >= 4;
-  const _hasNotes = !!(notesSavedLocal || (Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "NOTES_SAVED")));
-  const _hasSubmitted = Array.isArray(timeline) && timeline.some((t: any) => String(t?.type || "").toLowerCase() === "field_submitted");
+  // PEAKOPS_FIELD_STATUS_CANONICAL_V1
+  // All incident-level readiness/stage rules live in one module:
+  //   @/lib/workflow/fieldIncidentStatus
+  // That module is the single source of truth for: the CTA label, the readiness
+  // checklist, the flow-stage bar, the timing card, and the bottom-dock tiles.
+  // Supervisor readiness is intentionally separate — see ReviewClient.tsx which
+  // derives from job-level facts (reviewableJobs, selectedJobEvidenceCount, …).
+  //
+  // _hasApproved is computed here (not in the helper) because it is a job-level
+  // fact owned by the supervisor pipeline. The helper only consumes its boolean
+  // to decide whether the field stage is "review" vs "done".
   const _hasApproved = Array.isArray(jobs) && jobs.length > 0 && jobs.every((j: any) => {
     const rs = String(j?.reviewStatus || "").trim().toLowerCase();
     const st = String(j?.status || "").trim().toLowerCase();
     return rs === "approved" || st === "approved";
   });
 
-  // PHASE6_1_TIMERS_V1
-  const _secForType = (ty: string): number | null => {
-    try {
-      let best = 0;
-      for (const t of (timeline || []) as any[]) {
-        if (String(t?.type || "") !== ty) continue;
-        const sec = Number(t?.occurredAt?._seconds || 0);
-        if (sec > best) best = sec;
-      }
-      return best ? best : null;
-    } catch {
-      return null;
-    }
-  };
+  const _fieldStatus = useMemo(
+    () => deriveFieldIncidentStatus({
+      timeline: timeline as any[],
+      evidence: evidence as any[],
+      notesSavedLocal,
+      arrivedLocal,
+      allJobsApproved: !!_hasApproved,
+    }),
+    [timeline, evidence, notesSavedLocal, arrivedLocal, _hasApproved]
+  );
 
-  const _arrivalSec = _secForType("FIELD_ARRIVED");
-  const _notesSec = _secForType("NOTES_SAVED");
-  const hasArrival = !!_arrivalSec || !!_hasSession;
-const hasEvidence = !!_hasEvidence;
-const hasNotes = !!_hasNotes;
+  // Local aliases preserve every downstream binding that used the previous
+  // inline variable names. Do NOT re-derive these inline — update the helper
+  // module and the new field shows up here automatically.
+  const hasArrival = _fieldStatus.hasArrival;
+  const hasEvidence = _fieldStatus.hasEvidence;
+  const hasNotes = _fieldStatus.hasNotes;
+  const isSubmitted = _fieldStatus.hasSubmitted;
+  const isApproved = !!_hasApproved;
+  const currentStage = _fieldStatus.currentStage;
 
-// For now, treat "submitted" as the same as having enough evidence + notes.
-// We can refine this later to use a dedicated FIELD_SUBMITTED event.
-const isSubmitted = hasNotes;
+  const _arrivalSec = _fieldStatus.arrivalSec;
+  const _notesSec = _fieldStatus.notesSec;
+  const _lastEvidenceSec = _fieldStatus.evidenceLatestSec;
 
-// Approved = all jobs approved/locked
-const isApproved = !!_hasApproved;
-  const currentStage = useMemo(() => {
-    if (!hasArrival) return "arrive";
-    if (!hasEvidence && !hasNotes) return "evidence";
-    if (!hasNotes) return "notes";
-    if (!isSubmitted) return "submit";
-    if (!isApproved) return "review";
-    return "done";
-  }, [hasArrival, hasEvidence, hasNotes, isSubmitted, isApproved]);
-  
-  // Prefer timeline event; fallback to latest evidence timestamp if needed
-  const _evidenceSecFromTL = _secForType("EVIDENCE_ADDED");
-  const _evidenceSecFromDocs =
-    (Array.isArray(evidence) && evidence[0] && (evidence[0] as any).storedAt?._seconds) ||
-    (Array.isArray(evidence) && evidence[0] && (evidence[0] as any).createdAt?._seconds) ||
-    null;
+  // Legacy prop names still referenced by NextBestAction / checklist / dock /
+  // submit button. Kept as aliases until those consumers are refactored to
+  // accept a single status object.
+  const _hasEvidence = _fieldStatus.hasEvidence;
+  const _hasNotes = _fieldStatus.hasNotes;
+  const _hasSubmitted = _fieldStatus.hasSubmitted;
+  const _hasSession = _fieldStatus.hasSessionTimeline;
+  const _evidenceN = _fieldStatus.evidenceCount;
 
-  const _lastEvidenceSec = _evidenceSecFromTL || (_evidenceSecFromDocs ? Number(_evidenceSecFromDocs) : null);
-
-  const _arrivalAgo = _arrivalSec ? fmtAgo(_arrivalSec) : "—";
-  const _evidenceAgo = _lastEvidenceSec ? fmtAgo(_lastEvidenceSec) : "—";
-  const _notesAgo = _notesSec ? fmtAgo(_notesSec) : "—";
+  // Prefer the timeline timestamp; if it's missing but we know arrival happened
+  // (arrivedLocal sticky flag, or evidence exists), render a neutral "Arrived"
+  // instead of "Not started" so the timing card agrees with the CTA/checklist.
+  const _arrivalAgo = _arrivalSec
+    ? fmtAgo(_arrivalSec)
+    : hasArrival
+      ? "Arrived"
+      : "—";
+  const _evidenceAgo = _lastEvidenceSec
+    ? fmtAgo(_lastEvidenceSec)
+    : hasEvidence ? "Captured" : "—";
+  // If notes have been saved (sticky or timeline event) but no timestamp is
+  // available (e.g., sticky only, backend event missing), show a soft "Saved"
+  // so the timing card never disagrees with the checklist.
+  const _notesAgo = _notesSec
+    ? fmtAgo(_notesSec)
+    : hasNotes ? "Saved" : "—";
 
   return (
     invalidIncidentRoute ? (
@@ -2640,6 +2706,23 @@ const isApproved = !!_hasApproved;
           </div>
           <div style={{ fontSize: 11, color: "#6f6f6f", marginTop: 12, fontFamily: "ui-monospace, monospace" }}>
             /incidents/inc_demo
+          </div>
+        </div>
+      </main>
+    ) : !hasUsableOrgId(orgId) ? (
+      // PEAKOPS_NAV_ORGID_GUARD: URL is missing ?orgId=. Render a blocking
+      // state instead of live CTAs (Mark arrived / + Evidence / Go to Review),
+      // which would otherwise fire against an empty orgId and either fail the
+      // backend ("orgId required") or produce fake-empty data.
+      <main style={{ minHeight: "100vh", background: "#050505", color: "#f5f5f5", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", color: "#C8A84E", marginBottom: 16 }}>PEAKOPS</div>
+        <div style={{ maxWidth: 440, width: "100%", border: "1px solid #1c1c1c", background: "#0b0b0b", borderRadius: 8, padding: 20, textAlign: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>Missing orgId in URL</div>
+          <div style={{ fontSize: 12, color: "#6f6f6f", marginTop: 8, lineHeight: 1.5 }}>
+            This page needs <span style={{ color: "#C8A84E", fontFamily: "ui-monospace, monospace" }}>?orgId=&lt;your-org&gt;</span> to load incident data. Reload with the org appended to the URL.
+          </div>
+          <div style={{ fontSize: 11, color: "#6f6f6f", marginTop: 12, fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
+            /incidents/{String(incidentId || "").trim() || "<id>"}?orgId=&lt;your-org&gt;
           </div>
         </div>
       </main>
@@ -2743,7 +2826,7 @@ const isApproved = !!_hasApproved;
               onClick={() => {
                 const id = String(incidentId || "");
                 if (!id || id.includes("${")) return;
-                router.push(`/incidents/${id}/review`);
+                router.push(reviewPath(id, orgId));
               }}
             >
               Review
@@ -2758,7 +2841,7 @@ const isApproved = !!_hasApproved;
             <button
               type="button"
               style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3" }}
-              onClick={() => { try { router.push(`/incidents/${incidentId}/summary`); } catch {} }}
+              onClick={() => { try { router.push(summaryPath(incidentId, orgId)); } catch {} }}
               title="Open incident summary"
             >
               Summary
@@ -2825,7 +2908,7 @@ const isApproved = !!_hasApproved;
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f" }}>Active Job</div>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#f5f5f5", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "Waiting for assignment")}
+                {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "No active job assigned yet")}
               </div>
               <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>
                 {activeJobId ? (
@@ -2834,7 +2917,7 @@ const isApproved = !!_hasApproved;
                     {locked ? <span style={{ color: "#22c55e", marginLeft: 6 }}>Locked</span> : null}
                   </>
                 ) : (
-                  "A job will appear when the incident is set up"
+                  "You can capture evidence now — it will save to this incident and can be assigned to a job later."
                 )}
               </div>
             </div>
@@ -2853,14 +2936,26 @@ const isApproved = !!_hasApproved;
                   Open
                 </button>
               ) : null}
+              {/* PEAKOPS_OVERVIEW_CTA_HIERARCHY_V1
+                  Pre-arrival: Mark Arrived is the single dominant primary (inside NextBestAction).
+                  This "+ Evidence" is a muted secondary shortcut until the user marks arrived.
+                  Post-arrival: Evidence is the next primary action, so this button promotes to gold-gradient. */}
               <button
                 type="button"
                 style={{
-                  padding: "6px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer",
-                  border: "none", background: (isClosed || !hasActiveFieldJobs) ? "#0b0b0b" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: (isClosed || !hasActiveFieldJobs) ? "#6f6f6f" : "#050505",
+                  padding: "6px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                  cursor: isClosed ? "not-allowed" : "pointer",
+                  border: (isClosed || !hasArrival) ? "1px solid #1c1c1c" : "none",
+                  background: isClosed
+                    ? "#0b0b0b"
+                    : !hasArrival
+                      ? "transparent"
+                      : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
+                  color: isClosed ? "#6f6f6f" : !hasArrival ? "#6f6f6f" : "#050505",
                 }}
                 onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
-                disabled={isClosed || !hasActiveFieldJobs}
+                disabled={isClosed}
+                title={!hasArrival ? "Optional — you can also capture after you mark arrived" : "Add evidence"}
               >
                 + Evidence
               </button>
@@ -2889,23 +2984,22 @@ const isApproved = !!_hasApproved;
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#22c55e" }}>Submitted for review</div>
           <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>Session submitted. Waiting for supervisor approval.</div>
           <div style={{ marginTop: 10 }}>
-            <button type="button" style={{ width: "100%", padding: "14px 0", borderRadius: 8, border: "none", background: "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: "#050505", fontSize: 16, fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 12px rgba(200,168,78,0.20)" }} onClick={() => { try { router.push(`/incidents/${incidentId}/review`); } catch {} }}>
+            <button type="button" style={{ width: "100%", padding: "14px 0", borderRadius: 8, border: "none", background: "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: "#050505", fontSize: 16, fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 12px rgba(200,168,78,0.20)" }} onClick={() => { try { router.push(reviewPath(incidentId, orgId)); } catch {} }}>
               Go to Review
             </button>
           </div>
         </section>
       ) : (
         <NextBestAction
-          arrived={arrived}
+          arrived={hasArrival}
           hasSession={_hasSession}
           hasEvidence={_hasEvidence}
           hasNotes={_hasNotes}
           hasApproved={_hasApproved}
           evidenceCount={evidenceCount}
-          onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
+          onOpenNotes={() => router.push(notesPath(incidentId, orgId))}
           onAddEvidence={() => {
             if (isClosed) return toast("Incident is closed (read-only).", 2600);
-            if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
             goAddEvidence();
           }}
           onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
@@ -2987,7 +3081,7 @@ const isApproved = !!_hasApproved;
       </span>
     </div>
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <button type="button" style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer", opacity: (isClosed || !hasActiveFieldJobs) ? 0.5 : 1 }} disabled={isClosed || !hasActiveFieldJobs} onClick={() => { try { goAddEvidence(); } catch {} }}>+ Add evidence</button>
+      <button type="button" style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", cursor: isClosed ? "not-allowed" : "pointer", opacity: isClosed ? 0.5 : 1 }} disabled={isClosed} onClick={() => { try { goAddEvidence(); } catch {} }}>+ Add evidence</button>
       {process.env.NODE_ENV !== "production" ? (
         <details style={{ display: "inline" }}>
           <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f", padding: "2px 6px" }}>Dev</summary>
@@ -3007,8 +3101,8 @@ const isApproved = !!_hasApproved;
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="#6f6f6f" strokeWidth="1.5"/><circle cx="8.5" cy="9" r="1.5" fill="#6f6f6f"/><path d="M3 16l5-5 3 3 4-5 6 7" stroke="#6f6f6f" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
       </div>
       <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>No evidence yet</div>
-      <div style={{ marginTop: 4, fontSize: 12, color: "#6f6f6f", lineHeight: 1.5, maxWidth: 300, marginLeft: "auto", marginRight: "auto" }}>
-        Photos and files you capture in the field will attach to your active job and appear here.
+      <div style={{ marginTop: 4, fontSize: 12, color: "#6f6f6f", lineHeight: 1.5, maxWidth: 320, marginLeft: "auto", marginRight: "auto" }}>
+        Capture photos and files now — they save to this incident and can be assigned to a job later.
       </div>
       <button
         type="button"
@@ -3017,27 +3111,61 @@ const isApproved = !!_hasApproved;
           padding: "12px 22px",
           borderRadius: 8,
           border: "none",
-          background: (isClosed || !hasActiveFieldJobs) ? "#1c1c1c" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
-          color: (isClosed || !hasActiveFieldJobs) ? "#6f6f6f" : "#050505",
+          background: isClosed ? "#1c1c1c" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
+          color: isClosed ? "#6f6f6f" : "#050505",
           fontSize: 13,
           fontWeight: 800,
           letterSpacing: "0.02em",
-          cursor: (isClosed || !hasActiveFieldJobs) ? "not-allowed" : "pointer",
-          boxShadow: (isClosed || !hasActiveFieldJobs) ? "none" : "0 2px 12px rgba(200,168,78,0.20)",
+          cursor: isClosed ? "not-allowed" : "pointer",
+          boxShadow: isClosed ? "none" : "0 2px 12px rgba(200,168,78,0.20)",
         }}
-        disabled={isClosed || !hasActiveFieldJobs}
+        disabled={isClosed}
         onClick={() => { try { goAddEvidence(); } catch {} }}
       >
         + Add Evidence
       </button>
-      {(isClosed || !hasActiveFieldJobs) ? (
+      {isClosed ? (
         <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f" }}>
-          {isClosed ? "Incident is closed (read-only)." : "Waiting for an active field job."}
+          Incident is closed (read-only).
+        </div>
+      ) : !hasActiveFieldJobs ? (
+        <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f", maxWidth: 320, marginLeft: "auto", marginRight: "auto", lineHeight: 1.5 }}>
+          No active job yet — your upload will attach to this incident. You can assign it to a job from the Evidence Mapping section below once a job exists.
         </div>
       ) : null}
     </div>
   ) : (
   <>
+  {(() => {
+    const total = evidence.length;
+    const labeled = evidence.filter((e: any) => Array.isArray(e?.labels) && e.labels.length > 0).length;
+    const assigned = evidence.filter((e: any) => !!getLinkedJobId(e)).length;
+    const unlabeled = total - labeled;
+    const unassigned = total - assigned;
+    const chipStyle = (complete: boolean): React.CSSProperties => ({
+      fontSize: 10, fontWeight: 600, letterSpacing: "0.02em",
+      color: complete ? "#22c55e" : "#b3b3b3",
+      padding: "3px 9px", borderRadius: 999,
+      background: "#050505",
+      border: complete ? "1px solid rgba(34,197,94,0.3)" : "1px solid #1c1c1c",
+    });
+    const ready = total > 0 && unlabeled === 0 && unassigned === 0;
+    const needsParts: string[] = [];
+    if (unlabeled > 0) needsParts.push(`${unlabeled} unlabeled`);
+    if (unassigned > 0) needsParts.push(`${unassigned} unassigned`);
+    return (
+      <>
+        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+          <span style={chipStyle(false)}>{total} captured</span>
+          <span style={chipStyle(total > 0 && labeled === total)}>{labeled}/{total} labeled</span>
+          <span style={chipStyle(total > 0 && assigned === total)}>{assigned}/{total} assigned</span>
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, fontWeight: 500, color: ready ? "#22c55e" : "#b3b3b3" }}>
+          {ready ? "✓ Ready for review" : <>Needs: <span style={{ color: "#f5f5f5" }}>{needsParts.join(", ")}</span></>}
+        </div>
+      </>
+    );
+  })()}
   <div style={{ marginTop: 8, marginLeft: -4, marginRight: -4, overflowX: "auto" }} id="evidenceScroller">
     <div className="flex gap-2 snap-x snap-mandatory" style={{ padding: "0 4px" }}>
       {(() => {
@@ -3051,6 +3179,8 @@ const isApproved = !!_hasApproved;
               const u = thumbUrl[ev.id];
               const labels = (ev.labels || []).map(normLabel);
               const selected = selectedEvidenceId === ev.id;
+              const hasLabels = Array.isArray(ev?.labels) && ev.labels.length > 0;
+              const hasJob = !!getLinkedJobId(ev);
               const converting = isConvertingHeic(ev as EvidenceDoc);
               const convStatus = String((ev as any)?.file?.conversionStatus || "").toLowerCase();
               const uploadMissing = convStatus === "source_missing";
@@ -3083,6 +3213,14 @@ const isApproved = !!_hasApproved;
                       <div className="w-full h-full flex items-center justify-center text-[11px] text-gray-400">Loading…</div>
                     )
                   )}
+
+                  <div
+                    style={{ position: "absolute", top: 6, right: 6, display: "flex", gap: 3, padding: "3px 6px", borderRadius: 999, background: "rgba(5,5,5,0.82)", border: "1px solid #1c1c1c" }}
+                    title={`${hasLabels ? "Labeled" : "Needs label"} · ${hasJob ? "Assigned" : "Needs job"}`}
+                  >
+                    <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: hasLabels ? "#22c55e" : "#C8A84E" }} />
+                    <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: hasJob ? "#22c55e" : "#C8A84E" }} />
+                  </div>
 
                   <div className="absolute top-2 left-2 flex flex-wrap gap-1">
                     {labels.slice(0, 2).map((l:string) => (
@@ -3135,11 +3273,120 @@ const isApproved = !!_hasApproved;
   </div>
 
   <div style={{ marginTop: 8, fontSize: 10, color: "#6f6f6f", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-    <span>Tap any tile to preview. Scroll for more.</span>
+    <span>Tap a tile to preview, label, or assign to a job.</span>
     {evidence.length > 12 ? (
       <span style={{ color: "#b3b3b3" }}>Showing 12 of {evidence.length}</span>
     ) : null}
   </div>
+
+  {selectedEvidence && !previewOpen ? (() => {
+    const selId = String(selectedEvidence.id || "");
+    const selThumb = thumbUrl[selId];
+    const selLabels = (selectedEvidence.labels || []).map(normLabel);
+    const selJobId = getLinkedJobId(selectedEvidence);
+    const selJob = (jobs || []).find((j: any) => String(j?.id || j?.jobId || "") === selJobId);
+    const selJobTitle = String(selJob?.title || selJobId || "");
+    const selSec = Number(selectedEvidence.storedAt?._seconds || selectedEvidence.createdAt?._seconds || 0);
+    const idx = (evidence || []).findIndex((ev: any) => String(ev?.id || "") === selId);
+    const canPrev = idx > 0;
+    const canNext = idx >= 0 && idx < (evidence || []).length - 1;
+    const go = (delta: number) => {
+      const nextIdx = idx + delta;
+      const next = (evidence || [])[nextIdx];
+      if (!next || !next.id) return;
+      setSelectedEvidenceId(next.id);
+      try { jumpToEvidence(String(next.id)); } catch {}
+    };
+    return (
+      <div style={{ marginTop: 10, borderRadius: 10, border: "1px solid rgba(200,168,78,0.25)", background: "#050505", overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 140px) minmax(0, 1fr)", gap: 12, padding: 12 }}>
+          <div style={{ borderRadius: 8, overflow: "hidden", background: "#0b0b0b", aspectRatio: "4 / 3", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {selThumb ? (
+              <img src={toInlineMediaUrl(selThumb)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            ) : (
+              <span style={{ fontSize: 10, color: "#6f6f6f" }}>No preview</span>
+            )}
+          </div>
+          <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#f5f5f5", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={String(selectedEvidence.file?.originalName || selId)}>
+              {selectedEvidence.file?.originalName || selId}
+            </div>
+            <div style={{ fontSize: 10, color: "#6f6f6f" }}>
+              {selSec ? `Uploaded ${fmtAgo(selSec)}` : `id: …${selId.slice(-6)}`}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 2 }}>
+              {selLabels.length > 0 ? (
+                selLabels.map((l: string) => (
+                  <span key={l} className={"text-[10px] px-2 py-0.5 rounded-full border " + labelChipColor(l)}>{l}</span>
+                ))
+              ) : (
+                <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>Needs a label</span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: "#b3b3b3", marginTop: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {selJobId ? (
+                <span>Job: <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{selJobTitle}</span></span>
+              ) : (
+                <>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>Needs a job</span>
+                  {currentJobId ? (
+                    <button
+                      type="button"
+                      style={{ padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", cursor: isClosed ? "not-allowed" : "pointer" }}
+                      disabled={isClosed}
+                      onClick={() => { try { assignEvidenceJob(selId, String(currentJobId)); } catch {} }}
+                      title="Attach this evidence to your active job"
+                    >
+                      Assign to my job
+                    </button>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderTop: "1px solid #1c1c1c", background: "#0b0b0b", gap: 8 }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              type="button"
+              disabled={!canPrev}
+              onClick={() => go(-1)}
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid #1c1c1c", background: "transparent", color: canPrev ? "#b3b3b3" : "#3a3a3a", cursor: canPrev ? "pointer" : "not-allowed" }}
+            >
+              ← Prev
+            </button>
+            <button
+              type="button"
+              disabled={!canNext}
+              onClick={() => go(1)}
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid #1c1c1c", background: "transparent", color: canNext ? "#b3b3b3" : "#3a3a3a", cursor: canNext ? "pointer" : "not-allowed" }}
+            >
+              Next →
+            </button>
+            <span style={{ alignSelf: "center", fontSize: 10, color: "#6f6f6f", marginLeft: 4 }}>
+              {idx >= 0 ? `${idx + 1} / ${evidence.length}` : ""}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              type="button"
+              onClick={() => { try { openModal(selectedEvidence); } catch {} }}
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", cursor: "pointer" }}
+            >
+              Open full
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedEvidenceId("")}
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid #1c1c1c", background: "transparent", color: "#6f6f6f", cursor: "pointer" }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  })() : null}
   </>
   )}
 </section>
@@ -3268,7 +3515,7 @@ const isApproved = !!_hasApproved;
             </button>
           </div>
           <div style={{ marginTop: 6, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
-            New evidence auto-attaches to your active job. Completed jobs appear in Review.
+            When a job is active, new evidence auto-attaches to it. Otherwise it stays on the incident and you can assign it here once a job is available.
           </div>
           {(evidence || []).length === 0 ? (
             <div style={{ marginTop: 12, padding: "14px 10px", borderRadius: 8, border: "1px dashed #1c1c1c", background: "#050505", textAlign: "center", fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
@@ -3294,9 +3541,17 @@ const isApproved = !!_hasApproved;
                       <div className="text-[10px] text-gray-500 truncate">
                         {evSec ? `uploaded ${fmtAgo(evSec)}` : `id: …${eid ? eid.slice(-6) : "—"}`}
                       </div>
-                      <div className="text-[11px] text-cyan-200/85 truncate">
-                        job: {linkedJob ? String(linkedJob?.title || linkedJob?.id || linkedJob?.jobId || "") : (currentEvidenceJobId || "(no job)")}
-                      </div>
+                      {linkedJob ? (
+                        <div className="text-[11px] text-cyan-200/85 truncate">
+                          job: {String(linkedJob?.title || linkedJob?.id || linkedJob?.jobId || "")}
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: 2 }}>
+                          <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>
+                            Unassigned — stays on this incident
+                          </span>
+                        </div>
+                      )}
                     </div>
                     <select
                       className="text-xs bg-black/50 border border-white/15 rounded px-2 py-1 min-w-[180px]"
@@ -3364,6 +3619,24 @@ const isApproved = !!_hasApproved;
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Timeline</span>
             <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#101010", color: "#6f6f6f" }}>Auto-log</span>
           </div>
+          {/* PEAKOPS_TIMELINE_VS_GALLERY_DISCLOSURE_V1
+              Timeline = count of logged events (FIELD_ARRIVED / EVIDENCE_ADDED / NOTES_SAVED / …).
+              Gallery = count of actual evidence docs. These two counts can differ when
+              legacy evidence was uploaded before the backend emit/read-path unification
+              (functions_clean/_incidentPath.js), or when an emit silently failed. The
+              gallery is authoritative for "how many photos do we have"; the timeline is
+              authoritative for "what events were logged". Showing both with a one-line
+              caption so neither number contradicts the other. */}
+          {(() => {
+            const eventCount = (Array.isArray(timeline) ? timeline : []).filter((t: any) => String(t?.type) === "EVIDENCE_ADDED").length;
+            const galleryCount = _evidenceN;
+            if (eventCount === galleryCount) return null;
+            return (
+              <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 6, border: "1px dashed #1c1c1c", background: "#050505", fontSize: 10, color: "#b3b3b3", lineHeight: 1.5 }}>
+                Timeline logs <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{eventCount}</span> evidence-added event{eventCount === 1 ? "" : "s"}; gallery holds <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{galleryCount}</span> item{galleryCount === 1 ? "" : "s"}. Gallery is authoritative.
+              </div>
+            );
+          })()}
 
 
 <TimelinePanel
@@ -3383,9 +3656,9 @@ const isApproved = !!_hasApproved;
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 16px 12px", background: "rgba(5,5,5,0.96)", borderTop: "1px solid #1c1c1c", backdropFilter: "blur(12px)", zIndex: 20 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
           {[
-            { label: "Arrive", done: arrived, onClick: () => { try { markArrived(); } catch {} }, disabled: arrived || isClosed },
+            { label: "Arrive", done: hasArrival, onClick: () => { try { markArrived(); } catch {} }, disabled: hasArrival || isClosed },
             { label: "Evidence", done: _hasEvidence, onClick: () => { try { goAddEvidence(); } catch {} }, disabled: isClosed },
-            { label: "Notes", done: _hasNotes, onClick: () => { try { router.push("/incidents/" + incidentId + "/notes"); } catch {} }, disabled: false },
+            { label: "Notes", done: _hasNotes, onClick: () => { try { router.push(notesPath(incidentId, orgId)); } catch {} }, disabled: false },
           ].map((b) => (
             <button
               key={b.label}
@@ -3410,7 +3683,7 @@ const isApproved = !!_hasApproved;
           {_hasSubmitted ? (
             <button
               type="button"
-              onClick={() => { try { router.push(`/incidents/${incidentId}/review`); } catch {} }}
+              onClick={() => { try { router.push(reviewPath(incidentId, orgId)); } catch {} }}
               style={{
                 padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: "pointer",
                 border: "none",

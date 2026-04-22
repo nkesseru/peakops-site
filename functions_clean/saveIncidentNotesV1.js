@@ -1,25 +1,10 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { emitTimelineEvent } = require("./timelineEmit");
 
 if (!admin.apps.length) admin.initializeApp();
 const db = getFirestore();
-
-async function emitTimelineEvent({ orgId, incidentId, type, actor, sessionId, refId, meta }) {
-  const col = db.collection("incidents").doc(incidentId).collection("timeline_events");
-  await col.add({
-    orgId,
-    incidentId,
-    type,
-    actor: actor || "ui",
-    sessionId: sessionId || null,
-    refId: refId || null,
-    meta: meta || null,
-    v: 1,
-    occurredAt: FieldValue.serverTimestamp(),
-  });
-}
-
 
 function j(res, status, body) {
   res.status(status).set("content-type", "application/json").send(JSON.stringify(body));

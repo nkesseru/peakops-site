@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { incidentPath } from "@/lib/navigation/incidentRoutes";
 
 async function postJson<T>(url: string, body: any): Promise<T> {
   const res = await fetch(url, {
@@ -79,7 +80,9 @@ setMsg("");
 ;
       setTimeout(() => setMsg(""), 1800);
       if (updatedBy === "ui_manual" && incidentId) {
-        router.push(`/incidents/${encodeURIComponent(String(incidentId))}?notesSaved=1`);
+        // PEAKOPS_NAV_ORGID_V1: preserve orgId so the incident page's
+        // URL-sourced orgId doesn't become empty after the Notes round-trip.
+        router.push(incidentPath(String(incidentId), orgId, { extraQuery: { notesSaved: "1" } }));
       }
     } catch (e: any) {
       setMsg((e && (e.message || String(e))) || "save failed");
@@ -96,7 +99,16 @@ setMsg("");
         <button
           type="button"
           className="text-xs px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10"
-          onClick={() => window.history.back()}
+          onClick={() => {
+            // PEAKOPS_NAV_ORGID_V1: use an explicit orgId-preserving push
+            // instead of history.back(). history.back() depends on the prior
+            // URL still carrying ?orgId=…; push guarantees it.
+            if (incidentId) {
+              router.push(incidentPath(String(incidentId), orgId));
+            } else {
+              try { window.history.back(); } catch {}
+            }
+          }}
         >
           ← Back to Incident
         </button>

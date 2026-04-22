@@ -1,6 +1,7 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
+const { resolveIncidentRef } = require("./_incidentPath");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -40,24 +41,21 @@ exports.getTimelineEventsV1 = onRequest(async (req, res) => {
 
     if (!orgId || !incidentId) return send(res, 400, { ok: false, error: "Missing orgId/incidentId" });
 
-    let incRef = db.doc(`orgs/${orgId}/incidents/${incidentId}`);
-    let incSnap = await incRef.get();
+    // Unified resolver — identical to the one emitTimelineEvent uses. The ref
+    // returned here is guaranteed to match the parent that writes target, so
+    // there is no (org) vs (top-level) subcollection drift.
+    const { ref: incRef, exists: incExists, source } = await resolveIncidentRef(orgId, incidentId);
 
-    if (!incSnap.exists) {
-      incRef = db.collection("incidents").doc(incidentId);
-      incSnap = await incRef.get();
-    }
-
-    // Optional: check org match if the doc exists
-    if (incSnap.exists) {
+    // Validate org match only when the doc actually exists.
+    if (incExists) {
+      const incSnap = await incRef.get();
       const data = incSnap.data() || {};
       if (!isDemoBypass(req) && data.orgId && String(data.orgId) !== orgId) {
         return send(res, 404, { ok: false, error: "Incident not found" });
       }
     }
 
-    // Pull timelineEvents subcollection if present
-    let q = incRef.collection("timeline_events").orderBy("occurredAt", "asc").limit(limit);
+    const q = incRef.collection("timeline_events").orderBy("occurredAt", "asc").limit(limit);
     const snap = await q.get();
 
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -67,6 +65,7 @@ exports.getTimelineEventsV1 = onRequest(async (req, res) => {
       orgId,
       incidentId,
       count: docs.length,
+      source,
       docs,
     });
   } catch (e) {

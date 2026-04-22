@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { enqueueSupervisorRequestUpdate, enqueueSupervisorRequestClear, outboxFlushSupervisorRequests } from "@/lib/offlineOutbox";
 import {
   clearRememberedFunctionsBase,
@@ -17,6 +17,7 @@ import {
 import { ensureDemoActor, getActorRole, getActorUid } from "@/lib/demoActor";
 import { getFileField } from "@/lib/evidence/fileField";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, logThumbEvent } from "@/lib/evidence/signedThumb";
+import { incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
 
 
 
@@ -386,7 +387,12 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     } catch {}
   };
 
-  const orgId = "riverbend-electric";
+  // PEAKOPS_REVIEW_ORGID_URL_V1
+  // orgId is URL-sourced, matching the single-source-of-truth rule used by
+  // IncidentClient. No hardcoded fallback. Supervisor navigation uses the
+  // orgId-preserving helpers in @/lib/navigation/incidentRoutes.
+  const _reviewSp = useSearchParams();
+  const orgId = String(_reviewSp?.get?.("orgId") || "").trim();
   const functionsBase = getFunctionsBase();
   useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
@@ -1183,19 +1189,19 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
 <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}`)}
+              onClick={() => router.push(incidentPath(incidentId, orgId))}
             >
               ← Back to Incident
             </button>
             <button
               className="px-3 py-2 rounded-xl bg-blue-600/20 border border-blue-400/20 text-blue-100 hover:bg-blue-600/25 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}/notes`)}
+              onClick={() => router.push(notesPath(incidentId, orgId))}
             >
               📝 Notes
             </button>
             <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}/summary`)}
+              onClick={() => router.push(summaryPath(incidentId, orgId))}
             >
               Summary
             </button>
@@ -1278,7 +1284,8 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 disabled={!queueNavEnabled || !prevIncident}
                 onClick={() => {
                   if (!prevIncident?.incidentId) return;
-                  router.push(`/incidents/${encodeURIComponent(String(prevIncident.incidentId))}/review`);
+                  const prevOrg = String((prevIncident as any)?.orgId || orgId || "").trim();
+                  router.push(reviewPath(String(prevIncident.incidentId), prevOrg));
                 }}
               >
                 ← Previous
@@ -1290,7 +1297,8 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 disabled={!queueNavEnabled || !nextIncident}
                 onClick={() => {
                   if (!nextIncident?.incidentId) return;
-                  router.push(`/incidents/${encodeURIComponent(String(nextIncident.incidentId))}/review`);
+                  const nextOrg = String((nextIncident as any)?.orgId || orgId || "").trim();
+                  router.push(reviewPath(String(nextIncident.incidentId), nextOrg));
                 }}
               >
                 Next →
@@ -1446,7 +1454,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 onClick={() => {
                   saveRequest();
                   // v2: we just store + bounce to incident evidence area with a hint.
-                  if (incidentId) router.push("/incidents/" + incidentId + "?hi=request_update");
+                  if (incidentId) router.push(incidentPath(incidentId, orgId, { extraQuery: { hi: "request_update" } }));
                   setReqOpen(false);
                 }}
               >
@@ -1516,7 +1524,25 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 <div className="mt-1 text-xs text-amber-200">
                   {terminalJobs.length > 0
                     ? "All jobs approved — ready to close incident."
-                    : "No reviewable jobs yet. Mark a job as COMPLETE with linked evidence to enable review. Complete a job in Field view."}
+                    : "No reviewable jobs yet. A job becomes reviewable when its status is complete or review AND it has at least one linked evidence item."}
+                </div>
+              ) : null}
+              {/* PEAKOPS_FIELD_TO_REVIEW_BRIDGE_V1: the supervisor queue is
+                   empty until a job is moved to complete/review with linked
+                   evidence. Give the supervisor a direct jump to the Jobs tab
+                   on the field page so this isn't a dead-end. */}
+              {reviewableJobs.length === 0 && terminalJobs.length === 0 ? (
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 rounded-md text-[11px] font-semibold border border-amber-300/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15"
+                    onClick={() => router.push(incidentPath(incidentId, orgId, { hash: "jobs" }))}
+                  >
+                    Open Jobs tab →
+                  </button>
+                  <span className="text-[11px] text-gray-500">
+                    Mark a job complete + link evidence to enable review.
+                  </span>
                 </div>
               ) : null}
             </div>
@@ -1744,7 +1770,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
                 onClick={() => {
                   if (!incidentId) return;
-                  router.push("/incidents/" + incidentId + "#evidence");
+                  router.push(incidentPath(incidentId, orgId, { hash: "evidence" }));
                 }}
                 title="Open the field incident page evidence rail"
               >
