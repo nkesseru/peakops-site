@@ -17,11 +17,18 @@ safeExport("healthzV1", "./healthzV1");
 
 // --- Incident core ---
 safeExport("getIncidentV1", "./getIncidentV1");
+safeExport("listIncidentsV1", "./listIncidentsV1");
+safeExport("createIncidentV1", "./createIncidentV1");
 safeExport("getTimelineEventsV1", "./getTimelineEventsV1");
+safeExport("getWorkflowV1", "./getWorkflowV1");
+safeExport("generateTimelineV1", "./generateTimelineV1");
+safeExport("generateFilingsV1", "./generateFilingsV1");
+safeExport("getIncidentBundleV1", "./getIncidentBundleV1");
 safeExport("listEvidenceLocker", "./listEvidenceLocker");
 safeExport("closeIncidentV1", "./closeIncidentV1");
 
 // --- Sessions ---
+safeExport("markArrivedV1", "./markArrivedV1", "markArrivedV1");
 safeExport("startFieldSessionV1", "./startFieldSessionV1");
 safeExport("submitFieldSessionV1", "./submitFieldSessionV1");
 
@@ -62,6 +69,7 @@ safeExport("rejectJobV1", "./rejectJobV1");
 
 // Exports
 safeExport("exportIncidentPacketV1", "./exportIncidentPacketV1");
+safeExport("getIncidentPacketMetaV1", "./getIncidentPacketMetaV1");
 
 // Supervisor Requests
 safeExport("createSupervisorRequestV1", "./createSupervisorRequestV1");

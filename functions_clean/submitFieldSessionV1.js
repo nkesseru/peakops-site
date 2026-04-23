@@ -2,6 +2,18 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const { resolveIncidentRef } = require("./_incidentPath");
+
+async function hasFieldSubmittedEvent(db, incidentId, sessionId) {
+  const snap = await db
+    .collection("incidents").doc(incidentId)
+    .collection("timeline_events")
+    .where("type", "==", "FIELD_SUBMITTED")
+    .where("sessionId", "==", sessionId)
+    .limit(1)
+    .get();
+  return !snap.empty;
+}
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -27,18 +39,14 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     const submittedBy = String(body.submittedBy || body.techUserId || "ui");
 
     const db = getFirestore();
-    const incRef = db.collection("incidents").doc(incidentId);
-    const incSnap = await incRef.get();
-    const incStatus = String((incSnap.exists ? (incSnap.data() || {}) : {}).status || "").toLowerCase();
-    if (incStatus === "closed") {
-      return j(res, 409, { ok:false, error:"incident_closed", detail:"Incident is read-only" });
-    }
-    if (incStatus && !["open","in_progress","submitted"].includes(String(incStatus).toLowerCase())) {
-      return j(res, 409, { ok:false, error:"invalid_transition", detail:`unsupported incident.status=${incStatus}` });
-    }
-
-    const sesRef = db.collection("orgs").doc(orgId)
-      .collection("incidents").doc(incidentId)
+    // PEAKOPS_STATUS_WRITE_ALIGN_V1
+    // Status writes must land on the same parent that getIncidentV1 reads from,
+    // so the summary header status pill reflects the latest state. Field
+    // sessions themselves stay on the legacy path (startFieldSessionV1 writes
+    // them there, the existing hasFieldSubmittedEvent helper reads them from
+    // there).
+    const { ref: incRef } = await resolveIncidentRef(orgId, incidentId);
+    const sesRef = db.collection("incidents").doc(incidentId)
       .collection("fieldSessions").doc(sessionId);
 
     const snap = await sesRef.get();
@@ -49,7 +57,20 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 409, { ok:false, error:"ALREADY_APPROVED" });
     }
     if (data.status === "SUBMITTED") {
+      const alreadyHasEvent = await hasFieldSubmittedEvent(db, incidentId, sessionId);
+      if (!alreadyHasEvent) {
+        await emitTimelineEvent({ orgId, incidentId, type: "FIELD_SUBMITTED", sessionId, actor: submittedBy, meta: { backfilled: true } });
+      }
       return j(res, 200, { ok:true, orgId, incidentId, sessionId, already:true });
+    }
+
+    const incSnap = await incRef.get();
+    const incStatus = String((incSnap.exists ? (incSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (incStatus === "closed") {
+      return j(res, 409, { ok:false, error:"incident_closed", detail:"Incident is read-only" });
+    }
+    if (incStatus && !["open","in_progress","submitted"].includes(String(incStatus).toLowerCase())) {
+      return j(res, 409, { ok:false, error:"invalid_transition", detail:`unsupported incident.status=${incStatus}` });
     }
 
     const now = FieldValue.serverTimestamp();

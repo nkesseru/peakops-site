@@ -185,6 +185,10 @@ console.warn("[uploadEvidence] step=start-session", {
 });
 
 onStatus?.("Starting field session…");
+  if (!activeSessionId) {
+    activeSessionId = await startFreshSession();
+    console.warn("[uploadEvidence] created fresh sessionId", { sessionId: activeSessionId });
+  }
 
   // 2) Get uploadUrl + storagePath (retry once if session is stale)
   const requestUploadUrl = async (sidToUse: string): Promise<CreateUploadUrlResp> => {

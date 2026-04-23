@@ -288,8 +288,10 @@ useEffect(() => {
   }
 
   async function uploadOne(it: Item) {
-    if (!selectedJobId) throw new Error("No job selected. Return to incident page and pick My job first.");
     if (!sessionId) throw new Error("Session not ready yet. Please wait for 'Starting session…' to finish.");
+    // PEAKOPS_CAPTURE_WITHOUT_JOB_V1
+    // jobId is optional. When empty, addEvidenceV1 saves the doc at the
+    // incident level and it can be assigned to a job later from Evidence Mapping.
     await uploadEvidence({
       functionsBase: fnProxyBase,
       techUserId,
@@ -297,7 +299,7 @@ useEffect(() => {
       incidentId,
       phase: "inspection",
       labels: ["damage"],
-      jobId: selectedJobId,
+      jobId: selectedJobId || "",
       sessionId,
       file: it.file,
       onStatus: setStatus,
@@ -322,8 +324,11 @@ useEffect(() => {
         try { prev.forEach((x) => URL.revokeObjectURL(x.url)); } catch {}
         return [];
       });
-      // Back to incident
-      setTimeout(() => router.push(`/incidents/${incidentId}`), 350);
+      // Back to incident — preserve orgId so the incident page's refresh can run.
+      setTimeout(
+        () => router.push(`/incidents/${incidentId}?orgId=${encodeURIComponent(String(orgId || "").trim())}#evidence`),
+        350
+      );
     } catch (e: any) {
       console.error("UPLOAD FAIL", e);
       const m = (e && (e.message || e.toString())) || String(e);
@@ -340,19 +345,18 @@ useEffect(() => {
       <div className="mb-4">
         <div className="text-[11px] uppercase tracking-wider text-gray-400">Add Evidence</div>
         <div className="text-lg font-semibold">
-          Incident {incidentId.slice(-6)}
+          Incident {incidentId}
         </div>
         <div className="text-xs text-cyan-200/90 mt-1">
-          My job: {mounted ? (selectedJobId || "(auto-selecting…)") : "…"}
+          My job: {mounted ? (selectedJobId || "none") : "…"}
         </div>
         <div className="text-xs text-cyan-200/90 mt-1">
           Session: {sessionId ? `ready (${sessionId.slice(0, 8)}…)` : (sessionBusy ? "Starting session…" : "not ready")}
         </div>
         {!selectedJobId ? (
-          <div className="text-xs text-amber-200 mt-1">No job bound yet. Attempting auto-select from incident jobs…</div>
+          <div className="text-xs text-amber-200 mt-1">No active job yet — evidence will be saved to this incident and can be assigned later.</div>
         ) : null}
         <div className="text-xs text-gray-500 mt-1">Audit-safe capture • Auto-tagged • Time-locked</div>
-        <div className="text-xs text-gray-500 mt-1">Jobs detected: {Array.isArray(jobs) ? jobs.length : 0}</div>
       </div>
 
       {/* CAMERA MODE */}
@@ -396,7 +400,7 @@ useEffect(() => {
             Open Camera
           </button>
 
-          <input
+                  <input
             id="pick"
             ref={fileInputRef}
             type="file"
@@ -408,32 +412,29 @@ useEffect(() => {
               }
               addPickedFiles(e.target.files);
             }}
-            className="hidden"
+            className="sr-only"
             disabled={busy || sessionBusy || !sessionId}
           />
-          <button
-            type="button"
-            className="w-full py-5 flex items-center justify-center border-2 border-dashed border-white/20 rounded-xl text-gray-200 active:border-white/40"
-            disabled={busy || sessionBusy || !sessionId}
+          <label
+            htmlFor="pick"
+            className={
+              "w-full py-5 flex items-center justify-center border-2 border-dashed border-white/20 rounded-xl text-gray-200 active:border-white/40 " +
+              ((busy || sessionBusy || !sessionId) ? "opacity-50 pointer-events-none" : "cursor-pointer")
+            }
             onClick={() => {
               if (process.env.NODE_ENV !== "production") {
                 console.warn("[add-evidence]", {
-                  step: "click",
+                  step: "label_click",
                   disabled: busy || sessionBusy || !sessionId,
                   hasInput: !!fileInputRef.current,
                   isUserGesture: true,
                   ts: Date.now(),
                 });
               }
-              if (busy || sessionBusy || !sessionId) return;
-              fileInputRef.current?.click();
-              if (process.env.NODE_ENV !== "production") {
-                console.warn("[add-evidence]", { step: "input_click", ts: Date.now() });
-              }
             }}
           >
             Pick multiple photos/videos
-          </button>
+          </label>         
 
           {items.length ? (
             <div className="rounded-xl border border-white/10 bg-white/5 p-3">
@@ -475,10 +476,10 @@ useEffect(() => {
               <button
                 className="mt-3 w-full py-4 rounded-xl bg-green-600/90 border border-green-300/20 text-white font-semibold hover:bg-green-600 active:translate-y-[1px] transition"
                 onClick={uploadAll}
-                disabled={busy || sessionBusy || !sessionId || !items.length || !selectedJobId}
-                title={!selectedJobId ? "Return and select My job first" : (items.length ? "Upload all queued evidence" : "Add photos first")}
+                disabled={busy || sessionBusy || !sessionId || !items.length}
+                title={!items.length ? "Add photos first" : (!sessionId ? "Waiting for session…" : (selectedJobId ? "Upload all queued evidence" : "Upload — evidence will save to this incident"))}
               >
-                {busy ? (status || "Working…") : "Upload & Secure Evidence"}
+                {busy ? (status || "Working…") : "Secure Evidence to Incident"}
               </button>
 
               {status ? <div className="mt-2 text-sm text-gray-300">{status}</div> : null}

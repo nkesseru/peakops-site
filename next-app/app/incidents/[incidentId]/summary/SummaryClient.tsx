@@ -337,11 +337,11 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       setLoading(false);
     }
   }
-
-  
-
   async function handleArtifactDownload() {
-    if (!activeOrgId || !incidentId) return;
+    if (!activeOrgId || !incidentId) {
+      setErr("Cannot generate artifact: missing org or incident context.");
+      return;
+    }
     setArtifactBusy(true);
     setArtifactToast("");
     setErr("");
@@ -720,34 +720,80 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     if ((timelineCounts["incident_closed"] || 0) < 1) {
       reasons.push("missing incident_closed event");
     }
-    if ((timelineCounts["job_approved"] || 0) < 2) {
-      reasons.push("expected at least 2 job_approved events");
+
+    const expectedApprovedCount = Array.isArray(jobs) ? jobs.length : 0;
+
+    if ((timelineCounts["job_approved"] || 0) < expectedApprovedCount) {
+      reasons.push(`expected at least ${expectedApprovedCount} job_approved events`);
     }
 
     return reasons;
   }, [incident, jobs, evidence, timeline]);
 
+  const hasFieldIssues = truthMismatchReasons.some(r =>
+    r.includes("field_submitted") || r.includes("incident_closed")
+  );
+
+  const hasOnlyPacketIssues =
+    truthMismatchReasons.length > 0 &&
+    !hasFieldIssues;
+
   const truthError = truthMismatchReasons.length > 0
     ? truthMismatchReasons.join(" • ")
     : "";
+  const incidentClosed = String(incidentStatus || "").trim().toLowerCase() === "closed";
+  const artifactDownloadable = String(artifactHint || "").toLowerCase().includes("ready") || !!lastArtifactFilename;
+  const bannerKind =
+    hasFieldIssues
+      ? "error"
+      : incidentClosed && !artifactDownloadable
+      ? "info"
+      : artifactDownloadable
+      ? "success"
+      : "";
+  const bannerTitle =
+    bannerKind === "error"
+      ? "Almost ready to export"
+      : bannerKind === "info"
+      ? "Ready to finalize artifact"
+      : "Artifact ready to download";
+  const bannerBody =
+    bannerKind === "error"
+      ? "The field workflow is not complete yet. Finish the incident steps, then return here."
+      : bannerKind === "info"
+      ? "Incident is closed. Generate Artifact to finalize the packet."
+      : "Artifact generated. Download is ready.";
 
   return (
     <>
-      {truthError ? (
-        <div className="mb-4 rounded-xl border border-red-500/40 bg-red-950/40 p-4 text-red-100">
-          <div className="text-sm font-semibold">⚠ System inconsistency detected</div>
-          <div className="mt-2 text-sm">{truthError}</div>
-          <div className="mt-2 text-xs opacity-80">
-            Export should be treated as blocked until this mismatch is resolved.
+      {bannerKind ? (
+        <div className={"mb-4 rounded-xl border p-4 " + (bannerKind === "error" ? "border-red-400/30 bg-red-500/10 text-red-100" : bannerKind === "info" ? "border-indigo-400/30 bg-indigo-500/10 text-indigo-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100")}>
+          <div className="text-sm font-semibold">{bannerTitle}</div>
+          <div className={"mt-2 text-sm " + (bannerKind === "error" ? "text-red-100/90" : bannerKind === "info" ? "text-indigo-100/90" : "text-emerald-100/90")}>
+            {bannerBody}
           </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              className="px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-sm hover:bg-white/20"
+              onClick={() => router.push(`/incidents/${incidentId}`)}
+            >
+              Back to Incident
+            </button>
+          </div>
+          {truthError ? (
+            <details className={"mt-3 text-xs " + (bannerKind === "error" ? "text-red-100/75" : bannerKind === "info" ? "text-indigo-100/75" : "text-emerald-100/75")}>
+              <summary className="cursor-pointer">Technical details</summary>
+              <div className="mt-2">{truthError}</div>
+            </details>
+          ) : null}
         </div>
       ) : null}
     <main className="min-h-screen bg-black text-white p-4">
       <div className="max-w-6xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-[11px] uppercase tracking-wider text-gray-400">Incident Summary</div>
-            <div className="text-xl font-semibold">{incidentId}</div>
+            <div className="text-[11px] uppercase tracking-[0.18em] text-gray-500 font-semibold">Incident Summary</div>
+            <div className="text-2xl font-semibold tracking-tight text-white">{incidentId}</div>
           </div>
           <div className="flex items-center gap-2">
             <button className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm hover:bg-white/10" onClick={() => router.push(`/incidents/${incidentId}`)}>
@@ -756,37 +802,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           </div>
         </div>
 
-        {err ? (
-          <div className="rounded-xl border border-red-400/30 bg-red-500/10 text-red-100 text-sm px-3 py-2">
-            <div>{err}</div>
-            {errUrl ? <div className="mt-1 text-xs text-red-200/90 break-all">Request: {errUrl}</div> : null}
-            {errStatus ? <div className="mt-1 text-xs text-red-200/90">Status: {errStatus}</div> : null}
-            {errBody ? <pre className="mt-1 text-xs text-red-200/90 whitespace-pre-wrap break-words">{String(errBody).slice(0, 500)}</pre> : null}
-            {process.env.NODE_ENV !== "production" ? (
-              <div className="mt-1 text-xs text-red-200/90 break-all">
-                baseDebug: {(() => {
-                  const d = getFunctionsBaseDebugInfo();
-                  return `env=${d.envBase || "(unset)"} override=${d.overrideBase || "(unset)"} active=${d.activeBase || "(unset)"}`;
-                })()}
-              </div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" && getEnvFunctionsBase() ? (
-              <div className="mt-1 text-xs text-red-200/90">envBase present, fallback disabled</div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
-              <button
-                type="button"
-                className="mt-2 px-2 py-1 rounded border border-red-300/30 bg-black/30 hover:bg-black/50 text-[11px]"
-                onClick={() => {
-                  clearRememberedFunctionsBase();
-                  location.reload();
-                }}
-              >
-                Reset connection
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+
         {!err && demoAuthBypassMsg ? (
           <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 text-amber-100 text-sm px-3 py-2">
             {demoAuthBypassMsg}
@@ -798,22 +814,22 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           </div>
         ) : null}
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <section className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
           <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Incident Status</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">Incident Status</div>
             <span className={"text-[11px] px-2 py-0.5 rounded-full border " + incidentStatusPill(incidentStatus)}>{incidentStatusLabel(incidentStatus)}</span>
           </div>
           <div className="mt-3">
             <button
               type="button"
-              className={"px-3 py-2 rounded-xl text-sm border " + (!err && orgId && incidentId ? "bg-emerald-600/20 border-emerald-300/30 text-emerald-100 hover:bg-emerald-600/30" : "bg-white/5 border-white/10 text-gray-400")}
-              disabled={artifactBusy || !orgId || !incidentId || !!err}
+              className={"px-3 py-2 rounded-xl text-sm border " + (orgId && incidentId ? "bg-emerald-600/20 border-emerald-300/30 text-emerald-100 hover:bg-emerald-600/30" : "bg-white/5 border-white/10 text-gray-400")}
+              disabled={artifactBusy || !orgId || !incidentId}
               onClick={() => { void handleArtifactDownload(); }}
               title={artifactHint}
             >
               {artifactBusy ? "Preparing Artifact..." : (artifactHint.toLowerCase().includes("ready") ? "Download Artifact" : artifactHint.toLowerCase().includes("building") ? "Artifact Building..." : "Generate Artifact")}
             </button>
-            <div className="mt-2 text-xs text-gray-500">{artifactHint}</div>
+            <div className="mt-2 text-sm text-gray-300">{artifactHint}</div>
             {lastArtifactFilename ? (
               <div className="mt-1 text-xs text-gray-500">
                 Last artifact: {lastArtifactFilename} {lastArtifactAt ? `• ${lastArtifactAt}` : ""}
@@ -826,7 +842,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         </section>
 
         <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="text-xs uppercase tracking-wide text-gray-400">Jobs Breakdown</div>
+          <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">Jobs Breakdown</div>
           <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
             {Object.entries(statusCounts).map(([k, v]) => (
               <div key={k} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2">
@@ -839,7 +855,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
         <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Evidence by Job</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">Evidence by Job</div>
             {unassignedEvidenceCount > 0 ? (
               <div className="flex items-center gap-2">
                 <span className="text-[11px] px-2 py-1 rounded-full border border-amber-300/30 bg-amber-500/15 text-amber-100">
@@ -942,7 +958,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         </section>
 
         <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="text-xs uppercase tracking-wide text-gray-400">Timeline Highlights</div>
+          <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">Timeline Highlights</div>
           <div className="mt-3 space-y-2">
             {timelineHighlights.length === 0 ? (
               <div className="text-sm text-gray-400">No highlights yet.</div>
@@ -965,4 +981,4 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     </main>
     </>
   );
-}
+  }

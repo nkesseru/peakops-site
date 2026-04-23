@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { enqueueSupervisorRequestUpdate, enqueueSupervisorRequestClear, outboxFlushSupervisorRequests } from "@/lib/offlineOutbox";
 import {
   clearRememberedFunctionsBase,
@@ -17,6 +17,7 @@ import {
 import { ensureDemoActor, getActorRole, getActorUid } from "@/lib/demoActor";
 import { getFileField } from "@/lib/evidence/fileField";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, logThumbEvent } from "@/lib/evidence/signedThumb";
+import { incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
 
 
 
@@ -313,8 +314,13 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
   // PEAKOPS_REVIEW_QUEUE_V1
   const [queueItems, setQueueItems] = useState<Array<{ incidentId: string; orgId: string }>>([]);
+  const enableDashboardQueue = String(process.env.NEXT_PUBLIC_REVIEW_QUEUE_DASHBOARD || "") === "1";
 
   useEffect(() => {
+    if (!enableDashboardQueue) {
+      setQueueItems([]);
+      return;
+    }
     let dead = false;
     (async () => {
       try {
@@ -333,7 +339,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       }
     })();
     return () => { dead = true; };
-  }, []);
+  }, [enableDashboardQueue]);
 
   const queueIndex = useMemo(() => {
     return queueItems.findIndex((x) => String(x.incidentId) === String(incidentId || ""));
@@ -381,7 +387,12 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     } catch {}
   };
 
-  const orgId = "riverbend-electric";
+  // PEAKOPS_REVIEW_ORGID_URL_V1
+  // orgId is URL-sourced, matching the single-source-of-truth rule used by
+  // IncidentClient. No hardcoded fallback. Supervisor navigation uses the
+  // orgId-preserving helpers in @/lib/navigation/incidentRoutes.
+  const _reviewSp = useSearchParams();
+  const orgId = String(_reviewSp?.get?.("orgId") || "").trim();
   const functionsBase = getFunctionsBase();
   useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
@@ -419,6 +430,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const [jobs, setJobs] = useState<JobDoc[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<string>("");
   const [jobActionBusy, setJobActionBusy] = useState(false);
+  const [closingIncident, setClosingIncident] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
 
   // Gallery state
@@ -624,6 +636,32 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     }
   }
 
+  function openEvidenceFromAction(target: any) {
+    try {
+      if (!target) {
+        toast("No evidence available yet.", 2200);
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[review-view-evidence] missing target evidence");
+        }
+        return;
+      }
+      if (typeof openEvidence !== "function") {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[review-view-evidence] openEvidence handler missing");
+        }
+        toast("Evidence handler unavailable.", 2200);
+        return;
+      }
+      void openEvidence(target);
+    } catch (e: any) {
+      const msg = String(e?.message || e || "view_evidence_failed");
+      toast("View evidence failed: " + msg, 2600);
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[review-view-evidence] failed", e);
+      }
+    }
+  }
+
   async function refresh(retryAttempt = 0, baseOverride?: string, fallbackUsed = false): Promise<JobDoc[]> {
     const base = String(baseOverride || functionsBase || "").trim();
     if (!base) return [];
@@ -686,16 +724,18 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       const reviewable = (nextJobs || []).filter((j: any) => {
         const jid = String(j?.id || j?.jobId || "").trim();
         const st = String(j?.status || "").trim().toLowerCase();
-        return st === "complete" && Number(nextEvidenceCountByJob[jid] || 0) >= 1;
+        return (st === "complete" || st === "review") && Number(nextEvidenceCountByJob[jid] || 0) >= 1;
       });
-      const exists = reviewable.some((j: any) => String(j?.id || j?.jobId || "") === String(selectedJobId || ""));
+      const selectedExists = (nextJobs || []).some(
+        (j: any) => String(j?.id || j?.jobId || "") === String(selectedJobId || "")
+      );
 
       setIncidentDoc(nextIncidentDoc);
       setEvidence(nextEvidence);
       setJobs(nextJobs);
       setTimeline(nextTimeline);
-      if (!exists) {
-        const next = String(reviewable?.[0]?.id || reviewable?.[0]?.jobId || "");
+      if (!selectedExists) {
+        const next = String(reviewable?.[0]?.id || reviewable?.[0]?.jobId || nextJobs?.[0]?.id || nextJobs?.[0]?.jobId || "");
         setSelectedJobId(next);
       }
 
@@ -848,24 +888,38 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     [jobs, selectedJobId]
   );
   const hasReviewableJob = reviewableJobs.length > 0;
+  const incidentStatus = String((incidentDoc as any)?.status || "").trim().toLowerCase();
+  const incidentClosed = incidentStatus === "closed";
+  const hasFieldSubmitted =
+    incidentStatus === "submitted" ||
+    (Array.isArray(timeline) &&
+      timeline.some((t: any) => String(t?.type || "").trim().toLowerCase() === "field_submitted"));
+  const allJobsApproved = Array.isArray(jobs) && jobs.length > 0 && jobs.every((j: any) => {
+    const rs = String(j?.reviewStatus || "").trim().toLowerCase();
+    const st = String(j?.status || "").trim().toLowerCase();
+    return rs === "approved" || st === "approved" || !!j?.locked;
+  });
+  const canCloseIncident = !incidentClosed && allJobsApproved && hasFieldSubmitted;
   const selectedJobStatus = computedBaseStatus(selectedJob || {});
   const selectedJobReviewStatus = computedReviewStatus(selectedJob || {});
   const selectedJobInReview = selectedJobReviewStatus === "review";
   const selectedJobApproved = selectedJobReviewStatus === "approved";
   const noReviewablesApproved = !hasReviewableJob && latestTerminalStatus === "approved";
+  const queuePositionDisplay = hasReviewableJob ? queuePositionLabel : "0 / 0";
+  const queueNavEnabled = hasReviewableJob;
   const selectedJobEvidence = useMemo(() => {
     const sid = String(selectedJobId || "");
     if (!sid) return [];
     return (evidence || []).filter((ev: any) => getLinkedJobId(ev) === sid);
   }, [evidence, selectedJobId]);
-  const selectedJobReadyState = selectedJobReviewStatus === "review" || selectedJobStatus === "complete";
+  const selectedJobReadyState = selectedJobReviewStatus === "review" || selectedJobStatus === "complete" || selectedJobStatus === "review";
   const selectedJobEvidenceCount = selectedJobEvidence.length;
   const ready = selectedJobReadyState && selectedJobEvidenceCount >= 1;
   const canApproveNow = ready && hasReviewableJob && !selectedJobApproved;
   const missingItems = useMemo(() => {
     const out: string[] = [];
     if (noReviewablesApproved) return out;
-    if (!hasReviewableJob) out.push("No reviewable jobs (status=complete/review and linked evidence>=1)");
+    if (!hasReviewableJob) out.push("No reviewable jobs yet. Mark a job as COMPLETE with linked evidence to enable review. (status=complete/review and linked evidence>=1)");
     if (!selectedJobReadyState && !selectedJobApproved) out.push("Selected job must be complete or review");
     if (selectedJobEvidenceCount < 1) out.push("Selected job needs at least 1 linked evidence item");
     if (selectedJobApproved) out.push("Selected job is approved (terminal).");
@@ -990,6 +1044,39 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     }
   }
 
+  async function closeIncident() {
+    if (closingIncident || loading) return;
+    const oid = String(activeOrgId || orgId || "").trim();
+    const iid = String(incidentId || "").trim();
+    if (!oid || !iid) return toast("Close failed: missing org/incident context.", 3200);
+    if (!canCloseIncident) return toast("Incident is not ready to close yet.", 2200);
+    try {
+      setClosingIncident(true);
+      const res = await fetch("/api/fn/closeIncidentV1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orgId: oid,
+          incidentId: iid,
+          closedBy: "supervisor_ui",
+          actorRole: getActorRole(),
+          actorUid: getActorUid(),
+        }),
+        cache: "no-store",
+      });
+      const txt = await res.text().catch(() => "");
+      let out: any = {};
+      try { out = txt ? JSON.parse(txt) : {}; } catch {}
+      if (!res.ok || !out?.ok) throw new Error(out?.error || `closeIncidentV1 failed: ${res.status}`);
+      toast("Incident closed ✓", 2200);
+      await refresh();
+    } catch (e: any) {
+      toast("Close failed: " + String(e?.message || e), 3200);
+    } finally {
+      setClosingIncident(false);
+    }
+  }
+
   async function rejectJob(jobId: string) {
     try {
       if (selectedJobReviewStatus !== "review") {
@@ -1040,12 +1127,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         reviewStatus: "review",
       }, demoHeaders);
       if (!out?.ok) throw new Error(out?.error || "updateJobStatusV1 failed");
-      await refreshAfterMutation((rows) => {
-        const j = (rows || []).find((x: any) => String(x?.id || x?.jobId || "") === jid);
-        const st = String(j?.status || "").toLowerCase();
-        const rs = String((j as any)?.reviewStatus || "").toLowerCase();
-        return st === "review" || rs === "review";
-      });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1107,19 +1189,19 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
 <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}`)}
+              onClick={() => router.push(incidentPath(incidentId, orgId))}
             >
               ← Back to Incident
             </button>
             <button
               className="px-3 py-2 rounded-xl bg-blue-600/20 border border-blue-400/20 text-blue-100 hover:bg-blue-600/25 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}/notes`)}
+              onClick={() => router.push(notesPath(incidentId, orgId))}
             >
               📝 Notes
             </button>
             <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}/summary`)}
+              onClick={() => router.push(summaryPath(incidentId, orgId))}
             >
               Summary
             </button>
@@ -1180,24 +1262,30 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-xs uppercase tracking-wide text-gray-400">Decision</div>
-        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3">
+        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500">Review Queue</div>
-              <div className="mt-1 text-sm text-gray-200">Position {queuePositionLabel}</div>
-              {queuePositionLabel === "Not in queue" ? null : (
-                <div className="text-xs text-gray-500 mt-1">{queueRemaining} remaining after this</div>
-              )}
+              <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500/80">Next Action</div>
+              <div className="mt-1 text-xs text-gray-400">
+                {!selectedJob
+                  ? "Select a job to review"
+                  : canApproveNow
+                  ? "Ready to approve"
+                  : canCloseIncident
+                  ? "All jobs approved — ready to close incident"
+                  : "Select a complete/review job with linked evidence"}
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm disabled:opacity-50"
-                disabled={!prevIncident}
+                className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs text-gray-300 disabled:opacity-50"
+                disabled={!queueNavEnabled || !prevIncident}
                 onClick={() => {
                   if (!prevIncident?.incidentId) return;
-                  router.push(`/incidents/${encodeURIComponent(String(prevIncident.incidentId))}/review`);
+                  const prevOrg = String((prevIncident as any)?.orgId || orgId || "").trim();
+                  router.push(reviewPath(String(prevIncident.incidentId), prevOrg));
                 }}
               >
                 ← Previous
@@ -1205,11 +1293,12 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
               <button
                 type="button"
-                className="px-3 py-2 rounded-xl bg-blue-600/18 border border-blue-400/20 text-sm text-blue-100 hover:bg-blue-600/25 disabled:opacity-50"
-                disabled={!nextIncident}
+                className="px-3 py-2 rounded-xl bg-blue-600/18 border border-blue-400/20 text-xs text-blue-100 hover:bg-blue-600/25 disabled:opacity-50"
+                disabled={!queueNavEnabled || !nextIncident}
                 onClick={() => {
                   if (!nextIncident?.incidentId) return;
-                  router.push(`/incidents/${encodeURIComponent(String(nextIncident.incidentId))}/review`);
+                  const nextOrg = String((nextIncident as any)?.orgId || orgId || "").trim();
+                  router.push(reviewPath(String(nextIncident.incidentId), nextOrg));
                 }}
               >
                 Next →
@@ -1218,19 +1307,21 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           </div>
         </div>
 
-              <div className="text-sm text-gray-200">
-                {noReviewablesApproved
-                    ? "No reviewable jobs. Latest decision: approved."
-                    : canApproveNow
-                  ? "Ready to approve."
-                    : "Not ready yet — select a complete/review job with linked evidence."}
+              <div className="text-base font-semibold text-white">
+                {!selectedJob
+                  ? "Select a job to review"
+                  : canApproveNow
+                  ? "Ready to approve"
+                  : canCloseIncident
+                  ? "All jobs approved — ready to close incident"
+                  : "Select a complete/review job with linked evidence"}
               </div>
               {err && canDevLog ? <div className="text-xs text-red-300 mt-1 truncate">Error: {err}</div> : null}
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-end gap-2 shrink-0">
               <button
-                className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-50"
+                className="px-3 py-2 rounded-xl h-10 bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-50"
                 onClick={sendBack}
                 disabled={loading}
                 title="Send back to field with reasons"
@@ -1238,54 +1329,57 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 ↩︎ Send Back
               </button>
 
-              <div className="flex flex-col items-start">
-                <button
-                  className={
-                    "px-3 py-2 rounded-xl text-sm font-semibold border " +
-                    (canApproveNow
-                      ? "bg-green-700/25 border-green-400/25 text-green-200 hover:bg-green-700/35"
-                      : "bg-white/5 border-white/10 text-gray-500")
-                  }
-                  onClick={async () => {
-                    try {
-                      // Try common state vars
-                      // @ts-ignore
-                      const jid =
-                        (typeof selectedJobId !== "undefined" && selectedJobId) ? String(selectedJobId) :
-                        // @ts-ignore
-                        (typeof activeJobId !== "undefined" && activeJobId) ? String(activeJobId) :
-                        // @ts-ignore
-                        (typeof selectedJob !== "undefined" && selectedJob && (selectedJob.id || selectedJob.jobId)) ? String(selectedJob.id || selectedJob.jobId) :
-                        "";
-                      if (!jid) {
-                        const msg = "Select a job first.";
-                        setErr(msg);
-                        toast(msg, 2200);
-                        console.error("[Approve&Lock] missing selected jobId");
-                        return;
-                      }
-                      await approveAndLockJob(String(orgId || ""), String(incidentId || ""), jid);
-                      await refreshAfterMutation((rows) => {
-                        const j = (rows || []).find((x: any) => String(x?.id || x?.jobId || "") === String(jid || ""));
-                        const st = String(j?.status || "").toLowerCase();
-                        const rs = String(j?.reviewStatus || "").toLowerCase();
-                        return st === "approved" || rs === "approved" || !!j?.locked;
-                      });
-                      toast("Selected job approved + locked ✓", 1800);
-                    } catch (e: any) {
-                      const msg = String(e?.message || e || "approve_and_lock_failed");
+              <button
+                className={
+                  "px-3 py-2 rounded-xl h-10 text-sm font-semibold border " +
+                  (canApproveNow
+                    ? "bg-green-700/25 border-green-400/25 text-green-200 hover:bg-green-700/35"
+                    : "bg-white/5 border-white/10 text-gray-500")
+                }
+                onClick={async () => {
+                  if (jobActionBusy || loading) return;
+                  setJobActionBusy(true);
+                  try {
+                    // Try common state vars
+                    // @ts-ignore
+                    const jid = String(selectedJobId || "");
+                    if (!jid) {
+                      const msg = "Select a job first.";
                       setErr(msg);
-                      toast("Approve & Lock failed: " + msg, 3200);
-                      console.error(e);
+                      toast(msg, 2200);
+                      console.error("[Approve&Lock] missing selected jobId");
+                      return;
                     }
-                  }}
-                  disabled={!canApproveNow || loading}
-                  title={canApproveNow ? "Approve and lock selected job" : "Not ready yet"}
-                >
-                  🛡 Approve & Lock Selected Job
-                </button>
-                <div className="mt-1 text-[11px] text-gray-500">Applies to selected job only.</div>
-              </div>
+                    await approveAndLockJob(String(activeOrgId || orgId || ""), String(incidentId || ""), jid);
+                    await refresh();
+                    toast("Selected job approved + locked ✓", 1800);
+                  } catch (e: any) {
+                    const msg = String(e?.message || e || "approve_and_lock_failed");
+                    setErr(msg);
+                    toast("Approve & Lock failed: " + msg, 3200);
+                    console.error(e);
+                  } finally {
+                    setJobActionBusy(false);
+                  }
+                }}
+                disabled={!canApproveNow || loading || jobActionBusy}
+                title={canApproveNow ? "Approve and lock selected job" : "Not ready yet"}
+              >
+                🛡 Approve & Lock
+              </button>
+              {canCloseIncident ? (
+                <div className="flex flex-col items-start">
+                  <button
+                    className="px-3.5 py-2.5 rounded-xl text-sm font-semibold border bg-red-600/20 border-red-400/30 text-red-100 hover:bg-red-600/30 disabled:opacity-50"
+                    onClick={() => { void closeIncident(); }}
+                    disabled={loading || closingIncident}
+                    title="Close this incident"
+                  >
+                    {closingIncident ? "Closing..." : "Close Incident"}
+                  </button>
+                  <div className="mt-1 text-[11px] text-emerald-300">Ready to close incident.</div>
+                </div>
+              ) : null}
             </div>
           </div>
         </section>
@@ -1303,31 +1397,8 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
               type="button"
               className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
               onClick={() => {
-                try {
-                  const target = (visibleEvidence || [])[0];
-                  if (!target) {
-                    toast("No evidence available yet.", 2200);
-                    if (process.env.NODE_ENV !== "production") {
-                      console.warn("[review-view-evidence] missing target evidence");
-                    }
-                    return;
-                  }
-                  if (typeof openEvidence !== "function") {
-                    if (process.env.NODE_ENV !== "production") {
-                      console.warn("[review-view-evidence] openEvidence handler missing");
-                    }
-                    toast("Evidence handler unavailable.", 2200);
-                    return;
-                  }
-                  setReqOpen(false);
-                  void openEvidence(target);
-                } catch (e: any) {
-                  const msg = String(e?.message || e || "view_evidence_failed");
-                  toast("View evidence failed: " + msg, 2600);
-                  if (process.env.NODE_ENV !== "production") {
-                    console.warn("[review-view-evidence] failed", e);
-                  }
-                }
+                setReqOpen(false);
+                openEvidenceFromAction((visibleEvidence || [])[0]);
               }}
             >
               View evidence
@@ -1383,7 +1454,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 onClick={() => {
                   saveRequest();
                   // v2: we just store + bounce to incident evidence area with a hint.
-                  if (incidentId) router.push("/incidents/" + incidentId + "?hi=request_update");
+                  if (incidentId) router.push(incidentPath(incidentId, orgId, { extraQuery: { hi: "request_update" } }));
                   setReqOpen(false);
                 }}
               >
@@ -1428,9 +1499,13 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           <div className="mt-2 text-xs text-gray-400">
             Approval readiness is based on selected job state and linked evidence.
           </div>
-          <div className="mt-1 text-xs text-gray-500">
-            Incident close still requires all jobs approved.
-          </div>
+          {incidentClosed ? (
+            <div className="mt-1 text-xs text-emerald-300">Incident closed.</div>
+          ) : allJobsApproved ? (
+            <div className="mt-1 text-xs text-emerald-300">Approved &amp; locked. Ready to close incident.</div>
+          ) : (
+            <div className="mt-1 text-xs text-gray-500">Incident close still requires all jobs approved.</div>
+          )}
           {missingItems.length ? (
             <div className="mt-2 text-xs text-amber-200">
               Missing: {missingItems.join(" • ")}
@@ -1448,8 +1523,26 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
               {reviewableJobs.length === 0 ? (
                 <div className="mt-1 text-xs text-amber-200">
                   {terminalJobs.length > 0
-                    ? `No reviewable jobs. Latest decision: ${latestTerminalStatus || "finalized"}.`
-                    : "No reviewable jobs yet. Complete a job in Field view."}
+                    ? "All jobs approved — ready to close incident."
+                    : "No reviewable jobs yet. A job becomes reviewable when its status is complete or review AND it has at least one linked evidence item."}
+                </div>
+              ) : null}
+              {/* PEAKOPS_FIELD_TO_REVIEW_BRIDGE_V1: the supervisor queue is
+                   empty until a job is moved to complete/review with linked
+                   evidence. Give the supervisor a direct jump to the Jobs tab
+                   on the field page so this isn't a dead-end. */}
+              {reviewableJobs.length === 0 && terminalJobs.length === 0 ? (
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 rounded-md text-[11px] font-semibold border border-amber-300/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15"
+                    onClick={() => router.push(incidentPath(incidentId, orgId, { hash: "jobs" }))}
+                  >
+                    Open Jobs tab →
+                  </button>
+                  <span className="text-[11px] text-gray-500">
+                    Mark a job complete + link evidence to enable review.
+                  </span>
                 </div>
               ) : null}
             </div>
@@ -1476,7 +1569,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-2">
               {reviewableJobs.length === 0 ? (
-                <div className="text-sm text-gray-400">No jobs in complete state pending approval.</div>
+                <div className="text-sm text-gray-400">
+                  {noReviewablesApproved
+                    ? "All jobs already approved/locked. No further supervisor action needed."
+                    : "No jobs in complete/review state pending approval."}
+                </div>
               ) : reviewableJobs.map((j: any) => {
                 const jid = String(j?.id || j?.jobId || "");
                 const active = jid === String(selectedJobId || "");
@@ -1492,7 +1589,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                     <div className="flex items-start justify-between gap-2">
                       <button
                         type="button"
-                        onClick={() => setSelectedJobId(jid)}
+                        onClick={() => openJobForReview(jid)}
                         className="text-left min-w-0 flex-1"
                       >
                         <div className="text-sm text-gray-100 truncate">{String(j?.title || jid)}</div>
@@ -1521,6 +1618,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 <div className="text-sm text-gray-400">Select a job to review details.</div>
               ) : (
                 <>
+                  <div className="text-xs text-blue-200">Reviewing: {String(selectedJob?.title || selectedJobId)}</div>
                   <div className="text-sm font-semibold text-gray-100">{String(selectedJob?.title || selectedJobId)}</div>
                   <div className="text-xs text-gray-400 mt-1">jobId: {String(selectedJobId)}</div>
                   <div className="text-xs text-gray-400 mt-1">
@@ -1672,7 +1770,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
                 onClick={() => {
                   if (!incidentId) return;
-                  router.push("/incidents/" + incidentId + "#evidence");
+                  router.push(incidentPath(incidentId, orgId, { hash: "evidence" }));
                 }}
                 title="Open the field incident page evidence rail"
               >
@@ -1720,7 +1818,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                         (selectedEvidenceId === id ? "border-blue-400/40 ring-2 ring-blue-500/20 " : "border-white/10 ") +
                         "bg-black/40 hover:border-white/25 hover:scale-[1.015] hover:bg-black/50 transition-all duration-150"
                       }
-                      onClick={() => openEvidence(ev)}
+                      onClick={() => openEvidenceFromAction(ev)}
                       title={name}
                     >
                       {u ? (

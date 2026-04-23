@@ -171,18 +171,20 @@ const orgId = mustStr(body.orgId, "orgId");
     }
     const { getEvidenceCollectionRef } = await import("./evidenceRefs.mjs");
 
-    // Ensure session exists (org-scoped)
-    const sesRef = db.collection("orgs").doc(orgId)
-      .collection("incidents").doc(incidentId)
-      .collection("fieldSessions").doc(sessionId);
+    // Ensure session exists (top-level canonical incident path)
+    const sesRef = db.collection("incidents")
+      .doc(incidentId)
+      .collection("fieldSessions")
+      .doc(sessionId);
     let sesSnap = await sesRef.get();
-// --- DEV/EMULATOR SAFETY: auto-create missing field session (correct path) ---
+
+    // --- DEV/EMULATOR SAFETY: auto-create missing field session at canonical path ---
     const isEmu =
       String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
       String(process.env.FIREBASE_EMULATOR_HUB || "").length > 0;
 
     // IMPORTANT: startFieldSessionV1 writes sessions under:
-    //   orgs/{orgId}/incidents/{incidentId}/fieldSessions/{sessionId}
+    //   incidents/{incidentId}/fieldSessions/{sessionId}
     // so the dev auto-create MUST write to the same location.
     if (isEmu && sessionId && !sesSnap.exists) {
       try {
@@ -191,9 +193,10 @@ const orgId = mustStr(body.orgId, "orgId");
             orgId,
             incidentId,
             sessionId,
+            techUserId: String(body.techUserId || "dev_autocreate"),
             status: "IN_PROGRESS",
             startedAt: FieldValue.serverTimestamp ? FieldValue.serverTimestamp() : admin.firestore.FieldValue.serverTimestamp(),
-            requestedBy: "dev_autocreate_session_correct_path",
+            requestedBy: "dev_autocreate_session_top_level",
             version: 1,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),

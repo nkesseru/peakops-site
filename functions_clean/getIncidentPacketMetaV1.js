@@ -14,7 +14,10 @@ exports.getIncidentPacketMetaV1 = onRequest({ cors: true }, async (req, res) => 
       return res.status(400).json({ ok: false, error: "Missing orgId/incidentId" });
     }
 
-    const snap = await db.collection("incidents").doc(incidentId).get();
+    let snap = await db.doc(`orgs/${orgId}/incidents/${incidentId}`).get();
+    if (!snap.exists) {
+      snap = await db.collection("incidents").doc(incidentId).get();
+    }
     if (!snap.exists) {
       return res.status(404).json({ ok: false, error: "Incident not found" });
     }

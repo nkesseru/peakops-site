@@ -13,8 +13,14 @@ exports.getWorkflowV1 = onRequest({ cors: true }, async (req, res) => {
       return res.status(400).json({ ok: false, error: "Missing orgId/incidentId" });
     }
 
-    const incidentRef = db.collection("incidents").doc(incidentId);
-    const incidentSnap = await incidentRef.get();
+    let incidentRef = db.doc(`orgs/${orgId}/incidents/${incidentId}`);
+    let incidentSnap = await incidentRef.get();
+
+    if (!incidentSnap.exists) {
+      incidentRef = db.collection("incidents").doc(incidentId);
+      incidentSnap = await incidentRef.get();
+    }
+
     if (!incidentSnap.exists) {
       return res.status(404).json({ ok: false, error: "Incident not found" });
     }

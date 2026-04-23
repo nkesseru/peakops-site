@@ -20,7 +20,14 @@ exports.getIncidentV1 = onRequest({ cors: true }, async (req, res) => {
     const incidentId = String(req.query.incidentId || "");
     if (!orgId || !incidentId) return send(res, 400, { ok: false, error: "Missing orgId/incidentId" });
 
-    const snap = await db.collection("incidents").doc(incidentId).get();
+    let snap = await db.doc(`orgs/${orgId}/incidents/${incidentId}`).get();
+    let source = "orgs";
+
+    if (!snap.exists) {
+      snap = await db.collection("incidents").doc(incidentId).get();
+      source = "top_level";
+    }
+
     if (!snap.exists) return send(res, 404, { ok: false, error: "Incident not found" });
 
     const data = snap.data() || {};
@@ -30,7 +37,7 @@ exports.getIncidentV1 = onRequest({ cors: true }, async (req, res) => {
     }
 
     const doc = { id: snap.id, ...data };
-    return send(res, 200, { ok: true, orgId, incidentId, doc });
+    return send(res, 200, { ok: true, orgId, incidentId, source, doc });
   } catch (e) {
     return send(res, 500, { ok: false, error: String(e?.message || e) });
   }

@@ -21,10 +21,51 @@ import {
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { deriveFieldIncidentStatus } from "@/lib/workflow/fieldIncidentStatus";
+import { hasUsableOrgId, incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
 
 
 
+function StageBar({ stage }: { stage: string }) {
+  const steps = [
+    { key: "arrive", label: "Arrive" },
+    { key: "evidence", label: "Evidence" },
+    { key: "notes", label: "Notes" },
+    { key: "submit", label: "Submit" },
+    { key: "review", label: "Review" },
+    { key: "done", label: "Done" },
+  ];
 
+  return (
+    <div className="flex items-center gap-2 text-xs mb-4">
+      {steps.map((s, i) => {
+        const active = stage === s.key;
+        const done = steps.findIndex(x => x.key === stage) > i;
+
+        return (
+          <div key={s.key} className="flex items-center gap-2">
+            <div
+              className={
+                "px-3 py-1 rounded-full border " +
+                (done
+                  ? "bg-green-500/20 border-green-400 text-green-200"
+                  : active
+                  ? "bg-indigo-500/20 border-indigo-400 text-indigo-200"
+                  : "bg-white/5 border-white/10 text-gray-400")
+              }
+            >
+              {done ? "✓ " : ""}
+              {s.label}
+            </div>
+            {i < steps.length - 1 && (
+              <div className="w-4 h-[1px] bg-white/20" />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 
 // PEAKOPS_ACTIVE_JOB_CARD_V1
@@ -255,7 +296,7 @@ function labelChipColor(label: string) {
   const L = normLabel(label);
   // Cohesive system chips: dark base + subtle tint + quiet borders
   if (L === "DAMAGE") return "bg-red-500/12 border-red-400/20 text-red-200";
-  if (L === "SAFETY") return "bg-amber-400/12 border-amber-300/25 text-amber-200";
+  if (L === "SAFETY") return "bg-amber-400/12 border-indigo-400/20 text-indigo-200";
   if (L === "DOCS") return "bg-sky-400/12 border-sky-300/25 text-sky-200";
   return "bg-white/6 border-white/12 text-gray-200";
 }
@@ -271,7 +312,7 @@ function jobStatusPill(status: string) {
   if (s === "approved") return "bg-emerald-500/15 border-emerald-300/30 text-emerald-100";
   if (s === "rejected") return "bg-red-500/15 border-red-300/30 text-red-100";
   if (s === "in_progress") return "bg-blue-500/15 border-blue-300/30 text-blue-100";
-  if (s === "review") return "bg-amber-500/15 border-amber-300/30 text-amber-100";
+  if (s === "review") return "bg-indigo-500/15 border-indigo-400/20 text-indigo-100";
   if (s === "complete") return "bg-indigo-500/15 border-indigo-300/30 text-indigo-100";
   return "bg-white/8 border-white/15 text-gray-200";
 }
@@ -365,17 +406,63 @@ async function postJson<T>(url: string, body: any): Promise<T> {
   return JSON.parse(txt) as T;
 }
 
+function FlowStageBar({ stage }: { stage: "arrive" | "evidence" | "notes" | "submit" | "review" | "done" }) {
+  const steps = [
+    { key: "arrive", label: "Arrive" },
+    { key: "evidence", label: "Evidence" },
+    { key: "notes", label: "Notes" },
+    { key: "submit", label: "Submit" },
+    { key: "review", label: "Review" },
+    { key: "done", label: "Done" },
+  ] as const;
+
+  return (
+    <div style={{ padding: "7px 16px", background: "#050505", borderBottom: "1px solid #1c1c1c", display: "flex", alignItems: "center", gap: 4, overflowX: "auto" }}>
+        {steps.map((s, i) => {
+          const active = stage === s.key;
+          const done = steps.findIndex(x => x.key === stage) > i;
+          return (
+            <div key={s.key} style={{ display: "flex", alignItems: "center" }}>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 4,
+                padding: "5px 12px", borderRadius: 6, whiteSpace: "nowrap",
+                fontSize: 11, fontWeight: active ? 700 : 600,
+                color: active ? "#C8A84E" : done ? "#22c55e" : "#b3b3b3",
+                background: active ? "transparent" : done ? "transparent" : "#101010",
+                borderTop: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
+                borderRight: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
+                borderBottom: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
+                borderLeft: active ? "1px solid #C8A84E" : done ? "2px solid #22c55e" : "1px solid #1c1c1c",
+              }}>
+                {done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                {s.label}
+              </div>
+              {i < steps.length - 1 && (
+                <div style={{ width: 8, height: 1, background: done ? "rgba(34,197,94,0.3)" : "#1c1c1c" }} />
+              )}
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+
 export default function IncidentClient({ incidentId }: { incidentId: string }) {
   const DEMO_RESET_CMD = "scripts/dev/reset_demo_incident.sh && scripts/dev/seed_demo_incident.sh";
   const functionsBase = getFunctionsBase();
 useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
   }, [functionsBase]);
-  const invalidIncidentRoute = useMemo(() => {
+  
+const invalidIncidentRoute = useMemo(() => {
     const raw = String(incidentId || "").trim();
     if (!raw) return true;
     const s = raw.toLowerCase();
-    return s === "<incidentid>" || s === "%3cincidentid%3e" || s.includes("<incidentid>");
+    return (
+      s === "<incidentid>" || s === "%3cincidentid%3e" || s.includes("<incidentid>") ||
+      s === "[incidentid]" || s === "{incidentid}" || s === "incidentid" ||
+      s === ":incidentid" || s === "undefined" || s === "null"
+    );
   }, [incidentId]);
 
   useEffect(() => {
@@ -392,7 +479,7 @@ useEffect(() => {
   useEffect(() => {
     try { outboxFlushSupervisorRequests(); } catch {}
 
-    const onFocus = () => syncNotesSavedLocal();
+    const onFocus = () => { syncNotesSavedLocal(); syncArrivedLocal(); };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [incidentId]);
@@ -401,15 +488,21 @@ useEffect(() => {
   const [submitting, setSubmitting] = useState(false);
   const [closingIncident, setClosingIncident] = useState(false);
   const [incidentStatus, setIncidentStatus] = useState<string>("open");
+  const [incidentTitle, setIncidentTitle] = useState<string>("");
   const [incidentUpdatedAtSec, setIncidentUpdatedAtSec] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
   const [pendingJumpToEvidenceMapping, setPendingJumpToEvidenceMapping] = useState(false);
   const setTab = (tab: "overview" | "timeline" | "evidence" | "jobs") => {
+    if (previewOpen) setPreviewOpen(false);
     setActiveTab(tab);
     try {
       const nextHash = `#${tab}`;
       if (window.location.hash !== nextHash) {
         window.history.replaceState(null, "", nextHash);
+        if (window.location.hash !== nextHash) {
+          window.location.hash = tab;
+        }
       }
     } catch {}
   };
@@ -428,10 +521,15 @@ useEffect(() => {
     return () => window.removeEventListener("hashchange", applyHashTab);
   }, []);
 
+  useEffect(() => {
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
   function jumpToEvidenceMapping() {
     try {
       setPendingJumpToEvidenceMapping(true);
-      setActiveTab("evidence");
+      setTab("evidence");
       try { window.location.hash = "evidence-mapping"; } catch {}
     } catch {}
   }
@@ -478,9 +576,16 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
 
   const goAddEvidence = () => {
     if (isClosed) return toast("Incident is closed (read-only).", 2600);
-    if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
+    // PEAKOPS_CAPTURE_WITHOUT_JOB_V1
+    // Evidence capture no longer requires an active field job.
+    // Backend (addEvidenceV1) treats jobId as optional: when omitted, the doc
+    // saves at the incident level and can be assigned to a job later.
+    // PEAKOPS_NAV_ORGID_GUARD: never navigate to /add-evidence with an empty
+    // orgId — that produces "?orgId=" which breaks downstream refresh.
+    if (!hasUsableOrgId(orgId)) {
+      return toast("Missing orgId in URL — reload /incidents/<id>?orgId=<your-org>", 3500);
+    }
     try {
-      // PEAKOPS_ADD_EVIDENCE_NAV_V1: Keep MVP behavior dead-simple + reliable.
       const url =
         `/incidents/${encodeURIComponent(String(incidentId || ""))}/add-evidence` +
         `?orgId=${encodeURIComponent(String(orgId || ""))}`;
@@ -508,9 +613,21 @@ async function markArrived() {
     // If sessionId is missing or stale, create a new field session and retry once.
     const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
     const base = functionsBase;
-    const org = (typeof orgId !== "undefined" && orgId) ? String(orgId) : "spokane-valley";
+    // PEAKOPS_ARRIVE_ORGID_REFRESH_V1
+    // Derive orgId at click time: prefer the closure (useSearchParams), then
+    // re-read window.location.search as a live fallback. No hardcoded default —
+    // if URL genuinely has no orgId we bail with a clear toast instead of firing
+    // a POST that the backend would reject with "orgId required".
+    let org = String(orgId || "").trim();
+    if (!org && typeof window !== "undefined") {
+      try {
+        const usp = new URLSearchParams(window.location.search);
+        org = String(usp.get("orgId") || "").trim();
+      } catch {}
+    }
 
     if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
+    if (!org) return toast("Missing orgId in URL — reload /incidents/<id>?orgId=<your-org>", 3500);
     if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
 
     let sid = String(activeSessionId || "").trim();
@@ -520,7 +637,10 @@ async function markArrived() {
     }
 
     async function startSession(): Promise<string> {
-      const res = await fetch(`/api/fn/startFieldSessionV1`, {
+      // orgId in both query string (parity with getTimelineEventsV1) and body
+      // (markArrivedV1 / startFieldSessionV1 read from body via mustStr).
+      const url = `/api/fn/startFieldSessionV1?orgId=${encodeURIComponent(org)}`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: org, incidentId, createdBy: "ui", techUserId }),
@@ -533,7 +653,8 @@ async function markArrived() {
     }
 
     async function postArrived(sessionId: string): Promise<any> {
-      const res = await fetch(`/api/fn/markArrivedV1`, {
+      const url = `/api/fn/markArrivedV1?orgId=${encodeURIComponent(org)}`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: org, incidentId, sessionId: String(sessionId), updatedBy: "ui", techUserId }),
@@ -548,11 +669,12 @@ async function markArrived() {
       return out;
     }
 
+    let __optId = "";
     try {
       setArriving(true);
 
       // Optimistic UI event id (stable across try/catch)
-      let __optId = "opt_arrived_" + Date.now();
+      __optId = "opt_arrived_" + Date.now();
       try {
         const __sid = sid || "";
         if (__sid) {
@@ -584,7 +706,7 @@ async function markArrived() {
       } catch (e: any) {
         const msg = String(e?.message || e || "");
         // If stale session, recreate once and retry
-                  if ((e as any)?.__status == 404 || msg.toLowerCase().includes("session not found")) {
+        if ((e as any)?.__status == 404 || msg.toLowerCase().includes("session not found")) {
           sid = await startSession();
           try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
           try { setActiveSessionId(sid); } catch {}
@@ -594,11 +716,52 @@ async function markArrived() {
         }
       }
 
+      // Ensure the UI reflects arrival even on a fresh session where no optimistic
+      // FIELD_ARRIVED event was inserted before startSession().
+      try {
+        const confirmedId = __optId || ("arrived_" + Date.now());
+        setTimeline((prev: any) => {
+          const list = Array.isArray(prev) ? prev : [];
+          const alreadyHasArrival = list.some((x: any) =>
+            String(x?.type || "") === "FIELD_ARRIVED" &&
+            String(x?.sessionId || "") === String(sid || "")
+          );
+          if (alreadyHasArrival) {
+            return list.map((x: any) =>
+              x?.id === __optId
+                ? {
+                    ...x,
+                    id: confirmedId,
+                    meta: { ...(x?.meta || {}), optimistic: false }
+                  }
+                : x
+            );
+          }
+          return [
+            {
+              id: confirmedId,
+              type: "FIELD_ARRIVED",
+              actor: "ui",
+              sessionId: String(sid || ""),
+              occurredAt: { _seconds: Math.floor(Date.now() / 1000) },
+              refId: null,
+              meta: { optimistic: false }
+            },
+            ...list.filter((x: any) => x?.id !== __optId)
+          ];
+        });
+      } catch {}
+
       setArrived(true);
+      // PEAKOPS_ARRIVED_STICKY_V1: persist so remounts (notes save, tab nav,
+      // reload) don't regress the readiness/CTA state when the backend timeline
+      // fetch returns empty.
+      try { localStorage.setItem("peakops_arrived_" + String(incidentId || ""), "1"); } catch {}
+      setArrivedLocal(true);
       toast("Arrived ✓", 1800);
     } catch (e: any) {
       const msg = e?.message || String(e) || "markArrived failed";
-      toast("Arrive failed: " + msg, 3500);
+      toast("Arrival failed: " + msg, 3500);
       // OPTIMISTIC_FIELD_ARRIVED revert
       try { setTimeline((prev: any) => (Array.isArray(prev) ? prev.filter((x:any) => x?.id !== __optId) : prev)); } catch {}
       console.error(e);
@@ -607,21 +770,91 @@ async function markArrived() {
     }
 }
 
+  function isSessionMissingError(e: any) {
+    const msg = String(e?.message || e || "").toLowerCase();
+    return (e as any)?.__status === 404 || msg.includes("session not found");
+  }
+
+  function getSubmitSessionCandidates(): string[] {
+    const out: string[] = [];
+    const push = (v: any) => {
+      const s = String(v || "").trim();
+      if (s && !out.includes(s)) out.push(s);
+    };
+
+    try { push(typeof getActiveSessionId === "function" ? getActiveSessionId() : ""); } catch {}
+    try { push(localStorage.getItem("peakops_active_session_" + String(incidentId || ""))); } catch {}
+
+    for (const ev of (Array.isArray(evidence) ? evidence : [])) {
+      push((ev as any)?.sessionId);
+      push((ev as any)?.evidence?.sessionId);
+    }
+
+    for (const ev of (Array.isArray(timeline) ? timeline : [])) {
+      push((ev as any)?.sessionId);
+    }
+
+    push(activeSessionId);
+    return out;
+  }
+
+  async function postSubmitFieldSession(sessionId: string) {
+    return await postJson("/api/fn/submitFieldSessionV1", {
+      orgId: orgId,
+      incidentId,
+      sessionId: String(sessionId || "").trim(),
+      updatedBy: "ui",
+    });
+  }
+
   async function submitSession() {
+    toast("DEBUG: submitSession entered", 1200);
     if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
-    const sid = String(activeSessionId || "").trim();
+
+    let sid = getSubmitSessionCandidates()[0] || "";
     if (!sid) return toast("No active session yet — add evidence first.", 3000);
-    const ok = window.confirm("Submit this session? This locks the field visit for supervisor review.");
+
+    const ok = true;
     if (!ok) return;
+
     try {
       setSubmitting(true);
-      const out: any = await postJson("/api/fn/submitFieldSessionV1", { orgId: orgId,
-        incidentId,
-        sessionId: sid,
-        updatedBy: "ui",
+
+      console.warn("[submitSession] initial candidates", {
+        activeSessionId,
+        chosen: sid,
+        candidates: getSubmitSessionCandidates(),
       });
-      if (!out?.ok) throw new Error(out?.error || "submit failed");
+
+      try {
+        const out: any = await postSubmitFieldSession(sid);
+        if (!out?.ok) throw new Error(out?.error || "submit failed");
+      } catch (e: any) {
+        if (!isSessionMissingError(e)) throw e;
+
+        await refresh().catch(() => {});
+
+        const candidatesAfterRefresh = getSubmitSessionCandidates();
+        const retrySid = candidatesAfterRefresh.find((x) => String(x || "").trim() && String(x) !== String(sid)) || "";
+
+        console.warn("[submitSession] retry after stale session", {
+          staleSessionId: sid,
+          candidatesAfterRefresh,
+          retrySid,
+        });
+
+        if (!retrySid) throw e;
+
+        sid = retrySid;
+        try { localStorage.setItem("peakops_active_session_" + String(incidentId || ""), sid); } catch {}
+        try { setActiveSessionId(sid); } catch {}
+
+        const out: any = await postSubmitFieldSession(sid);
+        if (!out?.ok) throw new Error(out?.error || "submit failed");
+      }
+
       toast("Session submitted ✓", 2200);
+      await refresh();
     } catch (e: any) {
       const msg = (e && (e.message || String(e))) || "submit failed";
       toast("Submit failed: " + msg, 3500);
@@ -631,7 +864,10 @@ async function markArrived() {
   }
 
   const router = useRouter();
-  const orgId = "riverbend-electric";
+  // orgId is the single source of truth for this page: URL query param only.
+  // No hardcoded default, no localStorage cache, no doc-based override.
+  const orgSp = useSearchParams();
+  const orgId = String(orgSp?.get?.("orgId") || "").trim();
   // Evidence + Timeline
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
@@ -784,6 +1020,25 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
       // ignore
     }
   };
+
+  // PEAKOPS_ARRIVED_STICKY_V1: fallback-only sticky local flag for arrival.
+  // Backend is the primary source of truth — emitTimelineEvent and
+  // getTimelineEventsV1 now share functions_clean/_incidentPath.js, so the
+  // write/read subcollections always agree and the timeline round-trips
+  // FIELD_ARRIVED correctly on refresh. This sticky flag remains as a safety
+  // net for eventual-consistency windows and offline-first behavior only. Do
+  // not rely on it as the primary signal; read `hasArrival` instead.
+  const [arrivedLocal, setArrivedLocal] = useState<boolean>(false);
+
+  const syncArrivedLocal = () => {
+    try {
+      const k = "peakops_arrived_" + String(incidentId);
+      const v = localStorage.getItem(k);
+      setArrivedLocal(!!v);
+    } catch {
+      // ignore
+    }
+  };
 // Global hook for cross-page optimistic events (e.g., Notes → NOTEs_SAVED)
   useEffect(() => {
     try {
@@ -821,33 +1076,19 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
       });
       if (!out?.ok) throw new Error(out?.error || "markArrived failed");
       setArrived(true);
+      try { localStorage.setItem("peakops_arrived_" + String(incidentId || ""), "1"); } catch {}
+      setArrivedLocal(true);
       toast("Arrived ✓", 1500);
     } catch (e: any) {
       const msg = (e && (e.message || String(e))) || "markArrived failed";
-      toast(`Arrive failed: ${msg}`, 3500);
+      toast(`Arrival failed: ${msg}`, 3500);
     } finally {
       setArriving(false);
     }
   };
 
   const v6SubmitSession = async () => {
-    try {
-      setSubmitting(true);
-      const sid = getActiveSessionId();
-      if (!sid) throw new Error("sessionId missing — add evidence / start a session first.");
-      const out: any = await postJson(`/api/fn/submitFieldSessionV1`, { orgId: orgId,
-        incidentId,
-        sessionId: sid,
-        updatedBy: "ui",
-      });
-      if (!out?.ok) throw new Error(out?.error || "submit failed");
-      toast("Session submitted ✓", 2000);
-    } catch (e: any) {
-      const msg = (e && (e.message || String(e))) || "submit failed";
-      toast(`Submit failed: ${msg}`, 3500);
-    } finally {
-      setSubmitting(false);
-    }
+    await submitSession();
   };
   // V6_SESSION_HELPERS__END
 
@@ -882,6 +1123,17 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   const [thumbDebugOverlay, setThumbDebugOverlay] = useState(false);
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
   const thumbRefreshDebounceRef = useRef<any>(null);
+  const thumbMintInflightRef = useRef<Record<string, boolean>>({});
+  const refreshInflightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
+  // PEAKOPS_CREATE_JOB_INFLIGHT_V1
+  // Dedicated inflight flag for createJob. The existing jobsBusy state is
+  // shared with setJobStatus / assignJobOrg / assignAllUnassignedToCurrentJob
+  // / assignEvidenceJob — any of those firing (including auto-refresh-driven
+  // races) would wrongly disable the Create Job button. This ref gates only
+  // the create flow and has no cross-contamination risk.
+  const createJobInflightRef = useRef(false);
+  const [createJobInflight, setCreateJobInflight] = useState(false);
 
   // PEAKOPS_THUMBS_C2_V1: per-evidence thumb error flag
   const [thumbErr, setThumbErr] = useState<Record<string, boolean>>({});
@@ -974,6 +1226,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
 
       // highlight immediately
       setSelectedEvidenceId(id);
+      setTab("evidence");
 
       // PHASE4_2_CONTEXT_LOCK_V1
       try {
@@ -993,6 +1246,10 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       // B) Horizontal: after layout settles, CENTER the tile in the scroller
       window.setTimeout(() => {
         try {
+          const anchor = document.getElementById("evidence");
+          if (anchor && "scrollIntoView" in anchor) {
+            (anchor as any).scrollIntoView({ behavior: "smooth", block: "center" });
+          }
           const scroller = document.getElementById("evidenceScroller") as HTMLElement | null;
           const tile = document.querySelector('[data-ev-id="' + id + '"]') as HTMLElement | null;
           if (!tile) return;
@@ -1170,20 +1427,76 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     }
   }
 
+  async function resetDemoNow() {
+    try {
+      toast("Resetting demo…", 1500);
+
+      try {
+        const sidKey = "peakops_active_session_" + String(incidentId || "");
+        const jobKey = "peakops_current_job_" + String(incidentId || "").trim();
+        localStorage.removeItem(sidKey);
+        localStorage.removeItem(jobKey);
+        sessionStorage.removeItem(sidKey);
+        sessionStorage.removeItem(jobKey);
+      } catch {}
+      try { setActiveSessionId(""); } catch {}
+      try { setCurrentJobId(""); } catch {}
+      try { setIncidentStatus("open"); } catch {}
+      try { setTimeline([] as any); } catch {}
+      try { setEvidence([] as any); } catch {}
+
+      const res = await fetch("/api/dev/reset-demo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        cache: "no-store",
+      });
+
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out?.ok) {
+        throw new Error(out?.error || "reset-demo failed");
+      }
+
+      try { await refresh(); } catch {}
+      await new Promise((r) => setTimeout(r, 900));
+
+      const resetUrl = `/incidents/${encodeURIComponent(String(incidentId || "inc_demo"))}?reset=${Date.now()}`;
+      try {
+        window.location.href = resetUrl;
+      } catch {
+        try {
+          window.location.assign(resetUrl);
+        } catch {
+          location.reload();
+        }
+      }
+    } catch (e: any) {
+      toast("Demo reset failed: " + String(e?.message || e), 3500);
+    }
+  }
+
   async function closeIncident() {
+    toast("DEBUG: closeIncident entered", 1200);
     if (isClosed) {
       toast("Incident already closed.", 1800);
       return;
     }
-    const ok = window.confirm("Close this incident? This sets read-only mode.");
-    if (!ok) return;
+    const requestOrgId = String(orgId || "").trim();
+    if (!requestOrgId || !incidentId) {
+      toast("Close failed: missing org/incident context.", 3200);
+      return;
+    }
+    const ok = true;
+    if (!ok) {
+      toast("Close canceled.", 1400);
+      return;
+    }
     try {
       setClosingIncident(true);
       const res = await fetch("/api/fn/closeIncidentV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          orgId,
+          orgId: requestOrgId,
           incidentId,
           closedBy: "ui",
           actorRole: actorRole(),
@@ -1206,6 +1519,11 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     if (isClosed) return toast("Incident is closed (read-only).", 2600);
     const title = String(jobTitle || "").trim();
     if (!title) return toast("Job title is required.", 2200);
+    // PEAKOPS_CREATE_JOB_INFLIGHT_V1: dedicated re-entry guard. Short-circuits
+    // a double-click even if React hasn't re-rendered to reflect jobsBusy yet.
+    if (createJobInflightRef.current) return;
+    createJobInflightRef.current = true;
+    setCreateJobInflight(true);
     try {
       setJobsBusy(true);
       const out: any = await postJson(`/api/fn/createJobV1`, {
@@ -1232,6 +1550,8 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       toast("Create job failed: " + String(e?.message || e), 3200);
     } finally {
       setJobsBusy(false);
+      createJobInflightRef.current = false;
+      setCreateJobInflight(false);
     }
   }
 
@@ -1399,7 +1719,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
             const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
               orgId,
               incidentId,
-              evidenceId: id,
+              evidenceId,
               jobId: jid,
             });
             if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
@@ -1521,6 +1841,11 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   async function refresh(retryAttempt = 0, baseOverride?: string, fallbackUsed = false) {
     const base = String(baseOverride || functionsBase || "").trim();
     if (!base) return;
+    if (refreshInflightRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+    refreshInflightRef.current = true;
     if (process.env.NODE_ENV !== "production") {
       console.debug("[inc-refresh] start", { incidentId, orgId, functionsBase: base, fallbackUsed });
     }
@@ -1528,7 +1853,15 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     setRefreshError(null);
 
     try {
-      let requestOrgId = String(orgId || "").trim() || "riverbend-electric";
+      // Single source of truth: URL query param captured at component top.
+      // No fallback, no doc-based override — if URL has no orgId, we abort.
+      const requestOrgId = String(orgId || "").trim();
+      if (!requestOrgId) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[inc-refresh] missing orgId in URL — aborting refresh");
+        }
+        return;
+      }
       const failHttp = (name: string, url: string, status: number, body: string) => {
         const err: any = new Error(`${name} failed (${status})`);
         err.endpoint = url;
@@ -1557,57 +1890,61 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
           0
         );
         setIncidentStatus(st || "open");
+        setIncidentTitle(String(inc?.doc?.title || "").trim());
         setIncidentUpdatedAtSec(updatedSec || null);
-        const nextOrg = String(inc?.doc?.orgId || "").trim();
-        if (nextOrg) requestOrgId = nextOrg;
       }
 
-      const jobsUrl =
-        `/api/fn/listJobsV1?orgId=${encodeURIComponent(requestOrgId)}` +
-        `&incidentId=${encodeURIComponent(incidentId)}&limit=50` +
-        `&actorUid=${encodeURIComponent(actorUid())}&actorRole=${encodeURIComponent(actorRole())}`;
-      const jobsBody = await fetchTextOrThrow("listJobsV1", jobsUrl);
-      if (process.env.NODE_ENV !== "production") {
-        let jobsCount = 0;
-        let statuses: string[] = [];
-        try {
-          const parsed = jobsBody ? JSON.parse(jobsBody) : {};
-          const docs = Array.isArray(parsed?.docs) ? parsed.docs : [];
-          jobsCount = docs.length;
-          statuses = docs.map((j: any) => String(j?.status || ""));
-        } catch {}
-        console.debug("[inc-refresh] jobs", {
-          httpStatus: 200,
-          ok: true,
-          count: jobsCount,
-          statuses,
-        });
-      }
-      const jb = jobsBody ? JSON.parse(jobsBody) : {};
-      if (jb?.ok && Array.isArray(jb.docs)) {
-        const docs = jb.docs;
-        setJobs(docs);
-        const selectable = docs.filter((j: any) => isFieldSelectableJob(j?.status));
-        const currentId = String(currentJobId || "").trim();
-        const existsInSelectable = selectable.some((j: any) => String(j?.id || j?.jobId || "") === currentId);
-        const firstSelectableId = String(selectable?.[0]?.id || selectable?.[0]?.jobId || "").trim();
-        let effectiveJobId = currentId;
-        if (!currentId || !existsInSelectable) {
-          if (firstSelectableId) {
-            setCurrentJobId(firstSelectableId);
-            effectiveJobId = firstSelectableId;
-          } else {
-            setCurrentJobId("");
-            effectiveJobId = "";
+      // Jobs (GET-only, non-fatal — empty jobs list should not kill the field page)
+      try {
+        const jobsUrl =
+          `/api/fn/listJobsV1?orgId=${encodeURIComponent(requestOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}&limit=50` +
+          `&actorUid=${encodeURIComponent(actorUid())}&actorRole=${encodeURIComponent(actorRole())}`;
+        const jobsRes = await fetch(jobsUrl);
+        const jobsBody = await jobsRes.text();
+        if (!jobsRes.ok) {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[inc-refresh] jobs fetch failed (non-fatal)", {
+              httpStatus: jobsRes.status,
+              body: String(jobsBody || "").slice(0, 200),
+            });
+          }
+        } else {
+          const jb = jobsBody ? JSON.parse(jobsBody) : {};
+          if (process.env.NODE_ENV !== "production") {
+            const docs = Array.isArray(jb?.docs) ? jb.docs : [];
+            console.debug("[inc-refresh] jobs", {
+              httpStatus: jobsRes.status,
+              ok: !!jb?.ok,
+              count: docs.length,
+              statuses: docs.map((j: any) => String(j?.status || "")),
+            });
+          }
+          if (jb?.ok && Array.isArray(jb.docs)) {
+            const docs = jb.docs;
+            setJobs(docs);
+            const selectable = docs.filter((j: any) => isFieldSelectableJob(j?.status));
+            const currentId = String(currentJobId || "").trim();
+            const existsInSelectable = selectable.some((j: any) => String(j?.id || j?.jobId || "") === currentId);
+            const firstSelectableId = String(selectable?.[0]?.id || selectable?.[0]?.jobId || "").trim();
+            if (!currentId || !existsInSelectable) {
+              if (firstSelectableId) {
+                setCurrentJobId(firstSelectableId);
+              } else {
+                setCurrentJobId("");
+              }
+            }
+            if (process.env.NODE_ENV !== "production") {
+              console.debug("[jobs-refresh]", {
+                jobsCount: docs.length,
+                selectableJobsCount: selectable.length,
+                firstJobId: firstSelectableId || "",
+              });
+            }
           }
         }
-        if (process.env.NODE_ENV !== "production") {
-          console.debug("[jobs-refresh]", {
-            jobsCount: docs.length,
-            selectableJobsCount: selectable.length,
-                        firstJobId: firstSelectableId || "",
-          });
-        }
+      } catch (jobsErr) {
+        if (process.env.NODE_ENV !== "production") console.warn("[inc-refresh] jobs fetch failed (non-fatal)", jobsErr);
       }
 
       const orgsUrl =
@@ -1639,68 +1976,73 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         setOrgOptionsLoaded(true);
       }
 
-      // Evidence (GET-only)
-      const evUrl =
-        `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(requestOrgId)}` +
-        `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
-      const evBody = await fetchTextOrThrow("listEvidenceLocker", evUrl);
-      if (process.env.NODE_ENV !== "production") {
-        let evidenceCount = 0;
-        let evOk = false;
-        try {
-          const parsed = evBody ? JSON.parse(evBody) : {};
-          const docs = Array.isArray(parsed?.docs) ? parsed.docs : [];
-          evidenceCount = docs.length;
-          evOk = !!parsed?.ok;
-        } catch {}
-        console.debug("[inc-refresh] evidence", {
-          httpStatus: 200,
-          ok: evOk,
-          count: evidenceCount,
-        });
-      }
-      const ev = evBody ? JSON.parse(evBody) : {};
-
-      if (ev?.ok && Array.isArray(ev.docs)) {
-        setEvidence(ev.docs);
-        
-      prefetchThumbs(ev.docs);
-      // PHASE3_THUMBS_RETRY_SCHEDULED: re-try failed thumbs once
-        
-
-      // PEAKOPS_THUMBS_RETRY_EFFECT_V1
-      // Retry failed thumbs once after a short delay (keeps the rail feeling “alive”)
-      setTimeout(() => {
-        try {
-          const latest = (ev.docs || []).filter((x:any) => x?.file?.storagePath);
-          latest.forEach((x:any) => {
-            const id = String(x?.id || "");
-            if (!id) return;
-            if (thumbErr?.[id]) {
-              // clear the error so prefetchThumbs will try again
-              setThumbErr((m:any) => ({ ...m, [id]: false }));
-            }
-          });
-          retryThumbs(latest);
-        } catch {}
-      }, 800);
-
-if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId)) {
-          setSelectedEvidenceId("");
+      // Evidence (GET-only, non-fatal)
+      try {
+        const evUrl =
+          `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(requestOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
+        const evRes = await fetch(evUrl);
+        const evBody = await evRes.text();
+        if (process.env.NODE_ENV !== "production") {
+          let evidenceCount = 0;
+          let evOk = false;
+          try {
+            const parsed = evBody ? JSON.parse(evBody) : {};
+            const docs = Array.isArray(parsed?.docs) ? parsed.docs : [];
+            evidenceCount = docs.length;
+            evOk = !!parsed?.ok;
+          } catch {}
+          console.debug("[inc-refresh] evidence", { httpStatus: evRes.status, ok: evOk, count: evidenceCount });
         }
+        if (evRes.ok) {
+          const ev = evBody ? JSON.parse(evBody) : {};
+          if (ev?.ok && Array.isArray(ev.docs)) {
+            setEvidence(ev.docs);
+            prefetchThumbs(ev.docs);
+            setTimeout(() => {
+              try {
+                const latest = (ev.docs || []).filter((x:any) => x?.file?.storagePath);
+                const retryCandidates = latest.filter((x: any) => {
+                  const id = String(x?.id || "");
+                  return !!id && !!thumbErr?.[id];
+                });
+                if (!retryCandidates.length) return;
+                retryCandidates.forEach((x:any) => {
+                  const id = String(x?.id || "");
+                  if (!id) return;
+                  if (thumbErr?.[id]) {
+                    setThumbErr((m:any) => ({ ...m, [id]: false }));
+                  }
+                });
+                retryThumbs(retryCandidates as any);
+              } catch {}
+            }, 800);
+            if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId)) {
+              setSelectedEvidenceId("");
+            }
+          }
+        }
+      } catch (evErr) {
+        if (process.env.NODE_ENV !== "production") console.warn("[inc-refresh] evidence fetch failed (non-fatal)", evErr);
       }
 
-      // Timeline (GET-only)
-      const tlUrl =
-        `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(requestOrgId)}` +
-        `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
-      const tlBody = await fetchTextOrThrow("getTimelineEventsV1", tlUrl);
-      const tl = tlBody ? JSON.parse(tlBody) : {};
-
-      if (tl?.ok && Array.isArray(tl.docs)) {
-        const docs: TimelineDoc[] = tl.docs.slice();
-        docs.sort((a, b) => (b.occurredAt?._seconds || 0) - (a.occurredAt?._seconds || 0));
-        setTimeline(docs.filter((x) => x.type !== "DEBUG_EVENT"));
+      // Timeline (GET-only, non-fatal)
+      try {
+        const tlUrl =
+          `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(requestOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
+        const tlRes = await fetch(tlUrl);
+        const tlBody = await tlRes.text();
+        if (tlRes.ok) {
+          const tl = tlBody ? JSON.parse(tlBody) : {};
+          if (tl?.ok && Array.isArray(tl.docs)) {
+            const docs: TimelineDoc[] = tl.docs.slice();
+            docs.sort((a, b) => (b.occurredAt?._seconds || 0) - (a.occurredAt?._seconds || 0));
+            setTimeline(docs.filter((x) => x.type !== "DEBUG_EVENT"));
+          }
+        }
+      } catch (tlErr) {
+        if (process.env.NODE_ENV !== "production") console.warn("[inc-refresh] timeline fetch failed (non-fatal)", tlErr);
       }
 
       setDataStatus("live");
@@ -1759,50 +2101,60 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       setDataStatus("error");
     } finally {
       setLoading(false);
+      refreshInflightRef.current = false;
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        void refresh();
+      }
     }
   }
 
   // Prefetch signed thumbnail URLs for latest 12 evidence items
   async function prefetchThumbs(latest: EvidenceDoc[]) {
-    const want = latest.filter((x) => x.file?.storagePath);
+    const want = latest.filter((x) => x.file?.storagePath).slice(0, 12);
 
     await Promise.all(
       want.map(async (ev) => {
+        const id = String(ev?.id || "");
         const ref = getBestEvidenceImageRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
-        if (thumbUrl[ev.id] && thumbPathById[ev.id] === ref.storagePath) return;
+        if (!id) return;
+        if (thumbUrl[id] && thumbPathById[id] === ref.storagePath) return;
+        if (thumbMintInflightRef.current[id]) return;
 
         try {
+          thumbMintInflightRef.current[id] = true;
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
-            evidenceId: ev.id,
             storagePath: ref.storagePath,
             bucket: ref.bucket,
             expiresSec: getThumbExpiresSec(),
           });
           if (resp?.ok && resp.url) {
-            setThumbUrl((m) => ({ ...m, [ev.id]: resp.url! }));
-            setThumbPathById((m) => ({ ...m, [ev.id]: ref.storagePath }));
-            setThumbBucketById((m) => ({ ...m, [ev.id]: ref.bucket }));
-            setThumbRetryById((m) => ({ ...m, [ev.id]: 0 }));
+            setThumbUrl((m) => ({ ...m, [id]: resp.url! }));
+            setThumbPathById((m) => ({ ...m, [id]: ref.storagePath }));
+            setThumbBucketById((m) => ({ ...m, [id]: ref.bucket }));
+            setThumbRetryById((m) => ({ ...m, [id]: 0 }));
             setThumbDiagById((m) => {
-              if (!m[ev.id]) return m;
+              if (!m[id]) return m;
               const n = { ...m };
-              delete n[ev.id];
+              delete n[id];
               return n;
             });
-            setThumbStatusById((m) => ({ ...m, [ev.id]: Number(resp?.status || 200) }));
-            setThumbMintErrorById((m) => ({ ...m, [ev.id]: "-" }));
-            setThumbProbeStatusById((m) => ({ ...m, [ev.id]: 0 }));
-            setThumbProbeErrorById((m) => ({ ...m, [ev.id]: "-" }));
-            setThumbErr((m) => ({ ...m, [ev.id]: false }));
+            setThumbStatusById((m) => ({ ...m, [id]: Number(resp?.status || 200) }));
+            setThumbMintErrorById((m) => ({ ...m, [id]: "-" }));
+            setThumbProbeStatusById((m) => ({ ...m, [id]: 0 }));
+            setThumbProbeErrorById((m) => ({ ...m, [id]: "-" }));
+            setThumbErr((m) => ({ ...m, [id]: false }));
           }
         } catch (e) {
-          console.warn("thumb prefetch failed", ev.id, e);
-          setThumbDiagById((m) => ({ ...m, [ev.id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
-          setThumbMintErrorById((m) => ({ ...m, [ev.id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
-          setThumbErr((m) => ({ ...m, [ev.id]: true }));
+          console.warn("thumb prefetch failed", id, e);
+          setThumbDiagById((m) => ({ ...m, [id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
+          setThumbMintErrorById((m) => ({ ...m, [id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
+          setThumbErr((m) => ({ ...m, [id]: true }));
+        } finally {
+          thumbMintInflightRef.current[id] = false;
         }
       })
     );
@@ -1830,12 +2182,13 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
         if (!hadErr && hasUrl && samePath) {
           continue;
         }
+        if (thumbMintInflightRef.current[id]) continue;
 
         try {
+          thumbMintInflightRef.current[id] = true;
           const resp = await mintEvidenceReadUrl({
             orgId,
             incidentId,
-            evidenceId: id,
             storagePath: ref.storagePath,
             bucket: ref.bucket,
             expiresSec: getThumbExpiresSec(),
@@ -1868,6 +2221,8 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
           setThumbDiagById((m: any) => ({ ...m, [id]: String(e?.message || e || "thumb_retry_failed") }));
           setThumbMintErrorById((m: any) => ({ ...m, [id]: String(e?.message || e || "thumb_retry_failed") }));
           setThumbErr((m: any) => ({ ...m, [id]: true }));
+        } finally {
+          thumbMintInflightRef.current[id] = false;
         }
       }
     } catch {
@@ -1898,8 +2253,7 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
     setThumbRetryById((m) => ({ ...m, [id]: retryN + 1 }));
     if (process.env.NODE_ENV !== "production") {
       logThumbEvent("img_error", {
-        evidenceId: id,
-        kind: ref.kind,
+          kind: ref.kind,
         bucket: ref.bucket,
         storagePath: ref.storagePath,
         src: currentSrc,
@@ -1910,7 +2264,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
     const out = await mintEvidenceReadUrl({
       orgId,
       incidentId,
-      evidenceId: id,
       bucket: ref.bucket,
       storagePath: ref.storagePath,
       expiresSec: getThumbExpiresSec(),
@@ -1970,7 +2323,6 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       [id]: `${showFail ? "" : "retrying:"}mint_http=${mintStatus} mint_error=${mintErr}${mintDetails ? `:${mintDetails}` : ""} probe_http=- probe_error=-`,
     }));
     logThumbEvent("retry_fail", {
-      evidenceId: id,
       kind: ref.kind,
       storagePath: ref.storagePath,
       status: mintStatus,
@@ -2020,8 +2372,9 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
 
   useEffect(() => {
     refresh();
-    
+
     syncNotesSavedLocal();
+    syncArrivedLocal();
 const t = setInterval(refresh, 60000);
 
   // === ZIP PACK v3: micro-feedback helpers ===
@@ -2053,7 +2406,7 @@ const t = setInterval(refresh, 60000);
     ghost:
       "px-2 py-1 rounded bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-xs",
     jump:
-      "px-2 py-1 rounded-full bg-amber-400/12 border border-amber-300/25 text-amber-200 " +
+      "px-2 py-1 rounded-full bg-amber-400/12 border border-indigo-400/20 text-indigo-200 " +
       "hover:bg-amber-400/18 transition text-xs",
   };
 
@@ -2087,7 +2440,8 @@ return () => clearInterval(t);
   }, [evidence, incidentId]);
 
   useEffect(() => {
-    if (process.env.NODE_ENV === "production") return;
+    const debugHeic = process.env.NODE_ENV !== "production" && String(process.env.NEXT_PUBLIC_PEAKOPS_DEBUG || "") === "1";
+    if (!debugHeic) return;
     (evidence || []).forEach((ev: any) => {
       const f: any = ev?.file || {};
       const hasThumb = !!String(f?.thumbPath || "").trim();
@@ -2127,7 +2481,11 @@ return () => clearInterval(t);
       };
 
       setTimeline((prev: any) => (Array.isArray(prev) ? [opt, ...prev] : [opt]));
-      router.replace(`/incidents/${incidentId}`, { scroll: false } as any);
+      // PEAKOPS_NOTES_SAVED_ORGID_V1: preserve orgId when stripping ?notesSaved=1.
+      // Losing orgId from the URL makes refresh() abort (per single-source-of-truth
+      // rule), which is why arrival state regressed after a notes save.
+      const nextUrl = `/incidents/${incidentId}?orgId=${encodeURIComponent(String(orgId || "").trim())}`;
+      router.replace(nextUrl, { scroll: false } as any);
     } catch {}
   }, [sp, incidentId]);
 useEffect(() => {
@@ -2135,7 +2493,7 @@ useEffect(() => {
     if (!v) return;
     setHi(v);
     toast("Evidence secured ✓");
-    const t = setTimeout(() => toast(null), 2200);
+    const t = setTimeout(() => toast(""), 2200);
     // Scroll tile into view (if present)
     setTimeout(() => {
       const el = document.querySelector(`[data-ev-id="${v}"]`);
@@ -2143,10 +2501,6 @@ useEffect(() => {
     }, 120);
     return () => clearTimeout(t);
   }, [sp]);
-useEffect(() => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [evidence]);
-
   function scrollToEvidence(eid: string) {
     try {
       const el = document.getElementById(`ev-${eid}`);
@@ -2155,26 +2509,31 @@ useEffect(() => {
   }
 
   function openModal(ev: EvidenceDoc) {
-    const u = thumbUrl[ev.id];
+    const id = String(ev?.id || "");
     setPreviewName(ev.file?.originalName || ev.id);
-    setPreviewUrl(u || "");
+    setPreviewUrl("");
     setSelectedEvidenceId(ev.id);
     setPreviewOpen(true);
     toast("Opened preview");
     (async () => {
       try {
+        if (!id) return;
         const ref = getBestEvidenceImageRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
+        if (thumbMintInflightRef.current[id]) return;
+        thumbMintInflightRef.current[id] = true;
         const resp = await mintEvidenceReadUrl({
           orgId,
           incidentId,
-          evidenceId: ev.id,
           storagePath: ref.storagePath,
           bucket: ref.bucket,
           expiresSec: getThumbExpiresSec(),
         });
         if (resp?.ok && resp.url) setPreviewUrl(resp.url);
       } catch {}
+      finally {
+        if (id) thumbMintInflightRef.current[id] = false;
+      }
     })();
   }
 
@@ -2282,64 +2641,110 @@ useEffect(() => {
     return out;
   }, [timeline]);
 
-  // PEAKOPS_NEXTBESTACTION_V1
-  const _hasSession = Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "SESSION_STARTED" || String(t?.type) === "FIELD_ARRIVED" || String(t?.type) === "EVIDENCE_ADDED");
-  const _evidenceN = Array.isArray(evidence) ? evidence.filter((ev: any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath||"").includes("demo_placeholder")).length : 0;
-  const _hasEvidence = _evidenceN >= 4;
-  const _hasNotes = !!(notesSavedLocal || (Array.isArray(timeline) && timeline.some((t: any) => String(t?.type) === "NOTES_SAVED")));
+  // PEAKOPS_FIELD_STATUS_CANONICAL_V1
+  // All incident-level readiness/stage rules live in one module:
+  //   @/lib/workflow/fieldIncidentStatus
+  // That module is the single source of truth for: the CTA label, the readiness
+  // checklist, the flow-stage bar, the timing card, and the bottom-dock tiles.
+  // Supervisor readiness is intentionally separate — see ReviewClient.tsx which
+  // derives from job-level facts (reviewableJobs, selectedJobEvidenceCount, …).
+  //
+  // _hasApproved is computed here (not in the helper) because it is a job-level
+  // fact owned by the supervisor pipeline. The helper only consumes its boolean
+  // to decide whether the field stage is "review" vs "done".
   const _hasApproved = Array.isArray(jobs) && jobs.length > 0 && jobs.every((j: any) => {
     const rs = String(j?.reviewStatus || "").trim().toLowerCase();
     const st = String(j?.status || "").trim().toLowerCase();
     return rs === "approved" || st === "approved";
   });
 
-  // PHASE6_1_TIMERS_V1
-  const _secForType = (ty: string): number | null => {
-    try {
-      let best = 0;
-      for (const t of (timeline || []) as any[]) {
-        if (String(t?.type || "") !== ty) continue;
-        const sec = Number(t?.occurredAt?._seconds || 0);
-        if (sec > best) best = sec;
-      }
-      return best ? best : null;
-    } catch {
-      return null;
-    }
-  };
+  const _fieldStatus = useMemo(
+    () => deriveFieldIncidentStatus({
+      timeline: timeline as any[],
+      evidence: evidence as any[],
+      notesSavedLocal,
+      arrivedLocal,
+      allJobsApproved: !!_hasApproved,
+    }),
+    [timeline, evidence, notesSavedLocal, arrivedLocal, _hasApproved]
+  );
 
-  const _arrivalSec = _secForType("FIELD_ARRIVED");
-  const _notesSec = _secForType("NOTES_SAVED");
+  // Local aliases preserve every downstream binding that used the previous
+  // inline variable names. Do NOT re-derive these inline — update the helper
+  // module and the new field shows up here automatically.
+  const hasArrival = _fieldStatus.hasArrival;
+  const hasEvidence = _fieldStatus.hasEvidence;
+  const hasNotes = _fieldStatus.hasNotes;
+  const isSubmitted = _fieldStatus.hasSubmitted;
+  const isApproved = !!_hasApproved;
+  const currentStage = _fieldStatus.currentStage;
 
-  // Prefer timeline event; fallback to latest evidence timestamp if needed
-  const _evidenceSecFromTL = _secForType("EVIDENCE_ADDED");
-  const _evidenceSecFromDocs =
-    (Array.isArray(evidence) && evidence[0] && (evidence[0] as any).storedAt?._seconds) ||
-    (Array.isArray(evidence) && evidence[0] && (evidence[0] as any).createdAt?._seconds) ||
-    null;
+  const _arrivalSec = _fieldStatus.arrivalSec;
+  const _notesSec = _fieldStatus.notesSec;
+  const _lastEvidenceSec = _fieldStatus.evidenceLatestSec;
 
-  const _lastEvidenceSec = _evidenceSecFromTL || (_evidenceSecFromDocs ? Number(_evidenceSecFromDocs) : null);
+  // Legacy prop names still referenced by NextBestAction / checklist / dock /
+  // submit button. Kept as aliases until those consumers are refactored to
+  // accept a single status object.
+  const _hasEvidence = _fieldStatus.hasEvidence;
+  const _hasNotes = _fieldStatus.hasNotes;
+  const _hasSubmitted = _fieldStatus.hasSubmitted;
+  const _hasSession = _fieldStatus.hasSessionTimeline;
+  const _evidenceN = _fieldStatus.evidenceCount;
 
-  const _arrivalAgo = _arrivalSec ? fmtAgo(_arrivalSec) : "—";
-  const _evidenceAgo = _lastEvidenceSec ? fmtAgo(_lastEvidenceSec) : "—";
-  const _notesAgo = _notesSec ? fmtAgo(_notesSec) : "—";
+  // Prefer the timeline timestamp; if it's missing but we know arrival happened
+  // (arrivedLocal sticky flag, or evidence exists), render a neutral "Arrived"
+  // instead of "Not started" so the timing card agrees with the CTA/checklist.
+  const _arrivalAgo = _arrivalSec
+    ? fmtAgo(_arrivalSec)
+    : hasArrival
+      ? "Arrived"
+      : "—";
+  const _evidenceAgo = _lastEvidenceSec
+    ? fmtAgo(_lastEvidenceSec)
+    : hasEvidence ? "Captured" : "—";
+  // If notes have been saved (sticky or timeline event) but no timestamp is
+  // available (e.g., sticky only, backend event missing), show a soft "Saved"
+  // so the timing card never disagrees with the checklist.
+  const _notesAgo = _notesSec
+    ? fmtAgo(_notesSec)
+    : hasNotes ? "Saved" : "—";
 
   return (
     invalidIncidentRoute ? (
-      <main className="min-h-screen bg-black text-white p-6">
-        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
-          <div className="text-sm text-amber-100 font-semibold">Invalid incident URL</div>
-          <div className="mt-2 text-sm text-amber-50/90">
-            This page was opened with a placeholder incident id (`/incidents/&lt;incidentId&gt;`).
+      <main style={{ minHeight: "100vh", background: "#050505", color: "#f5f5f5", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", color: "#C8A84E", marginBottom: 16 }}>PEAKOPS</div>
+        <div style={{ maxWidth: 400, width: "100%", border: "1px solid #1c1c1c", background: "#0b0b0b", borderRadius: 8, padding: 20, textAlign: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>Invalid incident URL</div>
+          <div style={{ fontSize: 12, color: "#6f6f6f", marginTop: 8, lineHeight: 1.5 }}>
+            This page requires a valid incident ID in the URL.
           </div>
-          <div className="mt-3 text-xs text-amber-100/80">
-            Open `/incidents/inc_demo` or a real incident id instead.
+          <div style={{ fontSize: 11, color: "#6f6f6f", marginTop: 12, fontFamily: "ui-monospace, monospace" }}>
+            /incidents/inc_demo
+          </div>
+        </div>
+      </main>
+    ) : !hasUsableOrgId(orgId) ? (
+      // PEAKOPS_NAV_ORGID_GUARD: URL is missing ?orgId=. Render a blocking
+      // state instead of live CTAs (Mark arrived / + Evidence / Go to Review),
+      // which would otherwise fire against an empty orgId and either fail the
+      // backend ("orgId required") or produce fake-empty data.
+      <main style={{ minHeight: "100vh", background: "#050505", color: "#f5f5f5", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", color: "#C8A84E", marginBottom: 16 }}>PEAKOPS</div>
+        <div style={{ maxWidth: 440, width: "100%", border: "1px solid #1c1c1c", background: "#0b0b0b", borderRadius: 8, padding: 20, textAlign: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>Missing orgId in URL</div>
+          <div style={{ fontSize: 12, color: "#6f6f6f", marginTop: 8, lineHeight: 1.5 }}>
+            This page needs <span style={{ color: "#C8A84E", fontFamily: "ui-monospace, monospace" }}>?orgId=&lt;your-org&gt;</span> to load incident data. Reload with the org appended to the URL.
+          </div>
+          <div style={{ fontSize: 11, color: "#6f6f6f", marginTop: 12, fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
+            /incidents/{String(incidentId || "").trim() || "<id>"}?orgId=&lt;your-org&gt;
           </div>
         </div>
       </main>
     ) : (
     <main
-      className="min-h-screen bg-black text-white"
+      className="min-h-screen text-white"
+      style={{ background: "#050505" }}
       onPointerDownCapture={(ev) => {
         if (process.env.NODE_ENV === "production") return;
         try {
@@ -2361,30 +2766,66 @@ useEffect(() => {
         } catch {}
       }}
     >
-      
+      <FlowStageBar stage={currentStage} />
       {/* Top bar */}
-      <div className="px-4 pt-4 pb-3 border-b border-white/10 sticky top-0 bg-black/80 backdrop-blur z-10">
-        <div className="flex items-start justify-between gap-3">
+      <div style={{ padding: "10px 16px", borderBottom: "1px solid #1c1c1c", position: "sticky", top: 0, background: "rgba(5,5,5,0.95)", backdropFilter: "blur(8px)", zIndex: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
           <div>
-            <div className="text-[11px] uppercase tracking-wider text-gray-400">Field Incident</div>
-            <div className="text-xl font-semibold tracking-tight">{incidentId} • Riverbend Electric</div>
-            <div className="mt-1 text-[11px]">
-              <span className={"px-2 py-0.5 rounded-full border " + (isClosed ? "bg-red-500/15 border-red-400/30 text-red-100" : "bg-emerald-500/15 border-emerald-400/30 text-emerald-100")}>
-                status: {incidentStatus || "open"}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#C8A84E" }}>PEAKOPS</span>
+              <span style={{
+                padding: "1px 6px", borderRadius: 3, fontWeight: 600, fontSize: 9,
+                border: isClosed ? "1px solid #1c1c1c" : "1px solid rgba(34,197,94,0.2)",
+                background: isClosed ? "#0b0b0b" : "rgba(34,197,94,0.06)",
+                color: isClosed ? "#6f6f6f" : "#22c55e",
+              }}>
+                {String(incidentStatus || "open").toUpperCase()}
               </span>
-              <span className="ml-2 text-gray-400">updated: {incidentUpdatedAtSec ? fmtAgo(incidentUpdatedAtSec) : "—"}</span>
-              {isDemoMode ? (
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#f5f5f5", marginTop: 2 }}>{incidentTitle || incidentId}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, fontSize: 10, color: "#6f6f6f", flexWrap: "wrap" }}>
+              {incidentTitle ? <span style={{ fontFamily: "ui-monospace, monospace" }}>{incidentId}</span> : null}
+              {incidentTitle ? <span>·</span> : null}
+              <span>{orgId}</span>
+              {incidentUpdatedAtSec ? <span>· {fmtAgo(incidentUpdatedAtSec)}</span> : null}
+                           {isDemoMode ? (
                 <>
-                  <span className="ml-2 px-2 py-0.5 rounded-full border bg-blue-500/15 border-blue-300/30 text-blue-100">
-                    Demo Mode
-                  </span>
                   <button
                     type="button"
-                    className="ml-2 px-2 py-0.5 rounded-full border bg-white/6 border-white/12 text-gray-200 hover:bg-white/10"
-                    onClick={() => { void copyDemoResetCommand(); }}
-                    title="Copy deterministic demo reset command"
+                    style={{ marginLeft: 8, padding: "1px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }}
+                    onClick={() => { void resetDemoNow(); }}
+                    title="Fully reset demo data and reload clean"
                   >
-                    Reset demo (copy command)
+                    Reset
+                  </button>
+                  <button
+                    type="button"
+                    style={{ marginLeft: 4, padding: "1px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }}
+                    onClick={async () => {
+                      try {
+                        toast("Seeding demo evidence…", 1500);
+
+                        const res = await fetch("/api/dev/seed-demo-evidence", {
+                          method: "POST",
+                          cache: "no-store",
+                        });
+
+                        const out = await res.json().catch(() => ({}));
+
+                        if (!res.ok || !out?.ok) {
+                          throw new Error(out?.error || "seed-demo-evidence failed");
+                        }
+
+                        toast(`Seeded ${out.count} demo evidence`, 2200);
+                        window.location.reload();
+                      } catch (e: any) {
+                        toast("Seed failed: " + (e?.message || String(e)), 3500);
+                        console.error(e);
+                      }
+                    }}
+                    title="Seed 5 clean demo evidence items for testing"
+                  >
+                    Seed demo evidence
                   </button>
                 </>
               ) : null}
@@ -2392,36 +2833,30 @@ useEffect(() => {
           </div>
 
           <div className="flex items-center gap-2">
+
             <button
               type="button"
-              className="px-2 py-1 rounded-full text-xs bg-purple-600/20 border border-purple-400/20 text-purple-100 hover:bg-purple-600/30 transition"
+              style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", color: "#C8A84E" }}
               title="Supervisor review + approve/lock"
               onClick={() => {
                 const id = String(incidentId || "");
                 if (!id || id.includes("${")) return;
-                router.push(`/incidents/${id}/review`);
+                router.push(reviewPath(id, orgId));
               }}
             >
               Review
             </button>
+            {isClosed ? (
+              <span style={{ fontSize: 10, color: "#6f6f6f" }}>Incident closed</span>
+            ) : _hasApproved ? (
+              <span style={{ fontSize: 10, color: "#22c55e" }}>Approved</span>
+            ) : _hasSubmitted ? (
+              <span style={{ fontSize: 10, color: "#C8A84E" }}>Submitted</span>
+            ) : null}
             <button
               type="button"
-              className={
-                "px-2 py-1 rounded-full text-xs border transition " +
-                (isClosed
-                  ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
-                  : "bg-red-600/20 border-red-400/30 text-red-100 hover:bg-red-600/30")
-              }
-              disabled={isClosed || closingIncident}
-              onClick={() => { try { closeIncident(); } catch {} }}
-              title={isClosed ? "Incident already closed" : "Set incident status to closed"}
-            >
-              {closingIncident ? "Closing..." : "Close Incident"}
-            </button>
-            <button
-              type="button"
-              className="px-2 py-1 rounded-full text-xs bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 transition"
-              onClick={() => { try { router.push(`/incidents/${incidentId}/summary`); } catch {} }}
+              style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3" }}
+              onClick={() => { try { router.push(summaryPath(incidentId, orgId)); } catch {} }}
               title="Open incident summary"
             >
               Summary
@@ -2431,21 +2866,21 @@ useEffect(() => {
 
         {/* PEAKOPS_UX_TOAST_RENDER_V1 */}
         {toastMsg ? (
-          <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-20 z-50 px-3 py-2 rounded-xl bg-black/70 border border-white/10 text-sm text-gray-100 backdrop-blur shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
+          <div style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", top: 72, zIndex: 50, padding: "8px 14px", borderRadius: 6, background: "rgba(11,11,11,0.95)", border: "1px solid #1c1c1c", fontSize: 12, color: "#b3b3b3", backdropFilter: "blur(8px)", pointerEvents: "none" }}>
             {toastMsg}
           </div>
         ) : null}
-        <div className="mt-3 flex items-center gap-2">
+        <div style={{ marginTop: 10, display: "flex", gap: 4 }}>
           {(["overview", "timeline", "evidence", "jobs"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
-              className={
-                "px-3 py-1.5 rounded-lg text-xs border transition " +
-                (activeTab === tab
-                  ? "bg-cyan-500/20 border-cyan-300/35 text-cyan-100"
-                  : "bg-white/5 border-white/10 text-gray-300 hover:bg-white/10")
-              }
+              style={{
+                padding: "5px 12px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                border: activeTab === tab ? "1px solid rgba(200,168,78,0.35)" : "1px solid #1a1a1a",
+                background: activeTab === tab ? "rgba(200,168,78,0.1)" : "transparent",
+                color: activeTab === tab ? "#C8A84E" : "#6f6f6f",
+              }}
               onClick={() => setTab(tab)}
             >
               {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Evidence" : "Jobs"}
@@ -2467,54 +2902,45 @@ useEffect(() => {
     return (
       <div className="space-y-3 mt-3">
         {req && (reqMsg || reqJobId) ? (
-          <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wide text-amber-200/90">Update requested</div>
-                <div className="text-sm text-amber-100 mt-1 break-words">
+          <div style={{ borderRadius: 8, border: "1px solid rgba(200,168,78,0.25)", background: "rgba(200,168,78,0.06)", padding: "10px 14px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Update requested</div>
+                <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4, wordBreak: "break-word" }}>
                   {reqMsg ? reqMsg : "Supervisor requested an update."}
                 </div>
-                {reqJobId ? (
-                  <div className="text-xs text-amber-200/80 mt-1">jobId: {reqJobId}</div>
-                ) : null}
+                {reqJobId ? <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>Job: {reqJobId}</div> : null}
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-amber-50"
-                  onClick={() => { try { setTab("timeline"); } catch { try { location.hash="#timeline"; } catch {} } }}
-                >
-                  View timeline
-                </button>
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-amber-50"
-                  onClick={() => { try { setTab("evidence"); } catch { try { document.getElementById("evidence")?.scrollIntoView({behavior:"smooth"}); } catch {} } }}
-                >
-                  Go to evidence
-                </button>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button type="button" style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", fontSize: 11, cursor: "pointer" }} onClick={() => { setTab("evidence"); }}>Evidence</button>
               </div>
             </div>
           </div>
         ) : null}
 
-        <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wide text-gray-400">My active job</div>
-              <div className="text-sm text-gray-200 mt-1 truncate">
-                {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "No job selected")}
+        <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "10px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f" }}>Active Job</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#f5f5f5", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "No active job assigned yet")}
               </div>
-              <div className="text-xs text-gray-400 mt-1">
-                status: <span className="text-gray-200">{jobStatus || "n/a"}</span>
-                {locked ? <span className="ml-2 text-emerald-200">• locked</span> : null}
+              <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>
+                {activeJobId ? (
+                  <>
+                    {String(jobStatus || "n/a").toUpperCase()}
+                    {locked ? <span style={{ color: "#22c55e", marginLeft: 6 }}>Locked</span> : null}
+                  </>
+                ) : (
+                  "You can capture evidence now — it will save to this incident and can be assigned to a job later."
+                )}
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
               {activeJobId ? (
                 <button
                   type="button"
-                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 hover:bg-white/10 text-sm text-gray-100"
+                  style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
                   onClick={() => {
                     try {
                       const url = `/jobs/${encodeURIComponent(String(activeJobId||""))}?incidentId=${encodeURIComponent(String(incidentId||""))}&orgId=${encodeURIComponent(String(orgId||""))}`;
@@ -2522,26 +2948,31 @@ useEffect(() => {
                     } catch (e) { console.error(e); }
                   }}
                 >
-                  Open job
+                  Open
                 </button>
               ) : null}
+              {/* PEAKOPS_OVERVIEW_CTA_HIERARCHY_V1
+                  Pre-arrival: Mark Arrived is the single dominant primary (inside NextBestAction).
+                  This "+ Evidence" is a muted secondary shortcut until the user marks arrived.
+                  Post-arrival: Evidence is the next primary action, so this button promotes to gold-gradient. */}
               <button
                 type="button"
-                className={
-                  "px-3 py-2 rounded-xl border text-sm transition " +
-                  (isClosed
-                    ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
-                    : "bg-white/6 border-white/10 hover:bg-white/10 text-gray-100")
-                }
+                style={{
+                  padding: "6px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                  cursor: isClosed ? "not-allowed" : "pointer",
+                  border: (isClosed || !hasArrival) ? "1px solid #1c1c1c" : "none",
+                  background: isClosed
+                    ? "#0b0b0b"
+                    : !hasArrival
+                      ? "transparent"
+                      : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
+                  color: isClosed ? "#6f6f6f" : !hasArrival ? "#6f6f6f" : "#050505",
+                }}
                 onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
                 disabled={isClosed}
-                title={
-                  isClosed
-                    ? "Incident is closed (read-only)"
-                    : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : "Add evidence")
-                }
+                title={!hasArrival ? "Optional — you can also capture after you mark arrived" : "Add evidence"}
               >
-                Add evidence
+                + Evidence
               </button>
             </div>
           </div>
@@ -2556,186 +2987,202 @@ useEffect(() => {
 
       </div>
 
-      <div className={"p-4 space-y-4 " + (contextLockId ? "opacity-[0.94] transition-opacity" : "")}>
-        {refreshError ? (
-          <div className="rounded-xl border border-red-400/30 bg-red-500/10 text-red-100 text-xs px-3 py-2">
-            <div className="font-semibold">Refresh failed</div>
-            <div className="mt-1 break-all">{refreshError.message}</div>
-            {refreshError.endpoint ? <div className="mt-1 break-all text-red-200/90">endpoint: {refreshError.endpoint}</div> : null}
-            {refreshError.fallback ? <div className="mt-1 text-red-200/90">fallback: applied</div> : null}
-            {process.env.NODE_ENV !== "production" && getEnvFunctionsBase() ? (
-              <div className="mt-1 text-red-200/90">envBase present, fallback disabled</div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
-              <button
-                type="button"
-                className="mt-2 px-2 py-1 rounded border border-red-300/30 bg-black/30 hover:bg-black/50 text-[11px]"
-                onClick={() => {
-                  clearRememberedFunctionsBase();
-                  try {
-                    const envBase = getEnvFunctionsBase();
-                    if (envBase) sessionStorage.setItem("peakops_last_functions_base_reset", envBase);
-                  } catch {}
-                  location.reload();
-                }}
-              >
-                Reset connection
-              </button>
-            ) : null}
-            {refreshError.status ? <div className="mt-1">status: {refreshError.status}</div> : null}
-            {refreshError.body ? (
-              <details className="mt-1">
-                <summary className="cursor-pointer">response body</summary>
-                <pre className="mt-1 whitespace-pre-wrap break-words">{String(refreshError.body || "").slice(0, 500)}</pre>
-              </details>
-            ) : null}
-          </div>
-        ) : null}
-        
-              
-{/* PEAKOPS: removed big Open Notes bar */}
-{/* PEAKOPS_NEXTBESTACTION_V1_RENDER */}
-        {activeTab === "overview" ? (
-		<NextBestAction
-	  arrived={arrived}
-	  hasSession={_hasSession}
-	  hasEvidence={_hasEvidence}
-	  hasNotes={_hasNotes}
-	  hasApproved={_hasApproved}
-	  onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
-	  onAddEvidence={() => {
-      if (isClosed) return toast("Incident is closed (read-only).", 2600);
-      if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
-      goAddEvidence();
-    }}
-  onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
-  onSubmitSession={() => { if (!isClosed) { try { submitSession(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
-/>
-        ) : null}
+      <div className={"p-3 " + (contextLockId ? "opacity-[0.94] transition-opacity" : "")} style={{ display: "grid", gap: 8 }}>
 
-{/* PHASE6_1_TIMERS_V1_RENDER */}
-        {/* PHASE6_1_TIMERS_POLISH_V2 + PHASE6_2_ACTION_NEEDED_V1 */}
+{/* Overview 2-column layout */}
 {activeTab === "overview" ? (
-<div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-  <div className="flex items-center justify-between gap-3">
-    <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
-    {_notesAgo === "—" ? (
-      <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-300/25 text-amber-100">
-        Action needed: notes
-      </span>
-    ) : null}
-  </div>
+  <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(200px, 2fr)", gap: 8, alignItems: "start" }}>
+    {/* LEFT: Primary action */}
+    <div style={{ display: "grid", gap: 8 }}>
+      {_hasSubmitted ? (
+        <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#22c55e" }}>Submitted for review</div>
+          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>Session submitted. Waiting for supervisor approval.</div>
+          <div style={{ marginTop: 10 }}>
+            <button type="button" style={{ width: "100%", padding: "14px 0", borderRadius: 8, border: "none", background: "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: "#050505", fontSize: 16, fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 12px rgba(200,168,78,0.20)" }} onClick={() => { try { router.push(reviewPath(incidentId, orgId)); } catch {} }}>
+              Go to Review
+            </button>
+          </div>
+        </section>
+      ) : (
+        <NextBestAction
+          arrived={hasArrival}
+          hasSession={_hasSession}
+          hasEvidence={_hasEvidence}
+          hasNotes={_hasNotes}
+          hasApproved={_hasApproved}
+          evidenceCount={evidenceCount}
+          onOpenNotes={() => router.push(notesPath(incidentId, orgId))}
+          onAddEvidence={() => {
+            if (isClosed) return toast("Incident is closed (read-only).", 2600);
+            goAddEvidence();
+          }}
+          onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
+          onSubmitSession={() => { if (!isClosed) { void submitSession(); } else toast("Incident is closed (read-only).", 2600); }}
+        />
+      )}
 
-  <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
-    <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-1">
-      <div className="text-[10px] uppercase tracking-wide text-gray-400">Arrival</div>
-      <div className="mt-1 text-base font-semibold text-gray-100">{_arrivalAgo}</div>
+      {reqUpdateText ? (
+        <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#101010", padding: "10px 12px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Update requested</span>
+            <button type="button" style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }} onClick={() => { clearReqUpdate(); }}>Dismiss</button>
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: "#b3b3b3", lineHeight: 1.4 }}>{reqUpdateText}</div>
+        </div>
+      ) : null}
     </div>
 
-    <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-2">
-      <div className="text-[10px] uppercase tracking-wide text-gray-400">Evidence</div>
-      <div className="mt-1 text-base font-semibold text-gray-100">{_evidenceAgo}</div>
-    </div>
-
-    <div
-      className={
-        "rounded-xl border px-3 py-2 sm:col-span-2 " +
-        (_notesAgo === "—"
-          ? "bg-amber-500/10 border-amber-300/25"
-          : "bg-black/30 border-white/10")
-      }>
-      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-amber-200/80" : "text-gray-400")}>
-        Notes
+    {/* RIGHT: Status + Timers + Sync */}
+    <div style={{ display: "grid", gap: 8 }}>
+      {/* Timers */}
+      <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "10px 14px" }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f", marginBottom: 8 }}>Field Timing</div>
+        <div style={{ display: "grid", gap: 0 }}>
+          {[
+            { label: "Arrival", value: _arrivalAgo, empty: _arrivalAgo === "—", emptyText: "Not started" },
+            { label: "Evidence", value: _evidenceAgo, empty: _evidenceAgo === "—", emptyText: "No evidence" },
+            { label: "Notes", value: _notesAgo, empty: _notesAgo === "—", emptyText: "No notes" },
+          ].map((t, i) => (
+            <div key={t.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "7px 0", borderBottom: i < 2 ? "1px solid #1c1c1c" : "none" }}>
+              <span style={{ fontSize: 12, fontWeight: 500, color: "#b3b3b3" }}>{t.label}</span>
+              <span style={{ fontSize: 16, fontWeight: 800, color: t.empty ? "#C8A84E" : "#f5f5f5" }}>{t.empty ? t.emptyText : t.value}</span>
+            </div>
+          ))}
+        </div>
       </div>
-      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-amber-50" : "text-gray-100")}>
-        {_notesAgo}
-      </div>
+
+      {/* Sync state */}
+      {refreshError ? (
+        <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", overflow: "hidden", display: "flex" }}>
+          <div style={{ width: 3, flexShrink: 0, background: "rgba(220,60,60,0.4)" }} />
+          <div style={{ flex: 1, padding: "8px 12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 10, fontWeight: 600, color: "#b3b3b3" }}>Offline</span>
+              {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
+                <button type="button" style={{ padding: "2px 6px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }} onClick={() => { clearRememberedFunctionsBase(); location.reload(); }}>Retry</button>
+              ) : null}
+            </div>
+            <details style={{ marginTop: 4 }}>
+              <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f" }}>Details</summary>
+              <div style={{ marginTop: 4, fontSize: 9, color: "#6f6f6f", wordBreak: "break-all" }}>
+                {refreshError.message}
+                {refreshError.endpoint ? <div>endpoint: {refreshError.endpoint}</div> : null}
+                {refreshError.status ? <div>status: {refreshError.status}</div> : null}
+              </div>
+            </details>
+          </div>
+        </div>
+      ) : null}
     </div>
   </div>
-</div>
 ) : null}
 
-
-        
-        {/* PHASE5A_REQUEST_UPDATE_BANNER_V1 */}
-        {activeTab === "overview" && reqUpdateText ? (
-          <section className="rounded-2xl border border-amber-300/20 bg-amber-400/10 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wide text-amber-200/80">
-                  Supervisor requested an update
-                </div>
-                <div className="mt-1 text-sm text-amber-50/90 whitespace-pre-wrap break-words">
-                  {reqUpdateText}
-                </div>
-                <div className="mt-2 text-[11px] text-amber-100/50">
-                  (V2 demo: stored locally on this device. Phase B will persist to Firestore + notify.)
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-amber-50 hover:bg-white/10"
-                  onClick={() => { try { loadReqUpdate(); } catch {} try { refresh(); } catch {} }}
-                  title="Reload local request note"
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  className="px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-300/25 text-sm text-amber-50 hover:bg-amber-500/20"
-                  onClick={() => {
-                    clearReqUpdate();
-                  }}
-                  title="Clear this request note (local only)"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-          </section>
-        ) : null}
+{/* Non-overview content continues below */}
+{activeTab !== "overview" && refreshError ? (
+  <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "8px 12px", fontSize: 10, color: "#b3b3b3" }}>
+    Offline: {refreshError.message}
+  </div>
+) : null}
 
 {/* Quick actions */}
         {activeTab === "evidence" ? (
-        <section ref={myJobSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
-  <div className="flex items-center justify-between gap-2">
-    <div className="text-xs uppercase tracking-wide text-gray-400" id="evidence">Evidence</div>
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-500">Latest {Math.min(12, evidence.length)}</span>
+        <section ref={myJobSectionRef} style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
+  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+      <h2 id="evidence" style={{ margin: 0, fontSize: 13, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#f5f5f5" }}>Evidence</h2>
+      <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", lineHeight: 1.6 }}>
+        {evidence.length} {evidence.length === 1 ? "item" : "items"}
+      </span>
+    </div>
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <button type="button" style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", cursor: isClosed ? "not-allowed" : "pointer", opacity: isClosed ? 0.5 : 1 }} disabled={isClosed} onClick={() => { try { goAddEvidence(); } catch {} }}>+ Add evidence</button>
       {process.env.NODE_ENV !== "production" ? (
-        <>
-          <button
-            type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-            onClick={() => refreshVisibleThumbsDebounced()}
-          >
-            Refresh thumbnails
-          </button>
-          <button
-            type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-            onClick={() => forceRemintVisibleThumbs()}
-          >
-            Force remint URLs
-          </button>
-          <button
-            type="button"
-            className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-            onClick={() => setThumbDebugOverlay((v) => !v)}
-          >
-            {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
-          </button>
-        </>
+        <details style={{ display: "inline" }}>
+          <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f", padding: "2px 6px" }}>Dev</summary>
+          <div style={{ position: "absolute", zIndex: 20, background: "#0b0b0b", border: "1px solid #1c1c1c", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+            <button type="button" style={{ padding: "3px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "transparent", color: "#6f6f6f", fontSize: 9, cursor: "pointer", textAlign: "left" }} onClick={() => refreshVisibleThumbsDebounced()}>Refresh thumbs</button>
+            <button type="button" style={{ padding: "3px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "transparent", color: "#6f6f6f", fontSize: 9, cursor: "pointer", textAlign: "left" }} onClick={() => forceRemintVisibleThumbs()}>Force remint</button>
+            <button type="button" style={{ padding: "3px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "transparent", color: "#6f6f6f", fontSize: 9, cursor: "pointer", textAlign: "left" }} onClick={() => setThumbDebugOverlay((v) => !v)}>{thumbDebugOverlay ? "Hide debug" : "Show debug"}</button>
+          </div>
+        </details>
       ) : null}
     </div>
   </div>
 
-  {/* Evidence rail centering depends on runway padding on #evidenceScroller. Keep that padding. */}
-  <div className="mt-3 -mx-1 overflow-x-auto px-[calc(50%-74px)] scroll-smooth scroll-pl-4 scroll-pr-4 sm:scroll-pl-[calc(50vw-74px)] sm:scroll-pr-[calc(50vw-74px)]" id="evidenceScroller"
->
-    <div className="flex gap-2 snap-x snap-mandatory">
+  {evidence.length === 0 ? (
+    <div style={{ marginTop: 14, padding: "20px 8px 10px", textAlign: "center" }}>
+      <div style={{ width: 44, height: 44, margin: "0 auto 12px", borderRadius: 10, border: "1px solid #1c1c1c", background: "#050505", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="#6f6f6f" strokeWidth="1.5"/><circle cx="8.5" cy="9" r="1.5" fill="#6f6f6f"/><path d="M3 16l5-5 3 3 4-5 6 7" stroke="#6f6f6f" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>No evidence yet</div>
+      <div style={{ marginTop: 4, fontSize: 12, color: "#6f6f6f", lineHeight: 1.5, maxWidth: 320, marginLeft: "auto", marginRight: "auto" }}>
+        Capture photos and files now — they save to this incident and can be assigned to a job later.
+      </div>
+      <button
+        type="button"
+        style={{
+          marginTop: 14,
+          padding: "12px 22px",
+          borderRadius: 8,
+          border: "none",
+          background: isClosed ? "#1c1c1c" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
+          color: isClosed ? "#6f6f6f" : "#050505",
+          fontSize: 13,
+          fontWeight: 800,
+          letterSpacing: "0.02em",
+          cursor: isClosed ? "not-allowed" : "pointer",
+          boxShadow: isClosed ? "none" : "0 2px 12px rgba(200,168,78,0.20)",
+        }}
+        disabled={isClosed}
+        onClick={() => { try { goAddEvidence(); } catch {} }}
+      >
+        + Add Evidence
+      </button>
+      {isClosed ? (
+        <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f" }}>
+          Incident is closed (read-only).
+        </div>
+      ) : !hasActiveFieldJobs ? (
+        <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f", maxWidth: 320, marginLeft: "auto", marginRight: "auto", lineHeight: 1.5 }}>
+          No active job yet — your upload will attach to this incident. You can assign it to a job from the Evidence Mapping section below once a job exists.
+        </div>
+      ) : null}
+    </div>
+  ) : (
+  <>
+  {(() => {
+    const total = evidence.length;
+    const labeled = evidence.filter((e: any) => Array.isArray(e?.labels) && e.labels.length > 0).length;
+    const assigned = evidence.filter((e: any) => !!getLinkedJobId(e)).length;
+    const unlabeled = total - labeled;
+    const unassigned = total - assigned;
+    const chipStyle = (complete: boolean): React.CSSProperties => ({
+      fontSize: 10, fontWeight: 600, letterSpacing: "0.02em",
+      color: complete ? "#22c55e" : "#b3b3b3",
+      padding: "3px 9px", borderRadius: 999,
+      background: "#050505",
+      border: complete ? "1px solid rgba(34,197,94,0.3)" : "1px solid #1c1c1c",
+    });
+    const ready = total > 0 && unlabeled === 0 && unassigned === 0;
+    const needsParts: string[] = [];
+    if (unlabeled > 0) needsParts.push(`${unlabeled} unlabeled`);
+    if (unassigned > 0) needsParts.push(`${unassigned} unassigned`);
+    return (
+      <>
+        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+          <span style={chipStyle(false)}>{total} captured</span>
+          <span style={chipStyle(total > 0 && labeled === total)}>{labeled}/{total} labeled</span>
+          <span style={chipStyle(total > 0 && assigned === total)}>{assigned}/{total} assigned</span>
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, fontWeight: 500, color: ready ? "#22c55e" : "#b3b3b3" }}>
+          {ready ? "✓ Ready for review" : <>Needs: <span style={{ color: "#f5f5f5" }}>{needsParts.join(", ")}</span></>}
+        </div>
+      </>
+    );
+  })()}
+  <div style={{ marginTop: 8, marginLeft: -4, marginRight: -4, overflowX: "auto" }} id="evidenceScroller">
+    <div className="flex gap-2 snap-x snap-mandatory" style={{ padding: "0 4px" }}>
       {(() => {
         const list = (evidence || [])
           .filter((ev:any) => !!ev?.file?.storagePath && !String(ev?.file?.storagePath || "").includes("demo_placeholder"));
@@ -2747,6 +3194,8 @@ useEffect(() => {
               const u = thumbUrl[ev.id];
               const labels = (ev.labels || []).map(normLabel);
               const selected = selectedEvidenceId === ev.id;
+              const hasLabels = Array.isArray(ev?.labels) && ev.labels.length > 0;
+              const hasJob = !!getLinkedJobId(ev);
               const converting = isConvertingHeic(ev as EvidenceDoc);
               const convStatus = String((ev as any)?.file?.conversionStatus || "").toLowerCase();
               const uploadMissing = convStatus === "source_missing";
@@ -2759,9 +3208,9 @@ useEffect(() => {
                   key={ev.id}
                   data-ev-id={ev.id}
                   className={
-                    "snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] relative rounded-xl overflow-hidden border " +
-                    (selected ? "border-indigo-300/95 border-2 ring-4 ring-indigo-500/40 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_12px_40px_rgba(0,0,0,0.55)]  scale-[1.02] transition-transform duration-150" : "border-white/10 ") +
-                    "bg-black/40 hover:border-white/25 transition"
+                    "snap-start min-w-[132px] w-[132px] sm:min-w-[148px] sm:w-[148px] aspect-[4/3] relative rounded-lg overflow-hidden border transition " +
+                    (selected ? "border-[#C8A84E] border-2 ring-2 ring-[#C8A84E]/30 shadow-[0_0_0_1px_rgba(200,168,78,0.2),0_8px_24px_rgba(0,0,0,0.5)] scale-[1.02]" : "border-[#1a1a1a] ") +
+                    "bg-[#050505] hover:border-[#333]"
                   }
                   onClick={() => openModal(ev)}
                   title={ev.file?.originalName || ev.id}>
@@ -2780,6 +3229,14 @@ useEffect(() => {
                     )
                   )}
 
+                  <div
+                    style={{ position: "absolute", top: 6, right: 6, display: "flex", gap: 3, padding: "3px 6px", borderRadius: 999, background: "rgba(5,5,5,0.82)", border: "1px solid #1c1c1c" }}
+                    title={`${hasLabels ? "Labeled" : "Needs label"} · ${hasJob ? "Assigned" : "Needs job"}`}
+                  >
+                    <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: hasLabels ? "#22c55e" : "#C8A84E" }} />
+                    <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: hasJob ? "#22c55e" : "#C8A84E" }} />
+                  </div>
+
                   <div className="absolute top-2 left-2 flex flex-wrap gap-1">
                     {labels.slice(0, 2).map((l:string) => (
                       <span key={l} className={"text-[10px] px-2 py-0.5 rounded-full border " + labelChipColor(l)}>
@@ -2787,28 +3244,20 @@ useEffect(() => {
                       </span>
                     ))}
                     {converting ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-400/15 border-amber-300/30 text-amber-100">
-                        Converting…
-                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "rgba(200,168,78,0.15)", border: "1px solid rgba(200,168,78,0.3)", color: "#C8A84E" }}>Converting…</span>
                     ) : null}
                     {uploadMissing ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100">
-                        Upload not in storage yet
-                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "#0b0b0b", border: "1px solid #1c1c1c", color: "#b3b3b3" }}>Missing</span>
                     ) : null}
                     {conversionFailed ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-red-500/15 border-red-400/30 text-red-100" title={conversionError || "HEIC conversion failed"}>
-                        Convert failed
-                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "#0b0b0b", border: "1px solid #1c1c1c", color: "#b3b3b3" }} title={conversionError || "HEIC conversion failed"}>Failed</span>
                     ) : null}
                     {conversionNoPreview ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border bg-gray-500/15 border-gray-300/30 text-gray-100">
-                        No preview
-                      </span>
+                      <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 3, background: "#0b0b0b", border: "1px solid #1c1c1c", color: "#6f6f6f" }}>No preview</span>
                     ) : null}
                   </div>
 
-                  <div className="absolute bottom-2 left-2 right-2 text-[10px] text-gray-200/90 truncate bg-black/40 px-2 py-1 rounded">
+                  <div style={{ position: "absolute", bottom: 6, left: 6, right: 6, fontSize: 9, color: "#b3b3b3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", background: "rgba(5,5,5,0.7)", padding: "2px 6px", borderRadius: 3 }}>
                     {(ev.file?.originalName || "evidence")}
                   </div>
                   {process.env.NODE_ENV !== "production" && thumbDiagById[String(ev?.id || "")] ? (
@@ -2838,17 +3287,141 @@ useEffect(() => {
     </div>
   </div>
 
-  <div className="mt-2 text-[11px] text-gray-500">
-    Horizontal scroll. Tap a tile to preview. Timeline events will highlight related evidence.
+  <div style={{ marginTop: 8, fontSize: 10, color: "#6f6f6f", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+    <span>Tap a tile to preview, label, or assign to a job.</span>
+    {evidence.length > 12 ? (
+      <span style={{ color: "#b3b3b3" }}>Showing 12 of {evidence.length}</span>
+    ) : null}
   </div>
+
+  {selectedEvidence && !previewOpen ? (() => {
+    const selId = String(selectedEvidence.id || "");
+    const selThumb = thumbUrl[selId];
+    const selLabels = (selectedEvidence.labels || []).map(normLabel);
+    const selJobId = getLinkedJobId(selectedEvidence);
+    const selJob = (jobs || []).find((j: any) => String(j?.id || j?.jobId || "") === selJobId);
+    const selJobTitle = String(selJob?.title || selJobId || "");
+    const selSec = Number(selectedEvidence.storedAt?._seconds || selectedEvidence.createdAt?._seconds || 0);
+    const idx = (evidence || []).findIndex((ev: any) => String(ev?.id || "") === selId);
+    const canPrev = idx > 0;
+    const canNext = idx >= 0 && idx < (evidence || []).length - 1;
+    const go = (delta: number) => {
+      const nextIdx = idx + delta;
+      const next = (evidence || [])[nextIdx];
+      if (!next || !next.id) return;
+      setSelectedEvidenceId(next.id);
+      try { jumpToEvidence(String(next.id)); } catch {}
+    };
+    return (
+      <div style={{ marginTop: 10, borderRadius: 10, border: "1px solid rgba(200,168,78,0.25)", background: "#050505", overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 140px) minmax(0, 1fr)", gap: 12, padding: 12 }}>
+          <div style={{ borderRadius: 8, overflow: "hidden", background: "#0b0b0b", aspectRatio: "4 / 3", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {selThumb ? (
+              <img src={toInlineMediaUrl(selThumb)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            ) : (
+              <span style={{ fontSize: 10, color: "#6f6f6f" }}>No preview</span>
+            )}
+          </div>
+          <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#f5f5f5", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={String(selectedEvidence.file?.originalName || selId)}>
+              {selectedEvidence.file?.originalName || selId}
+            </div>
+            <div style={{ fontSize: 10, color: "#6f6f6f" }}>
+              {selSec ? `Uploaded ${fmtAgo(selSec)}` : `id: …${selId.slice(-6)}`}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 2 }}>
+              {selLabels.length > 0 ? (
+                selLabels.map((l: string) => (
+                  <span key={l} className={"text-[10px] px-2 py-0.5 rounded-full border " + labelChipColor(l)}>{l}</span>
+                ))
+              ) : (
+                <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>Needs a label</span>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: "#b3b3b3", marginTop: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {selJobId ? (
+                <span>Job: <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{selJobTitle}</span></span>
+              ) : (
+                <>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>Needs a job</span>
+                  {currentJobId ? (
+                    <button
+                      type="button"
+                      style={{ padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", cursor: isClosed ? "not-allowed" : "pointer" }}
+                      disabled={isClosed}
+                      onClick={() => { try { assignEvidenceJob(selId, String(currentJobId)); } catch {} }}
+                      title="Attach this evidence to your active job"
+                    >
+                      Assign to my job
+                    </button>
+                  ) : null}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderTop: "1px solid #1c1c1c", background: "#0b0b0b", gap: 8 }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              type="button"
+              disabled={!canPrev}
+              onClick={() => go(-1)}
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid #1c1c1c", background: "transparent", color: canPrev ? "#b3b3b3" : "#3a3a3a", cursor: canPrev ? "pointer" : "not-allowed" }}
+            >
+              ← Prev
+            </button>
+            <button
+              type="button"
+              disabled={!canNext}
+              onClick={() => go(1)}
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid #1c1c1c", background: "transparent", color: canNext ? "#b3b3b3" : "#3a3a3a", cursor: canNext ? "pointer" : "not-allowed" }}
+            >
+              Next →
+            </button>
+            <span style={{ alignSelf: "center", fontSize: 10, color: "#6f6f6f", marginLeft: 4 }}>
+              {idx >= 0 ? `${idx + 1} / ${evidence.length}` : ""}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              type="button"
+              onClick={() => { try { openModal(selectedEvidence); } catch {} }}
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", cursor: "pointer" }}
+            >
+              Open full
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedEvidenceId("")}
+              style={{ padding: "5px 10px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid #1c1c1c", background: "transparent", color: "#6f6f6f", cursor: "pointer" }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  })() : null}
+  </>
+  )}
 </section>
         ) : null}
 
         {activeTab === "jobs" ? (
-        <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase tracking-[0.16em] text-gray-400">My Job</div>
-            <span className="text-xs text-gray-500">default for new evidence</span>
+        <section style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>My Job</span>
+            <span style={{ fontSize: 10, color: "#6f6f6f" }}>default for new evidence</span>
+          </div>
+          <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.4 }}>Active field jobs appear here. Completed jobs move to Review.</div>
+          <div style={{ marginTop: 2, fontSize: 11, color: "#b3b3b3" }}>
+            {(() => {
+              const reviewReadyCount = (jobs || []).filter((j: any) => {
+                const s = normalizeJobStatus(j?.status);
+                return s !== "open" && s !== "in_progress" && s !== "assigned";
+              }).length;
+              return reviewReadyCount > 0 ? `${reviewReadyCount} job${reviewReadyCount === 1 ? "" : "s"} ready in Review` : "";
+            })()}
           </div>
 
           {(() => {
@@ -2856,10 +3429,112 @@ useEffect(() => {
             const currentTitle = String(current?.title || current?.id || current?.jobId || "").trim();
             const currentStatus = jobStatusText(current?.status);
 
+            // PEAKOPS_MARK_COMPLETE_WIRE_V1
+            // The existing markCurrentJobComplete() helper was defined but had
+            // no call site, which dead-ended the field→supervisor chain
+            // (supervisor gate = job status ∈ {complete,review} ∧ linked
+            // evidence ≥ 1). Gating mirrors the helper's own preconditions.
+            const currentJid = String(currentJobId || "").trim();
+            const currentNormalizedStatus = normalizeJobStatus(current?.status);
+            const currentIsFieldSelectable = isFieldSelectableJob(current?.status);
+            const markCompleteDisabled =
+              isClosed ||
+              jobsBusy ||
+              !currentJid ||
+              !current ||
+              !currentIsFieldSelectable;
+            const markCompleteDisabledReason = isClosed
+              ? "Incident is closed (read-only)"
+              : jobsBusy
+                ? "Job update in progress…"
+                : !currentJid || !current
+                  ? "Select a job first"
+                  : !currentIsFieldSelectable
+                    ? `Job is already ${currentNormalizedStatus || "past complete"}`
+                    : "Mark this job complete so it becomes reviewable";
+
+            // PEAKOPS_CREATE_JOB_INLINE_V1
+            // When the incident has zero jobs the select / Mark complete /
+            // Jump to mapping actions have nothing to operate on, and the
+            // supervisor dead-ends at "No reviewable jobs yet". Render the
+            // existing createJob() helper through a small inline form so a
+            // field user can create the first job without leaving the tab.
+            //
+            // Disable gating uses `createJobInflight` (a dedicated state flag
+            // flipped only inside createJob's try/finally) instead of the
+            // shared `jobsBusy`. That prevents unrelated job actions — including
+            // concurrent auto-refresh races — from wrongly greying out the button.
+            const createJobTitle = String(jobTitle || "").trim();
+            const createJobDisabled = isClosed || createJobInflight || !createJobTitle;
+            const showCreateJobInline = Array.isArray(jobs) && jobs.length === 0;
+
             return (
-              <div className="mt-3 space-y-3">
+              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                {showCreateJobInline ? (
+                  <div style={{ padding: 12, borderRadius: 8, border: "1px dashed #1c1c1c", background: "#050505" }}>
+                    <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>
+                      Create first job
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                      A job groups evidence under a specific task. Create one to enable Evidence Mapping and supervisor review.
+                    </div>
+                    <input
+                      type="text"
+                      value={jobTitle}
+                      onChange={(e) => setJobTitle(e.target.value)}
+                      placeholder="Job name (e.g. Pole inspection)"
+                      disabled={isClosed || createJobInflight}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !createJobDisabled) {
+                          e.preventDefault();
+                          try { createJob(); } catch {}
+                        }
+                      }}
+                      style={{
+                        width: "100%",
+                        marginTop: 10,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid #1c1c1c",
+                        background: "#101010",
+                        color: "#f5f5f5",
+                        fontSize: 13,
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { try { createJob(); } catch {} }}
+                      disabled={createJobDisabled}
+                      title={
+                        isClosed
+                          ? "Incident is closed (read-only)"
+                          : createJobInflight
+                            ? "Job create in progress…"
+                            : !createJobTitle
+                              ? "Enter a job name"
+                              : "Create this job and auto-select it"
+                      }
+                      style={{
+                        width: "100%",
+                        marginTop: 8,
+                        padding: "9px 14px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        letterSpacing: "0.02em",
+                        cursor: createJobDisabled ? "not-allowed" : "pointer",
+                        border: createJobDisabled ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
+                        background: createJobDisabled ? "#101010" : "rgba(200,168,78,0.1)",
+                        color: createJobDisabled ? "#6f6f6f" : "#C8A84E",
+                      }}
+                    >
+                      {createJobInflight ? "Creating…" : "+ Create Job"}
+                    </button>
+                  </div>
+                ) : null}
+
                 <select
-                  className="w-full text-sm bg-black/40 border border-white/15 rounded-lg px-3 py-2"
+                  style={{ width: "100%", fontSize: 13, background: "#101010", border: "1px solid #1c1c1c", borderRadius: 6, padding: "8px 10px", color: "#f5f5f5" }}
                   disabled={isClosed || jobsBusy || jobsForMapping.length === 0}
                   value={currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "")}
                   onChange={(e) => setCurrentJobId(String(e.target.value || ""))}
@@ -2880,93 +3555,114 @@ useEffect(() => {
                   })}
                 </select>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="px-3 py-2 rounded-lg text-sm border bg-white/6 border-white/12 text-gray-200 hover:bg-white/[0.08] disabled:opacity-50"
-                    disabled={!(currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "").trim())}
-                    onClick={() => {
-                      try {
-                        const fallbackJobId = String(
-                          currentJobId ||
-                          jobsForMapping?.[0]?.id ||
-                          jobsForMapping?.[0]?.jobId ||
-                          ""
-                        ).trim();
-                        if (fallbackJobId) {
-                          setCurrentJobId(fallbackJobId);
-                        }
-                        jumpToEvidenceMapping();
-                      } catch {}
-                    }}
-                  >
-                    Jump to evidence mapping
-                  </button>
+                <button
+                  type="button"
+                  style={{
+                    padding: "9px 14px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    letterSpacing: "0.02em",
+                    cursor: markCompleteDisabled ? "not-allowed" : "pointer",
+                    border: markCompleteDisabled ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
+                    background: markCompleteDisabled ? "#101010" : "rgba(200,168,78,0.1)",
+                    color: markCompleteDisabled ? "#6f6f6f" : "#C8A84E",
+                  }}
+                  disabled={markCompleteDisabled}
+                  onClick={() => { try { markCurrentJobComplete(); } catch {} }}
+                  title={markCompleteDisabledReason}
+                >
+                  ✓ Mark job complete
+                </button>
+                <div style={{ fontSize: 10, color: "#6f6f6f", lineHeight: 1.5, marginTop: -2 }}>
+                  A complete job with at least one linked evidence item becomes reviewable by the supervisor.
                 </div>
+
+                <button
+                  type="button"
+                  style={{ padding: "8px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, border: "1px solid #1c1c1c", background: "#101010", color: "#b3b3b3", cursor: "pointer" }}
+                  disabled={!(currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "").trim())}
+                  onClick={() => {
+                    try {
+                      const fallbackJobId = String(
+                        currentJobId ||
+                        jobsForMapping?.[0]?.id ||
+                        jobsForMapping?.[0]?.jobId ||
+                        ""
+                      ).trim();
+                      if (fallbackJobId) {
+                        setCurrentJobId(fallbackJobId);
+                      }
+                      jumpToEvidenceMapping();
+                    } catch {}
+                  }}
+                >
+                  Jump to evidence mapping
+                </button>
               </div>
             );
           })()}
 
           {orgOptionsLoadError ? (
-            <div className="mt-2 text-[11px] text-yellow-300">Org list failed to load</div>
+            <div style={{ marginTop: 8, fontSize: 11, color: "#C8A84E" }}>Org list failed to load</div>
           ) : orgOptionsLoaded && orgOptions.length === 0 ? (
-            <div className="mt-2 text-[11px] text-gray-400">No orgs available</div>
+            <div style={{ marginTop: 8, fontSize: 11, color: "#6f6f6f" }}>No orgs available</div>
           ) : null}
 
           {orgOptions.length === 0 && showOrgDevTools ? (
-            <div className="mt-2 flex items-center gap-2 text-[11px]">
-              <button
-                type="button"
-                className="underline text-cyan-200 disabled:text-gray-500"
-                onClick={() => { try { debugOrgs(); } catch {} }}
-                disabled={orgDebugBusy}
-              >
-                {orgDebugBusy ? "Debug orgs..." : "Debug orgs"}
-              </button>
-              <button
-                type="button"
-                className="underline text-cyan-200 disabled:text-gray-500"
-                onClick={() => { try { seedOrgsDev(); } catch {} }}
-                disabled={orgSeedBusy}
-              >
-                {orgSeedBusy ? "Seeding..." : "Seed orgs (dev)"}
-              </button>
-            </div>
-          ) : null}
-
-          {orgDebugJson ? (
-            <details className="mt-2 text-[11px] text-gray-300">
-              <summary className="cursor-pointer select-none">Org debug JSON</summary>
-              <pre className="mt-1 max-h-44 overflow-auto rounded bg-black/40 border border-white/[0.08] p-2 whitespace-pre-wrap break-words">{orgDebugJson}</pre>
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 10, color: "#6f6f6f" }}>Dev tools</summary>
+              <div style={{ marginTop: 4, display: "flex", gap: 8 }}>
+                <button type="button" style={{ fontSize: 10, color: "#6f6f6f", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }} onClick={() => { try { debugOrgs(); } catch {} }} disabled={orgDebugBusy}>{orgDebugBusy ? "Loading..." : "Debug orgs"}</button>
+                <button type="button" style={{ fontSize: 10, color: "#6f6f6f", background: "none", border: "none", textDecoration: "underline", cursor: "pointer" }} onClick={() => { try { seedOrgsDev(); } catch {} }} disabled={orgSeedBusy}>{orgSeedBusy ? "Seeding..." : "Seed orgs"}</button>
+              </div>
             </details>
           ) : null}
 
-          <div className="mt-2 text-[11px] text-gray-500">
+          {orgDebugJson ? (
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 10, color: "#6f6f6f" }}>Debug JSON</summary>
+              <pre style={{ marginTop: 4, maxHeight: 160, overflow: "auto", borderRadius: 6, background: "#101010", border: "1px solid #1c1c1c", padding: 8, whiteSpace: "pre-wrap", wordBreak: "break-all", fontSize: 10, color: "#b3b3b3" }}>{orgDebugJson}</pre>
+            </details>
+          ) : null}
+
+          <div style={{ marginTop: 8, fontSize: 11, color: "#6f6f6f" }}>
             Field view is simplified. Job status management is in Review.
           </div>
         </section>
         ) : null}
 
         {activeTab === "evidence" ? (
-        <section ref={evidenceMappingSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div id="evidence-mapping" className="text-xs uppercase tracking-wide text-gray-400">Evidence to Job Mapping</div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">Set `evidence.jobId`</span>
-              <button
-                type="button"
-                className={"px-2 py-1 rounded text-xs border " + (isClosed || jobsBusy || !currentJobId ? "bg-white/5 border-white/10 text-gray-500 cursor-not-allowed" : "bg-cyan-600/20 border-cyan-300/30 text-cyan-100 hover:bg-cyan-600/30")}
-                disabled={isClosed || jobsBusy || !currentJobId}
-                onClick={() => { try { assignAllUnassignedToCurrentJob(); } catch {} }}
-                title={currentJobId ? "Assign all unassigned evidence to My Job" : "Select My Job first"}
-              >
-                Assign all unassigned to My Job
-              </button>
+        <section ref={evidenceMappingSectionRef} style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+              <h2 id="evidence-mapping" style={{ margin: 0, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#f5f5f5" }}>Evidence Mapping</h2>
+              <span style={{ fontSize: 10, color: "#6f6f6f" }}>job assignment</span>
             </div>
+            <button
+              type="button"
+              style={{
+                padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", cursor: (isClosed || jobsBusy || !currentJobId) ? "not-allowed" : "pointer",
+                border: (isClosed || jobsBusy || !currentJobId) ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
+                background: (isClosed || jobsBusy || !currentJobId) ? "#101010" : "rgba(200,168,78,0.1)",
+                color: (isClosed || jobsBusy || !currentJobId) ? "#6f6f6f" : "#C8A84E",
+              }}
+              disabled={isClosed || jobsBusy || !currentJobId}
+              onClick={() => { try { assignAllUnassignedToCurrentJob(); } catch {} }}
+              title={currentJobId ? "Assign all unassigned evidence to My Job" : "Select My Job first"}
+            >
+              Assign all to My Job
+            </button>
           </div>
-          <div className="mt-1 text-[11px] text-gray-500">
-            Optional. New evidence auto-attaches to My Job.
+          <div style={{ marginTop: 6, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+            When a job is active, new evidence auto-attaches to it. Otherwise it stays on the incident and you can assign it here once a job is available.
           </div>
+          {(evidence || []).length === 0 ? (
+            <div style={{ marginTop: 12, padding: "14px 10px", borderRadius: 8, border: "1px dashed #1c1c1c", background: "#050505", textAlign: "center", fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+              Nothing to map yet. Evidence you add will show up here with a job selector.
+            </div>
+          ) : null}
+          {(evidence || []).length > 0 ? (
           <div className="mt-3 space-y-2">
             {(evidence || []).slice(0, 25).map((ev: any) => {
               const currentEvidenceJobId = getLinkedJobId(ev);
@@ -2985,9 +3681,17 @@ useEffect(() => {
                       <div className="text-[10px] text-gray-500 truncate">
                         {evSec ? `uploaded ${fmtAgo(evSec)}` : `id: …${eid ? eid.slice(-6) : "—"}`}
                       </div>
-                      <div className="text-[11px] text-cyan-200/85 truncate">
-                        job: {linkedJob ? String(linkedJob?.title || linkedJob?.id || linkedJob?.jobId || "") : (currentEvidenceJobId || "(no job)")}
-                      </div>
+                      {linkedJob ? (
+                        <div className="text-[11px] text-cyan-200/85 truncate">
+                          job: {String(linkedJob?.title || linkedJob?.id || linkedJob?.jobId || "")}
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: 2 }}>
+                          <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>
+                            Unassigned — stays on this incident
+                          </span>
+                        </div>
+                      )}
                     </div>
                     <select
                       className="text-xs bg-black/50 border border-white/15 rounded px-2 py-1 min-w-[180px]"
@@ -2998,7 +3702,7 @@ useEffect(() => {
                       <option value="">(no job)</option>
                       {jobs.map((j: any) => (
                         <option key={String(j?.id || j?.jobId)} value={String(j?.id || j?.jobId)}>
-                          {String(j?.id || j?.jobId || "job")}: {String(j?.title || "(untitled)")} ({jobStatusText(j?.status)})
+                          {String(j?.title || "(untitled)")} ({jobStatusText(j?.status)})
                         </option>
                       ))}
                     </select>
@@ -3043,152 +3747,110 @@ useEffect(() => {
               );
             })}
           </div>
+          ) : null}
         </section>
         ) : null}
 
         {/* Timeline story */}
         
         {activeTab === "timeline" ? (
-        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Timeline</div>
-            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">Auto-log: On</span>
+        <section style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Timeline</span>
+            <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#101010", color: "#6f6f6f" }}>Auto-log</span>
           </div>
+          {/* PEAKOPS_TIMELINE_VS_GALLERY_DISCLOSURE_V1
+              Timeline = count of logged events (FIELD_ARRIVED / EVIDENCE_ADDED / NOTES_SAVED / …).
+              Gallery = count of actual evidence docs. These two counts can differ when
+              legacy evidence was uploaded before the backend emit/read-path unification
+              (functions_clean/_incidentPath.js), or when an emit silently failed. The
+              gallery is authoritative for "how many photos do we have"; the timeline is
+              authoritative for "what events were logged". Showing both with a one-line
+              caption so neither number contradicts the other. */}
+          {(() => {
+            const eventCount = (Array.isArray(timeline) ? timeline : []).filter((t: any) => String(t?.type) === "EVIDENCE_ADDED").length;
+            const galleryCount = _evidenceN;
+            if (eventCount === galleryCount) return null;
+            return (
+              <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 6, border: "1px dashed #1c1c1c", background: "#050505", fontSize: 10, color: "#b3b3b3", lineHeight: 1.5 }}>
+                Timeline logs <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{eventCount}</span> evidence-added event{eventCount === 1 ? "" : "s"}; gallery holds <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{galleryCount}</span> item{galleryCount === 1 ? "" : "s"}. Gallery is authoritative.
+              </div>
+            );
+          })()}
 
-          
+
 <TimelinePanel
   items={timeline as any}
   onJumpToEvidence={jumpToEvidence}
   highlightId={selectedEvidenceId}
-  showHeader={false}
 />
         </section>
         ) : null}
 
-        {/* Notes section will remain below if you already inserted it elsewhere */}
-        {/* Readiness Checklist */}
-        {activeTab === "overview" ? (
-        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Readiness</div>
-            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">
-              Live
-            </span>
-          </div>
-
-          {(() => {
-            const hasSession = timeline.some((t: any) => String(t.type) === "SESSION_STARTED" || String(t.type) === "FIELD_ARRIVED" || String(t.type) === "EVIDENCE_ADDED");
-            const evidenceN = evidence.filter((ev: any) => !!ev.file?.storagePath && !String(ev.file?.storagePath||"").includes("demo_placeholder")).length;
-            const hasEvidence = evidenceN >= 4;
-            const hasNotes = notesSavedLocal || timeline.some((t: any) => String(t.type) === "NOTES_SAVED"); const hasApproved = _hasApproved;
-
-            const items = [
-              ["Field session started", hasSession],
-              ["Evidence captured (4+)", hasEvidence],
-              ["Notes saved", hasNotes],
-              ["Supervisor approved", hasApproved],
-            ];
-
-            const ready = hasSession && hasEvidence && hasNotes;
-
-            return (
-              <div className="mt-3 space-y-2 text-sm">
-                <div className={"rounded-xl p-3 border " + (ready ? "bg-green-700/15 border-green-400/20" : "bg-amber-700/10 border-amber-400/20")}>
-                  <div className="font-semibold">{ready ? "Ready for supervisor review" : "Not ready yet"}</div>
-                  <div className="text-xs text-gray-400 mt-1">This is computed from live events + evidence.</div>
-                </div>
-
-                <div className="grid gap-2">
-                  {items.map(([label, ok]) => (
-                    <div key={String(label)} className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
-                      <div className="text-gray-200">{label}</div>
-                      <div className={ok ? "text-green-300" : "text-gray-500"}>{ok ? "✓" : "—"}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
-        </section>
-        ) : null}
+        {/* Readiness — consolidated into the NextBestAction card above */}
 
         <div className="h-20" />
       </div>
 
       {/* Bottom dock */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/10">
-        <div className="grid grid-cols-4 gap-2">
-          {/* Arrive */}
-          <button
-            type="button"
-            className={
-              "py-3 rounded-xl text-sm font-semibold border transition " +
-              (arrived
-                ? "bg-emerald-500/15 border-emerald-300/25 text-emerald-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
-            }
-            onClick={() => { try { markArrived(); } catch {} }}
-            disabled={arrived || isClosed}
-            title={isClosed ? "Incident is closed (read-only)" : (arrived ? "Arrived (done)" : "Mark arrival")}>
-            Arrive
-          </button>
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 16px 12px", background: "rgba(5,5,5,0.96)", borderTop: "1px solid #1c1c1c", backdropFilter: "blur(12px)", zIndex: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+          {[
+            { label: "Arrive", done: hasArrival, onClick: () => { try { markArrived(); } catch {} }, disabled: hasArrival || isClosed },
+            { label: "Evidence", done: _hasEvidence, onClick: () => { try { goAddEvidence(); } catch {} }, disabled: isClosed },
+            { label: "Notes", done: _hasNotes, onClick: () => { try { router.push(notesPath(incidentId, orgId)); } catch {} }, disabled: false },
+          ].map((b) => (
+            <button
+              key={b.label}
+              type="button"
+              disabled={b.disabled}
+              onClick={b.onClick}
+              style={{
+                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: b.disabled ? "not-allowed" : "pointer",
+                borderLeft: b.done ? "2px solid #22c55e" : "none",
+                borderRight: "none", borderTop: "none", borderBottom: "none",
+                background: b.done ? "rgba(34,197,94,0.06)" : "#101010",
+                color: b.done ? "#22c55e" : b.disabled ? "#6f6f6f" : "#f5f5f5",
+                boxShadow: b.done ? "none" : "inset 0 -1px 0 rgba(255,255,255,0.03)",
+                outline: b.done ? "none" : "1px solid #1c1c1c",
+              }}
+            >
+              {b.done && <span style={{ marginRight: 4 }}>&#10003;</span>}
+              {b.label}
+            </button>
+          ))}
 
-          {/* Evidence */}
-          <button
-            type="button"
-            className={
-              "py-3 rounded-xl text-sm font-semibold border transition " +
-              (_hasEvidence
-                ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
-            }
-            onClick={() => { try { goAddEvidence(); } catch {} }}
-            disabled={isClosed}
-            title={
-              isClosed
-                ? "Incident is closed (read-only)"
-                : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : (_hasEvidence ? "Evidence captured (done)" : "Go to Evidence"))
-            }>
-            Evidence
-          </button>
-
-          {/* Notes */}
-          <button
-            type="button"
-            className={
-              "py-3 rounded-xl text-sm font-semibold border transition " +
-              (_hasNotes
-                ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
-            }
-            onClick={() => { try { router.push("/incidents/" + incidentId + "/notes"); } catch {} }}
-            title={_hasNotes ? "Notes saved (done)" : "Write notes"}>
-            Notes
-          </button>
-
-          {/* Submit */}
-          <button
-            type="button"
-            className={
-              "w-full py-3 rounded-xl text-sm font-semibold border transition " +
-              ((arrived && _hasEvidence && _hasNotes && !submitting && !isClosed)
-                ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
-                : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
-            }
-            disabled={submitting || !arrived || !_hasEvidence || !_hasNotes || isClosed}
-            title={
-              isClosed
-                ? "Incident is closed (read-only)"
-                : (arrived && _hasEvidence && _hasNotes)
-                ? "Submit session for supervisor review"
-                : "Complete Arrive + Evidence + Notes first"
-            }
-            onClick={(e) => {
-              try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {}
-              try { submitSession(); } catch {}
-            }}>
-            Submit
-          </button>
+          {_hasSubmitted ? (
+            <button
+              type="button"
+              onClick={() => { try { router.push(reviewPath(incidentId, orgId)); } catch {} }}
+              style={{
+                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: "pointer",
+                border: "none",
+                background: "linear-gradient(180deg, #9A7E2A 0%, #B89A3E 100%)",
+                color: "#050505",
+                boxShadow: "0 2px 8px rgba(200,168,78,0.15), inset 0 1px 0 rgba(255,255,255,0.08)",
+              }}
+            >
+              Review
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={submitting || !hasArrival || (!(_hasEvidence || _hasNotes)) || isClosed}
+              onClick={() => { void submitSession(); }}
+              style={{
+                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: (submitting || !hasArrival || (!(_hasEvidence || _hasNotes)) || isClosed) ? "not-allowed" : "pointer",
+                border: "none",
+                background: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "linear-gradient(180deg, #9A7E2A 0%, #B89A3E 100%)" : "#101010",
+                color: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "#050505" : "#6f6f6f",
+                boxShadow: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "0 2px 8px rgba(200,168,78,0.15), inset 0 1px 0 rgba(255,255,255,0.08)" : "inset 0 -1px 0 rgba(255,255,255,0.03)",
+                outline: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "none" : "1px solid #1c1c1c",
+              }}
+            >
+              Submit
+            </button>
+          )}
         </div>
       </div>
 
@@ -3247,7 +3909,7 @@ useEffect(() => {
               </button>
               {process.env.NODE_ENV !== "production" && selectedIsHeic && selectedMissingDerivatives ? (
                 <button
-                  className="text-xs px-2 py-1 rounded bg-amber-500/20 border border-amber-300/30 hover:bg-amber-500/30"
+                  className="text-xs px-2 py-1 rounded bg-amber-500/20 border border-indigo-400/20 hover:bg-amber-500/30"
                   disabled={convertingHeic}
                   onClick={() => { try { convertSelectedHeicNow(); } catch {} }}
                   title="Dev fallback: run HEIC conversion now"
