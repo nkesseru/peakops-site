@@ -2,6 +2,7 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const { resolveIncidentRef } = require("./_incidentPath");
 
 async function hasFieldSubmittedEvent(db, incidentId, sessionId) {
   const snap = await db
@@ -38,8 +39,13 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     const submittedBy = String(body.submittedBy || body.techUserId || "ui");
 
     const db = getFirestore();
-    const incRef = db.collection("incidents").doc(incidentId);
-
+    // PEAKOPS_STATUS_WRITE_ALIGN_V1
+    // Status writes must land on the same parent that getIncidentV1 reads from,
+    // so the summary header status pill reflects the latest state. Field
+    // sessions themselves stay on the legacy path (startFieldSessionV1 writes
+    // them there, the existing hasFieldSubmittedEvent helper reads them from
+    // there).
+    const { ref: incRef } = await resolveIncidentRef(orgId, incidentId);
     const sesRef = db.collection("incidents").doc(incidentId)
       .collection("fieldSessions").doc(sessionId);
 

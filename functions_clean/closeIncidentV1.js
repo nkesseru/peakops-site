@@ -2,6 +2,7 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const { resolveIncidentRef } = require("./_incidentPath");
 const { INCIDENT_STATUS, normalizeIncidentStatus, canTransitionIncident } = require("./incidentState");
 
 if (!admin.apps.length) admin.initializeApp();
@@ -106,7 +107,13 @@ exports.closeIncidentV1 = onRequest({ cors: true }, async (req, res) => {
       String(process.env.NODE_ENV || "").toLowerCase() !== "production" ||
       String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true";
 
-    const incRef = db.collection("incidents").doc(incidentId);
+    // PEAKOPS_STATUS_WRITE_ALIGN_V1
+    // Status must land on the parent that getIncidentV1 reads from (canonical
+    // when it exists, legacy otherwise). Jobs pre-check stays on legacy because
+    // createJobV1 and the rest of the job writers hardcode that path.
+    const { ref: incRef } = await resolveIncidentRef(orgId, incidentId);
+    const legacyIncRef = db.collection("incidents").doc(incidentId);
+
     const snap = await incRef.get();
     const data = snap.exists ? (snap.data() || {}) : {};
     const status = normalizeIncidentStatus(data.status);
@@ -129,7 +136,7 @@ exports.closeIncidentV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 403, { ok: false, error: "force_close_not_allowed_in_production" });
     }
     if (!forceClose) {
-      const jobsSnap = await incRef.collection("jobs").limit(500).get();
+      const jobsSnap = await legacyIncRef.collection("jobs").limit(500).get();
       const blocked = jobsSnap.docs
         .map((d) => ({ id: d.id, ...(d.data() || {}) }))
         .filter((job) => {

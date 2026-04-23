@@ -23,7 +23,14 @@ export type IncidentRouteOpts = {
 
 function buildQuery(orgId: string, extra?: IncidentRouteOpts["extraQuery"]): string {
   const params = new URLSearchParams();
-  params.set("orgId", String(orgId || "").trim());
+  // Only set orgId when we actually have one. Emitting an empty value
+  // ("?orgId=") is worse than omitting the key entirely — downstream pages
+  // read `searchParams.get("orgId")` as an empty string and trigger the
+  // "Missing orgId" blocking state instead of letting a missing value be a
+  // missing value. Callers that need strict enforcement should gate navigation
+  // with hasUsableOrgId() before building the URL.
+  const org = String(orgId || "").trim();
+  if (org) params.set("orgId", org);
   if (extra) {
     for (const [k, v] of Object.entries(extra)) {
       if (v === undefined || v === null) continue;
@@ -33,6 +40,12 @@ function buildQuery(orgId: string, extra?: IncidentRouteOpts["extraQuery"]): str
     }
   }
   return params.toString();
+}
+
+function buildPath(pathname: string, orgId: string, opts: IncidentRouteOpts): string {
+  const q = buildQuery(orgId, opts.extraQuery);
+  const qs = q ? `?${q}` : "";
+  return `${pathname}${qs}${buildHash(opts.hash)}`;
 }
 
 function buildHash(hash?: string): string {
@@ -45,29 +58,29 @@ function encIncident(incidentId: string): string {
   return encodeURIComponent(String(incidentId || "").trim());
 }
 
-/** Overview: /incidents/{id}?orgId={org}[&…][#hash] */
+/** Overview: /incidents/{id}[?orgId={org}[&…]][#hash] */
 export function incidentPath(incidentId: string, orgId: string, opts: IncidentRouteOpts = {}): string {
-  return `/incidents/${encIncident(incidentId)}?${buildQuery(orgId, opts.extraQuery)}${buildHash(opts.hash)}`;
+  return buildPath(`/incidents/${encIncident(incidentId)}`, orgId, opts);
 }
 
-/** Supervisor review: /incidents/{id}/review?orgId={org}[&…] */
+/** Supervisor review: /incidents/{id}/review[?orgId={org}[&…]] */
 export function reviewPath(incidentId: string, orgId: string, opts: IncidentRouteOpts = {}): string {
-  return `/incidents/${encIncident(incidentId)}/review?${buildQuery(orgId, opts.extraQuery)}${buildHash(opts.hash)}`;
+  return buildPath(`/incidents/${encIncident(incidentId)}/review`, orgId, opts);
 }
 
-/** Notes: /incidents/{id}/notes?orgId={org}[&…] */
+/** Notes: /incidents/{id}/notes[?orgId={org}[&…]] */
 export function notesPath(incidentId: string, orgId: string, opts: IncidentRouteOpts = {}): string {
-  return `/incidents/${encIncident(incidentId)}/notes?${buildQuery(orgId, opts.extraQuery)}${buildHash(opts.hash)}`;
+  return buildPath(`/incidents/${encIncident(incidentId)}/notes`, orgId, opts);
 }
 
-/** Summary: /incidents/{id}/summary?orgId={org}[&…] */
+/** Summary: /incidents/{id}/summary[?orgId={org}[&…]] */
 export function summaryPath(incidentId: string, orgId: string, opts: IncidentRouteOpts = {}): string {
-  return `/incidents/${encIncident(incidentId)}/summary?${buildQuery(orgId, opts.extraQuery)}${buildHash(opts.hash)}`;
+  return buildPath(`/incidents/${encIncident(incidentId)}/summary`, orgId, opts);
 }
 
-/** Add evidence: /incidents/{id}/add-evidence?orgId={org}[&…] */
+/** Add evidence: /incidents/{id}/add-evidence[?orgId={org}[&…]] */
 export function addEvidencePath(incidentId: string, orgId: string, opts: IncidentRouteOpts = {}): string {
-  return `/incidents/${encIncident(incidentId)}/add-evidence?${buildQuery(orgId, opts.extraQuery)}${buildHash(opts.hash)}`;
+  return buildPath(`/incidents/${encIncident(incidentId)}/add-evidence`, orgId, opts);
 }
 
 /**

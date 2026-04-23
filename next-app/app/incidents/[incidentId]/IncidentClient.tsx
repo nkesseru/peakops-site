@@ -1126,6 +1126,14 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   const thumbMintInflightRef = useRef<Record<string, boolean>>({});
   const refreshInflightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
+  // PEAKOPS_CREATE_JOB_INFLIGHT_V1
+  // Dedicated inflight flag for createJob. The existing jobsBusy state is
+  // shared with setJobStatus / assignJobOrg / assignAllUnassignedToCurrentJob
+  // / assignEvidenceJob — any of those firing (including auto-refresh-driven
+  // races) would wrongly disable the Create Job button. This ref gates only
+  // the create flow and has no cross-contamination risk.
+  const createJobInflightRef = useRef(false);
+  const [createJobInflight, setCreateJobInflight] = useState(false);
 
   // PEAKOPS_THUMBS_C2_V1: per-evidence thumb error flag
   const [thumbErr, setThumbErr] = useState<Record<string, boolean>>({});
@@ -1511,6 +1519,11 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     if (isClosed) return toast("Incident is closed (read-only).", 2600);
     const title = String(jobTitle || "").trim();
     if (!title) return toast("Job title is required.", 2200);
+    // PEAKOPS_CREATE_JOB_INFLIGHT_V1: dedicated re-entry guard. Short-circuits
+    // a double-click even if React hasn't re-rendered to reflect jobsBusy yet.
+    if (createJobInflightRef.current) return;
+    createJobInflightRef.current = true;
+    setCreateJobInflight(true);
     try {
       setJobsBusy(true);
       const out: any = await postJson(`/api/fn/createJobV1`, {
@@ -1537,6 +1550,8 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       toast("Create job failed: " + String(e?.message || e), 3200);
     } finally {
       setJobsBusy(false);
+      createJobInflightRef.current = false;
+      setCreateJobInflight(false);
     }
   }
 
@@ -3414,8 +3429,110 @@ useEffect(() => {
             const currentTitle = String(current?.title || current?.id || current?.jobId || "").trim();
             const currentStatus = jobStatusText(current?.status);
 
+            // PEAKOPS_MARK_COMPLETE_WIRE_V1
+            // The existing markCurrentJobComplete() helper was defined but had
+            // no call site, which dead-ended the field→supervisor chain
+            // (supervisor gate = job status ∈ {complete,review} ∧ linked
+            // evidence ≥ 1). Gating mirrors the helper's own preconditions.
+            const currentJid = String(currentJobId || "").trim();
+            const currentNormalizedStatus = normalizeJobStatus(current?.status);
+            const currentIsFieldSelectable = isFieldSelectableJob(current?.status);
+            const markCompleteDisabled =
+              isClosed ||
+              jobsBusy ||
+              !currentJid ||
+              !current ||
+              !currentIsFieldSelectable;
+            const markCompleteDisabledReason = isClosed
+              ? "Incident is closed (read-only)"
+              : jobsBusy
+                ? "Job update in progress…"
+                : !currentJid || !current
+                  ? "Select a job first"
+                  : !currentIsFieldSelectable
+                    ? `Job is already ${currentNormalizedStatus || "past complete"}`
+                    : "Mark this job complete so it becomes reviewable";
+
+            // PEAKOPS_CREATE_JOB_INLINE_V1
+            // When the incident has zero jobs the select / Mark complete /
+            // Jump to mapping actions have nothing to operate on, and the
+            // supervisor dead-ends at "No reviewable jobs yet". Render the
+            // existing createJob() helper through a small inline form so a
+            // field user can create the first job without leaving the tab.
+            //
+            // Disable gating uses `createJobInflight` (a dedicated state flag
+            // flipped only inside createJob's try/finally) instead of the
+            // shared `jobsBusy`. That prevents unrelated job actions — including
+            // concurrent auto-refresh races — from wrongly greying out the button.
+            const createJobTitle = String(jobTitle || "").trim();
+            const createJobDisabled = isClosed || createJobInflight || !createJobTitle;
+            const showCreateJobInline = Array.isArray(jobs) && jobs.length === 0;
+
             return (
               <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                {showCreateJobInline ? (
+                  <div style={{ padding: 12, borderRadius: 8, border: "1px dashed #1c1c1c", background: "#050505" }}>
+                    <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>
+                      Create first job
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                      A job groups evidence under a specific task. Create one to enable Evidence Mapping and supervisor review.
+                    </div>
+                    <input
+                      type="text"
+                      value={jobTitle}
+                      onChange={(e) => setJobTitle(e.target.value)}
+                      placeholder="Job name (e.g. Pole inspection)"
+                      disabled={isClosed || createJobInflight}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !createJobDisabled) {
+                          e.preventDefault();
+                          try { createJob(); } catch {}
+                        }
+                      }}
+                      style={{
+                        width: "100%",
+                        marginTop: 10,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid #1c1c1c",
+                        background: "#101010",
+                        color: "#f5f5f5",
+                        fontSize: 13,
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { try { createJob(); } catch {} }}
+                      disabled={createJobDisabled}
+                      title={
+                        isClosed
+                          ? "Incident is closed (read-only)"
+                          : createJobInflight
+                            ? "Job create in progress…"
+                            : !createJobTitle
+                              ? "Enter a job name"
+                              : "Create this job and auto-select it"
+                      }
+                      style={{
+                        width: "100%",
+                        marginTop: 8,
+                        padding: "9px 14px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        letterSpacing: "0.02em",
+                        cursor: createJobDisabled ? "not-allowed" : "pointer",
+                        border: createJobDisabled ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
+                        background: createJobDisabled ? "#101010" : "rgba(200,168,78,0.1)",
+                        color: createJobDisabled ? "#6f6f6f" : "#C8A84E",
+                      }}
+                    >
+                      {createJobInflight ? "Creating…" : "+ Create Job"}
+                    </button>
+                  </div>
+                ) : null}
+
                 <select
                   style={{ width: "100%", fontSize: 13, background: "#101010", border: "1px solid #1c1c1c", borderRadius: 6, padding: "8px 10px", color: "#f5f5f5" }}
                   disabled={isClosed || jobsBusy || jobsForMapping.length === 0}
@@ -3437,6 +3554,29 @@ useEffect(() => {
                     );
                   })}
                 </select>
+
+                <button
+                  type="button"
+                  style={{
+                    padding: "9px 14px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    letterSpacing: "0.02em",
+                    cursor: markCompleteDisabled ? "not-allowed" : "pointer",
+                    border: markCompleteDisabled ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
+                    background: markCompleteDisabled ? "#101010" : "rgba(200,168,78,0.1)",
+                    color: markCompleteDisabled ? "#6f6f6f" : "#C8A84E",
+                  }}
+                  disabled={markCompleteDisabled}
+                  onClick={() => { try { markCurrentJobComplete(); } catch {} }}
+                  title={markCompleteDisabledReason}
+                >
+                  ✓ Mark job complete
+                </button>
+                <div style={{ fontSize: 10, color: "#6f6f6f", lineHeight: 1.5, marginTop: -2 }}>
+                  A complete job with at least one linked evidence item becomes reviewable by the supervisor.
+                </div>
 
                 <button
                   type="button"

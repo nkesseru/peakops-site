@@ -80,9 +80,24 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     }
     if (!incSnap.exists) return j(res, 404, { ok: false, error: "incident_not_found" });
 
+    // PEAKOPS_EXPORT_PATH_ALIGN_V1
+    // Subcollections on this app are split across two parents. Writers that
+    // hardcode the legacy top-level path:
+    //   - createJobV1         → incidents/{id}/jobs
+    //   - addEvidenceV1       → incidents/{id}/evidence_locker   (via evidenceRefs.mjs)
+    //   - assignEvidenceToJobV1, setEvidenceLabelV1 → same legacy path
+    // Timeline events are written through the unified emitTimelineEvent
+    // resolver (functions_clean/_incidentPath.js), which lands them under the
+    // incident doc that *actually exists* — canonical for createIncidentV1
+    // incidents, legacy for seed-era incidents. Reading all three subcollections
+    // off the same resolved incRef (as the original code did) produces empty
+    // jobs + evidence arrays for any hybrid incident (canonical doc + legacy
+    // subcollections), which is the normal shape for createIncidentV1 output.
+    // Fix: read each subcollection from the parent its writers actually target.
+    const legacyIncRef = db.collection("incidents").doc(incidentId);
     const [jobsSnap, evSnap, tlSnap] = await Promise.all([
-      incRef.collection("jobs").get(),
-      incRef.collection("evidence_locker").get(),
+      legacyIncRef.collection("jobs").get(),
+      legacyIncRef.collection("evidence_locker").get(),
       incRef.collection("timeline_events").get(),
     ]);
 
