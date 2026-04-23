@@ -1,13 +1,17 @@
 "use client";
 import AdminNav from "../_components/AdminNav";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 function mono(s: string) {
   return <span style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{s}</span>;
 }
 
-export default function AdminContractsList() {
+// PEAKOPS_SUSPENSE_CSR_BAILOUT_V1
+// Next.js 16 requires every useSearchParams() caller to sit inside a Suspense
+// boundary so static prerender can bail out cleanly. Wrapping the original
+// component body keeps all behavior identical while satisfying the rule.
+function AdminContractsListInner() {
   const sp = useSearchParams();
   const orgId = sp.get("orgId") || "org_001";
   const router = useRouter();
@@ -104,5 +108,13 @@ export default function AdminContractsList() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function AdminContractsList() {
+  return (
+    <Suspense fallback={null}>
+      <AdminContractsListInner />
+    </Suspense>
   );
 }
