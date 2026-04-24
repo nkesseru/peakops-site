@@ -96,7 +96,13 @@ export default function JobDetailClient({
 }) {
   const router = useRouter();
   const functionsBase = getFunctionsBase();
-  const [orgId, setOrgId] = useState(String(initialOrgId || "").trim() || "riverbend-electric");
+  // PEAKOPS_JOB_DETAIL_ORGID_V1
+  // orgId comes from the URL via initialOrgId (the parent page reads ?orgId=
+  // and passes it as a prop). No hardcoded fallback — if the URL has no
+  // ?orgId=, downstream API calls target an empty org and surface a clear
+  // "orgId required" error instead of silently cross-fetching from a random
+  // default org.
+  const [orgId, setOrgId] = useState(String(initialOrgId || "").trim());
   const [incidentId, setIncidentId] = useState(String(initialIncidentId || "").trim());
   const [job, setJob] = useState<JobDoc | null>(null);
   const [incident, setIncident] = useState<{ id: string; title?: string; status?: string } | null>(null);

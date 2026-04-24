@@ -42,7 +42,12 @@ useEffect(() => {
   const [selectedJobId, setSelectedJobId] = useState("");
   const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
 
-// Prefer orgId from query (?orgId=...), else localStorage, else riverbend-electric (your demo org)
+  // PEAKOPS_ADD_EVIDENCE_ORGID_URL_V1
+  // orgId priority: URL query param first, then the most recent localStorage
+  // hint from a prior page in the same session. No hardcoded default — if
+  // neither source has a value, orgId is empty and every downstream call
+  // (startFieldSessionV1, addEvidenceV1, createEvidenceUploadUrlV1) surfaces
+  // a clear "orgId required" error instead of silently targeting the wrong org.
   const orgId = useMemo(() => {
     const q = String(sp?.get("orgId") || "").trim();
     if (q) return q;
@@ -50,7 +55,7 @@ useEffect(() => {
       const v = String(localStorage.getItem("peakops_orgId") || "").trim();
       if (v) return v;
     } catch {}
-    return "riverbend-electric";
+    return "";
   }, [sp]);
 
   useEffect(() => {

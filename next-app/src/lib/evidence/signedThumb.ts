@@ -222,9 +222,19 @@ export async function mintEvidenceReadUrl(
       };
     }
 
-    // cache-bust to avoid stale image cache
-    const sep = mintedUrl.includes("?") ? "&" : "?";
-    const finalUrl = `${mintedUrl}${sep}v=${Date.now()}`;
+    // PEAKOPS_MINT_CACHEBUST_V2 (2026-04-24)
+    // Previously we appended `&v=${Date.now()}` as a browser-image-cache
+    // buster. That invalidates GCS v4 signed URLs: GCS canonicalizes the
+    // request query string during signature verification and the extra
+    // unsigned `v=…` breaks canonical equivalence → HTTP 403.
+    // Verified with prod curl:
+    //   curl -I "$URL"              -> 200 (bytes served)
+    //   curl -I "$URL&v=12345"      -> 403 (signature invalid)
+    // Dropped the cache-buster. Browser image cache isn't a real problem
+    // here (mint cache above already dedupes at 30s; the minted URL itself
+    // carries X-Goog-Expires so repeated fetches hit the same signed blob).
+    // Emulator URLs aren't signed, so they don't need busting either.
+    const finalUrl = mintedUrl;
 
     __PEAKOPS_MINT_CACHE[cacheKey] = { url: finalUrl, at: Date.now() };
 

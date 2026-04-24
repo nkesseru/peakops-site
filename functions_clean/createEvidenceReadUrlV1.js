@@ -23,11 +23,20 @@ function mustStr(v, name) {
   return s;
 }
 
+// PEAKOPS_READ_URL_EMU_GATE_V2 (2026-04-24)
+// Match the tightened emulator gate used by addEvidenceV1 and
+// _emu_bootstrap.js. Previously we also treated
+// FIREBASE_STORAGE_EMULATOR_HOST being set as "we're in the emulator", which
+// was load-bearing on _emu_bootstrap loading the checked-in env.runtime and
+// fired the emulator branch in production — returning
+// http://127.0.0.1:9199/download/... as a read URL to the browser and
+// breaking every thumbnail on the deployed app. Rely only on the canonical
+// emulator flags FUNCTIONS_EMULATOR / FIREBASE_EMULATOR_HUB that the Firebase
+// emulator suite sets and the deployed runtime never sets.
 function isEmulatorRuntime() {
   return (
     String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
-    !!process.env.FIREBASE_EMULATOR_HUB ||
-    !!process.env.FIREBASE_STORAGE_EMULATOR_HOST
+    !!process.env.FIREBASE_EMULATOR_HUB
   );
 }
 
@@ -93,7 +102,7 @@ function buildBucketCandidates(requestedBucket, adminDefaultBucket) {
   return [...new Set(out.filter(Boolean))];
 }
 
-exports.createEvidenceReadUrlV1 = onRequest(async (req, res) => {
+exports.createEvidenceReadUrlV1 = onRequest({ cors: true }, async (req, res) => {
   try {
     if (req.method !== "POST") return j(res, 405, { ok: false, error: "method_not_allowed" });
 
@@ -123,16 +132,53 @@ exports.createEvidenceReadUrlV1 = onRequest(async (req, res) => {
       return j(res, 200, { ok: true, orgId, incidentId, bucket, storagePath, url, emulator: true });
     }
 
-    // Prod path: signed URL
-    const bucket = candidates[0];
-    const file = getStorage().bucket(bucket).file(storagePath);
+    // PEAKOPS_READ_URL_RESOLVE_V1 (2026-04-24)
+    // Previously we signed against `candidates[0]` blindly. `getSignedUrl`
+    // happily signs URLs for non-existent objects; the signature is valid but
+    // GCS returns 404/403 on fetch, surfaced as a broken <img>. Firebase
+    // projects often have both <project>.appspot.com and
+    // <project>.firebasestorage.app backed by the same storage; if the
+    // evidence doc's recorded bucket drifts from the actual upload target,
+    // reads land on a ghost object.
+    //
+    // Fix: walk candidates, HEAD each (file.exists()), sign against the
+    // first bucket where the object actually lives. Returns 404 with a
+    // specific error if no candidate matches — which the frontend's
+    // terminal-flag logic turns into a deterministic "Unavailable" tile
+    // instead of an ambiguous 403.
+    let resolvedBucket = "";
+    const probed = [];
+    for (const cand of candidates) {
+      try {
+        const [exists] = await getStorage().bucket(cand).file(storagePath).exists();
+        probed.push({ bucket: cand, exists: !!exists });
+        if (exists) { resolvedBucket = cand; break; }
+      } catch (err) {
+        probed.push({ bucket: cand, exists: false, error: (err && err.message) ? err.message : String(err) });
+      }
+    }
+
+    if (!resolvedBucket) {
+      return j(res, 404, {
+        ok: false,
+        error: "object_not_found",
+        orgId,
+        incidentId,
+        storagePath,
+        triedBuckets: probed,
+      });
+    }
+
+    const file = getStorage().bucket(resolvedBucket).file(storagePath);
     const [url] = await file.getSignedUrl({
       version: "v4",
       action: "read",
       expires: Date.now() + Math.max(60, expiresSec) * 1000,
     });
 
-    return j(res, 200, { ok: true, orgId, incidentId, bucket, storagePath, url });
+    // Return the *actually resolved* bucket so the client can update its
+    // local reference if it drifted.
+    return j(res, 200, { ok: true, orgId, incidentId, bucket: resolvedBucket, storagePath, url });
   } catch (e) {
     return j(res, 500, { ok: false, error: (e && e.message) ? e.message : String(e || "error") });
   }

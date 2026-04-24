@@ -1,6 +1,41 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function RootPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const trimmed = email.trim();
+  const emailLooksValid = EMAIL_RE.test(trimmed);
+  const canSubmit = emailLooksValid && !submitting;
+
+  function handleContinue(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    setError("");
+    if (!emailLooksValid) {
+      setError("Enter a valid work email (you@company.com).");
+      return;
+    }
+    setSubmitting(true);
+    // PEAKOPS_PORTAL_IDENTITY_V1
+    // Front-door identity capture. Stashes the entered email client-side so
+    // downstream pages can treat it as the current user until real auth is
+    // wired in. No backend call, no redirect side effects other than the
+    // in-app route push.
+    try {
+      localStorage.setItem("peakops_user_email", trimmed.toLowerCase());
+      localStorage.setItem("peakops_user_email_at", String(Date.now()));
+    } catch {}
+    router.push("/incidents");
+  }
+
   return (
     <main
       style={{
@@ -62,74 +97,127 @@ export default function RootPage() {
           textAlign: "center",
           maxWidth: 440,
           lineHeight: 1.6,
-          margin: "0 0 36px",
+          margin: "0 0 28px",
         }}
       >
         PeakOps turns field work into audit-ready, filing-ready records without
         reconstruction.
       </p>
 
-      {/* CTAs */}
-      <div
+      {/* Email entry — primary CTA */}
+      <form
+        onSubmit={handleContinue}
         style={{
+          width: "100%",
+          maxWidth: 380,
           display: "flex",
           flexDirection: "column",
-          alignItems: "center",
           gap: 10,
         }}
       >
-        <Link
-          href="/admin/login"
+        <label
+          htmlFor="peakops-email"
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "12px 32px",
-            borderRadius: 6,
-            background: "#C8A84E",
-            color: "#000",
-            fontSize: 14,
+            fontSize: 10,
             fontWeight: 600,
-            textDecoration: "none",
-            minWidth: 200,
-            letterSpacing: "0.02em",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase" as const,
+            color: "#6f6f6f",
           }}
         >
-          Operator Login
-        </Link>
-        <span
-          aria-disabled="true"
+          Work email
+        </label>
+        <input
+          id="peakops-email"
+          type="email"
+          autoComplete="email"
+          inputMode="email"
+          placeholder="you@company.com"
+          value={email}
+          onChange={(event) => {
+            if (error) setError("");
+            setEmail(event.target.value);
+          }}
+          disabled={submitting}
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "12px 32px",
-            borderRadius: 6,
-            border: "1px solid #222",
-            background: "transparent",
-            color: "#555",
+            width: "100%",
+            padding: "12px 14px",
+            borderRadius: 8,
+            border: "1px solid #1c1c1c",
+            background: "#0b0b0b",
+            color: "#f5f5f5",
             fontSize: 14,
-            fontWeight: 500,
-            minWidth: 200,
-            cursor: "default",
+            outline: "none",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02)",
+          }}
+        />
+
+        {error ? (
+          <div
+            style={{
+              fontSize: 11,
+              color: "#e6a96a",
+              lineHeight: 1.4,
+            }}
+            role="alert"
+          >
+            {error}
+          </div>
+        ) : null}
+
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          style={{
+            marginTop: 4,
+            padding: "12px 0",
+            borderRadius: 8,
+            border: "none",
+            background: canSubmit
+              ? "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)"
+              : "#1c1c1c",
+            color: canSubmit ? "#050505" : "#6f6f6f",
+            fontSize: 14,
+            fontWeight: 700,
+            letterSpacing: "0.02em",
+            cursor: canSubmit ? "pointer" : "not-allowed",
+            boxShadow: canSubmit
+              ? "0 2px 12px rgba(200,168,78,0.20), inset 0 1px 0 rgba(255,255,255,0.08)"
+              : "none",
+            transition: "background 120ms ease",
           }}
         >
-          Contractor Access
-        </span>
+          {submitting ? "Continuing…" : "Continue"}
+        </button>
+
         <p
           style={{
             fontSize: 11,
-            color: "#444",
+            color: "#555",
             textAlign: "center",
-            maxWidth: 320,
             lineHeight: 1.5,
-            margin: "2px 0 0",
+            margin: "6px 0 0",
           }}
         >
-          Portal access is being finalized. Contact your administrator if you
-          need access.
+          New to PeakOps? Your administrator will send an invite.
         </p>
-      </div>
+      </form>
+
+      {/* Secondary path — operator / admin sign in */}
+      <Link
+        href="/admin/login"
+        style={{
+          marginTop: 20,
+          fontSize: 12,
+          color: "#888",
+          textDecoration: "none",
+          letterSpacing: "0.02em",
+          borderBottom: "1px dotted #333",
+          paddingBottom: 1,
+        }}
+      >
+        Admin / operator sign in →
+      </Link>
 
       {/* Trust line */}
       <p

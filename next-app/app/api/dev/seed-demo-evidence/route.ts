@@ -238,7 +238,8 @@ async function uploadViaProxy(args: {
     const res = await fetch(`http://127.0.0.1:3001/api/fn/uploadEvidenceProxyV1?${q.toString()}`, {
       method: "POST",
       headers: { "content-type": args.contentType },
-      body: args.buffer,
+      // Zero-copy Uint8Array view over the same bytes; satisfies BodyInit type.
+      body: new Uint8Array(args.buffer),
       cache: "no-store",
     });
 
@@ -254,7 +255,8 @@ async function uploadViaProxy(args: {
   const res = await fetch(args.uploadUrl, {
     method: method === "POST" ? "POST" : "PUT",
     headers: { "content-type": args.contentType },
-    body: args.buffer,
+    // Zero-copy Uint8Array view over the same bytes; satisfies BodyInit type.
+    body: new Uint8Array(args.buffer),
     cache: "no-store",
   });
 

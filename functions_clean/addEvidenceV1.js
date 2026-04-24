@@ -100,13 +100,24 @@ const orgId = mustStr(body.orgId, "orgId");
     const storagePath = String(body.storagePath || "").trim(); // optional for now
 
   // PEAKOPS_NO_GHOST_EVIDENCE_V1
-  // In emulator, ensure the object exists in Storage before writing Firestore evidence doc.
-  // Add a short retry loop to avoid race conditions right after upload.
+  // In the emulator only, poll the local Storage emulator to ensure the
+  // uploaded object exists before writing the Firestore evidence doc (avoids
+  // "ghost evidence" when the emulator's object-metadata write is slightly
+  // delayed relative to the upload response).
+  //
+  // PEAKOPS_ADDEVIDENCE_EMU_GATE_V2 (2026-04-24)
+  // Tightened the emulator signal: we previously also treated
+  // FIREBASE_STORAGE_EMULATOR_HOST being set as "we're in the emulator".
+  // That was load-bearing on _emu_bootstrap.js's checked-in env.runtime and
+  // fired the emulator probe in production — which then tried to fetch
+  // http://127.0.0.1:9199/... from a deployed Cloud Function and failed with
+  // undici's generic "fetch failed", surfaced to clients as 400. Rely only
+  // on the canonical emulator flags FUNCTIONS_EMULATOR / FIREBASE_EMULATOR_HUB
+  // that the Firebase emulator suite sets and the deployed runtime never sets.
   const _emuHost = process.env.FIREBASE_STORAGE_EMULATOR_HOST;
   const _isEmu =
     String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
-    !!process.env.FIREBASE_EMULATOR_HUB ||
-    !!_emuHost;
+    !!process.env.FIREBASE_EMULATOR_HUB;
 
   if (_isEmu) {
     const host = _emuHost || "127.0.0.1:9199";

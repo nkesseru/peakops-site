@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import {
   clearRememberedFunctionsBase,
@@ -17,6 +17,7 @@ import {
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
+import { incidentPath } from "@/lib/navigation/incidentRoutes";
 
 type IncidentDoc = {
   id: string;
@@ -86,7 +87,14 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
   }, [functionsBase]);
-  const orgId = "riverbend-electric";
+  // PEAKOPS_SUMMARY_ORGID_URL_V1
+  // orgId is URL-sourced, matching IncidentClient/ReviewClient/NotesClient and
+  // the single-source-of-truth rule for this app. No hardcoded fallback — if
+  // the URL has no ?orgId=, every downstream fetch targets an empty orgId and
+  // the backend surfaces a clear 400/409 instead of the old silent cross-org
+  // mis-fetch against "riverbend-electric".
+  const _summarySp = useSearchParams();
+  const orgId = String(_summarySp?.get?.("orgId") || "").trim();
   const functionsBaseIsLocal = useMemo(() => {
     try {
       const host = String(new URL(String(functionsBase || "")).hostname || "").toLowerCase();
@@ -123,8 +131,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const [artifactToast, setArtifactToast] = useState("");
   const [lastArtifactFilename, setLastArtifactFilename] = useState("");
   const [lastArtifactAt, setLastArtifactAt] = useState("");
-  const [, setArtifactUrl] = useState("");
-  const [, setArtifactReady] = useState(false);
+  // PEAKOPS_SUMMARY_ARTIFACT_REUSE_V1 (2026-04-24)
+  // Read states surface the "ready + URL" signal to handleArtifactDownload,
+  // so the button can short-circuit to a direct download instead of
+  // re-invoking exportIncidentPacketV1 when the packet already exists.
+  const [artifactUrl, setArtifactUrl] = useState("");
+  const [artifactReady, setArtifactReady] = useState(false);
   const isDemoMode = isDemoIncident(incidentId);
   const [demoAuthBypassMsg, setDemoAuthBypassMsg] = useState("");
   const [activeOrgId, setActiveOrgId] = useState(orgId);
@@ -342,6 +354,26 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       setErr("Cannot generate artifact: missing org or incident context.");
       return;
     }
+
+    // PEAKOPS_SUMMARY_ARTIFACT_REUSE_V1 (2026-04-24)
+    // If the packet is already ready, download the existing artifact
+    // rather than POSTing exportIncidentPacketV1 again. Prevents
+    // duplicate regenerations (which would change the zip hash) and
+    // duplicate billable invocations.
+    if (artifactReady && artifactUrl) {
+      const existingName =
+        lastArtifactFilename || `incident_${incidentId}_packet.zip`;
+      const a = document.createElement("a");
+      a.href = artifactUrl;
+      a.download = existingName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setArtifactToast(`Artifact already generated — downloaded ${existingName}.`);
+      window.setTimeout(() => setArtifactToast(""), 2500);
+      return;
+    }
+
     setArtifactBusy(true);
     setArtifactToast("");
     setErr("");
@@ -361,6 +393,24 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
       const exportTxt = await exportRes.text();
       const out = exportTxt ? JSON.parse(exportTxt) : {};
+
+      // PEAKOPS_SUMMARY_ARTIFACT_409_V1 (2026-04-24)
+      // A 409 response paired with an incident that already has a ready
+      // packet means the backend rejected regeneration because the
+      // artifact exists. Treat it as a success state: show a friendly
+      // toast and let the next refresh() pick up the existing packet
+      // URL, rather than surfacing a red error to the operator.
+      const packetAlreadyReady =
+        artifactReady ||
+        String((incident as any)?.packetMeta?.status || "").toLowerCase() === "ready";
+      if (exportRes.status === 409 && packetAlreadyReady) {
+        setArtifactToast("Artifact already generated.");
+        window.setTimeout(() => setArtifactToast(""), 2500);
+        setTimeout(() => {
+          void refresh().catch(() => {});
+        }, 300);
+        return;
+      }
 
       if (!exportRes.ok || !out?.ok) {
         throw new Error(out?.error || `exportIncidentPacketV1 failed (${exportRes.status})`);
@@ -751,234 +801,687 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       : artifactDownloadable
       ? "success"
       : "";
+  // PEAKOPS_SUMMARY_HUMAN_COPY_V1 (2026-04-24)
+  // Translate raw backend/internal mismatch reasons into short, operational
+  // copy a city/utility ops user can act on. The raw strings stay available
+  // in the "Technical details" collapsible so we don't lose debug fidelity.
+  const humanizedReasons = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of truthMismatchReasons) {
+      const x = String(r || "").toLowerCase();
+      let s = "";
+      if (x.includes("unassigned")) s = "Some evidence is not assigned to a job";
+      else if (x.includes("field_submitted")) s = "Field report has not been submitted";
+      else if (x.includes("incident_closed")) s = "Incident has not been closed";
+      else if (x.includes("job_approved")) s = "Some jobs are still waiting for approval";
+      else if (x.includes("evidencecount")) s = "Packet evidence count is out of date — regenerate to refresh";
+      else if (x.includes("jobcount")) s = "Packet job count is out of date — regenerate to refresh";
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.push(s);
+      }
+    }
+    return out;
+  }, [truthMismatchReasons]);
+  const bannerIcon = bannerKind === "success" ? "✓" : bannerKind === "error" ? "⚠" : bannerKind === "info" ? "ℹ" : "";
   const bannerTitle =
     bannerKind === "error"
-      ? "Almost ready to export"
+      ? "A few steps left before export"
       : bannerKind === "info"
-      ? "Ready to finalize artifact"
-      : "Artifact ready to download";
+      ? "Ready to finalize the artifact"
+      : "Incident finalized";
   const bannerBody =
     bannerKind === "error"
-      ? "The field workflow is not complete yet. Finish the incident steps, then return here."
+      ? "Finish the items below, then return here to generate the packet."
       : bannerKind === "info"
-      ? "Incident is closed. Generate Artifact to finalize the packet."
-      : "Artifact generated. Download is ready.";
+      ? "All field steps are complete. Generate the artifact to finalize this incident."
+      : lastArtifactFilename
+      ? `Packet ready: ${lastArtifactFilename}.`
+      : "Your incident packet is ready. Use Download Artifact to save it.";
+
+  // PEAKOPS_SUMMARY_POLISH_V1 (2026-04-24)
+  // Purely visual pass: aligns Summary with the field/review dark+gold tokens,
+  // tightens card spacing, promotes Generate Artifact to the same
+  // gold-gradient primary used by NextBestAction/Mark arrived, hides dev
+  // tools behind a <details> so prod UI is clean, and preserves orgId on
+  // the Back button. No data, backend calls, or state logic touched.
+  const bannerPalette =
+    bannerKind === "error"
+      ? { border: "1px solid rgba(220,60,60,0.35)", background: "rgba(220,60,60,0.08)", color: "#fca5a5" }
+      : bannerKind === "info"
+      ? { border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", color: "#C8A84E" }
+      : { border: "1px solid rgba(34,197,94,0.3)", background: "rgba(34,197,94,0.08)", color: "#86efac" };
+  const artifactDisabled = artifactBusy || !orgId || !incidentId;
+  const artifactLabel = artifactBusy
+    ? "Preparing Artifact…"
+    : artifactHint.toLowerCase().includes("ready")
+    ? "Download Artifact"
+    : artifactHint.toLowerCase().includes("building")
+    ? "Artifact Building…"
+    : "Generate Artifact";
 
   return (
     <>
-      {bannerKind ? (
-        <div className={"mb-4 rounded-xl border p-4 " + (bannerKind === "error" ? "border-red-400/30 bg-red-500/10 text-red-100" : bannerKind === "info" ? "border-indigo-400/30 bg-indigo-500/10 text-indigo-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100")}>
-          <div className="text-sm font-semibold">{bannerTitle}</div>
-          <div className={"mt-2 text-sm " + (bannerKind === "error" ? "text-red-100/90" : bannerKind === "info" ? "text-indigo-100/90" : "text-emerald-100/90")}>
-            {bannerBody}
-          </div>
-          <div className="mt-3 flex items-center gap-2">
+      <main
+        className="min-h-screen p-4"
+        style={{
+          background: "#050505",
+          color: "#f5f5f5",
+          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        }}
+      >
+        <div className="max-w-6xl mx-auto space-y-3">
+          {/* Header */}
+          <div className="flex items-start justify-between gap-3">
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: "0.14em",
+                  color: "#C8A84E",
+                  textTransform: "uppercase" as const,
+                }}
+              >
+                Incident Summary
+              </div>
+              <div
+                style={{
+                  fontSize: 22,
+                  fontWeight: 700,
+                  color: "#f5f5f5",
+                  marginTop: 4,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {incidentId}
+              </div>
+              {orgId ? (
+                <div style={{ fontSize: 11, color: "#6f6f6f", marginTop: 2 }}>
+                  Org: <span style={{ color: "#b3b3b3", fontFamily: "ui-monospace, monospace" }}>{orgId}</span>
+                </div>
+              ) : null}
+            </div>
             <button
-              className="px-3 py-2 rounded-lg bg-white/10 border border-white/20 text-sm hover:bg-white/20"
-              onClick={() => router.push(`/incidents/${incidentId}`)}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 6,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                border: "1px solid #1c1c1c",
+                background: "#0b0b0b",
+                color: "#b3b3b3",
+                flexShrink: 0,
+              }}
+              onClick={() => router.push(incidentPath(incidentId, orgId))}
             >
-              Back to Incident
+              ← Back to Incident
             </button>
           </div>
-          {truthError ? (
-            <details className={"mt-3 text-xs " + (bannerKind === "error" ? "text-red-100/75" : bannerKind === "info" ? "text-indigo-100/75" : "text-emerald-100/75")}>
-              <summary className="cursor-pointer">Technical details</summary>
-              <div className="mt-2">{truthError}</div>
-            </details>
+
+          {/* PEAKOPS_SUMMARY_BANNER_INSIDE_V1 (2026-04-24)
+              Status banner moved inside <main> so it shares the page's
+              max-width, padding, and rhythm. Uses an icon + bulleted
+              humanized reasons; raw `truthError` stays in a collapsible
+              for debugging. */}
+          {bannerKind ? (
+            <section
+              style={{
+                borderRadius: 10,
+                padding: "14px 16px",
+                ...bannerPalette,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                {bannerIcon ? (
+                  <div
+                    aria-hidden
+                    style={{
+                      flexShrink: 0,
+                      width: 28,
+                      height: 28,
+                      borderRadius: 999,
+                      background:
+                        bannerKind === "success"
+                          ? "rgba(34,197,94,0.18)"
+                          : bannerKind === "error"
+                          ? "rgba(220,60,60,0.18)"
+                          : "rgba(200,168,78,0.18)",
+                      color:
+                        bannerKind === "success"
+                          ? "#86efac"
+                          : bannerKind === "error"
+                          ? "#fca5a5"
+                          : "#C8A84E",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 14,
+                      fontWeight: 800,
+                      lineHeight: 1,
+                    }}
+                  >
+                    {bannerIcon}
+                  </div>
+                ) : null}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{bannerTitle}</div>
+                  <div style={{ marginTop: 4, fontSize: 12, lineHeight: 1.5, opacity: 0.9 }}>
+                    {bannerBody}
+                  </div>
+                  {bannerKind === "error" && humanizedReasons.length > 0 ? (
+                    <ul
+                      style={{
+                        marginTop: 8,
+                        paddingLeft: 16,
+                        fontSize: 12,
+                        lineHeight: 1.6,
+                        listStyle: "disc",
+                      }}
+                    >
+                      {humanizedReasons.map((r) => (
+                        <li key={r}>{r}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {bannerKind === "success" && (lastArtifactFilename || lastArtifactAt) ? (
+                    <div style={{ marginTop: 6, fontSize: 11, opacity: 0.85 }}>
+                      {lastArtifactFilename ? (
+                        <span style={{ fontFamily: "ui-monospace, monospace" }}>
+                          {lastArtifactFilename}
+                        </span>
+                      ) : null}
+                      {lastArtifactFilename && lastArtifactAt ? " • " : ""}
+                      {lastArtifactAt || ""}
+                    </div>
+                  ) : null}
+                  {truthError ? (
+                    <details style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f" }}>
+                      <summary style={{ cursor: "pointer" }}>Technical details</summary>
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontFamily: "ui-monospace, monospace",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {truthError}
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+              </div>
+            </section>
           ) : null}
-        </div>
-      ) : null}
-    <main className="min-h-screen bg-black text-white p-4">
-      <div className="max-w-6xl mx-auto space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.18em] text-gray-500 font-semibold">Incident Summary</div>
-            <div className="text-2xl font-semibold tracking-tight text-white">{incidentId}</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm hover:bg-white/10" onClick={() => router.push(`/incidents/${incidentId}`)}>
-              Back
-            </button>
-          </div>
-        </div>
 
-
-        {!err && demoAuthBypassMsg ? (
-          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 text-amber-100 text-sm px-3 py-2">
-            {demoAuthBypassMsg}
-          </div>
-        ) : null}
-        {!err && artifactToast ? (
-          <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 text-emerald-100 text-sm px-3 py-2">
-            {artifactToast}
-          </div>
-        ) : null}
-
-        <section className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-          <div className="flex items-center justify-between">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">Incident Status</div>
-            <span className={"text-[11px] px-2 py-0.5 rounded-full border " + incidentStatusPill(incidentStatus)}>{incidentStatusLabel(incidentStatus)}</span>
-          </div>
-          <div className="mt-3">
-            <button
-              type="button"
-              className={"px-3 py-2 rounded-xl text-sm border " + (orgId && incidentId ? "bg-emerald-600/20 border-emerald-300/30 text-emerald-100 hover:bg-emerald-600/30" : "bg-white/5 border-white/10 text-gray-400")}
-              disabled={artifactBusy || !orgId || !incidentId}
-              onClick={() => { void handleArtifactDownload(); }}
-              title={artifactHint}
+          {/* PEAKOPS_SUMMARY_UNASSIGNED_WARNING_V1 (2026-04-24)
+              Customer-facing warning when evidence still needs to be
+              assigned. The dev-only "Fix unassigned" affordance still
+              lives inside the Evidence by Job section. This banner gives
+              an ops user one obvious next action without exposing
+              backend wording. */}
+          {unassignedEvidenceCount > 0 ? (
+            <section
+              style={{
+                borderRadius: 10,
+                padding: "12px 16px",
+                border: "1px solid rgba(200,168,78,0.35)",
+                background: "rgba(200,168,78,0.08)",
+                color: "#C8A84E",
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
             >
-              {artifactBusy ? "Preparing Artifact..." : (artifactHint.toLowerCase().includes("ready") ? "Download Artifact" : artifactHint.toLowerCase().includes("building") ? "Artifact Building..." : "Generate Artifact")}
-            </button>
-            <div className="mt-2 text-sm text-gray-300">{artifactHint}</div>
+              <div
+                aria-hidden
+                style={{
+                  flexShrink: 0,
+                  width: 28,
+                  height: 28,
+                  borderRadius: 999,
+                  background: "rgba(200,168,78,0.18)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 14,
+                  fontWeight: 800,
+                  lineHeight: 1,
+                }}
+              >
+                ⚠
+              </div>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>
+                  {unassignedEvidenceCount} evidence item
+                  {unassignedEvidenceCount === 1 ? "" : "s"} need
+                  {unassignedEvidenceCount === 1 ? "s" : ""} to be assigned before export.
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
+                  Open the incident&rsquo;s Evidence tab to attach each item to a job.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  router.push(incidentPath(incidentId, orgId, { hash: "evidence" }))
+                }
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  border: "1px solid rgba(200,168,78,0.4)",
+                  background: "rgba(200,168,78,0.15)",
+                  color: "#C8A84E",
+                  flexShrink: 0,
+                }}
+              >
+                Assign Evidence →
+              </button>
+            </section>
+          ) : null}
+
+          {/* Transient banners */}
+          {!err && demoAuthBypassMsg ? (
+            <div
+              style={{
+                fontSize: 12,
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid rgba(200,168,78,0.3)",
+                background: "rgba(200,168,78,0.08)",
+                color: "#C8A84E",
+              }}
+            >
+              {demoAuthBypassMsg}
+            </div>
+          ) : null}
+          {!err && artifactToast ? (
+            <div
+              style={{
+                fontSize: 12,
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid rgba(34,197,94,0.3)",
+                background: "rgba(34,197,94,0.08)",
+                color: "#86efac",
+              }}
+            >
+              {artifactToast}
+            </div>
+          ) : null}
+
+          {/* Incident Status + Artifact */}
+          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
+            <div className="flex items-center justify-between gap-3">
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: "0.1em",
+                  color: "#C8A84E",
+                  textTransform: "uppercase" as const,
+                }}
+              >
+                Incident Status
+              </div>
+              <span className={"text-[11px] px-2 py-0.5 rounded-full border " + incidentStatusPill(incidentStatus)}>
+                {incidentStatusLabel(incidentStatus)}
+              </span>
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                disabled={artifactDisabled}
+                onClick={() => { void handleArtifactDownload(); }}
+                title={artifactHint}
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: 8,
+                  fontSize: 13,
+                  fontWeight: 800,
+                  letterSpacing: "0.02em",
+                  cursor: artifactDisabled ? "not-allowed" : "pointer",
+                  border: artifactDisabled ? "1px solid #1c1c1c" : "none",
+                  background: artifactDisabled ? "#101010" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
+                  color: artifactDisabled ? "#6f6f6f" : "#050505",
+                  boxShadow: artifactDisabled ? "none" : "0 2px 12px rgba(200,168,78,0.20)",
+                  transition: "background 120ms ease",
+                }}
+              >
+                {artifactLabel}
+              </button>
+              <div style={{ fontSize: 12, color: "#b3b3b3", lineHeight: 1.5, flex: 1, minWidth: 200 }}>
+                {artifactHint}
+              </div>
+            </div>
             {lastArtifactFilename ? (
-              <div className="mt-1 text-xs text-gray-500">
-                Last artifact: {lastArtifactFilename} {lastArtifactAt ? `• ${lastArtifactAt}` : ""}
+              <div style={{ marginTop: 10, fontSize: 11, color: "#6f6f6f" }}>
+                Last artifact:{" "}
+                <span style={{ color: "#b3b3b3", fontFamily: "ui-monospace, monospace" }}>{lastArtifactFilename}</span>
+                {lastArtifactAt ? ` • ${lastArtifactAt}` : ""}
               </div>
             ) : null}
-            <div className="mt-1 text-xs text-gray-500">
-              Packet counts: evidence {incident?.packetMeta?.evidenceCount ?? packetEvidenceCount} • jobs {incident?.packetMeta?.jobCount ?? packetJobCount}
-            </div>
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">Jobs Breakdown</div>
-          <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
-            {Object.entries(statusCounts).map(([k, v]) => (
-              <div key={k} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2">
-                <div className="text-[10px] uppercase text-gray-400">{k}</div>
-                <div className="text-lg font-semibold">{v}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">Evidence by Job</div>
-            {unassignedEvidenceCount > 0 ? (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] px-2 py-1 rounded-full border border-amber-300/30 bg-amber-500/15 text-amber-100">
-                  {unassignedEvidenceCount} unassigned evidence
+            <div
+              className="mt-3 flex flex-wrap gap-4"
+              style={{ fontSize: 11, color: "#6f6f6f" }}
+            >
+              <span>
+                Evidence:{" "}
+                <span style={{ color: "#f5f5f5", fontWeight: 600 }}>
+                  {incident?.packetMeta?.evidenceCount ?? packetEvidenceCount}
                 </span>
-                {(isDemoMode || process.env.NODE_ENV !== "production") ? (
+              </span>
+              <span>
+                Jobs:{" "}
+                <span style={{ color: "#f5f5f5", fontWeight: 600 }}>
+                  {incident?.packetMeta?.jobCount ?? packetJobCount}
+                </span>
+              </span>
+            </div>
+          </section>
+
+          {/* Jobs Breakdown */}
+          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.1em",
+                color: "#C8A84E",
+                textTransform: "uppercase" as const,
+              }}
+            >
+              Jobs Breakdown
+            </div>
+            <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+              {Object.entries(statusCounts).map(([k, v]) => (
+                <div
+                  key={k}
+                  style={{
+                    borderRadius: 8,
+                    border: "1px solid #1c1c1c",
+                    background: "#050505",
+                    padding: "10px 12px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 9,
+                      fontWeight: 600,
+                      letterSpacing: "0.08em",
+                      color: "#6f6f6f",
+                      textTransform: "uppercase" as const,
+                    }}
+                  >
+                    {k}
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "#f5f5f5", marginTop: 2 }}>{v}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Evidence by Job */}
+          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: "0.1em",
+                  color: "#C8A84E",
+                  textTransform: "uppercase" as const,
+                }}
+              >
+                Evidence by Job
+              </div>
+              {unassignedEvidenceCount > 0 ? (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: "#C8A84E",
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(200,168,78,0.3)",
+                    background: "rgba(200,168,78,0.08)",
+                  }}
+                >
+                  {unassignedEvidenceCount} unassigned
+                </span>
+              ) : null}
+            </div>
+            {(isDemoMode || process.env.NODE_ENV !== "production") ? (
+              <details style={{ marginTop: 6 }}>
+                <summary style={{ cursor: "pointer", fontSize: 10, color: "#6f6f6f" }}>Dev tools</summary>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    className="text-[11px] px-2 py-1 rounded border border-amber-300/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
-                    onClick={() => { void fixUnassignedEvidence(); }}
-                    disabled={fixUnassignedBusy}
+                    style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", cursor: "pointer" }}
+                    onClick={() => refreshVisibleThumbsDebounced()}
                   >
-                    {fixUnassignedBusy ? "Fixing…" : "Fix unassigned"}
+                    Refresh thumbnails
                   </button>
-                ) : null}
-              </div>
+                  <button
+                    type="button"
+                    style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", cursor: "pointer" }}
+                    onClick={() => forceRemintVisibleThumbs()}
+                  >
+                    Force remint URLs
+                  </button>
+                  <button
+                    type="button"
+                    style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", cursor: "pointer" }}
+                    onClick={() => setThumbDebugOverlay((v) => !v)}
+                  >
+                    {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
+                  </button>
+                  {unassignedEvidenceCount > 0 ? (
+                    <button
+                      type="button"
+                      style={{
+                        fontSize: 10,
+                        padding: "3px 8px",
+                        borderRadius: 4,
+                        border: "1px solid rgba(200,168,78,0.3)",
+                        background: "rgba(200,168,78,0.08)",
+                        color: "#C8A84E",
+                        fontWeight: 600,
+                        cursor: fixUnassignedBusy ? "not-allowed" : "pointer",
+                        opacity: fixUnassignedBusy ? 0.5 : 1,
+                      }}
+                      onClick={() => { void fixUnassignedEvidence(); }}
+                      disabled={fixUnassignedBusy}
+                    >
+                      {fixUnassignedBusy ? "Fixing…" : "Fix unassigned (dev)"}
+                    </button>
+                  ) : null}
+                </div>
+              </details>
             ) : null}
-            {process.env.NODE_ENV !== "production" ? (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => refreshVisibleThumbsDebounced()}
-                >
-                  Refresh thumbnails
-                </button>
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => forceRemintVisibleThumbs()}
-                >
-                  Force remint URLs
-                </button>
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => setThumbDebugOverlay((v) => !v)}
-                >
-                  {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
-                </button>
-              </div>
-            ) : null}
-          </div>
-          <div className="mt-3 space-y-3">
-            {Object.keys(evidenceByJob).length === 0 ? (
-              <div className="text-sm text-gray-400">No evidence found.</div>
-            ) : Object.entries(evidenceByJob).map(([jobId, list]) => {
-              const job = jobs.find((j) => String(j?.id || j?.jobId || "") === jobId);
-              return (
-                <div key={jobId} className="rounded-xl border border-white/10 bg-black/30 p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm text-gray-100 truncate">{job ? String(job.title || jobId) : (jobId === "unassigned" ? "Unassigned" : jobId)}</div>
-                    <span className="text-xs text-gray-400">{list.length} evidence</span>
+            <div className="mt-3 space-y-3">
+              {Object.keys(evidenceByJob).length === 0 ? (
+                <div style={{ fontSize: 13, color: "#6f6f6f" }}>No evidence found.</div>
+              ) : Object.entries(evidenceByJob).map(([jobId, list]) => {
+                const job = jobs.find((j) => String(j?.id || j?.jobId || "") === jobId);
+                const title = job ? String(job.title || jobId) : (jobId === "unassigned" ? "Unassigned" : jobId);
+                const isUnassigned = jobId === "unassigned";
+                return (
+                  <div key={jobId} style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#050505", padding: "10px 12px" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                        <span
+                          aria-hidden
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: 999,
+                            background: isUnassigned ? "#C8A84E" : "#22c55e",
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span
+                          style={{
+                            fontSize: 13,
+                            color: "#f5f5f5",
+                            fontWeight: 600,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {title}
+                        </span>
+                      </div>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          color: "#b3b3b3",
+                          padding: "2px 8px",
+                          borderRadius: 999,
+                          border: "1px solid #1c1c1c",
+                          background: "#0b0b0b",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {list.length} item{list.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex gap-2 overflow-x-auto">
+                      {list.slice(0, 8).map((ev) => {
+                        const id = String(ev.id || "");
+                        const u = thumbUrl[id];
+                        return (
+                          <div
+                            key={id}
+                            className="relative min-w-[110px] w-[110px] aspect-[4/3] rounded-lg overflow-hidden"
+                            style={{ border: "1px solid #1a1a1a", background: "#000" }}
+                          >
+                            {u ? (
+                              <img
+                                src={u}
+                                className="w-full h-full object-cover"
+                                onLoad={() => {
+                                  setThumbStatusById((m) => ({ ...m, [id]: 200 }));
+                                  setThumbErrById((m) => ({ ...m, [id]: "" }));
+                                }}
+                                onError={() => { void renewThumbOnce(ev, u); }}
+                              />
+                            ) : (
+                              <div
+                                className="w-full h-full flex items-center justify-center text-[10px] text-center px-1"
+                                style={{ color: "#6f6f6f" }}
+                              >
+                                {thumbErrById[id] ? "Unavailable" : "Loading…"}
+                              </div>
+                            )}
+                            {process.env.NODE_ENV !== "production" && thumbErrById[id] ? (
+                              <div
+                                className="absolute left-1 right-1 bottom-1 text-[9px] truncate bg-black/70 px-1 py-0.5 rounded"
+                                style={{ color: "#fca5a5", border: "1px solid rgba(248,113,113,0.3)" }}
+                              >
+                                {thumbErrById[id]}
+                              </div>
+                            ) : null}
+                            {process.env.NODE_ENV !== "production" && thumbDebugOverlay ? (
+                              <div
+                                className="absolute left-1 right-1 top-1 text-[9px] bg-black/65 px-1 py-0.5 rounded"
+                                style={{ color: "#a5f3fc", border: "1px solid rgba(103,232,249,0.3)" }}
+                              >
+                                <div className="truncate">id={id}</div>
+                                <div className="truncate">bucket={String(thumbBucketById[id] || "")}</div>
+                                <div className="truncate">path={String(thumbPathById[id] || "")}</div>
+                                <div className="truncate">mint_http={String(thumbStatusById[id] || 0)}</div>
+                                <div className="truncate">mint_error={String(thumbMintErrorById[id] || "-")}</div>
+                                <div className="truncate">probe_http={String(thumbProbeStatusById[id] || "-")}</div>
+                                <div className="truncate">probe_error={String(thumbProbeErrorById[id] || "-")}</div>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="mt-2 flex gap-2 overflow-x-auto">
-                    {list.slice(0, 8).map((ev) => {
-                      const id = String(ev.id || "");
-                      const u = thumbUrl[id];
-                      return (
-                        <div key={id} className="relative min-w-[110px] w-[110px] aspect-[4/3] rounded-lg overflow-hidden border border-white/10 bg-black">
-                          {u ? (
-                            <img
-                              src={u}
-                              className="w-full h-full object-cover"
-                              onLoad={() => {
-                                setThumbStatusById((m) => ({ ...m, [id]: 200 }));
-                                setThumbErrById((m) => ({ ...m, [id]: "" }));
-                              }}
-                              onError={() => { void renewThumbOnce(ev, u); }}
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-500 text-center px-1">
-                              {thumbErrById[id] ? "Unavailable" : "Loading…"}
-                            </div>
-                          )}
-                          {process.env.NODE_ENV !== "production" && thumbErrById[id] ? (
-                            <div className="absolute left-1 right-1 bottom-1 text-[9px] text-red-200 truncate bg-black/70 px-1 py-0.5 rounded border border-red-400/30">
-                              {thumbErrById[id]}
-                            </div>
-                          ) : null}
-                          {process.env.NODE_ENV !== "production" && thumbDebugOverlay ? (
-                            <div className="absolute left-1 right-1 top-1 text-[9px] text-cyan-100 bg-black/65 px-1 py-0.5 rounded border border-cyan-300/30">
-                              <div className="truncate">id={id}</div>
-                              <div className="truncate">bucket={String(thumbBucketById[id] || "")}</div>
-                              <div className="truncate">path={String(thumbPathById[id] || "")}</div>
-                              <div className="truncate">mint_http={String(thumbStatusById[id] || 0)}</div>
-                              <div className="truncate">mint_error={String(thumbMintErrorById[id] || "-")}</div>
-                              <div className="truncate">probe_http={String(thumbProbeStatusById[id] || "-")}</div>
-                              <div className="truncate">probe_error={String(thumbProbeErrorById[id] || "-")}</div>
-                            </div>
-                          ) : null}
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Timeline Highlights */}
+          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.1em",
+                color: "#C8A84E",
+                textTransform: "uppercase" as const,
+              }}
+            >
+              Timeline Highlights
+            </div>
+            <div className="mt-3 space-y-2">
+              {timelineHighlights.length === 0 ? (
+                <div style={{ fontSize: 13, color: "#6f6f6f" }}>No highlights yet.</div>
+              ) : timelineHighlights.map((t) => {
+                const ty = String(t.type || "").toLowerCase();
+                const tone =
+                  ty === "incident_closed" || ty === "job_approved"
+                    ? "#22c55e"
+                    : ty === "field_submitted"
+                    ? "#C8A84E"
+                    : "#6f6f6f";
+                return (
+                  <div
+                    key={t.id}
+                    style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#050505", padding: "8px 12px" }}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0 flex items-center gap-2">
+                      <span
+                        aria-hidden
+                        style={{ width: 6, height: 6, borderRadius: 999, background: tone, flexShrink: 0 }}
+                      />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, color: "#f5f5f5", fontWeight: 500 }}>
+                          {String(t.type || "event")}
                         </div>
-                      );
-                    })}
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: "#6f6f6f",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          actor: {String(t.actor || "system")}
+                          {t.refId ? ` • ref: ${String(t.refId)}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#6f6f6f", flexShrink: 0 }}>
+                      {fmtAgo(t.occurredAt?._seconds)}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
+                );
+              })}
+            </div>
+          </section>
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500 font-semibold">Timeline Highlights</div>
-          <div className="mt-3 space-y-2">
-            {timelineHighlights.length === 0 ? (
-              <div className="text-sm text-gray-400">No highlights yet.</div>
-            ) : timelineHighlights.map((t) => (
-              <div key={t.id} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-sm text-gray-100">{String(t.type || "event")}</div>
-                  <div className="text-xs text-gray-500 truncate">
-                    actor: {String(t.actor || "system")} {t.refId ? `• ref: ${String(t.refId)}` : ""}
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500">{fmtAgo(t.occurredAt?._seconds)}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {loading ? <div className="text-xs text-gray-500">Refreshing summary…</div> : null}
-      </div>
-    </main>
+          {loading ? <div style={{ fontSize: 11, color: "#6f6f6f" }}>Refreshing summary…</div> : null}
+        </div>
+      </main>
     </>
   );
   }

@@ -38,16 +38,24 @@ exports.assignEvidenceToJobV1 = onRequest({ cors: true }, async (req, res) => {
     const incidentId = mustStr(body.incidentId, "incidentId");
     const evidenceId = mustStr(body.evidenceId, "evidenceId");
     const jobId = String(body.jobId || "").trim();
-const db = getFirestore();
-    // PEAKOPS_LOCK_ENFORCE_V1 (fixed placement)
-    // Block any mutations to a locked/approved job.
-    const jobRef = db.collection("incidents").doc(incidentId).collection("jobs").doc(String(jobId));
-    const jobSnap = await jobRef.get();
-    if (!jobSnap.exists) return j(res, 404, { ok: false, error: "job_not_found" });
-    const job = jobSnap.data() || {};
-    const locked = !!job.locked || String(job.status || "").toLowerCase() === "approved";
-    if (locked) return j(res, 423, { ok: false, error: "locked", jobId });
+    const db = getFirestore();
 
+    // PEAKOPS_ASSIGN_EVIDENCE_TO_JOB_V2 (2026-04-24)
+    // Previously this handler had two bugs:
+    //   (1) An unconditional pre-check did `jobs.doc(String(jobId))` even when
+    //       jobId was empty. Firestore rejects empty doc IDs ("documentPath is
+    //       not a valid resource path") → 400s the unassign path. For real but
+    //       non-existent jobIds it returned 404 before any incident validation.
+    //   (2) A `locked` gate blocked assignment *TO* any approved job, making
+    //       the common "assign evidence to the approved job" flow impossible.
+    //       The smoke-test / MVP flow explicitly wants evidence to be
+    //       attachable to approved jobs (so the export's "all evidence has a
+    //       job" invariant is satisfied before the packet is generated).
+    //
+    // Rewritten: incident/org validation first, then optional job existence +
+    // org-match when jobId is non-empty. No lock gate — approved jobs are
+    // legitimate attachment targets in this flow. Unassign (empty jobId) is
+    // a deliberate no-op path that skips the job lookup entirely.
     await assertIncidentOrg(db, orgId, incidentId);
 
     if (jobId) {

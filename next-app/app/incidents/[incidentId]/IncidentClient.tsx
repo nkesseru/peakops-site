@@ -145,6 +145,26 @@ function tileUrlFromEvidence(ev: any): string {
 
 
 // PEAKOPS_PREVIEW_MEDIA_V1
+// PEAKOPS_MEDIA_EMULATOR_GATE_V1 (2026-04-24)
+// Authoritative signal for "it's safe to route images through the /api/media
+// Storage-emulator proxy". Keyed off the ACTUAL Cloud Functions base the app
+// talks to (NEXT_PUBLIC_FUNCTIONS_BASE) — NOT window.location.hostname, and
+// NOT the URL shape coming back from the backend. If a stale deployed
+// createEvidenceReadUrlV1 hands us an emulator-shaped URL while we're
+// pointed at production Functions, we refuse to rewrite to /api/media (which
+// itself tries to fetch 127.0.0.1:9199 server-side) and return empty so the
+// <img> fails silently instead of firing a doomed localhost request.
+function isEmulatorFunctionsBaseClient(): boolean {
+  const base = String(process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "").trim();
+  if (!base) return false;
+  try {
+    const host = new URL(base).hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost";
+  } catch {
+    return false;
+  }
+}
+
 function toInlineMediaUrl(u: string | undefined | null): string {
   const url = String(u || "").trim();
   if (!url) return url;
@@ -152,26 +172,27 @@ function toInlineMediaUrl(u: string | undefined | null): string {
   // If it's already our proxy, use it.
   if (url.startsWith("/api/media?")) return url;
 
-  // Match Storage emulator download URLs
-  // Example:
-  // http://127.0.0.1:9199/download/storage/v1/b/<bucket>/o/<encodedPath>?alt=media
+  // Detect emulator-shaped URLs (both /download/storage/v1/ and legacy /v0/).
   const m = url.match(/\/download\/storage\/v1\/b\/([^\/]+)\/o\/([^?]+)(\?.*)?$/);
-  if (m) {
-    const bucket = decodeURIComponent(m[1] || "");
-    const encPath = m[2] || "";
-    let path = encPath;
-    try { path = decodeURIComponent(encPath); } catch {}
-    // Route through Next so headers are inline + content-type is image/*.
-    if (!bucket || !path) return "";
-    return `/api/media?bucket=${encodeURIComponent(bucket)}&path=${encodeURIComponent(path)}`;
-  }
+  const m2 = m ? null : url.match(/\/v0\/b\/([^\/]+)\/o\/([^?]+)(\?.*)?$/);
+  const emuMatch = m || m2;
 
-  // Match v0 style:
-  // http://127.0.0.1:9199/v0/b/<bucket>/o/<encodedPath>?alt=media
-  const m2 = url.match(/\/v0\/b\/([^\/]+)\/o\/([^?]+)(\?.*)?$/);
-  if (m2) {
-    const bucket = decodeURIComponent(m2[1] || "");
-    const encPath = m2[2] || "";
+  if (emuMatch) {
+    if (!isEmulatorFunctionsBaseClient()) {
+      // Prod Functions returning an emulator URL means the deployed function
+      // is stale (createEvidenceReadUrlV1 not redeployed since the V2 fix).
+      // Routing through /api/media would just proxy to 127.0.0.1:9199 from
+      // Next's server-side runtime — also doomed. Drop the URL entirely; the
+      // tile renders its "Loading…" / "Unavailable" fallback instead.
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[toInlineMediaUrl] emulator-shaped URL in non-emulator context (redeploy createEvidenceReadUrlV1?):", url);
+      }
+      return "";
+    }
+
+    const bucket = decodeURIComponent(emuMatch[1] || "");
+    const encPath = emuMatch[2] || "";
     let path = encPath;
     try { path = decodeURIComponent(encPath); } catch {}
     if (!bucket || !path) return "";
@@ -1124,6 +1145,17 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
   const thumbRefreshDebounceRef = useRef<any>(null);
   const thumbMintInflightRef = useRef<Record<string, boolean>>({});
+  // PEAKOPS_THUMB_TERMINAL_V1 (2026-04-24)
+  // Hard terminal-failure flag per evidenceId. Survives state resets and
+  // refresh() cycles because it's a ref, not state. Set on the FIRST of:
+  //   - a mint call that returned !ok,
+  //   - a post-mint probe that failed (e.g. 403 from GCS),
+  //   - an <img> onError firing.
+  // While this flag is true for an id, prefetchThumbs / retryThumbs /
+  // renewThumbOnce all skip minting for it — no more loops. Cleared only
+  // when the IncidentClient component unmounts (i.e. hard page reload or
+  // navigating to a different incident).
+  const thumbTerminalRef = useRef<Record<string, boolean>>({});
   const refreshInflightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
   // PEAKOPS_CREATE_JOB_INFLIGHT_V1
@@ -2119,6 +2151,8 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         const ref = getBestEvidenceImageRef(ev);
         if (!ref?.storagePath || !ref?.bucket) return;
         if (!id) return;
+        // PEAKOPS_THUMB_TERMINAL_V1: once failed, never re-mint until reload.
+        if (thumbTerminalRef.current[id]) return;
         if (thumbUrl[id] && thumbPathById[id] === ref.storagePath) return;
         if (thumbMintInflightRef.current[id]) return;
 
@@ -2147,9 +2181,15 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
             setThumbProbeStatusById((m) => ({ ...m, [id]: 0 }));
             setThumbProbeErrorById((m) => ({ ...m, [id]: "-" }));
             setThumbErr((m) => ({ ...m, [id]: false }));
+          } else {
+            // Mint returned !ok — terminal. Don't retry until reload.
+            thumbTerminalRef.current[id] = true;
+            setThumbErr((m) => ({ ...m, [id]: true }));
+            setThumbMintErrorById((m) => ({ ...m, [id]: String(resp?.error || "read_url_failed") }));
           }
         } catch (e) {
           console.warn("thumb prefetch failed", id, e);
+          thumbTerminalRef.current[id] = true;
           setThumbDiagById((m) => ({ ...m, [id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
           setThumbMintErrorById((m) => ({ ...m, [id]: String((e as any)?.message || e || "thumb_prefetch_failed") }));
           setThumbErr((m) => ({ ...m, [id]: true }));
@@ -2175,6 +2215,8 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         const id = String((ev as any)?.id || "");
         const ref = getBestEvidenceImageRef(ev as any);
         if (!id || !ref?.storagePath || !ref?.bucket) continue;
+        // PEAKOPS_THUMB_TERMINAL_V1: never retry a terminally-failed thumb.
+        if (thumbTerminalRef.current[id]) continue;
 
         const hadErr = !!(thumbErr as any)?.[id];
         const hasUrl = !!(thumbUrl as any)?.[id];
@@ -2238,96 +2280,24 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       setThumbRetryById((m) => ({ ...m, [id]: 0 }));
       return;
     }
-    const retryN = Number(thumbRetryById[id] || 0);
-    if (retryN >= 1) {
-      setThumbErr((m) => ({ ...m, [id]: true }));
-      setThumbDiagById((m) => ({ ...m, [id]: m[id] || "read_url_failed" }));
-      return;
-    }
-    const ref = getBestEvidenceImageRef(ev);
-    if (!ref?.bucket || !ref?.storagePath) {
-      setThumbErr((m) => ({ ...m, [id]: true }));
-      setThumbDiagById((m) => ({ ...m, [id]: "missing_bucket_or_storagePath" }));
-      return;
-    }
-    setThumbRetryById((m) => ({ ...m, [id]: retryN + 1 }));
-    if (process.env.NODE_ENV !== "production") {
-      logThumbEvent("img_error", {
-          kind: ref.kind,
-        bucket: ref.bucket,
-        storagePath: ref.storagePath,
-        src: currentSrc,
-        retryCount: retryN,
-      });
-    }
-    logThumbEvent("retry_start", { evidenceId: id, kind: ref.kind, storagePath: ref.storagePath, retryCount: retryN });
-    const out = await mintEvidenceReadUrl({
-      orgId,
-      incidentId,
-      bucket: ref.bucket,
-      storagePath: ref.storagePath,
-      expiresSec: getThumbExpiresSec(),
+    // PEAKOPS_THUMB_TERMINAL_V1 (2026-04-24)
+    // First image-load failure is terminal for this evidenceId. No re-mint
+    // attempt. The minted URL is bad (signed-URL permissions, missing object,
+    // wrong bucket, stale doc, etc.) — re-minting the same backend call with
+    // the same inputs produces an equally bad URL and just spams GCS with 403s.
+    // Mark terminal, clear the URL so the fallback "Unavailable" placeholder
+    // renders, and stop. Only a hard page reload re-attempts (the ref clears
+    // on component unmount).
+    if (thumbTerminalRef.current[id]) return;
+    thumbTerminalRef.current[id] = true;
+    setThumbErr((m) => ({ ...m, [id]: true }));
+    setThumbUrl((m) => {
+      const n = { ...m };
+      delete n[id];
+      return n;
     });
-    if (out?.ok && out.url) {
-      const sep = out.url.includes("?") ? "&" : "?";
-      const fresh = `${out.url}${sep}v=${Date.now()}`;
-      setThumbUrl((m) => ({ ...m, [id]: fresh }));
-      setThumbPathById((m) => ({ ...m, [id]: ref.storagePath }));
-      setThumbBucketById((m) => ({ ...m, [id]: ref.bucket }));
-      setThumbRetryById((m) => ({ ...m, [id]: 0 }));
-      setThumbErr((m) => ({ ...m, [id]: false }));
-      setThumbDiagById((m) => {
-        if (!m[id]) return m;
-        const n = { ...m };
-        delete n[id];
-        return n;
-      });
-      setThumbStatusById((m) => ({ ...m, [id]: Number(out?.status || 200) }));
-      setThumbMintErrorById((m) => ({ ...m, [id]: "-" }));
-      setThumbProbeStatusById((m) => ({ ...m, [id]: 0 }));
-      setThumbProbeErrorById((m) => ({ ...m, [id]: "-" }));
-      if (!functionsBaseIsLocal) {
-        void probeMintedThumbUrl(fresh).then((probe) => {
-          const pmsg = probe.ok ? "" : (probe.status > 0 ? `probe_http_${probe.status}` : String(probe.error || "probe_failed"));
-          setThumbProbeStatusById((m) => ({ ...m, [id]: Number(probe.status || 0) }));
-          setThumbProbeErrorById((m) => ({ ...m, [id]: pmsg || "-" }));
-          setThumbDiagById((m) => ({
-            ...m,
-            [id]: `mint_http=${Number(out?.mintHttp || out?.status || 200)} mint_error=- probe_http=${Number(probe.status || 0)} probe_error=${pmsg || "-"}`,
-          }));
-          if (!probe.ok) {
-            logThumbEvent("retry_fail", {
-              evidenceId: id,
-              kind: ref.kind,
-              storagePath: ref.storagePath,
-              status: Number(probe.status || 0),
-              error: pmsg || "probe_failed",
-            });
-          }
-        });
-      }
-      logThumbEvent("retry_ok", { evidenceId: id, kind: ref.kind, storagePath: ref.storagePath });
-      return;
-    }
-    const mintErr = String(out?.error || "read_url_failed");
-    const mintDetails = out?.details ? String(JSON.stringify(out.details)).slice(0, 180) : "";
-    const mintStatus = Number(out?.mintHttp || out?.status || 0) || 0;
-    const showFail = retryN >= 1;
-    setThumbErr((m) => ({ ...m, [id]: showFail }));
-    setThumbStatusById((m) => ({ ...m, [id]: Number(out?.status || 0) || 0 }));
-    setThumbMintErrorById((m) => ({ ...m, [id]: `${mintErr}${mintDetails ? `:${mintDetails}` : ""}` }));
-    setThumbProbeStatusById((m) => ({ ...m, [id]: 0 }));
-    setThumbProbeErrorById((m) => ({ ...m, [id]: "-" }));
-    setThumbDiagById((m) => ({
-      ...m,
-      [id]: `${showFail ? "" : "retrying:"}mint_http=${mintStatus} mint_error=${mintErr}${mintDetails ? `:${mintDetails}` : ""} probe_http=- probe_error=-`,
-    }));
-    logThumbEvent("retry_fail", {
-      kind: ref.kind,
-      storagePath: ref.storagePath,
-      status: mintStatus,
-      error: mintErr,
-    });
+    setThumbDiagById((m) => ({ ...m, [id]: m[id] || "img_load_failed" }));
+    logThumbEvent("terminal", { evidenceId: id, src: currentSrc });
   }
 
   function refreshVisibleThumbsDebounced() {
@@ -2994,7 +2964,23 @@ useEffect(() => {
   <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(200px, 2fr)", gap: 8, alignItems: "start" }}>
     {/* LEFT: Primary action */}
     <div style={{ display: "grid", gap: 8 }}>
-      {_hasSubmitted ? (
+      {/* PEAKOPS_INCIDENT_CLOSED_AFFORDANCE_V1 (2026-04-24)
+          When an incident is closed, the "Submitted for review / waiting for
+          supervisor approval" card is stale — review already happened. Show
+          a confident "Incident closed" affordance with a Summary CTA instead.
+          When the field has submitted but the incident isn't closed, keep
+          the existing review-pending card. */}
+      {isClosed ? (
+        <section style={{ borderRadius: 10, border: "1px solid rgba(34,197,94,0.30)", background: "rgba(34,197,94,0.06)", padding: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.10em", textTransform: "uppercase" as const, color: "#22c55e" }}>Incident closed</div>
+          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>This incident is finalized. Open the summary to review the artifact.</div>
+          <div style={{ marginTop: 10 }}>
+            <button type="button" style={{ width: "100%", padding: "14px 0", borderRadius: 8, border: "none", background: "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: "#050505", fontSize: 16, fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 12px rgba(200,168,78,0.20)" }} onClick={() => { try { router.push(summaryPath(incidentId, orgId)); } catch {} }}>
+              View Summary
+            </button>
+          </div>
+        </section>
+      ) : _hasSubmitted ? (
         <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: 14 }}>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#22c55e" }}>Submitted for review</div>
           <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>Session submitted. Waiting for supervisor approval.</div>

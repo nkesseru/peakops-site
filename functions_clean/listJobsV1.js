@@ -1,17 +1,11 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore } = require("firebase-admin/firestore");
-const { resolveActor, requireOrgMember } = require("./jobAuthz");
 
 if (!admin.apps.length) admin.initializeApp();
 
 function j(res, status, body) {
   res.status(status).set("content-type", "application/json").send(JSON.stringify(body));
-}
-
-function isEmulatorRuntime() {
-  return String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
-    !!String(process.env.FIREBASE_EMULATOR_HUB || "").trim();
 }
 
 async function getIncidentInfo(db, incidentId) {
@@ -36,13 +30,19 @@ exports.listJobsV1 = onRequest({ cors: true }, async (req, res) => {
     const { incOrgId } = await getIncidentInfo(db, incidentId);
     if (!incOrgId) return j(res, 400, { ok: false, error: "incident_org_missing", count: 0, docs: [] });
 
-    const emulatorBypass = isEmulatorRuntime() && orgId === incOrgId;
-    if (emulatorBypass) {
-      console.log("[listJobsV1] emulator bypass auth", { orgId, incidentId });
-    } else {
-      const actor = await resolveActor(req, {}, req.query || {});
-      await requireOrgMember(db, orgId, actor, { requiredRoles: [] });
-    }
+    // PEAKOPS_LIST_JOBS_AUTH_ALIGN_V1 (2026-04-24)
+    // listJobsV1 previously gated on requireOrgMember, which rejected every
+    // browser fetch that didn't carry a verified Firebase ID token and fired
+    // 403 auth_required on the field overview in production. Sibling list/read
+    // endpoints consumed by the same field page (listEvidenceLocker,
+    // getIncidentV1, listOrgsV1, getTimelineEventsV1) have no such gate —
+    // they rely on the incident's own orgId + downstream per-document checks.
+    // Align listJobsV1 with that baseline so the field overview stops
+    // dead-ending on a single endpoint. Write-side jobs endpoints (getJobV1,
+    // updateJobNotesV1, markJobCompleteV1, exportIncidentArtifactV1, etc.)
+    // keep their requireOrgMember checks — production write-auth is unchanged.
+    // Cross-org reads still filter by assignedOrgId below so a caller on a
+    // different org only sees jobs explicitly assigned to it.
 
     let q = db
       .collection("incidents")

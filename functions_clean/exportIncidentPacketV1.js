@@ -6,7 +6,7 @@ const { getStorage } = require("firebase-admin/storage");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execFile } = require("child_process");
+const archiver = require("archiver");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -18,10 +18,12 @@ function mustStr(v, name) {
   if (!s) throw new Error(`${name} required`);
   return s;
 }
+// PEAKOPS_EXPORT_EMU_GATE_V2 (2026-04-24)
+// Canonical emulator flags only — drop the FIREBASE_STORAGE_EMULATOR_HOST
+// disjunct that leaks into prod via the checked-in env.runtime.
 function isEmu() {
   return String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
-    !!process.env.FIREBASE_EMULATOR_HUB ||
-    !!process.env.FIREBASE_STORAGE_EMULATOR_HOST;
+    !!process.env.FIREBASE_EMULATOR_HUB;
 }
 function emuStorageHost() {
   return String(process.env.FIREBASE_STORAGE_EMULATOR_HOST || "127.0.0.1:9199").trim();
@@ -33,18 +35,34 @@ function emuDownloadUrl(bucket, storagePath) {
 async function writeJson(fp, obj) {
   await fs.promises.writeFile(fp, JSON.stringify(obj, null, 2), "utf8");
 }
+// PEAKOPS_EXPORT_FETCH_BYTES_V2 (2026-04-24)
+// Previously this hard-coded a 127.0.0.1:9199 emulator URL, making every
+// evidence download fail in production. Use the Admin SDK's file.download()
+// which transparently talks to GCS in prod and the Storage emulator in dev
+// (the admin library honors FIREBASE_STORAGE_EMULATOR_HOST when set).
 async function fetchEvidenceBytes(bucket, storagePath) {
-  const url = emuDownloadUrl(bucket, storagePath);
-  const r = await fetch(url, { method: "GET" });
-  if (!r.ok) throw new Error(`evidence_download_failed ${r.status} ${storagePath}`);
-  return Buffer.from(await r.arrayBuffer());
+  const [buf] = await getStorage().bucket(bucket).file(storagePath).download();
+  return buf;
 }
+// PEAKOPS_EXPORT_ZIP_V2 (2026-04-24)
+// Replace `execFile("zip", …)` with node-native archiver. The GCF Node 20
+// runtime has no `zip` binary; the old execFile call failed with ENOENT and
+// returned 500 before any bytes hit Storage. `archiver` is already a
+// functions_clean package.json dep and the same lib exportIncidentArtifactV1
+// uses.
 function runZip(cwd, outZip) {
   return new Promise((resolve, reject) => {
-    execFile("zip", ["-r", "-q", outZip, "."], { cwd }, (err) => {
-      if (err) return reject(err);
-      resolve(true);
+    const output = fs.createWriteStream(outZip);
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    output.on("close", resolve);
+    output.on("error", reject);
+    archive.on("warning", (err) => {
+      if (err?.code !== "ENOENT") reject(err);
     });
+    archive.on("error", reject);
+    archive.pipe(output);
+    archive.directory(cwd, false);
+    archive.finalize();
   });
 }
 function isApprovedJob(job) {

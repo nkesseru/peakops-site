@@ -56,6 +56,24 @@ function isLocalDev(): boolean {
   }
 }
 
+// PEAKOPS_EMULATOR_FUNCTIONS_BASE_V1
+// Authoritative signal for "the upload proxy is safe to call". We key off the
+// actual Cloud Functions base the app is pointed at — NOT the browser
+// hostname — because a developer can (and does) run the UI on localhost while
+// NEXT_PUBLIC_FUNCTIONS_BASE=https://us-central1-<project>.cloudfunctions.net.
+// In that case the functions are production, uploadEvidenceProxyV1 returns
+// 403 dev_only_endpoint, and the client must take the direct-signed-URL path.
+function isEmulatorFunctionsBase(): boolean {
+  const base = String(process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "").trim();
+  if (!base) return false;
+  try {
+    const host = new URL(base).hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost";
+  } catch {
+    return false;
+  }
+}
+
 async function postJson<T>(url: string, body: any): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
@@ -97,11 +115,34 @@ async function uploadBytesToUploadUrl(opts: {
   const method = String(opts.uploadMethod || "PUT").toUpperCase();
   const ct = opts.file.type || "application/octet-stream";
 
+  // PEAKOPS_UPLOAD_PROXY_DEV_GATE_V2
+  // The uploadEvidenceProxyV1 endpoint is dev-only (returns 403
+  // dev_only_endpoint when deployed to production). Guarantee the proxy
+  // branch can only fire when BOTH:
+  //   (a) the Cloud Functions base points at an emulator (localhost / 127.0.0.1),
+  //       i.e. we're actually routing function calls to the local emulator, AND
+  //   (b) the backend returned an emulator-shaped Storage uploadUrl.
+  // The earlier heuristic checked window.location.hostname, which wrongly
+  // treated "UI served from localhost while pointed at prod Functions" as
+  // local dev — that configuration is common during staging smoke tests and
+  // was the reason the proxy kept getting called in prod. Now it hinges on
+  // NEXT_PUBLIC_FUNCTIONS_BASE, which is the only signal that actually tells
+  // us which backend we're talking to.
+  const emulatorFunctionsBase = isEmulatorFunctionsBase();
   const isLocalStorageEmulatorUrl =
     /127\.0\.0\.1:9199/i.test(String(opts.uploadUrl || "")) ||
     /localhost:9199/i.test(String(opts.uploadUrl || ""));
 
-  if (isLocalStorageEmulatorUrl && opts.proxyArgs) {
+  if (isLocalStorageEmulatorUrl && !emulatorFunctionsBase) {
+    throw new Error(
+      `Upload URL points at the Storage emulator (${opts.uploadUrl}) but ` +
+      `NEXT_PUBLIC_FUNCTIONS_BASE is not an emulator endpoint. Verify that ` +
+      `createEvidenceUploadUrlV1 is returning real signed URLs in production ` +
+      `and that NEXT_PUBLIC_FUNCTIONS_BASE is set correctly for this environment.`
+    );
+  }
+
+  if (emulatorFunctionsBase && isLocalStorageEmulatorUrl && opts.proxyArgs) {
     const q = new URLSearchParams({
       orgId: String(opts.proxyArgs.orgId || ""),
       incidentId: String(opts.proxyArgs.incidentId || ""),

@@ -47,8 +47,43 @@ exports.createEvidenceUploadUrlV1 = onRequest({ cors: true }, async (req, res) =
     const storagePath =
       `orgs/${orgId}/incidents/${incidentId}/uploads/${sessionId}/${ts}__${finalName}`;
 
-    const host = String(process.env.FIREBASE_STORAGE_EMULATOR_HOST || "127.0.0.1:9199");
-    const uploadUrl = `http://${host}/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(storagePath)}`;
+    // PEAKOPS_EVIDENCE_UPLOAD_URL_V2
+    // Branch on whether we're running inside the Firebase emulator suite.
+    // Emulator: return an unsigned upload-URL against the local Storage
+    // emulator (the existing uploadEvidenceProxyV1 handles the odd emulator
+    // upload protocol and that endpoint short-circuits outside dev).
+    // Production: mint a real v4 signed PUT URL against the real bucket so
+    // the browser uploads directly to GCS and NEVER hits uploadEvidenceProxyV1
+    // (which returns 403 dev_only_endpoint in prod).
+    const emuHost = String(process.env.FIREBASE_STORAGE_EMULATOR_HOST || "").trim();
+    const isEmulator =
+      !!emuHost ||
+      String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true";
+
+    const expiresMs = Date.now() + 10 * 60 * 1000; // 10 minutes
+    let uploadUrl;
+    let uploadMethod;
+
+    if (isEmulator) {
+      const host = emuHost || "127.0.0.1:9199";
+      uploadUrl = `http://${host}/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(storagePath)}`;
+      uploadMethod = "POST";
+    } else {
+      // Real GCS v4 signed PUT URL. Requires the runtime service account to
+      // have iam.serviceAccounts.signBlob on itself (see prod-blocker note).
+      const fileRef = bucketObj.file(storagePath);
+      const [signed] = await fileRef.getSignedUrl({
+        action: "write",
+        version: "v4",
+        expires: expiresMs,
+        contentType,
+      });
+      uploadUrl = signed;
+      uploadMethod = "PUT";
+    }
+
+    let uploadUrlHost = "";
+    try { uploadUrlHost = new URL(uploadUrl).host; } catch {}
 
     return j(res, 200, {
       ok: true,
@@ -59,10 +94,10 @@ exports.createEvidenceUploadUrlV1 = onRequest({ cors: true }, async (req, res) =
       storagePath,
       contentType,
       uploadUrl,
-      uploadMethod: "POST",
-      uploadUrlHost: host,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-      storageEmulatorHost: host,
+      uploadMethod,
+      uploadUrlHost,
+      expiresAt: new Date(expiresMs).toISOString(),
+      storageEmulatorHost: isEmulator ? (emuHost || "127.0.0.1:9199") : "",
     });
   } catch (e) {
     return j(res, 500, { ok: false, error: String(e?.message || e || "error") });

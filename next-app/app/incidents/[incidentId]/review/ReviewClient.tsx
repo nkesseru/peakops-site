@@ -16,7 +16,7 @@ import {
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid } from "@/lib/demoActor";
 import { getFileField } from "@/lib/evidence/fileField";
-import { getBestEvidenceImageRef, getBestEvidencePreviewRef, logThumbEvent } from "@/lib/evidence/signedThumb";
+import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl } from "@/lib/evidence/signedThumb";
 import { incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
 
 
@@ -439,6 +439,19 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const [thumbRetryById, setThumbRetryById] = useState<Record<string, number>>({});
   const [thumbStatusById, setThumbStatusById] = useState<Record<string, number>>({});
   const [thumbErrorById, setThumbErrorById] = useState<Record<string, string>>({});
+  // PEAKOPS_REVIEW_THUMB_SIGNED_V1 (2026-04-24)
+  // Minted signed URLs keyed by evidenceId, populated by the prefetch effect
+  // below. Replaces the previous /api/media proxy approach, which returns 410
+  // Gone in production. Renders through toInlineMediaUrl(...) so emulator
+  // URLs still flow through /api/media while production URLs go direct to
+  // storage.googleapis.com.
+  const [thumbUrlById, setThumbUrlById] = useState<Record<string, string>>({});
+  const thumbMintInflightRef = useRef<Record<string, boolean>>({});
+  // Terminal-failure flag. Once a thumbnail fails (mint !ok, mint exception,
+  // or <img> onError), we never re-mint until the component unmounts (hard
+  // page reload or navigating to a different incident). Matches the
+  // one-shot-terminal pattern used by IncidentClient.
+  const thumbTerminalRef = useRef<Record<string, boolean>>({});
   const [thumbDebugOverlay, setThumbDebugOverlay] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string>("");
@@ -541,59 +554,30 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   }
 
   async function handleThumbDecodeError(evidenceId: string, url: string, media?: TileMedia) {
-    const retryN = Number(thumbRetryById[evidenceId] || 0);
-    if (retryN < 1) {
-      if (canDevLog) {
-        logThumbEvent("img_error", {
-	  evidenceId: (selectedEvidenceId || "unknown"),
-          kind: media?.mode === "image" ? media.ref.kind : "unknown",
-          bucket: media?.mode === "image" ? media.ref.bucket : "",
-          storagePath: media?.mode === "image" ? media.ref.storagePath : "",
-          src: url,
-          retryCount: retryN,
-        });
-      }
-      logThumbEvent("retry_start", {
-	evidenceId: (selectedEvidenceId || "unknown"),
+    // PEAKOPS_REVIEW_THUMB_SIGNED_V1 (2026-04-24)
+    // One-shot terminal. Previously retried via a counter and a cache-buster;
+    // that caused the same re-mint storm the field page had. The signed URL
+    // from createEvidenceReadUrlV1 is either fetchable or not — a browser
+    // retry doesn't change its contents. Mark terminal, clear the URL so the
+    // "Unavailable" placeholder renders, and stop. Cleared only on component
+    // unmount (hard page reload or navigation).
+    if (thumbTerminalRef.current[evidenceId]) return;
+    thumbTerminalRef.current[evidenceId] = true;
+    setThumbUrlById((m) => {
+      const n = { ...m };
+      delete n[evidenceId];
+      return n;
+    });
+    setThumbErrorById((m) => ({ ...m, [evidenceId]: "img_load_failed" }));
+    setThumbReasonById((m) => ({ ...m, [evidenceId]: "img_load_failed" }));
+    setThumbStatusById((m) => ({ ...m, [evidenceId]: Number(m[evidenceId] || 0) }));
+    if (canDevLog) {
+      logThumbEvent("terminal", {
+        evidenceId: (selectedEvidenceId || evidenceId || "unknown"),
         kind: media?.mode === "image" ? media.ref.kind : "unknown",
+        bucket: media?.mode === "image" ? media.ref.bucket : "",
         storagePath: media?.mode === "image" ? media.ref.storagePath : "",
-        retryCount: retryN,
-      });
-      setThumbRetryById((m) => ({ ...m, [evidenceId]: retryN + 1 }));
-      setThumbCacheBustById((m) => ({ ...m, [evidenceId]: Date.now() }));
-      return;
-    }
-    try {
-      const debugUrl = `${url}${url.includes("?") ? "&" : "?"}debug=1`;
-      const res = await fetch(debugUrl, { method: "GET", cache: "no-store" });
-      const txt = await res.text().catch(() => "");
-      let out: any = {};
-      try { out = txt ? JSON.parse(txt) : {}; } catch {}
-      const ct = String(out?.ct || out?.contentType || res.headers.get("content-type") || "").trim();
-      const err = String(out?.error || "").trim();
-      const magic = String(out?.magic?.got || "").trim();
-      const size = out?.size != null ? String(out.size) : "";
-      setThumbStatusById((m) => ({ ...m, [evidenceId]: Number(res.status || 0) }));
-      setThumbErrorById((m) => ({ ...m, [evidenceId]: err || "thumb_proxy_failed" }));
-      setThumbReasonById((m) => ({
-        ...m,
-        [evidenceId]: `thumb_proxy_failed http=${res.status} error=${err || "unknown"} ct=${ct || "unknown"} magic=${magic || "-"} size=${size || "-"}`,
-      }));
-      logThumbEvent("retry_fail", {
-	evidenceId: (selectedEvidenceId || "unknown"),
-        status: res.status,
-        error: err || "unknown",
-        storagePath: media?.mode === "image" ? media.ref.storagePath : "",
-      });
-    } catch {
-      setThumbStatusById((m) => ({ ...m, [evidenceId]: 0 }));
-      setThumbErrorById((m) => ({ ...m, [evidenceId]: "probe_failed" }));
-      setThumbReasonById((m) => ({ ...m, [evidenceId]: "thumb_proxy_failed http=0 error=probe_failed" }));
-      logThumbEvent("retry_fail", {
-	evidenceId: (selectedEvidenceId || "unknown"),
-        status: 0,
-        error: "probe_failed",
-        storagePath: media?.mode === "image" ? media.ref.storagePath : "",
+        src: url,
       });
     }
   }
@@ -937,6 +921,55 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       : base;
     return scoped.slice(0, evidenceLimit);
   }, [evidence, evidenceFilterJobId, evidenceLimit]);
+
+  // PEAKOPS_REVIEW_THUMB_SIGNED_V1 (2026-04-24)
+  // Mint signed thumbnail URLs for every visible evidence tile that doesn't
+  // already have one. Uses the shared signedThumb helper so review and field
+  // pages go through the same code path and same mint cache. One mint per
+  // evidenceId per page load; terminal-failure gate prevents any retry loop.
+  useEffect(() => {
+    const effectiveOrgId = String(activeOrgId || orgId || "").trim();
+    if (!effectiveOrgId || !incidentId) return;
+    (visibleEvidence || []).forEach((ev: any) => {
+      const id = String(ev?.id || ev?.evidenceId || "");
+      if (!id) return;
+      if (thumbTerminalRef.current[id]) return;
+      if (thumbUrlById[id]) return;
+      if (thumbMintInflightRef.current[id]) return;
+      const ref = getBestEvidenceImageRef(ev);
+      if (!ref?.bucket || !ref?.storagePath) return;
+      thumbMintInflightRef.current[id] = true;
+      (async () => {
+        try {
+          const resp = await mintEvidenceReadUrl({
+            orgId: effectiveOrgId,
+            incidentId,
+            bucket: ref.bucket,
+            storagePath: ref.storagePath,
+            expiresSec: getThumbExpiresSec(),
+          });
+          if (resp?.ok && resp.url) {
+            setThumbUrlById((m) => ({ ...m, [id]: resp.url! }));
+            setThumbStatusById((m) => ({ ...m, [id]: Number(resp?.status || 200) }));
+            setThumbErrorById((m) => ({ ...m, [id]: "" }));
+          } else {
+            thumbTerminalRef.current[id] = true;
+            setThumbReasonById((m) => ({ ...m, [id]: String(resp?.error || "mint_failed") }));
+            setThumbErrorById((m) => ({ ...m, [id]: String(resp?.error || "mint_failed") }));
+            setThumbStatusById((m) => ({ ...m, [id]: Number(resp?.status || 0) }));
+          }
+        } catch (e: any) {
+          thumbTerminalRef.current[id] = true;
+          setThumbReasonById((m) => ({ ...m, [id]: String(e?.message || e || "mint_error") }));
+        } finally {
+          thumbMintInflightRef.current[id] = false;
+        }
+      })();
+    });
+    // Intentionally don't depend on thumbUrlById to avoid loops; the in-body
+    // guard (if (thumbUrlById[id]) return) handles the deduplication.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleEvidence, activeOrgId, orgId, incidentId]);
 
   function openJobForReview(jobIdRaw: string) {
     const jid = String(jobIdRaw || "").trim();
@@ -1804,7 +1837,16 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 return visibleEvidence.map((ev: any) => {
                   const id = String(ev?.id || ev?.evidenceId || "");
                   const media = getTileMedia(ev as any);
-                  const u = media.mode === "image" ? buildThumbProxyUrl(media.ref, id) : "";
+                  // PEAKOPS_REVIEW_THUMB_SIGNED_V1 (2026-04-24)
+                  // Read the minted signed URL from state (populated by the
+                  // prefetch effect above) and run it through toInlineMediaUrl
+                  // so emulator URLs still route through /api/media while
+                  // production URLs go direct to storage.googleapis.com.
+                  // buildThumbProxyUrl (which hardcoded /api/media) is no
+                  // longer called — /api/media returns 410 outside the
+                  // emulator and would break review thumbnails in prod.
+                  const mintedRaw = media.mode === "image" ? (thumbUrlById[id] || "") : "";
+                  const u = toInlineMediaUrl(mintedRaw);
                   const name = String(getFileField(ev, "originalName") || id);
                   const labels = (ev?.labels || []).map((x: any) => String(x).toUpperCase());
                   const reason = String(thumbReasonById[id] || "").trim();
