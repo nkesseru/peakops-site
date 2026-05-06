@@ -18,6 +18,12 @@ import { ensureDemoActor, getActorRole, getActorUid } from "@/lib/demoActor";
 import { getFileField } from "@/lib/evidence/fileField";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl } from "@/lib/evidence/signedThumb";
 import { incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
+import { authedFetch } from "@/lib/apiClient";
+import { useAuth } from "@/hooks/useAuth";
+import { deriveNextAction, type NextActionKey } from "@/lib/workflow/nextBestAction";
+import { displayIncidentTitle } from "@/lib/incidents/displayIncidentTitle";
+import { resolveJobDisplayState, buildJobUiState } from "@/lib/incidents/resolveJobDisplayState";
+import QaAuthDebugChip from "@/components/dev/QaAuthDebugChip";
 
 
 
@@ -26,7 +32,7 @@ import { incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigati
 
 // PEAKOPS_REQUEST_UPDATE_V1
 async function createSupervisorRequest(orgId: string, incidentId: string, message: string, jobId?: string) {
-  const res = await fetch("/api/fn/createSupervisorRequestV1", {
+  const res = await authedFetch("/api/fn/createSupervisorRequestV1", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ orgId, incidentId, message, jobId: jobId || "", actorUid: "dev-admin" }),
@@ -42,7 +48,7 @@ async function createSupervisorRequest(orgId: string, incidentId: string, messag
 
 // PEAKOPS_EXPORT_PACKET_UI_V1
 async function exportIncidentPacket(orgId: string, incidentId: string): Promise<string> {
-  const res = await fetch("/api/fn/exportIncidentPacketV1", {
+  const res = await authedFetch("/api/fn/exportIncidentPacketV1", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ orgId, incidentId }),
@@ -78,7 +84,7 @@ function getSelectedJobIdForApprove(): string {
 }
 
 async function approveAndLockJob(orgId: string, incidentId: string, jobId: string) {
-  const res = await fetch("/api/fn/approveAndLockJobV1", {
+  const res = await authedFetch("/api/fn/approveAndLockJobV1", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ orgId, incidentId, jobId, actorUid: "dev-admin" }),
@@ -194,6 +200,9 @@ type JobDoc = {
   notes?: string | null;
   assignedTo?: string | null;
   rejectReason?: string | null;
+  // PEAKOPS_VENDOR_ASSIGNMENT_V1 (2026-05-04)
+  vendorId?: string | null;
+  vendorName?: string | null;
 };
 
 type IncidentDoc = {
@@ -241,8 +250,77 @@ function computedBaseStatus(job: any): string {
   return st || "open";
 }
 
+// PEAKOPS_REVIEW_LANG_V1 (2026-04-28)
+// Human labels for raw lifecycle statuses surfaced on the supervisor
+// review page. Customers should never see machine tokens like
+// "revision_requested" or "rejected" — every UI string maps through
+// these helpers.
+function humanizeJobBaseStatus(st: string): string {
+  switch (String(st || "").toLowerCase()) {
+    case "open": return "Open";
+    case "in_progress":
+    case "active": return "In progress";
+    case "complete": return "Complete";
+    default: return st ? st.charAt(0).toUpperCase() + st.slice(1) : "Open";
+  }
+}
+function humanizeReviewStatus(rs: string): string {
+  switch (String(rs || "").toLowerCase()) {
+    case "review": return "In review";
+    case "approved": return "Approved";
+    case "rejected":
+    case "revision_requested": return "Sent back";
+    case "none":
+    case "": return "—";
+    default: return rs;
+  }
+}
+
+// PEAKOPS_REVIEW_TIMELINE_HUMANIZE_V1 (2026-04-28)
+// Mirror of the mapping in TimelinePanel.tsx so the inline timeline
+// rendered on /review never shows raw event tokens like
+// "FIELD_SUBMITTED" or "JOB_REJECTED" to a customer.
+function prettyTimelineType(t: string): string {
+  const key = String(t || "").toLowerCase();
+  const m: Record<string, string> = {
+    notes_saved: "Notes saved",
+    evidence_added: "Photos saved",
+    field_arrived: "Field arrived",
+    field_submitted: "Submitted to supervisor",
+    field_approved: "Supervisor approved",
+    material_added: "Material logged",
+    incident_opened: "Job opened",
+    incident_closed: "Job closed",
+    session_started: "Session started",
+    job_created: "Job created",
+    job_completed: "Job completed",
+    job_approved: "Job approved",
+    job_rejected: "Job sent back",
+    job_locked: "Job locked",
+    supervisor_request_update: "Update requested",
+  };
+  if (m[key]) return m[key];
+  return key
+    .replace(/_/g, " ")
+    .replace(/^./, (x) => x.toUpperCase()) || "Event";
+}
+function timelineClock(sec?: number): string {
+  if (!sec) return "";
+  try {
+    return new Date(sec * 1000).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
 async function postJson<T>(url: string, body: any, extraHeaders?: Record<string, string>): Promise<T> {
-  const res = await fetch(url, {
+  // PEAKOPS_PHASE3_AUTHED_FETCH_V1 (2026-04-27)
+  // Only called with /api/fn/* URLs in this file; route through authedFetch
+  // so the Firebase ID token reaches the Phase 3 enforcement gate.
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...(extraHeaders || {}) },
     body: JSON.stringify(body || {}),
@@ -393,6 +471,19 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   // orgId-preserving helpers in @/lib/navigation/incidentRoutes.
   const _reviewSp = useSearchParams();
   const orgId = String(_reviewSp?.get?.("orgId") || "").trim();
+  // PEAKOPS_REVIEW_DEV_MODE_V2 (2026-04-29)
+  // Dev tools (Re-link photos, Refresh thumbnails, Show thumb debug,
+  // Force remint URLs) gated STRICTLY on ?dev=1. Previous V1 also fired
+  // when NODE_ENV !== "production"; local QA is now customer-clean by
+  // default and engineers opt in via the URL flag.
+  const devMode = useMemo(() => {
+    try {
+      const v = String(_reviewSp?.get?.("dev") || "").trim();
+      return v === "1" || v.toLowerCase() === "true";
+    } catch {
+      return false;
+    }
+  }, [_reviewSp]);
   const functionsBase = getFunctionsBase();
   useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
@@ -421,8 +512,42 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string>("");
   const [errDiag, setErrDiag] = useState<{ endpoint?: string; status?: number; body?: string } | null>(null);
+  // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+  // Set when getIncidentV1 returns 404 / "incident_not_found". Drives
+  // a clean customer-facing empty state instead of the raw debug panel.
+  const [incidentNotFound, setIncidentNotFound] = useState(false);
   const [toastMsg, setToastMsg] = useState<string>("");
   const [mounted, setMounted] = useState(false);
+
+  // PEAKOPS_REVIEW_NBA_V1 (2026-04-28)
+  // Same Firebase Auth claims source as the field/summary pages so NBA
+  // resolves identical role logic across the lifecycle.
+  // PEAKOPS_REVIEW_AUTH_GATE_V2 (2026-04-28)
+  // Pull `user` + `loading` so we can render a loading card before
+  // committing to either the field-only or supervisor branch.
+  const { user: authUser, loading: authLoading, claims: authClaims } = useAuth();
+
+  // Force-refresh claims once on /review mount so a stale cached
+  // token doesn't render the wrong branch when the user just had
+  // their custom claims updated server-side. Result is plumbed into
+  // useAuth's existing onAuthStateChanged listener via the next
+  // tick — we don't need to set local state here.
+  const [tokenForceRefreshed, setTokenForceRefreshed] = useState(false);
+  useEffect(() => {
+    if (!authUser) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await authUser.getIdToken(true);
+      } catch {
+        /* swallow — useAuth already exposes the cached fallback */
+      }
+      if (!cancelled) setTokenForceRefreshed(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser]);
 
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [incidentDoc, setIncidentDoc] = useState<IncidentDoc | null>(null);
@@ -431,7 +556,36 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const [selectedJobId, setSelectedJobId] = useState<string>("");
   const [jobActionBusy, setJobActionBusy] = useState(false);
   const [closingIncident, setClosingIncident] = useState(false);
+  // PEAKOPS_REVIEW_REENTRY_GUARDS_V1 (2026-05-04)
+  // Synchronous double-click guards. State updates lag by a render so
+  // a fast double-click can fire two POSTs before the button visibly
+  // disables. These refs are checked synchronously at the entry of
+  // each handler. Released in the matching finally block.
+  const approveJobRef = useRef(false);
+  const rejectJobRef = useRef(false);
+  const closeIncidentRef = useRef(false);
+  // PEAKOPS_REVIEW_GENERATE_REPORT_V1 (2026-05-01)
+  // Loading state for the Review-side direct export trigger. Used to
+  // disable the NBA button + show "Preparing report…" feedback while
+  // exportIncidentPacketV1 runs. Distinct from closingIncident so a
+  // double-click between Close and Generate Report can't conflate
+  // the two states.
+  const [exportingReport, setExportingReport] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
+
+  // PEAKOPS_REVIEW_INLINE_CONFIRM_V1 (2026-04-28)
+  // Inline confirmation panel state for destructive review actions.
+  // Replaces native window.confirm, which a previous QA pass demonstrated
+  // could auto-commit (browser dialog suppression, focused-Enter race,
+  // or Cypress-style auto-accept) on the first click. With this state
+  // the first click only ever toggles UI — only the explicit Confirm
+  // button in the panel below the NBA card is allowed to call the API.
+  type PendingConfirmAction = null | "approve" | "send_back" | "close";
+  const [pendingConfirmAction, setPendingConfirmAction] =
+    useState<PendingConfirmAction>(null);
+  // Optional reason captured inline for "Send Back" so the field team
+  // gets context. Cleared on cancel/success/failure.
+  const [pendingSendBackReason, setPendingSendBackReason] = useState<string>("");
 
   // Gallery state
   const [thumbReasonById, setThumbReasonById] = useState<Record<string, string>>({});
@@ -489,7 +643,8 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
   async function fetchTextOrThrow(url: string, request: string) {
-    const res = await fetch(url, { headers: demoHeaders });
+    // Refresh path only fetches /api/fn/* URLs; route through authedFetch.
+    const res = await authedFetch(url, { headers: demoHeaders });
     const text = await res.text();
     if (!res.ok) {
       if (canDevLog) {
@@ -651,6 +806,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     if (!base) return [];
     setLoading(true);
     setErr("");
+    setIncidentNotFound(false);
     setErrDiag(null);
     try {
       let requestOrgId = String(activeOrgId || orgId || "").trim() || orgId;
@@ -769,11 +925,23 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           body: String((e as any)?.body || "").slice(0, 500),
         });
       }
+      const diagStatus = Number((e as any)?.status || 0) || undefined;
+      const diagBody = String((e as any)?.body || "").slice(0, 500);
       setErrDiag({
         endpoint: String((e as any)?.endpoint || ""),
-        status: Number((e as any)?.status || 0) || undefined,
-        body: String((e as any)?.body || "").slice(0, 500),
+        status: diagStatus,
+        body: diagBody,
       });
+      // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+      // Detect 404 / "incident_not_found" so the page can render a
+      // clean empty state instead of the raw debug panel.
+      if (
+        diagStatus === 404 ||
+        /incident_not_found/i.test(diagBody) ||
+        /incident not found/i.test(msg)
+      ) {
+        setIncidentNotFound(true);
+      }
       setErr(`${msg} [functionsBase=${base}${fallbackUsed ? " fallback=applied" : ""}]`);
       return [];
     } finally {
@@ -883,7 +1051,42 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     const st = String(j?.status || "").trim().toLowerCase();
     return rs === "approved" || st === "approved" || !!j?.locked;
   });
-  const canCloseIncident = !incidentClosed && allJobsApproved && hasFieldSubmitted;
+  // PEAKOPS_REVIEW_TIMELINE_CLOSED_V1 (2026-05-05)
+  // Honor timeline-derived close. If the timeline records an
+  // `incident_closed` event but `incidentDoc.status` is still
+  // "approved" (data lag between supervisor approve and the close
+  // pipeline writing back), the canonical state is Closed and the
+  // Close Job CTA must NOT show. This was the root of the "Closed
+  // appears on the timeline but Close Job CTA still active" buyer
+  // contradiction.
+  const hasClosedTimelineEvent = Array.isArray(timeline) && timeline.some(
+    (t: any) => {
+      const ty = String(t?.type || "").toLowerCase();
+      return ty === "incident_closed" || ty === "job_closed";
+    },
+  );
+  const incidentClosedCanonical = incidentClosed || hasClosedTimelineEvent;
+  const canCloseIncident = !incidentClosedCanonical && allJobsApproved && hasFieldSubmitted;
+
+  // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05) /
+  // PEAKOPS_REVIEW_TIMELINE_CLOSED_V1 (2026-05-05)
+  // Page-level UI state for Supervisor Review. Drives header pill,
+  // approve/send-back/close visibility, and review messaging. Now
+  // also accepts a timeline-derived close signal so a job whose
+  // close event has fired but whose status field hasn't caught up
+  // still resolves to Closed everywhere.
+  const reviewUiState = buildJobUiState({
+    // Force-close when the timeline has the event, even if the
+    // status field is still "approved".
+    status: hasClosedTimelineEvent ? "closed" : incidentStatus,
+    allTasksApproved: allJobsApproved,
+    hasSubmitted: hasFieldSubmitted,
+    anyRejected: Array.isArray(jobs) && jobs.some((j: any) => {
+      const rs = String(j?.reviewStatus || "").toLowerCase();
+      const st = String(j?.status || "").toLowerCase();
+      return rs === "rejected" || rs === "revision_requested" || st === "rejected";
+    }),
+  });
   const selectedJobStatus = computedBaseStatus(selectedJob || {});
   const selectedJobReviewStatus = computedReviewStatus(selectedJob || {});
   const selectedJobInReview = selectedJobReviewStatus === "review";
@@ -903,10 +1106,10 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const missingItems = useMemo(() => {
     const out: string[] = [];
     if (noReviewablesApproved) return out;
-    if (!hasReviewableJob) out.push("No reviewable jobs yet. Mark a job as COMPLETE with linked evidence to enable review. (status=complete/review and linked evidence>=1)");
-    if (!selectedJobReadyState && !selectedJobApproved) out.push("Selected job must be complete or review");
-    if (selectedJobEvidenceCount < 1) out.push("Selected job needs at least 1 linked evidence item");
-    if (selectedJobApproved) out.push("Selected job is approved (terminal).");
+    if (!hasReviewableJob) out.push("Before this can be approved, at least one completed job needs attached photos.");
+    if (!selectedJobReadyState && !selectedJobApproved) out.push("Selected job must be complete or in review");
+    if (selectedJobEvidenceCount < 1) out.push("Selected job needs at least one attached photo");
+    if (selectedJobApproved) out.push("Selected job is already approved.");
     return out;
   }, [noReviewablesApproved, hasReviewableJob, selectedJobReadyState, selectedJobApproved, selectedJobEvidenceCount]);
   const visibleEvidence = useMemo(() => {
@@ -979,18 +1182,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     try { jobDetailPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch {}
   }
 
-  useEffect(() => {
-    if (process.env.NODE_ENV === "production") return;
-    const sid = String(selectedJobId || "");
-    if (!sid) return;
-    const linked = (evidence || []).filter((ev: any) => getLinkedJobId(ev) === sid);
-    console.debug("[review-selected-job]", {
-      selectedJobId: sid,
-      totalEvidence: (evidence || []).length,
-      linkedEvidenceCount: linked.length,
-      firstLinkedIds: linked.slice(0, 3).map((ev: any) => String(ev?.id || "")),
-    });
-  }, [selectedJobId, evidence]);
+  // PEAKOPS_NOTIFICATIONS_V1_2 (2026-05-05)
+  // Removed dev console diagnostics for selected-job — was noise in
+  // the review console without enough signal to keep around. Real
+  // operational issues surface via the existing toasts and error
+  // paths below.
 
   async function approveAndLock() {
   try {
@@ -1010,7 +1206,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       return;
     }
 
-    const res = await fetch("/api/fn/approveAndLockJobV1", {
+    const res = await authedFetch("/api/fn/approveAndLockJobV1", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ orgId: oid, incidentId: iid, jobId: jid }),
@@ -1047,16 +1243,81 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   }
 }
 
-  async function sendBack() {
-    alert("TODO: wire send-back endpoint (sendBackIncidentV1). For now, this is a stub.");
+  // PEAKOPS_REVIEW_SEND_BACK_V3 (2026-04-28)
+  // Commit-only path for Send Back. The button click no longer enters
+  // here directly — it sets pendingConfirmAction = "send_back" and the
+  // inline confirm panel's "Confirm Send Back" is the only caller. The
+  // panel collects the reason inline (no native window.prompt) and
+  // passes it through here.
+  async function commitSendBack(reason: string) {
+    const dev = process.env.NODE_ENV !== "production";
+    if (jobActionBusy || loading) {
+      toast("Please wait — another action is in progress.", 2400);
+      return;
+    }
+    const jid = String(selectedJobId || "");
+    if (!jid) {
+      toast("Select a job first.", 2400);
+      setPendingConfirmAction(null);
+      return;
+    }
+    // PEAKOPS_REVIEW_HERO_V1 (2026-04-30)
+    // The supervisor never has to think about "Move to Review" — if
+    // the task is still `complete`, transparently promote it to
+    // `review` first so the rejectJobV1 backend's gating doesn't
+    // strand the user. Failure here drops the user back to the
+    // confirm panel with a clean retry.
+    if (selectedJobReviewStatus !== "review") {
+      try {
+        await moveSelectedJobToReview();
+      } catch (e: any) {
+        if (process.env.NODE_ENV !== "production") {
+          // eslint-disable-next-line no-console
+          console.warn("[review-sendback-commit] auto-promote failed", String(e?.message || e));
+        }
+        toast("We couldn't prepare this job to be sent back. Please retry.", 3000);
+        return;
+      }
+    }
+    const trimmedReason = String(reason || "").trim();
+    if (!trimmedReason) {
+      toast("A short reason is required to send a job back.", 2800);
+      return;
+    }
+    try {
+      setRejectReason(trimmedReason);
+      setJobActionBusy(true);
+      const out: any = await postJson(`/api/fn/rejectJobV1`, {
+        orgId: activeOrgId || orgId,
+        incidentId,
+        jobId: jid,
+        reason: trimmedReason,
+        rejectedBy: "supervisor_ui",
+      }, demoHeaders);
+      if (!out?.ok) throw new Error(out?.error || "send-back failed");
+      setRejectReason("");
+      await refresh();
+      toast("Update requested. The field team will see your note.", 2200);
+      if (dev) console.debug("[review-sendback-commit] success", { jid });
+    } catch (e: any) {
+      if (dev) console.warn("[review-sendback-commit] failure", String(e?.message || e));
+      toast("We couldn't complete that action. Please refresh and try again.", 3600);
+    } finally {
+      setJobActionBusy(false);
+      setPendingConfirmAction(null);
+      setPendingSendBackReason("");
+    }
   }
 
   async function approveJob(jobId: string) {
+    // PEAKOPS_REVIEW_REENTRY_GUARDS_V1 (2026-05-04)
+    if (approveJobRef.current) return;
     try {
       if (selectedJobReviewStatus !== "review") {
         toast("Move to Review first.");
         return;
       }
+      approveJobRef.current = true;
       setJobActionBusy(true);
       const out: any = await postJson(`/api/fn/approveJobV1`, {
         orgId: activeOrgId || orgId,
@@ -1070,22 +1331,44 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         const st = String(j?.status || "").toLowerCase();
         return st === "approved";
       });
+      toast("Job approved.", 2200);
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      // PEAKOPS_REVIEW_REENTRY_GUARDS_V1 (2026-05-04)
+      // Customer-safe message; raw error goes to dev console only.
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[review-approve] failure", String(e?.message || e));
+      }
+      toast("We couldn't approve that job. Please refresh and try again.", 3600);
     } finally {
       setJobActionBusy(false);
+      approveJobRef.current = false;
     }
   }
 
+  // PEAKOPS_REVIEW_CLOSE_V2 (2026-04-28)
+  // Commit-only path; only the inline confirm panel may call this.
   async function closeIncident() {
+    const dev = process.env.NODE_ENV !== "production";
+    // PEAKOPS_REVIEW_REENTRY_GUARDS_V1 (2026-05-04)
+    if (closeIncidentRef.current) return;
     if (closingIncident || loading) return;
     const oid = String(activeOrgId || orgId || "").trim();
     const iid = String(incidentId || "").trim();
-    if (!oid || !iid) return toast("Close failed: missing org/incident context.", 3200);
-    if (!canCloseIncident) return toast("Incident is not ready to close yet.", 2200);
+    if (!oid || !iid) {
+      toast("Close failed: missing org/incident context.", 3200);
+      setPendingConfirmAction(null);
+      return;
+    }
+    if (!canCloseIncident) {
+      toast("Job is not ready to close yet.", 2200);
+      setPendingConfirmAction(null);
+      return;
+    }
     try {
+      closeIncidentRef.current = true;
       setClosingIncident(true);
-      const res = await fetch("/api/fn/closeIncidentV1", {
+      const res = await authedFetch("/api/fn/closeIncidentV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -1101,16 +1384,113 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       let out: any = {};
       try { out = txt ? JSON.parse(txt) : {}; } catch {}
       if (!res.ok || !out?.ok) throw new Error(out?.error || `closeIncidentV1 failed: ${res.status}`);
-      toast("Incident closed ✓", 2200);
+      toast("Job closed.", 2200);
       await refresh();
     } catch (e: any) {
-      toast("Close failed: " + String(e?.message || e), 3200);
+      toast("We couldn't complete that action. Please refresh and try again.", 3600);
     } finally {
       setClosingIncident(false);
+      // PEAKOPS_REVIEW_REENTRY_GUARDS_V1 (2026-05-04)
+      closeIncidentRef.current = false;
+      setPendingConfirmAction(null);
+    }
+  }
+
+  // PEAKOPS_REVIEW_GENERATE_REPORT_V1 (2026-05-01)
+  // One-click Generate Report from the Review screen. Previously the
+  // NBA "open_report" action only did router.push(summaryPath), which
+  // forced the user to click Generate Report a second time on the
+  // Summary page. This fires exportIncidentPacketV1 directly using
+  // the same call shape SummaryClient uses, then navigates to
+  // /summary so the user lands on the canonical "report ready / can
+  // download" surface. Re-entrancy guarded by exportingReport state.
+  async function triggerExportThenNavigate() {
+    if (exportingReport) return;
+    const oid = String(activeOrgId || orgId || "").trim();
+    const iid = String(incidentId || "").trim();
+    if (!oid || !iid) {
+      toast("Missing org/incident context.", 3200);
+      return;
+    }
+    try {
+      setExportingReport(true);
+      toast("Preparing report…", 1800);
+      const res = await authedFetch("/api/fn/exportIncidentPacketV1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orgId: oid,
+          incidentId: iid,
+          requestedBy: getActorUid?.() || "review_ui",
+          actorUid: getActorUid?.() || "review_ui",
+          actorRole: getActorRole?.() || "admin",
+        }),
+        cache: "no-store",
+      });
+      const txt = await res.text().catch(() => "");
+      let out: any = {};
+      try { out = txt ? JSON.parse(txt) : {}; } catch {}
+      // 409 = packet already generated for this incident — treat as
+      // success; SummaryClient will pick up the existing packet from
+      // incident.packetMeta and surface the Download button.
+      const okSignal = res.ok && out?.ok;
+      const alreadyExists = res.status === 409;
+      if (!okSignal && !alreadyExists) {
+        // PEAKOPS_REVIEW_DEBUG_LOG_GUARD_V1 (2026-05-05)
+        // Removed the [review-generate-report] console.warn — even
+        // gated on `dev`, QA / preview deploys ran with dev truthy
+        // and the string leaked into operator consoles. The toast
+        // below is the user-facing signal; the server already logs
+        // the failing incident via [export-packet] failed.
+        toast("We couldn't generate the report. Please try again.", 3600);
+        return;
+      }
+      try { router.push(summaryPath(iid, oid)); } catch {}
+    } catch (_e: any) {
+      toast("We couldn't generate the report. Please try again.", 3600);
+    } finally {
+      setExportingReport(false);
+    }
+  }
+
+  // PEAKOPS_REVIEW_APPROVE_COMMIT_V1 (2026-04-28)
+  // Commit-only path for Approve & Lock; only the inline confirm panel
+  // may call this. The first-click handler `requestApprove` only
+  // toggles pendingConfirmAction — never reaches here.
+  async function commitApproveAndLock() {
+    const dev = process.env.NODE_ENV !== "production";
+    if (jobActionBusy || loading || closingIncident) {
+      toast("Please wait — another action is in progress.", 2400);
+      return;
+    }
+    const jid = String(selectedJobId || "").trim();
+    if (!jid) {
+      toast("Select a job to review first.", 2400);
+      setPendingConfirmAction(null);
+      return;
+    }
+    setJobActionBusy(true);
+    try {
+      await approveAndLockJob(
+        String(activeOrgId || orgId || ""),
+        String(incidentId || ""),
+        jid,
+      );
+      await refresh();
+      toast("Job approved.", 1800);
+    } catch (e: any) {
+      const msg = String(e?.message || e || "approve_and_lock_failed");
+      setErr(msg);
+      toast("We couldn't complete that action. Please refresh and try again.", 3600);
+    } finally {
+      setJobActionBusy(false);
+      setPendingConfirmAction(null);
     }
   }
 
   async function rejectJob(jobId: string) {
+    // PEAKOPS_REVIEW_REENTRY_GUARDS_V1 (2026-05-04)
+    if (rejectJobRef.current) return;
     try {
       if (selectedJobReviewStatus !== "review") {
         toast("Move to Review first.");
@@ -1118,9 +1498,10 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       }
       const reason = String(rejectReason || "").trim();
       if (!reason) {
-        toast("Reject reason is required.");
+        toast("Add a short reason before sending this job back.");
         return;
       }
+      rejectJobRef.current = true;
       setJobActionBusy(true);
       const out: any = await postJson(`/api/fn/rejectJobV1`, {
         orgId: activeOrgId || orgId,
@@ -1136,10 +1517,16 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         const st = String(j?.status || "").toLowerCase();
         return st === "rejected";
       });
+      toast("Job sent back.", 2200);
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[review-reject] failure", String(e?.message || e));
+      }
+      toast("We couldn't send that job back. Please refresh and try again.", 3600);
     } finally {
       setJobActionBusy(false);
+      rejectJobRef.current = false;
     }
   }
 
@@ -1162,7 +1549,13 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       if (!out?.ok) throw new Error(out?.error || "updateJobStatusV1 failed");
       await refresh();
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      // PEAKOPS_REVIEW_REENTRY_GUARDS_V1 (2026-05-04)
+      // Customer-safe message; raw error to dev console only.
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[review-move-to-review] failure", String(e?.message || e));
+      }
+      toast("We couldn't move that job to review. Please refresh and try again.", 3600);
     } finally {
       setJobActionBusy(false);
     }
@@ -1184,56 +1577,407 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       await sleep(150);
       await refresh();
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[review-backfill] failure", String(e?.message || e));
+      }
+      toast("We couldn't backfill those links. Please refresh and try again.", 3600);
     } finally {
       setJobActionBusy(false);
     }
   }
 
 
-  return (
-    <main className="min-h-screen bg-black text-white">
-      {/* Sticky top bar */}
-      <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
-            <div className="text-lg font-semibold truncate">{incidentId}</div>
+  // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+  // Clean customer-facing empty state when getIncidentV1 returns 404
+  // (typical for a deep-link to an incident that was deleted, never
+  // existed, or that the user can't access). Replaces the legacy
+  // raw debug panel (endpoint / status / body / envBase / fallback
+  // disabled) with a calm card. Raw diagnostics live in a dev-only
+  // disclosure inside the card so engineers can still see the cause
+  // when running locally.
+  if (incidentNotFound) {
+    return (
+      <main className="min-h-screen bg-black text-white">
+        <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
+              <div className="text-lg font-semibold truncate" title={incidentId}>
+                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+              </div>
+              <div className="mt-2">
+                <QaAuthDebugChip />
+              </div>
+            </div>
+            <button
+              className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
+              onClick={() => router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+            >
+              ← Back to incidents
+            </button>
           </div>
+        </div>
+        <div className="p-4">
+          <section
+            style={{
+              borderRadius: 12,
+              border: "1px solid #1c1c1c",
+              background: "#0b0b0b",
+              padding: "24px 22px",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                color: "#6f6f6f",
+                textTransform: "uppercase" as const,
+              }}
+            >
+              Not found
+            </div>
+            <div style={{ marginTop: 6, fontSize: 18, fontWeight: 700, color: "#f5f5f5" }}>
+              Incident not found
+            </div>
+            <div style={{ marginTop: 6, fontSize: 13, color: "#b3b3b3", lineHeight: 1.5 }}>
+              This incident may have been deleted, moved, or you may not have access.
+            </div>
+            <div style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                onClick={() => router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: 8,
+                  border: "1px solid #1c1c1c",
+                  background: "transparent",
+                  color: "#b3b3b3",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Back to incidents
+              </button>
+            </div>
+            {/* PEAKOPS_NOT_FOUND_DEV_GATE_V1 (2026-04-30) */}
+            {devMode ? (
+              <details style={{ marginTop: 16, fontSize: 10, color: "#6f6f6f" }}>
+                <summary style={{ cursor: "pointer" }}>Technical details (dev only)</summary>
+                <div style={{ marginTop: 6, fontFamily: "ui-monospace, monospace", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                  incidentId: {incidentId}
+                  {errDiag?.endpoint ? <div>endpoint: {errDiag.endpoint}</div> : null}
+                  {errDiag?.status ? <div>status: {errDiag.status}</div> : null}
+                  {errDiag?.body ? <div>body: {String(errDiag.body).slice(0, 240)}</div> : null}
+                </div>
+              </details>
+            ) : null}
+          </section>
+        </div>
+      </main>
+    );
+  }
 
-          <div className="flex items-center gap-2 shrink-0">
-            
-<button
-  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-  onClick={() => {
-    try {
-      exportIncidentPacket(String(orgId||""), String(incidentId||""))
-        .then((url) => {
-          console.log("[ExportPacket] url:", url);
-          window.open(url, "_blank", "noreferrer");
-        })
-        .catch((e:any) => console.error(e));
-    } catch (e) { console.error(e); }
-  }}
-  title="Export incident packet ZIP"
->
-  📦 Download Packet
-</button>
-
-<button
+  // PEAKOPS_REVIEW_AUTH_GATE_V2 (2026-04-28)
+  // Three-state role gate to eliminate the cold-nav flash where the
+  // page commits to a render branch before claims are loaded:
+  //   1. Loading (auth still resolving OR claims empty + token refresh
+  //      hasn't completed yet) → neutral "Checking review access" card.
+  //   2. Explicit "field" → field waiting card (no supervisor UI).
+  //   3. Anything else (supervisor / admin / unknown-but-resolved) →
+  //      full supervisor render below.
+  // Backend Phase 3 enforcement is the source of truth for write
+  // authorization; this gate is purely about not rendering the wrong
+  // UI during the cold-nav window.
+  const _reviewerRole = String(authClaims?.role || "").toLowerCase();
+  const _authStillLoading = authLoading || (!!authUser && !_reviewerRole && !tokenForceRefreshed);
+  if (_authStillLoading) {
+    return (
+      <main className="min-h-screen bg-black text-white">
+        <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
+              <div className="text-lg font-semibold truncate" title={incidentId}>
+                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+              </div>
+              <div className="mt-2">
+                <QaAuthDebugChip />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="p-4">
+          <section
+            style={{
+              borderRadius: 12,
+              border: "1px solid #1c1c1c",
+              background: "#0b0b0b",
+              padding: "24px 22px",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                color: "#6f6f6f",
+                textTransform: "uppercase" as const,
+              }}
+            >
+              Loading
+            </div>
+            <div style={{ marginTop: 6, fontSize: 16, fontWeight: 700, color: "#f5f5f5" }}>
+              Checking review access…
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#b3b3b3", lineHeight: 1.5 }}>
+              Verifying your permissions.
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  }
+  // PEAKOPS_REVIEW_UNKNOWN_ROLE_V1 (2026-04-28)
+  // If the user is signed in but no role claim exists after a fresh
+  // token refresh, they don't belong on /review. Render an explicit
+  // "Access unavailable" card so the page never falls through into
+  // either field or supervisor UI for an unconfigured user.
+  const _knownRoles = new Set(["field", "supervisor", "admin"]);
+  if (!!authUser && !_knownRoles.has(_reviewerRole)) {
+    return (
+      <main className="min-h-screen bg-black text-white">
+        <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
+              <div className="text-lg font-semibold truncate" title={incidentId}>
+                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+              </div>
+              <div className="mt-2">
+                <QaAuthDebugChip />
+              </div>
+            </div>
+            <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
               onClick={() => router.push(incidentPath(incidentId, orgId))}
             >
-              ← Back to Incident
+              ← Jobs
             </button>
-            <button
-              className="px-3 py-2 rounded-xl bg-blue-600/20 border border-blue-400/20 text-blue-100 hover:bg-blue-600/25 text-sm"
-              onClick={() => router.push(notesPath(incidentId, orgId))}
+          </div>
+        </div>
+        <div className="p-4">
+          <section
+            style={{
+              borderRadius: 12,
+              border: "1px solid rgba(220,60,60,0.30)",
+              background: "rgba(220,60,60,0.06)",
+              padding: "20px 22px",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                color: "#fca5a5",
+                textTransform: "uppercase" as const,
+              }}
             >
-              📝 Notes
-            </button>
+              Access unavailable
+            </div>
+            <div style={{ marginTop: 6, fontSize: 16, fontWeight: 700, color: "#f5f5f5" }}>
+              Review access not assigned
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#b3b3b3", lineHeight: 1.5 }}>
+              Your account does not have a role configured for this organisation. Contact your PeakOps administrator to request access.
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  }
+  if (_reviewerRole === "field") {
+    return (
+      <main className="min-h-screen bg-black text-white">
+        <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
+              <div className="text-lg font-semibold truncate" title={incidentId}>
+                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+              </div>
+              <div className="mt-2">
+                <QaAuthDebugChip />
+              </div>
+            </div>
             <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
+              onClick={() => router.push(incidentPath(incidentId, orgId))}
+            >
+              ← Jobs
+            </button>
+          </div>
+        </div>
+        <div className="p-4">
+          <section
+            style={{
+              borderRadius: 12,
+              border: "1px solid rgba(34,197,94,0.30)",
+              background: "rgba(34,197,94,0.06)",
+              padding: "20px 22px",
+              display: "flex",
+              alignItems: "center",
+              gap: 16,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ flex: "1 1 280px", minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: "0.14em",
+                  color: "#86efac",
+                  textTransform: "uppercase" as const,
+                }}
+              >
+                Submitted for review
+              </div>
+              <div style={{ marginTop: 4, fontSize: 16, fontWeight: 700, color: "#f5f5f5" }}>
+                Waiting for supervisor approval
+              </div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#b3b3b3", lineHeight: 1.5 }}>
+                The field work has been submitted. A supervisor will review and
+                approve from here. No field action is needed right now.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => router.push(incidentPath(incidentId, orgId))}
+              style={{
+                padding: "12px 22px",
+                borderRadius: 8,
+                fontSize: 13,
+                fontWeight: 700,
+                letterSpacing: "0.02em",
+                cursor: "pointer",
+                border: "1px solid #1c1c1c",
+                background: "transparent",
+                color: "#b3b3b3",
+                flexShrink: 0,
+              }}
+            >
+              ← Jobs
+            </button>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-black text-white">
+      {/* PEAKOPS_REVIEW_HEADER_V2 (2026-04-30)
+          Sticky top bar — restructured per UI/UX upgrade:
+          - Single "← Jobs" back link (replaces the Mission Control +
+            Back to Incident pair).
+          - Title + status pill + job-count subtitle on the left.
+          - Notes / Summary / Download Report demoted to ghost
+            utilities on the right. Download appears only when the
+            report is ready. */}
+      <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex items-start gap-3">
+            <button
+              type="button"
+              onClick={() => router.push(incidentPath(incidentId, orgId))}
+              className="mt-0.5 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-xs text-gray-200 shrink-0"
+              title="Back to job"
+            >
+              ← Jobs
+            </button>
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
+              <div className="text-lg font-semibold truncate" title={incidentId}>
+                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+              </div>
+              <div className="mt-1 flex items-center gap-2 flex-wrap text-[11px] text-gray-400">
+                {(() => {
+                  // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
+                  // Header pill reads off the page-level reviewUiState.
+                  // Same source of truth feeds the inline NBA close
+                  // button visibility and the review CTA below.
+                  const ds = reviewUiState.displayState;
+                  const label = ds === "Awaiting Supervisor Review" ? "Awaiting Review" : ds;
+                  const tone =
+                    ds === "Closed" ? { bg: "rgba(16,185,129,0.10)", border: "rgba(16,185,129,0.30)", color: "#a7f3d0" } :
+                    ds === "Approved" ? { bg: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.30)", color: "#86efac" } :
+                    ds === "Awaiting Supervisor Review" ? { bg: "rgba(245,158,11,0.10)", border: "rgba(245,158,11,0.30)", color: "#fcd34d" } :
+                    ds === "Sent Back" ? { bg: "rgba(220,60,60,0.10)", border: "rgba(220,60,60,0.30)", color: "#fca5a5" } :
+                    { bg: "rgba(255,255,255,0.05)", border: "rgba(255,255,255,0.12)", color: "#d1d5db" };
+                  return (
+                    <span
+                      className="px-2 py-0.5 rounded-full text-[10px] font-semibold"
+                      style={{ background: tone.bg, border: `1px solid ${tone.border}`, color: tone.color }}
+                    >
+                      {label}
+                    </span>
+                  );
+                })()}
+                {Array.isArray(jobs) && jobs.length > 0 ? (
+                  <span>
+                    {jobs.length} {jobs.length === 1 ? "job" : "jobs"}
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-2">
+                <QaAuthDebugChip />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {(() => {
+              const incPacketMeta: any = (incidentDoc as any)?.packetMeta || {};
+              const packetReady =
+                String(incPacketMeta?.status || "").toLowerCase() === "ready" ||
+                !!String(incPacketMeta?.downloadUrl || "").trim() ||
+                !!String(incPacketMeta?.packetHash || incPacketMeta?.zipSha256 || "").trim() ||
+                (!!String(incPacketMeta?.bucket || "").trim() && !!String(incPacketMeta?.storagePath || "").trim());
+              if (!incidentClosed || !packetReady) return null;
+              return (
+                <button
+                  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
+                  onClick={() => {
+                    try {
+                      exportIncidentPacket(String(orgId||""), String(incidentId||""))
+                        .then((url) => {
+                          window.open(url, "_blank", "noreferrer");
+                        })
+                        .catch((e:any) => {
+                          if (process.env.NODE_ENV !== "production") console.warn(e);
+                        });
+                    } catch (e) {
+                      if (process.env.NODE_ENV !== "production") console.warn(e);
+                    }
+                  }}
+                  title="Download report"
+                >
+                  Open Report
+                </button>
+              );
+            })()}
+            <button
+              className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-gray-200"
+              onClick={() => router.push(notesPath(incidentId, orgId))}
+            >
+              Notes
+            </button>
+            <button
+              className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm text-gray-200"
               onClick={() => router.push(summaryPath(incidentId, orgId))}
             >
               Summary
@@ -1248,24 +1992,464 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             {toastMsg}
           </div>
         ) : null}
-        {err ? (
-          <div className="rounded-xl border border-red-400/30 bg-red-500/10 text-red-100 text-xs px-3 py-2">
-            <div className="font-semibold">Review refresh failed</div>
-            <div className="mt-1 break-all">{err}</div>
-            {errDiag?.endpoint ? <div className="mt-1 break-all text-red-200/90">endpoint: {errDiag.endpoint}</div> : null}
-            {errDiag?.status ? <div className="mt-1 text-red-200/90">status: {errDiag.status}</div> : null}
-            {errDiag?.body ? <pre className="mt-1 text-red-200/90 whitespace-pre-wrap break-words">{String(errDiag.body || "").slice(0, 500)}</pre> : null}
-            {process.env.NODE_ENV !== "production" ? (
-              <div className="mt-1 text-red-200/90 break-all">
-                baseDebug: {(() => {
-                  const d = getFunctionsBaseDebugInfo();
-                  return `env=${d.envBase || "(unset)"} override=${d.overrideBase || "(unset)"} active=${d.activeBase || "(unset)"}`;
-                })()}
+
+        {/* PEAKOPS_REVIEW_NBA_V1 (2026-04-28)
+            Single dominant CTA on /review. Uses the shared
+            deriveNextAction helper with viewContext: "review" so the
+            "submitted, supervisor" branch maps to "Approve & Lock" /
+            "Send Back" instead of generic "Review Work". The legacy
+            review action panels below stay rendered as utilities, but
+            their styling is demoted by PEAKOPS_REVIEW_DEMOTE_V1. */}
+        {(() => {
+          const safeJobs = Array.isArray(jobs) ? jobs : [];
+          const safeEvidence = Array.isArray(evidence) ? evidence : [];
+          const evidenceWithJob = safeEvidence.filter((ev: any) => {
+            const top = String(ev?.jobId || "").trim();
+            const nested = String(ev?.evidence?.jobId || "").trim();
+            return !!(top || nested);
+          });
+          const unassignedEvidenceCount = safeEvidence.length - evidenceWithJob.length;
+          const anyWorkItemComplete = safeJobs.some((j: any) => {
+            const s = String(j?.status || "").toLowerCase();
+            return s === "complete" || s === "review" || s === "approved";
+          });
+          const incPacketMeta: any = (incidentDoc as any)?.packetMeta || {};
+          const packetReady =
+            String(incPacketMeta?.status || "").toLowerCase() === "ready" ||
+            !!String(incPacketMeta?.downloadUrl || "").trim() ||
+            !!String(incPacketMeta?.packetHash || incPacketMeta?.zipSha256 || "").trim() ||
+            (!!String(incPacketMeta?.bucket || "").trim() && !!String(incPacketMeta?.storagePath || "").trim());
+
+          // PEAKOPS_REVIEW_NBA_CLOSED_FIX_V1 (2026-05-05)
+          // Use the canonical closed signal (status==closed OR
+          // timeline has incident_closed/job_closed event). The
+          // earlier `!!incidentClosed` check only looked at the
+          // status field, so a job with a fresh close timeline event
+          // but a stale status would still surface a "Close Job"
+          // CTA — exactly the buyer-trust contradiction QA flagged.
+          let action = deriveNextAction({
+            hasArrival: true,
+            evidenceCount: safeEvidence.length,
+            unassignedEvidenceCount,
+            workItemCount: safeJobs.length,
+            anyWorkItemComplete,
+            allWorkItemsApproved: !!allJobsApproved,
+            hasReviewableWorkItem: !!hasReviewableJob,
+            hasSubmitted: !!hasFieldSubmitted,
+            isClosed: !!incidentClosedCanonical,
+            packetReady,
+            role: String(authClaims?.role || "").toLowerCase(),
+            currentWorkItemId: String(selectedJobId || ""),
+            viewContext: "review",
+          });
+          // PEAKOPS_REVIEW_NBA_OVERRIDE_V1 (2026-05-05)
+          // Belt-and-braces: when the canonical reviewUiState says
+          // Closed, force the NBA to "Open Summary" regardless of
+          // what deriveNextAction returned. Same override pattern as
+          // the field page so the supervisor cannot accidentally
+          // see a "Close Job" or "Approve & Lock" CTA on a record
+          // the audit trail already shows as closed.
+          if (reviewUiState.displayState === "Closed") {
+            action = {
+              state: "download_report",
+              title: "Job closed",
+              helper: "This job is closed. Open the summary to review the audit-ready report.",
+              buttonLabel: "Open Summary",
+              primaryAction: "open_report",
+              enabled: true,
+              tone: "success",
+            };
+          }
+
+          // PEAKOPS_REVIEW_INLINE_CONFIRM_V1 (2026-04-28)
+          // First-click handlers for destructive review actions. These
+          // ONLY mutate UI state — they never call any API. The inline
+          // confirmation panel rendered below the NBA card is the only
+          // path that can reach the commit functions, defeating the
+          // browser-dialog auto-accept that bit a previous QA pass.
+          const requestApprove = () => {
+            if (jobActionBusy || loading || closingIncident) {
+              toast("Please wait — another action is in progress.", 2400);
+              return;
+            }
+            let jid = String(selectedJobId || "").trim();
+            if (!jid && reviewableJobs.length > 0) {
+              const fallback = reviewableJobs[0];
+              jid = String(fallback?.id || fallback?.jobId || "").trim();
+              if (jid) setSelectedJobId(jid);
+            }
+            if (!jid) {
+              toast("Select a job to review first.", 2400);
+              return;
+            }
+            setPendingConfirmAction("approve");
+          };
+
+          const requestSendBack = () => {
+            const dev = process.env.NODE_ENV !== "production";
+            if (dev) console.debug("[review-sendback-click] clicked", {
+              selectedJobId,
+              selectedJobReviewStatus,
+              jobActionBusy,
+              loading,
+            });
+            if (jobActionBusy || loading) {
+              toast("Please wait — another action is in progress.", 2400);
+              return;
+            }
+            const jid = String(selectedJobId || "").trim();
+            if (!jid) {
+              toast("Select a job first.", 2400);
+              return;
+            }
+            if (selectedJobReviewStatus !== "review") {
+              toast("Move this job to Review before sending it back.", 2800);
+              return;
+            }
+            setPendingSendBackReason("");
+            setPendingConfirmAction("send_back");
+          };
+
+          const requestClose = () => {
+            if (jobActionBusy || loading || closingIncident) {
+              toast("Please wait — another action is in progress.", 2400);
+              return;
+            }
+            if (!canCloseIncident) {
+              toast("Job is not ready to close yet.", 2200);
+              return;
+            }
+            setPendingConfirmAction("close");
+          };
+
+          const runAction = (key: NextActionKey) => {
+            switch (key) {
+              case "approve_work":
+                requestApprove();
+                return;
+              case "send_back":
+                requestSendBack();
+                return;
+              case "close":
+                requestClose();
+                return;
+              case "open_report":
+                // PEAKOPS_REVIEW_GENERATE_REPORT_V1 (2026-05-01)
+                // Fire the export directly from Review so the user
+                // doesn't need a second click on Summary. After the
+                // POST resolves (or 409s with an already-existing
+                // packet), navigate to Summary which surfaces the
+                // ready-to-download state.
+                void triggerExportThenNavigate();
+                return;
+              case "download_report":
+                // Packet already exists. Land on Summary where the
+                // Download button is wired to the opaque /api/reports
+                // endpoint.
+                try { router.push(summaryPath(incidentId, orgId)); } catch {}
+                return;
+              case "back_to_incident":
+              case "mark_arrived":
+              case "add_evidence":
+              case "create_work_item":
+              case "attach_evidence":
+              case "finish_work_item":
+              case "submit":
+              case "review":
+                try { router.push(incidentPath(incidentId, orgId)); } catch {}
+                return;
+              case "none":
+                return;
+            }
+          };
+
+          // PEAKOPS_PRIMARY_CTA_DEDUP_V1 (2026-04-29)
+          // While the inline confirm panel is open, the panel's
+          // "Confirm <action>" button becomes the screen's only yellow
+          // primary CTA. The NBA primary visually demotes to gray so
+          // the user's eye is drawn to the new commit button.
+          const confirmPanelOpen = pendingConfirmAction !== null;
+          const primaryBg = !action.enabled
+            ? "#101010"
+            : action.tone === "success"
+              ? "linear-gradient(180deg, #22c55e 0%, #15803d 100%)"
+              : action.tone === "muted"
+                ? "#101010"
+                : confirmPanelOpen
+                  ? "#101010"
+                  : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)";
+          const primaryColor = !action.enabled
+            ? "#6f6f6f"
+            : action.tone === "success" ? "#050505"
+            : action.tone === "muted" ? "#6f6f6f"
+            : confirmPanelOpen ? "#6f6f6f"
+            : "#050505";
+          const primaryBorder =
+            action.enabled && action.tone !== "success" && action.tone !== "muted" && !confirmPanelOpen
+              ? "none"
+              : "1px solid #1c1c1c";
+
+          return (
+            <section
+              style={{
+                borderRadius: 12,
+                border: "1px solid #1c1c1c",
+                background: "#0b0b0b",
+                padding: "16px 18px",
+                display: "flex",
+                alignItems: "center",
+                gap: 16,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#C8A84E", textTransform: "uppercase" as const }}>
+                  Next best action
+                </div>
+                <div style={{ marginTop: 4, fontSize: 16, fontWeight: 700, color: "#f5f5f5" }}>{action.title}</div>
+                <div style={{ marginTop: 4, fontSize: 12, color: "#b3b3b3", lineHeight: 1.5 }}>{action.helper}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+                {action.secondaryLabel && action.secondaryAction ? (
+                  <button
+                    type="button"
+                    onClick={() => runAction(action.secondaryAction!)}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      border: "1px solid #1c1c1c",
+                      background: "transparent",
+                      color: "#b3b3b3",
+                    }}
+                  >
+                    {action.secondaryLabel}
+                  </button>
+                ) : null}
+                {action.primaryAction === "none" ? null : action.tone === "muted" && !action.enabled ? (
+                  <span
+                    style={{
+                      padding: "10px 16px",
+                      borderRadius: 999,
+                      fontSize: 12,
+                      fontWeight: 700,
+                      letterSpacing: "0.04em",
+                      textTransform: "uppercase" as const,
+                      border: "1px solid rgba(34,197,94,0.30)",
+                      background: "rgba(34,197,94,0.08)",
+                      color: "#86efac",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    ✓ {action.buttonLabel}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!action.enabled || loading || jobActionBusy || closingIncident || confirmPanelOpen}
+                    onClick={() => runAction(action.primaryAction)}
+                    style={{
+                      padding: "12px 22px",
+                      borderRadius: 8,
+                      fontSize: 13,
+                      fontWeight: confirmPanelOpen ? 600 : 800,
+                      letterSpacing: "0.02em",
+                      cursor:
+                        action.enabled && !loading && !jobActionBusy && !closingIncident && !confirmPanelOpen
+                          ? "pointer"
+                          : "not-allowed",
+                      border: primaryBorder,
+                      background: primaryBg,
+                      color: primaryColor,
+                      boxShadow:
+                        action.enabled && action.tone !== "muted" && !confirmPanelOpen
+                          ? "0 2px 12px rgba(200,168,78,0.20)"
+                          : "none",
+                    }}
+                  >
+                    {action.buttonLabel}
+                  </button>
+                )}
+              </div>
+            </section>
+          );
+        })()}
+
+        {/* PEAKOPS_REVIEW_INLINE_CONFIRM_V1 (2026-04-28)
+            Inline confirmation panel for destructive review actions.
+            Sits directly under the NBA card so the user's eye stays in
+            the same column. Replaces native window.confirm — only the
+            "Confirm …" button below can call the commit functions, so
+            any auto-accepted browser dialog cannot trigger a commit.
+            The first click on Approve & Lock / Send Back / Close
+            Incident only sets pendingConfirmAction. */}
+        {pendingConfirmAction ? (
+          <section
+            data-testid="review-inline-confirm"
+            style={{
+              borderRadius: 12,
+              border: "1px solid rgba(220,60,60,0.35)",
+              background: "rgba(220,60,60,0.06)",
+              padding: "16px 18px",
+              display: "grid",
+              gap: 10,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                color: "#fca5a5",
+                textTransform: "uppercase" as const,
+              }}
+            >
+              Confirm action
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#f5f5f5" }}>
+              {pendingConfirmAction === "approve"
+                ? "Approve this job?"
+                : pendingConfirmAction === "send_back"
+                ? "Send this job back to the field?"
+                : "Close this job?"}
+            </div>
+            <div style={{ fontSize: 13, color: "#b3b3b3", lineHeight: 1.5 }}>
+              {pendingConfirmAction === "approve"
+                ? "Records supervisor approval and locks further field edits."
+                : pendingConfirmAction === "send_back"
+                ? "The field team will see your note and can resubmit."
+                : "Field edits will be locked and the report can be generated."}
+            </div>
+
+            {pendingConfirmAction === "send_back" ? (
+              <div style={{ display: "grid", gap: 4 }}>
+                <label
+                  htmlFor="review-sendback-reason"
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 500,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase" as const,
+                    color: "#6f6f6f",
+                  }}
+                >
+                  Reason (sent to the field team)
+                </label>
+                <textarea
+                  id="review-sendback-reason"
+                  value={pendingSendBackReason}
+                  onChange={(e) => setPendingSendBackReason(e.target.value)}
+                  placeholder="What needs to be fixed?"
+                  rows={3}
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: "1px solid #1c1c1c",
+                    background: "#050505",
+                    color: "#f5f5f5",
+                    fontSize: 13,
+                    outline: "none",
+                    fontFamily: "inherit",
+                    resize: "vertical",
+                  }}
+                />
               </div>
             ) : null}
-            {process.env.NODE_ENV !== "production" && getEnvFunctionsBase() ? (
-              <div className="mt-1 text-red-200/90">envBase present, fallback disabled</div>
-            ) : null}
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingConfirmAction(null);
+                  setPendingSendBackReason("");
+                }}
+                disabled={jobActionBusy || closingIncident}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: 8,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor:
+                    jobActionBusy || closingIncident ? "not-allowed" : "pointer",
+                  border: "1px solid #1c1c1c",
+                  background: "transparent",
+                  color: "#b3b3b3",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  jobActionBusy ||
+                  closingIncident ||
+                  loading ||
+                  (pendingConfirmAction === "send_back" &&
+                    !pendingSendBackReason.trim())
+                }
+                onClick={() => {
+                  if (pendingConfirmAction === "approve") {
+                    void commitApproveAndLock();
+                  } else if (pendingConfirmAction === "send_back") {
+                    void commitSendBack(pendingSendBackReason);
+                  } else if (pendingConfirmAction === "close") {
+                    void closeIncident();
+                  }
+                }}
+                style={{
+                  padding: "10px 18px",
+                  borderRadius: 8,
+                  fontSize: 13,
+                  fontWeight: 800,
+                  letterSpacing: "0.02em",
+                  cursor:
+                    jobActionBusy ||
+                    closingIncident ||
+                    loading ||
+                    (pendingConfirmAction === "send_back" &&
+                      !pendingSendBackReason.trim())
+                      ? "not-allowed"
+                      : "pointer",
+                  border: "none",
+                  background:
+                    pendingConfirmAction === "approve"
+                      ? "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)"
+                      : "linear-gradient(180deg, #dc2626 0%, #991b1b 100%)",
+                  color: pendingConfirmAction === "approve" ? "#050505" : "#fff",
+                  opacity:
+                    jobActionBusy ||
+                    closingIncident ||
+                    loading ||
+                    (pendingConfirmAction === "send_back" &&
+                      !pendingSendBackReason.trim())
+                      ? 0.55
+                      : 1,
+                }}
+              >
+                {jobActionBusy || closingIncident
+                  ? "Working…"
+                  : pendingConfirmAction === "approve"
+                  ? "Confirm Approve Job"
+                  : pendingConfirmAction === "send_back"
+                  ? "Confirm Send Back"
+                  : "Confirm Close Job"}
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {/* PEAKOPS_REVIEW_ERR_PANEL_V2 (2026-04-28)
+            Customer-facing failure copy (one line) + Retry button.
+            Raw endpoint / status / body / envBase / fallback-disabled
+            details are tucked into a dev-only collapsible so the
+            customer never sees engineer text. */}
+        {err ? (
+          <div className="rounded-xl border border-red-400/30 bg-red-500/10 text-red-100 text-xs px-3 py-2">
+            <div className="font-semibold">We had trouble loading this review.</div>
+            <div className="mt-1 text-red-200/90">Your last loaded data is still visible. Tap Retry to try again.</div>
             <div className="mt-2 flex items-center gap-2">
               <button
                 type="button"
@@ -1288,472 +2472,283 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 </button>
               ) : null}
             </div>
+            {process.env.NODE_ENV !== "production" ? (
+              <details className="mt-2 text-[11px] text-red-200/80">
+                <summary className="cursor-pointer">Technical details (dev only)</summary>
+                <div className="mt-1 break-all">{err}</div>
+                {errDiag?.endpoint ? <div className="mt-1 break-all">endpoint: {errDiag.endpoint}</div> : null}
+                {errDiag?.status ? <div className="mt-1">status: {errDiag.status}</div> : null}
+                {errDiag?.body ? <pre className="mt-1 whitespace-pre-wrap break-words">{String(errDiag.body || "").slice(0, 500)}</pre> : null}
+                <div className="mt-1 break-all">
+                  baseDebug: {(() => {
+                    const d = getFunctionsBaseDebugInfo();
+                    return `env=${d.envBase || "(unset)"} override=${d.overrideBase || "(unset)"} active=${d.activeBase || "(unset)"}`;
+                  })()}
+                </div>
+                {getEnvFunctionsBase() ? (
+                  <div className="mt-1">envBase present, fallback disabled</div>
+                ) : null}
+              </details>
+            ) : null}
           </div>
         ) : null}
-        {/* Status + actions */}
-        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-xs uppercase tracking-wide text-gray-400">Decision</div>
-        <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500/80">Next Action</div>
-              <div className="mt-1 text-xs text-gray-400">
-                {!selectedJob
-                  ? "Select a job to review"
-                  : canApproveNow
-                  ? "Ready to approve"
-                  : canCloseIncident
-                  ? "All jobs approved — ready to close incident"
-                  : "Select a complete/review job with linked evidence"}
-              </div>
-            </div>
+        {/* PEAKOPS_REVIEW_HERO_V1 (2026-04-30)
+            The Decision panel was a noisy duplicate of the NBA card
+            (same status copy, same "Next Action" eyebrow) plus queue
+            nav. The status copy lived in three places on the same
+            screen. The hero card below absorbs the queue nav next to
+            the task title; the NBA card above owns the status+CTA.
+            Net: one decision surface, no duplicate readouts. */}
 
+{/* PEAKOPS_REVIEW_UNIFY_SEND_BACK_V1 (2026-04-30)
+    The standalone "Request update" panel was removed. It called
+    createSupervisorRequest (a notification-only path that left the
+    task in review state) while the NBA's "Send Back" called
+    rejectJobV1 (the real send-back that actually returns the task to
+    the field). Two paths, same intent — confusing.
+    Now there is exactly one send-back surface: the NBA card's
+    secondary action, labeled "Ask for update", which opens the
+    inline confirm panel and routes through rejectJobV1 (with the
+    auto-promote complete→review transition baked into commitSendBack
+    so the supervisor never sees that step). */}
+
+
+
+
+
+        {/* PEAKOPS_REVIEW_HERO_V1 (2026-04-30)
+            Readiness section removed. Its three checks ("Selected task
+            has at least one photo", "Selected task is complete or in
+            review", "Field activity detected") were system-language
+            paraphrases of state already encoded by the NBA card's
+            enabled/disabled state. The photo count moves into the
+            hero card's meta line; the rest is implicit. */}
+
+        {/* PEAKOPS_REVIEW_HERO_V1 (2026-04-30)
+            Single decision surface. The selected task is the hero —
+            title, status pill, photo count. When more than one task
+            is reviewable, a chip strip lets the supervisor switch
+            without leaving the card. Per-task Approve / Send Back /
+            Move-to-Review buttons were removed: the NBA card above is
+            the only commit path, and commitSendBack auto-promotes
+            complete→review behind the scenes so the user never sees
+            that step. */}
+        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-xs uppercase tracking-wide text-gray-400">Job in review</div>
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs text-gray-300 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-[11px] text-gray-300 disabled:opacity-50"
                 disabled={!queueNavEnabled || !prevIncident}
                 onClick={() => {
                   if (!prevIncident?.incidentId) return;
                   const prevOrg = String((prevIncident as any)?.orgId || orgId || "").trim();
                   router.push(reviewPath(String(prevIncident.incidentId), prevOrg));
                 }}
+                title="Previous job in the review queue"
               >
-                ← Previous
+                ← Prev job
               </button>
-
               <button
                 type="button"
-                className="px-3 py-2 rounded-xl bg-blue-600/18 border border-blue-400/20 text-xs text-blue-100 hover:bg-blue-600/25 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg bg-blue-600/15 border border-blue-400/20 hover:bg-blue-600/25 text-[11px] text-blue-100 disabled:opacity-50"
                 disabled={!queueNavEnabled || !nextIncident}
                 onClick={() => {
                   if (!nextIncident?.incidentId) return;
                   const nextOrg = String((nextIncident as any)?.orgId || orgId || "").trim();
                   router.push(reviewPath(String(nextIncident.incidentId), nextOrg));
                 }}
+                title="Next job in the review queue"
               >
-                Next →
+                Next job →
               </button>
             </div>
           </div>
-        </div>
 
-              <div className="text-base font-semibold text-white">
-                {!selectedJob
-                  ? "Select a job to review"
-                  : canApproveNow
-                  ? "Ready to approve"
-                  : canCloseIncident
-                  ? "All jobs approved — ready to close incident"
-                  : "Select a complete/review job with linked evidence"}
-              </div>
-              {err && canDevLog ? <div className="text-xs text-red-300 mt-1 truncate">Error: {err}</div> : null}
-            </div>
-
-            <div className="flex items-end gap-2 shrink-0">
-              <button
-                className="px-3 py-2 rounded-xl h-10 bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-50"
-                onClick={sendBack}
-                disabled={loading}
-                title="Send back to field with reasons"
-              >
-                ↩︎ Send Back
-              </button>
-
-              <button
-                className={
-                  "px-3 py-2 rounded-xl h-10 text-sm font-semibold border " +
-                  (canApproveNow
-                    ? "bg-green-700/25 border-green-400/25 text-green-200 hover:bg-green-700/35"
-                    : "bg-white/5 border-white/10 text-gray-500")
-                }
-                onClick={async () => {
-                  if (jobActionBusy || loading) return;
-                  setJobActionBusy(true);
-                  try {
-                    // Try common state vars
-                    // @ts-ignore
-                    const jid = String(selectedJobId || "");
-                    if (!jid) {
-                      const msg = "Select a job first.";
-                      setErr(msg);
-                      toast(msg, 2200);
-                      console.error("[Approve&Lock] missing selected jobId");
-                      return;
-                    }
-                    await approveAndLockJob(String(activeOrgId || orgId || ""), String(incidentId || ""), jid);
-                    await refresh();
-                    toast("Selected job approved + locked ✓", 1800);
-                  } catch (e: any) {
-                    const msg = String(e?.message || e || "approve_and_lock_failed");
-                    setErr(msg);
-                    toast("Approve & Lock failed: " + msg, 3200);
-                    console.error(e);
-                  } finally {
-                    setJobActionBusy(false);
-                  }
-                }}
-                disabled={!canApproveNow || loading || jobActionBusy}
-                title={canApproveNow ? "Approve and lock selected job" : "Not ready yet"}
-              >
-                🛡 Approve & Lock
-              </button>
-              {canCloseIncident ? (
-                <div className="flex flex-col items-start">
-                  <button
-                    className="px-3.5 py-2.5 rounded-xl text-sm font-semibold border bg-red-600/20 border-red-400/30 text-red-100 hover:bg-red-600/30 disabled:opacity-50"
-                    onClick={() => { void closeIncident(); }}
-                    disabled={loading || closingIncident}
-                    title="Close this incident"
-                  >
-                    {closingIncident ? "Closing..." : "Close Incident"}
-                  </button>
-                  <div className="mt-1 text-[11px] text-emerald-300">Ready to close incident.</div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </section>
-
-{/* PEAKOPS_MOVE_REQ_UPDATE_UNDER_DECISION_V4 */}
-{/* PEAKOPS_V2_REVIEW_ACTIONS_UI */}
-      <div className="rounded-2xl bg-white/5 border border-white/10 p-4 mt-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-xs uppercase tracking-wide text-gray-400">Request update</div>
-            <div className="text-sm text-gray-200">Ask the field team for better photos / missing info.</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
-              onClick={() => {
-                setReqOpen(false);
-                openEvidenceFromAction((visibleEvidence || [])[0]);
-              }}
-            >
-              View evidence
-            </button>
-            <button
-              type="button"
-              className="px-3 py-2 rounded-xl bg-blue-600/18 border border-blue-400/20 text-sm text-blue-100 hover:bg-blue-600/25"
-              onClick={() => {
-                try {
-                  const msg = window.prompt("What update do you want from the field team?");
-                  if (!msg || !String(msg).trim()) return;
-                  // Best-effort selected job id
-                  // @ts-ignore
-                  const jid =
-                    (typeof selectedJobId !== "undefined" && selectedJobId) ? String(selectedJobId) :
-                    // @ts-ignore
-                    (typeof activeJobId !== "undefined" && activeJobId) ? String(activeJobId) :
-                    // @ts-ignore
-                    (typeof selectedJob !== "undefined" && selectedJob && (selectedJob.id || selectedJob.jobId)) ? String(selectedJob.id || selectedJob.jobId) :
-                    "";
-                  createSupervisorRequest(String(orgId||""), String(incidentId||""), String(msg).trim(), jid)
-                    .then(() => { try { location.reload(); } catch {} })
-                    .catch((e:any) => console.error(e));
-                } catch (e) { console.error(e); }
-              }}
-            >
-              Request update
-            </button>
-          </div>
-        </div>
-
-        {reqOpen ? (
-          <div className="mt-3">
-            <textarea
-              className="w-full min-h-[110px] bg-black/30 border border-white/10 rounded-xl p-3 text-sm text-gray-200 outline-none"
-              placeholder="Example: Please re-shoot the pole base from 10ft back + include hazard tape + include GPS landmark..."
-              value={reqText}
-              onChange={(e) => setReqText(e.target.value)}
-            />
-            <div className="mt-2 flex items-center justify-between">
-              <button
-                type="button"
-                className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
-		onClick={() => {
-  		setReqOpen(false);
-		}}             
-		 >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="px-3 py-2 rounded-xl bg-blue-600/22 border border-blue-400/22 text-sm text-blue-100 hover:bg-blue-600/30"
-                onClick={() => {
-                  saveRequest();
-                  // v2: we just store + bounce to incident evidence area with a hint.
-                  if (incidentId) router.push(incidentPath(incidentId, orgId, { extraQuery: { hi: "request_update" } }));
-                  setReqOpen(false);
-                }}
-              >
-                Save request
-              </button>
-            </div>
-            <div className="mt-2 text-[11px] text-gray-500">
-              V2 behavior: stored locally for demo. V2.1: persist to Firestore + notify crew.
-            </div>
-          </div>
-        ) : null}
-      </div>
-
-
-
-
-
-        {/* Readiness */}
-        <section className={"rounded-2xl border p-4 " + (canApproveNow ? "bg-green-700/15 border-green-400/20" : "bg-white/5 border-white/10")}>
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Readiness</div>
-            <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">
-              {loading ? "Refreshing…" : "Live"}
-            </span>
-          </div>
-
-          <div className="mt-3 grid gap-2 text-sm">
-            <div className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
-              <div className="text-gray-300">Field activity detected (info)</div>
-              <div className={hasSession ? "text-green-300" : "text-gray-500"}>{hasSession ? "✓" : "—"}</div>
-            </div>
-            <div className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
-              <div className="text-gray-200">Selected job evidence (1+)</div>
-              <div className={selectedJobEvidenceCount >= 1 ? "text-green-300" : "text-gray-500"}>{selectedJobEvidenceCount >= 1 ? "✓" : "—"}</div>
-            </div>
-            <div className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
-              <div className="text-gray-200">Selected job state (complete/review)</div>
-              <div className={selectedJobReadyState ? "text-green-300" : "text-gray-500"}>{selectedJobReadyState ? "✓" : "—"}</div>
-            </div>
-          </div>
-
-          <div className="mt-2 text-xs text-gray-400">
-            Approval readiness is based on selected job state and linked evidence.
-          </div>
+          {/* Hero body — closed / waiting / hero */}
           {incidentClosed ? (
-            <div className="mt-1 text-xs text-emerald-300">Incident closed.</div>
-          ) : allJobsApproved ? (
-            <div className="mt-1 text-xs text-emerald-300">Approved &amp; locked. Ready to close incident.</div>
-          ) : (
-            <div className="mt-1 text-xs text-gray-500">Incident close still requires all jobs approved.</div>
-          )}
-          {missingItems.length ? (
-            <div className="mt-2 text-xs text-amber-200">
-              Missing: {missingItems.join(" • ")}
+            <div className="mt-4 text-sm text-emerald-200/90">
+              Job closed. The report is ready to generate.
             </div>
-          ) : null}
-        </section>
-
-        <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-xs uppercase tracking-wide text-gray-400">Jobs Review</div>
-              <div className="text-xs text-gray-500">
-                Reviewable: {reviewableJobs.length} (status=complete/review and linked evidence&gt;=1)
-              </div>
-              {reviewableJobs.length === 0 ? (
-                <div className="mt-1 text-xs text-amber-200">
-                  {terminalJobs.length > 0
-                    ? "All jobs approved — ready to close incident."
-                    : "No reviewable jobs yet. A job becomes reviewable when its status is complete or review AND it has at least one linked evidence item."}
+          ) : !selectedJob ? (
+            <div className="mt-4">
+              {reviewableJobs.length === 0 && terminalJobs.length > 0 ? (
+                <div className="text-sm text-emerald-200/90">All jobs approved — ready to close.</div>
+              ) : reviewableJobs.length === 0 ? (
+                <div className="text-sm text-gray-300">
+                  Waiting on the field team to mark a job complete with attached photos.
                 </div>
-              ) : null}
-              {/* PEAKOPS_FIELD_TO_REVIEW_BRIDGE_V1: the supervisor queue is
-                   empty until a job is moved to complete/review with linked
-                   evidence. Give the supervisor a direct jump to the Jobs tab
-                   on the field page so this isn't a dead-end. */}
+              ) : (
+                <div className="text-sm text-gray-300">
+                  {reviewableJobs.length} {reviewableJobs.length === 1 ? "job" : "jobs"} ready — pick one to review.
+                </div>
+              )}
               {reviewableJobs.length === 0 && terminalJobs.length === 0 ? (
-                <div className="mt-2 flex items-center gap-2">
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
                   <button
                     type="button"
                     className="px-3 py-1.5 rounded-md text-[11px] font-semibold border border-amber-300/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15"
-                    onClick={() => router.push(incidentPath(incidentId, orgId, { hash: "jobs" }))}
+                    onClick={() => router.push(incidentPath(incidentId, orgId, { hash: "evidence" }))}
                   >
-                    Open Jobs tab →
+                    ← Return to Evidence
                   </button>
-                  <span className="text-[11px] text-gray-500">
-                    Mark a job complete + link evidence to enable review.
-                  </span>
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 rounded-md text-[11px] font-semibold border border-white/15 bg-white/5 text-gray-200 hover:bg-white/10"
+                    onClick={() => router.push(incidentPath(incidentId, orgId, { hash: "tasks" }))}
+                  >
+                    Open Jobs →
+                  </button>
                 </div>
               ) : null}
             </div>
-            {mounted && showJobsDebugPanel ? (
-              <details className="text-[11px] text-gray-300">
-                <summary className="cursor-pointer select-none">Jobs debug (raw listJobsV1 docs)</summary>
-                <pre className="mt-1 max-h-44 overflow-auto rounded bg-black/40 border border-white/10 p-2 whitespace-pre-wrap break-words">
-                  {JSON.stringify(rawJobsDebug, null, 2)}
-                </pre>
-              </details>
-            ) : null}
-            {process.env.NODE_ENV !== "production" ? (
+          ) : (
+            <div ref={jobDetailPanelRef} className="mt-3">
+              <div className="min-w-0">
+                <div className="text-base font-semibold text-gray-100 truncate" title={String(selectedJob?.title || "Job")}>
+                  {String(selectedJob?.title || "Job")}
+                </div>
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border border-white/15 bg-white/5 text-gray-200">
+                    {humanizeReviewStatus(selectedJobReviewStatus || "") !== "—"
+                      ? humanizeReviewStatus(selectedJobReviewStatus || "")
+                      : humanizeJobBaseStatus(selectedJobStatus || "open")}
+                  </span>
+                  <span className="text-[11px] text-gray-400">
+                    {selectedJobEvidenceCount} {selectedJobEvidenceCount === 1 ? "photo" : "photos"} attached
+                  </span>
+                  {/* PEAKOPS_VENDOR_ASSIGNMENT_V1 (2026-05-04)
+                      Read-only vendor pill in the review meta line.
+                      The supervisor sees the assignment as part of
+                      the review context. Editing happens on the
+                      incident detail page; surfacing it here too
+                      would clutter the review focal point. */}
+                  {String(selectedJob?.vendorName || "").trim() ? (
+                    <span className="text-[11px] text-gray-400" title="Service provider assigned to this task">
+                      Vendor: <span className="text-gray-200">{String(selectedJob?.vendorName).trim()}</span>
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              {selectedJobEvidence.length > 0 ? (
+                <div className="mt-3 space-y-1 max-h-40 overflow-auto pr-1">
+                  {/* PEAKOPS_REVIEW_PHOTO_LABELS_V2 (2026-05-05)
+                      Customer-facing labels — "Photo 1", "Photo 2",
+                      etc. Raw camera filenames ("5.png", "IMG_1234.jpg")
+                      were leaking into the supervisor view; index-based
+                      captions read like a real report. The original
+                      filename stays in the title attribute for
+                      operators who need it. */}
+                  {selectedJobEvidence.map((ev: any, idx: number) => {
+                    const orig = String(getFileField(ev, "originalName") || "").trim();
+                    return (
+                      <div
+                        key={String(ev?.id || "")}
+                        title={orig || `Photo ${idx + 1}`}
+                        className="text-xs text-gray-300 truncate rounded bg-black/30 border border-white/10 px-2 py-1"
+                      >
+                        Photo {idx + 1}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-3 text-xs text-amber-200/90">
+                  No photos attached yet — the field team needs to attach photos before this can be approved.
+                </div>
+              )}
+
+              {(selectedJobReviewStatus === "approved" || selectedJobReviewStatus === "revision_requested") ? (
+                <div className="mt-3 text-xs text-gray-400">
+                  {selectedJobReviewStatus === "approved"
+                    ? "Approved. No further action needed."
+                    : "Sent back to the field team. Waiting for a fresh submission."}
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {/* Other reviewable tasks — chip strip when more than one is ready */}
+          {reviewableJobs.length > 1 ? (
+            <div className="mt-4 pt-3 border-t border-white/10">
+              <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500 mb-2">Other jobs ready</div>
+              <div className="flex flex-wrap gap-2">
+                {reviewableJobs.map((j: any) => {
+                  const jid = String(j?.id || j?.jobId || "");
+                  const active = jid === String(selectedJobId || "");
+                  if (active) return null;
+                  return (
+                    <button
+                      key={jid}
+                      type="button"
+                      onClick={() => openJobForReview(jid)}
+                      className="px-3 py-1.5 rounded-full text-[11px] border bg-black/30 border-white/15 text-gray-200 hover:border-white/30 hover:bg-white/5"
+                    >
+                      {String(j?.title || `Job ${jid.slice(-6)}`)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {/* History — collapsed disclosure so it never crowds the hero */}
+          {terminalJobs.length > 0 ? (
+            <details className="mt-4 pt-3 border-t border-white/10">
+              <summary className="cursor-pointer text-[10px] uppercase tracking-[0.14em] text-gray-500 select-none">
+                History · {terminalJobs.length}
+              </summary>
+              <div className="mt-2 space-y-1.5">
+                {terminalJobs.map((j: any) => {
+                  const jid = String(j?.id || j?.jobId || "");
+                  const st = String(j?.status || "").toLowerCase();
+                  const active = jid === String(selectedJobId || "");
+                  return (
+                    <button
+                      key={`history_${jid}`}
+                      type="button"
+                      className={
+                        "w-full text-left rounded-md border px-3 py-1.5 transition " +
+                        (active ? "bg-white/10 border-white/30" : "bg-black/30 border-white/10 hover:border-white/20")
+                      }
+                      onClick={() => openJobForReview(jid)}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs text-gray-100 truncate">{String(j?.title || `Job ${jid.slice(-6)}`)}</div>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full border border-white/15 bg-white/5 text-gray-200">
+                          {st === "approved" ? "Approved" : st === "rejected" ? "Sent back" : "Closed"}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </details>
+          ) : null}
+
+          {devMode ? (
+            <div className="mt-4 pt-3 border-t border-white/10 flex items-center gap-2 flex-wrap">
               <button
                 type="button"
-                className="px-2 py-1 rounded text-xs border bg-white/6 border-white/12 text-gray-200 hover:bg-white/10 disabled:opacity-50"
+                className="px-2 py-1 rounded text-[10px] border bg-white/5 border-white/10 text-gray-300 hover:bg-white/10 disabled:opacity-50"
                 disabled={loading || jobActionBusy}
                 onClick={() => { void backfillJobLinks(); }}
+                title="Re-link evidence photos to their tasks (dev only)"
               >
-                Backfill job links
+                Re-link photos
               </button>
-            ) : null}
-          </div>
-
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-2">
-              {reviewableJobs.length === 0 ? (
-                <div className="text-sm text-gray-400">
-                  {noReviewablesApproved
-                    ? "All jobs already approved/locked. No further supervisor action needed."
-                    : "No jobs in complete/review state pending approval."}
-                </div>
-              ) : reviewableJobs.map((j: any) => {
-                const jid = String(j?.id || j?.jobId || "");
-                const active = jid === String(selectedJobId || "");
-                const rs = computedReviewStatus(j);
-                return (
-                  <div
-                    key={jid}
-                    className={
-                      "w-full rounded-lg border px-3 py-2 transition " +
-                      (active ? "bg-blue-600/15 border-blue-400/30" : "bg-black/30 border-white/10 hover:border-white/20")
-                    }
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => openJobForReview(jid)}
-                        className="text-left min-w-0 flex-1"
-                      >
-                        <div className="text-sm text-gray-100 truncate">{String(j?.title || jid)}</div>
-                        <div className="text-[11px] text-gray-400">
-                          state: {computedBaseStatus(j)} • review: {rs} {j?.assignedTo ? `• assigned: ${String(j.assignedTo)}` : ""}
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded text-xs border bg-white/6 border-white/12 text-gray-200 hover:bg-white/10"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openJobForReview(jid);
-                        }}
-                      >
-                        Open
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+              {mounted && showJobsDebugPanel ? (
+                <details className="text-[10px] text-gray-300">
+                  <summary className="cursor-pointer select-none">Tasks debug (raw)</summary>
+                  <pre className="mt-1 max-h-44 overflow-auto rounded bg-black/40 border border-white/10 p-2 whitespace-pre-wrap break-words">
+                    {JSON.stringify(rawJobsDebug, null, 2)}
+                  </pre>
+                </details>
+              ) : null}
             </div>
-
-            <div ref={jobDetailPanelRef} className="rounded-xl border border-white/10 bg-black/30 p-3">
-              {!selectedJob ? (
-                <div className="text-sm text-gray-400">Select a job to review details.</div>
-              ) : (
-                <>
-                  <div className="text-xs text-blue-200">Reviewing: {String(selectedJob?.title || selectedJobId)}</div>
-                  <div className="text-sm font-semibold text-gray-100">{String(selectedJob?.title || selectedJobId)}</div>
-                  <div className="text-xs text-gray-400 mt-1">jobId: {String(selectedJobId)}</div>
-                  <div className="text-xs text-gray-400 mt-1">
-                    state: {selectedJobStatus || "open"} • review: {selectedJobReviewStatus}
-                  </div>
-
-                  <div className="mt-3 text-xs uppercase tracking-wide text-gray-400">Evidence for this job</div>
-                  <div className="mt-2 space-y-1 max-h-48 overflow-auto">
-                    {selectedJobEvidence.length === 0 ? (
-                      <div className="text-xs text-gray-500">No evidence linked (assign on incident page)</div>
-                    ) : selectedJobEvidence.map((ev: any) => (
-                      <div key={String(ev?.id || "")} className="text-xs text-gray-200 truncate">
-                        {String(getFileField(ev, "originalName") || ev?.id || "evidence")}
-                      </div>
-                    ))}
-                  </div>
-
-                  {selectedJobStatus === "complete" && selectedJobReviewStatus !== "review" && selectedJobReviewStatus !== "approved" ? (
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        className="w-full px-3 py-2 rounded-lg bg-blue-700/25 border border-blue-400/25 text-blue-200 hover:bg-blue-700/35 disabled:opacity-50"
-                        disabled={loading || jobActionBusy}
-                        onClick={() => { void moveSelectedJobToReview(); }}
-                      >
-                        Move to Review
-                      </button>
-                    </div>
-                  ) : null}
-                  {selectedJobReviewStatus === "review" ? (
-                    <>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          className="px-3 py-2 rounded-lg bg-green-700/25 border border-green-400/25 text-green-200 hover:bg-green-700/35 disabled:opacity-50"
-                          disabled={loading || jobActionBusy}
-                          onClick={() => approveJob(String(selectedJobId))}
-                        >
-                          Approve Job
-                        </button>
-                        <button
-                          type="button"
-                          className="px-3 py-2 rounded-lg bg-red-700/25 border border-red-400/25 text-red-200 hover:bg-red-700/35 disabled:opacity-50"
-                          disabled={loading || jobActionBusy}
-                          onClick={() => rejectJob(String(selectedJobId))}
-                        >
-                          Reject Job
-                        </button>
-                      </div>
-                      <textarea
-                        className="mt-2 w-full min-h-[70px] bg-black/30 border border-white/10 rounded-xl p-2 text-xs text-gray-200 outline-none"
-                        placeholder="Reject reason (required for reject)"
-                        value={rejectReason}
-                        onChange={(e) => setRejectReason(e.target.value)}
-                      />
-                    </>
-                  ) : null}
-                  {(selectedJobReviewStatus === "approved" || selectedJobReviewStatus === "revision_requested") ? (
-                    <div className="mt-3 text-xs text-gray-400">
-                      Final status: {selectedJobReviewStatus}. Actions are locked.
-                    </div>
-                  ) : null}
-                  {(selectedJobStatus !== "complete" && selectedJobReviewStatus !== "review" && selectedJobReviewStatus !== "approved" && selectedJobReviewStatus !== "revision_requested") ? (
-                    <div className="mt-3 text-xs text-gray-400">
-                      Actions are unavailable for state: {selectedJobStatus || "unknown"} (review: {selectedJobReviewStatus}).
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-3 rounded-xl border border-white/10 bg-black/25 p-3">
-            <div className="text-xs uppercase tracking-wide text-gray-400">History (Approved/Rejected)</div>
-            <div className="mt-2 space-y-2">
-              {terminalJobs.length === 0 ? (
-                <div className="text-xs text-gray-500">No terminal job decisions yet.</div>
-              ) : terminalJobs.map((j: any) => {
-                const jid = String(j?.id || j?.jobId || "");
-                const st = String(j?.status || "").toLowerCase();
-                const active = jid === String(selectedJobId || "");
-                return (
-                  <button
-                    key={`history_${jid}`}
-                    type="button"
-                    className={
-                      "w-full text-left rounded-lg border px-3 py-2 transition " +
-                      (active ? "bg-white/10 border-white/30" : "bg-black/30 border-white/10 hover:border-white/20")
-                    }
-                    onClick={() => openJobForReview(jid)}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm text-gray-100 truncate">{String(j?.title || jid)}</div>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full border border-white/15 bg-white/8 text-gray-200">
-                        {st || "terminal"}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          ) : null}
         </section>
 
         
@@ -1761,7 +2756,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         <section ref={evidenceSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4" id="review-evidence">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-xs uppercase tracking-wide text-gray-400">Evidence</div>
+              <div className="text-xs uppercase tracking-wide text-gray-400">Photos</div>
               <div className="text-xs text-gray-500">
                 {evidenceN} captured • showing {visibleEvidence.length}{evidenceFilterJobId ? " (filtered)" : " (latest)"}
               </div>
@@ -1776,7 +2771,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
               >
                 ⬇ Download all
               </button>
-              {process.env.NODE_ENV !== "production" ? (
+              {devMode ? (
                 <button
                   type="button"
                   className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
@@ -1788,7 +2783,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                   Refresh thumbnails
                 </button>
               ) : null}
-              {process.env.NODE_ENV !== "production" ? (
+              {devMode ? (
                 <button
                   type="button"
                   className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
@@ -1807,7 +2802,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 }}
                 title="Open the field incident page evidence rail"
               >
-                Open full evidence
+                Open full record
               </button>
 
               {evidenceN > evidenceLimit ? (
@@ -1834,7 +2829,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           <div className="mt-3 -mx-1 px-1 overflow-x-auto">
             <div className="flex gap-2 justify-center">
               {(() => {
-                return visibleEvidence.map((ev: any) => {
+                return visibleEvidence.map((ev: any, evIdx: number) => {
                   const id = String(ev?.id || ev?.evidenceId || "");
                   const media = getTileMedia(ev as any);
                   // PEAKOPS_REVIEW_THUMB_SIGNED_V1 (2026-04-24)
@@ -1847,13 +2842,19 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                   // emulator and would break review thumbnails in prod.
                   const mintedRaw = media.mode === "image" ? (thumbUrlById[id] || "") : "";
                   const u = toInlineMediaUrl(mintedRaw);
-                  const name = String(getFileField(ev, "originalName") || id);
+                  // PEAKOPS_REVIEW_PHOTO_LABELS_V3 (2026-05-05)
+                  // Customer-facing tile caption is "Photo N" — never
+                  // the raw filename. The original filename is kept on
+                  // the title attribute for engineers/operators who
+                  // explicitly hover.
+                  const originalName = String(getFileField(ev, "originalName") || "").trim();
+                  const photoLabel = `Photo ${evIdx + 1}`;
                   const labels = (ev?.labels || []).map((x: any) => String(x).toUpperCase());
                   const reason = String(thumbReasonById[id] || "").trim();
 
                   return (
                     <button
-                      key={id || name}
+                      key={id || photoLabel}
                       type="button"
                       className={
                         "min-w-[148px] w-[148px] sm:min-w-[168px] sm:w-[168px] aspect-[4/3] relative rounded-xl overflow-hidden border " +
@@ -1861,7 +2862,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                         "bg-black/40 hover:border-white/25 hover:scale-[1.015] hover:bg-black/50 transition-all duration-150"
                       }
                       onClick={() => openEvidenceFromAction(ev)}
-                      title={name}
+                      title={originalName || photoLabel}
                     >
                       {u ? (
                         <img
@@ -1887,8 +2888,24 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                           onError={() => { void handleThumbDecodeError(id, u, media); }}
                         />
                       ) : (
+                        // PEAKOPS_REVIEW_THUMB_LOADING_V1 (2026-05-05)
+                        // Show "Loading…" while the signed read URL
+                        // is in flight; only fall through to
+                        // "Unavailable" when the media metadata
+                        // itself is a hard placeholder (unrenderable
+                        // type, missing bucket/path) OR a fetch has
+                        // genuinely failed (thumbReasonById entry
+                        // exists). Previously the falsy-URL branch
+                        // collapsed both states into "Unavailable",
+                        // so the buyer saw "Unavailable" briefly on
+                        // every cold load before the real image
+                        // landed.
                         <div className="w-full h-full flex items-center justify-center text-xs text-gray-500 text-center px-2">
-                          {media.mode === "placeholder" ? media.label : "Unavailable"}
+                          {media.mode === "placeholder"
+                            ? media.label
+                            : reason
+                              ? "Unavailable"
+                              : "Loading…"}
                         </div>
                       )}
 
@@ -1904,7 +2921,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                       </div>
 
                       <div className="absolute bottom-2 left-2 right-2 text-[10px] text-gray-200/90 truncate bg-black/40 px-2 py-1 rounded">
-                        {name || "evidence"}
+                        {photoLabel}
                       </div>
                       {process.env.NODE_ENV !== "production" && reason ? (
                         <div className="absolute left-2 right-2 bottom-8 text-[10px] text-red-200 truncate bg-black/55 px-2 py-1 rounded border border-red-400/30">
@@ -1934,7 +2951,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           </div>
 
           <div className="mt-2 text-[11px] text-gray-500">
-            Click a tile to preview. Use “Open full evidence” for the full field page rail.
+            Click a tile to preview. Use “Open full record” for the full field page rail.
           </div>
         </section>
 
@@ -1986,22 +3003,23 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
           </div>
 
           <div className="mt-3 space-y-2">
-            {timeline.slice(0, 12).map((t) => (
-              <div
-                key={t.id}
-                className="rounded-lg bg-black/30 border border-white/10 px-3 py-2 flex items-center justify-between gap-3"
-              >
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-gray-100">
-                    {String(t.type || "EVENT")}
+            {timeline.slice(0, 12).map((t) => {
+              const clock = timelineClock(t.occurredAt?._seconds);
+              const ago = fmtAgo(t.occurredAt?._seconds);
+              return (
+                <div
+                  key={t.id}
+                  className="rounded-lg bg-black/30 border border-white/10 px-3 py-2 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-gray-100">
+                      {prettyTimelineType(String(t.type || ""))}
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-500 truncate">
-                    actor: {String(t.actor || "system")} {t.refId ? `• ref: ${t.refId}` : ""}
-                  </div>
+                  <div className="text-xs text-gray-500 whitespace-nowrap">{clock || ago}</div>
                 </div>
-                <div className="text-xs text-gray-500">{fmtAgo(t.occurredAt?._seconds)}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       </div>

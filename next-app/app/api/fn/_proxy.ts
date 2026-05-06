@@ -63,6 +63,22 @@ export async function proxy(req: Request, name: string): Promise<Response> {
     );
   }
 
+  // PEAKOPS_PROXY_UPSTREAM_DIAG_V1 (2026-04-30)
+  // Dev-only: when the upstream Cloud Function returns a non-2xx,
+  // log the function name + status + body snippet so a regression
+  // like the listIncidentsV1 401 is visible in the server log
+  // without having to attach Cloud Run logs. Production stays silent.
+  if (process.env.NODE_ENV !== "production" && upstream.status >= 400) {
+    try {
+      const cloned = upstream.clone();
+      const peek = await cloned.text();
+      // eslint-disable-next-line no-console
+      console.warn(`[proxy] ${name} upstream ${upstream.status}`, peek.slice(0, 280));
+    } catch {
+      /* ignore — diagnostic only */
+    }
+  }
+
   // If upstream returned non-JSON, wrap as JSON so callers can safely r.json()
   const ct = upstream.headers.get("content-type") || "";
   if (!ct.includes("application/json")) {

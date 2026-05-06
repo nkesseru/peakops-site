@@ -1,6 +1,7 @@
 "use client";
 
 import { isHeicEvidence } from "./isHeicEvidence";
+import { authedFetch } from "@/lib/apiClient";
 
 export type StartFieldSessionResp = {
   ok: boolean;
@@ -75,7 +76,9 @@ function isEmulatorFunctionsBase(): boolean {
 }
 
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  // PEAKOPS_PHASE3_AUTHED_FETCH_V1 (2026-04-27)
+  // Only called with /api/fn/* URLs; route through authedFetch.
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -153,7 +156,7 @@ async function uploadBytesToUploadUrl(opts: {
       originalName: String(opts.proxyArgs.originalName || opts.file.name || "upload.bin"),
     });
 
-    const res = await fetch(`/api/fn/uploadEvidenceProxyV1?${q.toString()}`, {
+    const res = await authedFetch(`/api/fn/uploadEvidenceProxyV1?${q.toString()}`, {
       method: "POST",
       headers: { "content-type": ct },
       body: opts.file,
@@ -218,7 +221,7 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
   // 1) Ensure we have a sessionId
     let activeSessionId = String(args.sessionId || "").trim();
 
-console.warn("[uploadEvidence] step=start-session", {
+if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] step=start-session", {
   orgId,
   incidentId,
   fileName: file?.name,
@@ -228,7 +231,7 @@ console.warn("[uploadEvidence] step=start-session", {
 onStatus?.("Starting field session…");
   if (!activeSessionId) {
     activeSessionId = await startFreshSession();
-    console.warn("[uploadEvidence] created fresh sessionId", { sessionId: activeSessionId });
+    if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] created fresh sessionId", { sessionId: activeSessionId });
   }
 
   // 2) Get uploadUrl + storagePath (retry once if session is stale)
@@ -243,7 +246,7 @@ onStatus?.("Starting field session…");
     });
   };
 
-  console.warn("[uploadEvidence] step=request-upload-url", { orgId, incidentId, incomingSessionId: activeSessionId, fileName: file?.name, contentType: file?.type });
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] step=request-upload-url", { orgId, incidentId, incomingSessionId: activeSessionId, fileName: file?.name, contentType: file?.type });
   onStatus?.("Requesting upload URL…");
   let createResp: CreateUploadUrlResp;
   try {
@@ -252,14 +255,14 @@ onStatus?.("Starting field session…");
     if (isSessionMissing(e)) {
       onStatus?.("Refreshing session…");
       activeSessionId = await startFreshSession();
-      console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
+      if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
       createResp = await requestUploadUrl(activeSessionId);
     } else {
       throw e;
     }
   }
 
-  console.warn("[uploadEvidence] createResp", createResp);
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] createResp", createResp);
   const uploadUrl = String(createResp.uploadUrl || "").trim();
   const storagePath = String(createResp.storagePath || "").trim();
   const bucket = String(createResp.bucket || "").trim();
@@ -269,7 +272,7 @@ onStatus?.("Starting field session…");
   }
 
   // 3) Upload bytes
-  console.warn("[uploadEvidence] step=upload-bytes", { uploadMethod: createResp.uploadMethod, storagePath: createResp.storagePath, bucket: createResp.bucket });
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] step=upload-bytes", { uploadMethod: createResp.uploadMethod, storagePath: createResp.storagePath, bucket: createResp.bucket });
   onStatus?.("Uploading…");
   await uploadBytesToUploadUrl({
     uploadUrl,
@@ -306,8 +309,8 @@ onStatus?.("Starting field session…");
     });
   };
 
-  console.warn("[uploadEvidence] step=add-evidence", { orgId, incidentId, incomingSessionId: activeSessionId, storagePath, bucket, fileName: file?.name, jobId });
-  onStatus?.("Securing evidence…");
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] step=add-evidence", { orgId, incidentId, incomingSessionId: activeSessionId, storagePath, bucket, fileName: file?.name, jobId });
+  onStatus?.("Saving photo…");
   let addResp: AddEvidenceResp;
   try {
     addResp = await postAddEvidence(activeSessionId);
@@ -315,7 +318,7 @@ onStatus?.("Starting field session…");
     if (isSessionMissing(e)) {
       onStatus?.("Refreshing session…");
       activeSessionId = await startFreshSession();
-      console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
+      if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
       addResp = await postAddEvidence(activeSessionId);
     } else {
       throw e;
@@ -326,7 +329,7 @@ onStatus?.("Starting field session…");
     // leave disabled unless you’ve stabilized HEIC end-to-end
   }
 
-  console.warn("[uploadEvidence] success", { evidenceId: addResp?.evidenceId, finalSessionId: activeSessionId, registration: addResp });
-  onStatus?.("Secured ✅");
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] success", { evidenceId: addResp?.evidenceId, finalSessionId: activeSessionId, registration: addResp });
+  onStatus?.("Saved ✅");
   return addResp;
 }

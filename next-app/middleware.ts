@@ -45,6 +45,17 @@ export function middleware(request: NextRequest) {
   return NextResponse.redirect(loginUrl);
 }
 
+// PEAKOPS_MIDDLEWARE_SCOPE_V1 (2026-04-27)
+// Matcher is intentionally limited to /admin/:path*. Incident pages
+// (/incidents, /incidents/[id], /incidents/[id]/{notes,review,summary,
+// add-evidence}) are NOT under middleware protection — they're gated
+// client-side by Firebase Auth (lib/auth.ts) and server-side by the
+// Firebase ID token enforcement on /api/fn/* (lib/verifyAuth.ts +
+// app/api/fn/_orgProxy.ts). Until we issue a server session cookie
+// that mirrors Firebase Auth state, edge middleware has no way to see
+// whether a visitor is signed in, so any /incidents/* match here would
+// either let everyone through (useless) or redirect every visit to
+// /admin/login (wrong destination).
 export const config = {
   matcher: ["/admin/:path*"],
 };

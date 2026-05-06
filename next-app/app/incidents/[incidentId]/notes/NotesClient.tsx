@@ -3,9 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { incidentPath } from "@/lib/navigation/incidentRoutes";
+import { authedFetch } from "@/lib/apiClient";
 
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  // PEAKOPS_PHASE3_AUTHED_FETCH_V1 (2026-04-27)
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -28,7 +30,7 @@ export default function NotesClient({ incidentId, orgId }: { incidentId: string;
     (async () => {
       try {
         setMsg("Loading…");
-        const res = await fetch(
+        const res = await authedFetch(
   `/api/fn/getIncidentNotesV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`,
   { cache: "no-store" }
 );
@@ -128,7 +130,7 @@ setMsg("");
         <div className="text-[11px] text-gray-500 mt-1 mb-2">Used for this visit only. Clears when the incident resets.</div>
         <textarea
           className="w-full min-h-[160px] bg-black/30 border border-white/10 rounded-xl p-3 text-sm outline-none"
-          placeholder="What happened? Key decisions, summary, impact..."
+          placeholder="Example: Bracket was cracked at the base, replaced with a new conduit clamp."
           value={incidentNotes}
           onChange={(e) => setIncidentNotes(e.target.value)}
         />

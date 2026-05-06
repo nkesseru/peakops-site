@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+import { requireOrgAccess } from "../../../../lib/verifyAuth";
+
+export const runtime = "nodejs";
 
 function json(v: any, status = 200) {
   return new NextResponse(JSON.stringify(v), {
@@ -21,10 +24,27 @@ export async function POST(req: Request) {
     const zipSha256 = String(body?.zipSha256 || "");
     const zipSize = Number(body?.zipSize || 0) || 0;
     const zipGeneratedAt = String(body?.zipGeneratedAt || "");
-    const verifiedBy = String(body?.verifiedBy || "ui");
     const verifiedAt = String(body?.verifiedAt || new Date().toISOString());
 
-    if (!orgId || !incidentId || !zipSha256) return json({ ok: false, error: "Missing orgId/incidentId/zipSha256" }, 400);
+    if (!incidentId || !zipSha256) return json({ ok: false, error: "Missing incidentId/zipSha256" }, 400);
+
+    // Phase 3 enforcement: verify token + org membership before any
+    // Firestore I/O. Identity (verifiedBy) is server-derived from the
+    // verified token; client-supplied verifiedBy is ignored.
+    let authCtx;
+    try {
+      authCtx = await requireOrgAccess(req, orgId);
+    } catch (e: any) {
+      const status = Number(e?.status || 401);
+      return json({ ok: false, error: String(e?.message || "unauthorized") }, status);
+    }
+    console.log("[persistZipVerificationV1] org-authenticated", {
+      uid: authCtx.uid,
+      email: authCtx.email,
+      orgId: authCtx.orgId,
+      role: authCtx.role,
+    });
+    const verifiedBy = authCtx.uid;
 
     const host = mustEnv("FIRESTORE_EMULATOR_HOST");
     const base = `http://${host}/v1/projects/peakops-pilot/databases/(default)/documents`;

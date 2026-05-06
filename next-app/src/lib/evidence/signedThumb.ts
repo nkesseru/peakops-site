@@ -1,5 +1,7 @@
 "use client";
 
+import { authedFetch } from "@/lib/apiClient";
+
 export type EvidenceImageRefKind = "thumbnailPath" | "thumbPath" | "previewPath" | "original";
 
 export type EvidenceImageRef = {
@@ -39,8 +41,23 @@ export function getThumbExpiresSec(): number {
   return 900;
 }
 
+// PEAKOPS_THUMB_DEBUG_GUARD_V1 (2026-05-05)
+// Guarded behind an explicit `?dev=1` URL flag — NODE_ENV alone was
+// no longer enough since QA / preview deploys run without prod
+// NODE_ENV but should not be polluted with [thumb-debug] noise.
+// Dev helpers re-enable by appending ?dev=1 to the URL.
+function _isDevModeUrl(): boolean {
+  try {
+    if (typeof window === "undefined") return false;
+    const sp = new URL(window.location.href).searchParams;
+    const flag = String(sp.get("dev") || "").trim().toLowerCase();
+    return flag === "1" || flag === "true";
+  } catch {
+    return false;
+  }
+}
 export function logThumbEvent(event: string, details: any = {}): void {
-  if (process.env.NODE_ENV === "production") return;
+  if (!_isDevModeUrl()) return;
   try {
     // eslint-disable-next-line no-console
     console.log(`[thumb-debug] ${event}`, details);
@@ -188,7 +205,7 @@ export async function mintEvidenceReadUrl(
       expiresSec,
     };
 
-    const res = await fetch("/api/fn/createEvidenceReadUrlV1", {
+    const res = await authedFetch("/api/fn/createEvidenceReadUrlV1", {
       method: "POST",
       headers: { "content-type": "application/json", ...(headers || {}) },
       body: JSON.stringify(body),

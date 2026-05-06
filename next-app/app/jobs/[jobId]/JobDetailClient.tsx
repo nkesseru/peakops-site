@@ -42,6 +42,24 @@ function fmtStatus(s: any) {
   return String(s || "open").toLowerCase();
 }
 
+// PEAKOPS_TASK_STATUS_HUMANIZE_V1 (2026-04-29)
+// Customer-facing label for raw lifecycle tokens. Never render the
+// underlying string ("complete", "in_progress", "approved", …) directly.
+function humanizeTaskStatus(s: string): string {
+  switch (String(s || "").toLowerCase()) {
+    case "open": return "Open";
+    case "assigned": return "Assigned";
+    case "in_progress":
+    case "in-progress": return "In progress";
+    case "complete": return "Complete";
+    case "review": return "In review";
+    case "approved": return "Approved";
+    case "rejected":
+    case "revision_requested": return "Sent back";
+    default: return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Open";
+  }
+}
+
 function statusChip(status: string) {
   if (status === "complete") return "bg-emerald-500/15 border-emerald-300/30 text-emerald-100";
   if (status === "assigned") return "bg-blue-500/15 border-blue-300/30 text-blue-100";
@@ -142,7 +160,7 @@ export default function JobDetailClient({
   async function refresh() {
     if (!functionsBase) return;
     if (!incidentId) {
-      setErr("Missing incidentId. Open this page from Incident -> Jobs -> Open.");
+      setErr("This page is missing incident context. Open it from a task tile on the incident page.");
       return;
     }
     setLoading(true);
@@ -436,9 +454,8 @@ export default function JobDetailClient({
       <div className="max-w-5xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-xs uppercase tracking-wide text-gray-400">Job Detail</div>
-            <h1 className="text-xl font-semibold">{job?.title || jobId}</h1>
-            <div className="text-xs text-gray-400">jobId: {jobId}</div>
+            <div className="text-xs uppercase tracking-wide text-gray-400">Task</div>
+            <h1 className="text-xl font-semibold">{job?.title || "Task"}</h1>
           </div>
           <button
             type="button"
@@ -455,14 +472,17 @@ export default function JobDetailClient({
         {err ? <div className="text-sm text-amber-300">{err}</div> : null}
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className={"px-2 py-0.5 rounded-full border text-xs " + statusChip(fmtStatus(job?.status))}>
-              {fmtStatus(job?.status)}
+              {humanizeTaskStatus(fmtStatus(job?.status))}
             </span>
-            <span className="text-xs text-gray-400">incident: {incident?.title || incident?.id || incidentId || "-"}</span>
-            <span className="text-xs text-gray-400">incidentStatus: {incident ? incidentStatusLabel(incident?.status) : "-"}</span>
+            {incident?.title ? (
+              <span className="text-xs text-gray-400">on {incident.title}</span>
+            ) : null}
+            {incident ? (
+              <span className="text-xs text-gray-400">· {incidentStatusLabel(incident?.status)}</span>
+            ) : null}
           </div>
-          <div className="text-xs text-gray-400">org: {orgId} · assignedOrg: {String(job?.assignedOrgId || "-")}</div>
         </section>
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
@@ -511,7 +531,7 @@ export default function JobDetailClient({
               const thumbBroken = !!thumbBrokenById[key];
               return (
                 <div key={ev.id} className="rounded border border-white/10 bg-black/25 p-2">
-                  <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || ev?.id || "Untitled evidence")}</div>
+                  <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || "Photo")}</div>
                   {src && !thumbBroken ? (
                     <button
                       type="button"
@@ -519,7 +539,7 @@ export default function JobDetailClient({
                       onClick={() =>
                         setPreviewOpen({
                           src,
-                          name: String(ev?.file?.originalName || ev?.id || "Untitled evidence"),
+                          name: String(ev?.file?.originalName || "Photo"),
                         })
                       }
                     >
@@ -530,7 +550,7 @@ export default function JobDetailClient({
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={src}
-                          alt={String(ev?.file?.originalName || ev?.id || "Untitled evidence")}
+                          alt={String(ev?.file?.originalName || "Photo")}
                           className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
                           onError={() => {
                             setThumbBrokenById((m) => ({ ...m, [key]: true }));
@@ -569,7 +589,7 @@ export default function JobDetailClient({
                 </div>
               );
             })}
-            {evidence.length === 0 ? <div className="text-xs text-gray-400">No evidence linked to this job yet.</div> : null}
+            {evidence.length === 0 ? <div className="text-xs text-gray-400">No evidence attached to this task yet.</div> : null}
           </div>
         </section>
 
@@ -579,7 +599,7 @@ export default function JobDetailClient({
             className="w-full min-h-[120px] rounded border border-white/15 bg-black/40 px-3 py-2 text-sm"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="Job notes"
+            placeholder="Task notes"
           />
           <div className="flex items-center gap-2">
             <button

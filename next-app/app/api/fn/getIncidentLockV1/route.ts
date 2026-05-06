@@ -1,5 +1,8 @@
 // AUTO-GENERATED (mega_finalize_incident_v1_FIXED)
 import { NextResponse } from "next/server";
+import { requireOrgAccess } from "../../../../lib/verifyAuth";
+
+export const runtime = "nodejs";
 
 function json(ok: boolean, body: any, status = 200) {
   return NextResponse.json({ ok, ...body }, { status });
@@ -31,8 +34,22 @@ export async function GET(req: Request) {
     const u = new URL(req.url);
     const orgId = u.searchParams.get("orgId") || "";
     const incidentId = u.searchParams.get("incidentId") || "";
-    if (!orgId) return json(false, { error: "orgId required" }, 400);
     if (!incidentId) return json(false, { error: "incidentId required" }, 400);
+
+    // Phase 3 enforcement.
+    let authCtx;
+    try {
+      authCtx = await requireOrgAccess(req, orgId);
+    } catch (e: any) {
+      const status = Number(e?.status || 401);
+      return json(false, { error: String(e?.message || "unauthorized") }, status);
+    }
+    console.log("[getIncidentLockV1] org-authenticated", {
+      uid: authCtx.uid,
+      email: authCtx.email,
+      orgId: authCtx.orgId,
+      role: authCtx.role,
+    });
 
     const base = `${firestoreBase()}/projects/${projectId()}/databases/(default)/documents`;
     const orgDocUrl = `${base}/orgs/${encodeURIComponent(orgId)}/incidents/${encodeURIComponent(incidentId)}`;

@@ -47,6 +47,21 @@ function thumbUrlFromEvidence(ev: any): string {
 
 export async function GET() {
   try {
+    // PEAKOPS_DASHBOARD_DEMO_GATE_V1 (2026-04-24)
+    // The dashboard route originally hard-coded six demo incidents
+    // (riverbend-electric / northwind-telecom / spokane-valley-utilities)
+    // and fetched them from a localhost emulator. Shipping that to
+    // prod would surface fake data on every customer's dashboard.
+    // Gate the demo-seed path on local/dev only; in production the
+    // route returns an empty list until a real listIncidents source
+    // is wired in.
+    const isLocal =
+      process.env.NEXT_PUBLIC_ENV === "local" ||
+      process.env.NODE_ENV !== "production";
+    if (!isLocal) {
+      return NextResponse.json({ ok: true, items: [], orgs: [] });
+    }
+
     const base = "http://127.0.0.1:3001";
 
     const seeds = [

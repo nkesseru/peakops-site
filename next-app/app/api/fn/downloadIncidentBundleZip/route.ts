@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
 import crypto from "crypto";
+import { requireOrgAccess } from "../../../../lib/verifyAuth";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 function sha256Hex(buf: Buffer | string): string {
   const b = typeof buf === "string" ? Buffer.from(buf, "utf8") : buf;
@@ -14,15 +16,39 @@ export async function GET(req: NextRequest) {
     const u = new URL(req.url);
     const orgId = u.searchParams.get("orgId") || "";
     const incidentId = u.searchParams.get("incidentId") || "";
-    if (!orgId || !incidentId) {
-      return NextResponse.json({ ok: false, error: "missing orgId or incidentId" }, { status: 400 });
+    if (!incidentId) {
+      return NextResponse.json({ ok: false, error: "missing incidentId" }, { status: 400 });
     }
+
+    // Phase 3 enforcement: verify token + org membership.
+    let authCtx;
+    try {
+      authCtx = await requireOrgAccess(req, orgId);
+    } catch (e: any) {
+      const status = Number(e?.status || 401);
+      return NextResponse.json(
+        { ok: false, error: String(e?.message || "unauthorized") },
+        { status },
+      );
+    }
+    console.log("[downloadIncidentBundleZip] org-authenticated", {
+      uid: authCtx.uid,
+      email: authCtx.email,
+      orgId: authCtx.orgId,
+      role: authCtx.role,
+    });
 
     const origin = new URL(req.url).origin;
 
-    // Fetch packet.zip from our own route (same deterministic build)
+    // Fetch packet.zip from our own route (same deterministic build).
+    // Forward the bearer token so the cascading /api/fn/* gate accepts it.
+    const auth = req.headers.get("authorization") || "";
     const packetUrl = `${origin}/api/fn/downloadIncidentPacketZip?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`;
-    const pr = await fetch(packetUrl, { method: "GET", cache: "no-store" });
+    const pr = await fetch(packetUrl, {
+      method: "GET",
+      cache: "no-store",
+      headers: auth ? { authorization: auth } : {},
+    });
     if (!pr.ok) {
       const t = await pr.text();
       throw new Error(`packet.zip failed: HTTP ${pr.status} ${t.slice(0, 160)}`);

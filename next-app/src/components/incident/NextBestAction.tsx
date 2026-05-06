@@ -43,7 +43,7 @@ export default function NextBestAction(props: Props) {
 
   const desc =
     currentStage === "arrive" ? "Check in on site to begin the field visit." :
-    currentStage === "evidence" ? "Add enough evidence to continue, or explain the exception in notes." :
+    currentStage === "evidence" ? "Add enough evidence to continue, or add a quick note if the photos don't tell the whole story." :
     currentStage === "notes" ? "Add notes to continue. This is your explanation fallback if no photos were captured." :
     currentStage === "submit" ? "Submit session" :
     "Approved. Ready to close.";
@@ -77,10 +77,10 @@ export default function NextBestAction(props: Props) {
   }
 
   const checks = [
-    { label: "Field session started", done: !!arrived, state: arrived ? "Done" : "Missing" },
-    { label: "Evidence captured", done: hasEvidence, state: hasEvidence ? (evidenceCount > 0 ? `${evidenceCount} item${evidenceCount !== 1 ? "s" : ""}` : "Done") : "Missing" },
-    { label: "Notes saved", done: hasNotes, state: hasNotes ? "Done" : "Missing" },
-    { label: "Supervisor approved", done: hasApproved || currentStage === "review", state: (hasApproved || currentStage === "review") ? "Done" : "Pending" },
+    { label: "Session started", done: !!arrived, state: arrived ? "Complete" : "Missing" },
+    { label: "Photos captured", done: hasEvidence, state: hasEvidence ? (evidenceCount > 0 ? `${evidenceCount} photo${evidenceCount !== 1 ? "s" : ""}` : "Complete") : "Missing" },
+    { label: "Notes saved", done: hasNotes, state: hasNotes ? "Complete" : "Missing" },
+    { label: "Supervisor approved", done: hasApproved || currentStage === "review", state: (hasApproved || currentStage === "review") ? "Complete" : "Pending" },
   ];
   const allDone = checks.every((c) => c.done);
   const doneCount = checks.filter((c) => c.done).length;
@@ -103,7 +103,12 @@ export default function NextBestAction(props: Props) {
       </div>
       <div style={{ fontSize: 14, color: "#f5f5f5", marginTop: 6, lineHeight: 1.4, fontWeight: 500 }}>{desc}</div>
 
-      {/* Primary CTA */}
+      {/* PEAKOPS_PRIMARY_CTA_DEDUP_V2 (2026-04-29)
+          The in-page NBA card section in IncidentClient already exposes
+          the same primary action as a yellow CTA. This panel button is
+          demoted to a neutral gray secondary so only one yellow button
+          appears per screen on Arrive / Evidence / Notes / Submit
+          stages. Click still works as a redundant secondary path. */}
       <button
         type="button"
         disabled={disabled}
@@ -113,15 +118,14 @@ export default function NextBestAction(props: Props) {
           marginTop: 14,
           padding: "12px 0",
           borderRadius: 8,
-          border: disabled ? "1px solid #1c1c1c" : "none",
-          background: disabled ? "#101010" : "linear-gradient(180deg, #9A7E2A 0%, #B89A3E 100%)",
-          color: disabled ? "#6f6f6f" : "#050505",
-          fontSize: 15,
-          fontWeight: 800,
+          border: "1px solid #1c1c1c",
+          background: "#101010",
+          color: disabled ? "#6f6f6f" : "#b3b3b3",
+          fontSize: 14,
+          fontWeight: 600,
           letterSpacing: "0.02em",
           cursor: disabled ? "not-allowed" : "pointer",
           fontFamily: "inherit",
-          boxShadow: disabled ? "none" : "0 2px 8px rgba(200,168,78,0.15), inset 0 1px 0 rgba(255,255,255,0.08)",
         }}
       >
         {currentStage === "arrive" && arrived ? "Arrived" : cta}

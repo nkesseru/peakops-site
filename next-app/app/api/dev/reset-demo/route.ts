@@ -8,6 +8,14 @@ const execFileAsync = promisify(execFile);
 export const runtime = "nodejs";
 
 export async function POST() {
+  // PEAKOPS_DEV_ROUTE_PROD_GATE_V1 (2026-04-24)
+  // /api/dev/reset-demo executes shell scripts on the server. It must
+  // never be reachable in production. Return 404 so the route looks
+  // absent rather than disabled — same surface area as a non-existent
+  // path.
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+  }
   try {
     const repoRoot = process.cwd();
     const appRoot = path.join(repoRoot, "..");

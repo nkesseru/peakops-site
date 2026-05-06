@@ -463,12 +463,20 @@ export default function Dashboard() {
               ))}
             </select>
 
-            <button
-              className="px-3 py-2 rounded-xl bg-white/[0.05] border border-white/[0.1]"
-              onClick={() => { window.location.href = "/incidents/inc_demo?orgId=riverbend-electric"; }}
-            >
-              Open Demo Incident
-            </button>
+            {/* PEAKOPS_DASHBOARD_DEMO_BUTTON_GATE_V1 (2026-04-24)
+                The "Open Demo Incident" affordance is hard-wired to
+                inc_demo / riverbend-electric (local seed). Hide it in
+                production builds so customers don't see a button that
+                would route them to data that doesn't exist for them. */}
+            {(process.env.NEXT_PUBLIC_ENV === "local" ||
+              process.env.NODE_ENV !== "production") ? (
+              <button
+                className="px-3 py-2 rounded-xl bg-white/[0.05] border border-white/[0.1]"
+                onClick={() => { window.location.href = "/incidents/inc_demo?orgId=riverbend-electric"; }}
+              >
+                Open Demo Incident
+              </button>
+            ) : null}
           </div>
         </div>
 

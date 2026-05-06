@@ -45,17 +45,20 @@ function guessContentType(path: string): string {
 export async function GET(req: Request) {
   try {
     if (!isEmulatorFunctionsBase()) {
-      // Not pointed at the emulator — this proxy would fetch 127.0.0.1:9199
-      // from the Next server process and fail. Refuse the request so callers
-      // see a deterministic error instead of a silent network timeout, and so
-      // broken backend URLs don't quietly reroute through here.
+      // PEAKOPS_MEDIA_410_SANITIZE_V1 (2026-05-01)
+      // Out of emulator, this proxy is intentionally disabled.
+      // Customer-safe response — no internal function names, no URL
+      // hints in the body. Diagnostic detail goes to server logs only.
+      console.warn(
+        "[/api/media] called outside emulator — disabled by design; caller should use a signed URL or /api/reports/<id>/download.",
+      );
       return NextResponse.json(
         {
           ok: false,
-          error: "media_proxy_disabled_outside_emulator",
-          hint: "In production the browser fetches real signed URLs directly from storage.googleapis.com. Check that createEvidenceReadUrlV1 has been redeployed with the V2 emulator gate.",
+          error: "download_unavailable",
+          message: "This download link is unavailable. Refresh the page and try again.",
         },
-        { status: 410 }
+        { status: 410 },
       );
     }
 

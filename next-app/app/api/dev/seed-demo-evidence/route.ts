@@ -394,6 +394,13 @@ async function verifyEvidence(): Promise<number> {
 }
 
 export async function POST() {
+  // PEAKOPS_DEV_ROUTE_PROD_GATE_V1 (2026-04-24)
+  // /api/dev/seed-demo-evidence writes Firestore docs to a hardcoded
+  // demo incident on the local emulator. It must never be reachable
+  // in production. Return 404 so the route looks absent.
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+  }
   try {
     await ensureIncidentExists();
     await ensureJobExists();

@@ -6,8 +6,9 @@ import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
 import AddEvidenceButton from "@/components/evidence/AddEvidenceButton";
 import FilingCountdown from "@/components/incident/FilingCountdown";
-import NextBestAction from "@/components/incident/NextBestAction";
 import TimelinePanel from "@/components/incident/TimelinePanel";
+import VendorPicker from "@/components/VendorPicker";
+import { assignVendorToJob } from "@/lib/jobVendor";
 import {
   clearRememberedFunctionsBase,
   getFunctionsBase,
@@ -23,49 +24,14 @@ import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/li
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { deriveFieldIncidentStatus } from "@/lib/workflow/fieldIncidentStatus";
 import { hasUsableOrgId, incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
+import { authedFetch } from "@/lib/apiClient";
+import { useAuth } from "@/hooks/useAuth";
+import { deriveNextAction, type NextActionKey } from "@/lib/workflow/nextBestAction";
+import { incidentStatusLabel, deriveDisplayStatus } from "@/lib/incidents/incidentStatus";
+import { buildJobUiState } from "@/lib/incidents/resolveJobDisplayState";
+import { displayIncidentTitle } from "@/lib/incidents/displayIncidentTitle";
+import QaAuthDebugChip from "@/components/dev/QaAuthDebugChip";
 
-
-
-function StageBar({ stage }: { stage: string }) {
-  const steps = [
-    { key: "arrive", label: "Arrive" },
-    { key: "evidence", label: "Evidence" },
-    { key: "notes", label: "Notes" },
-    { key: "submit", label: "Submit" },
-    { key: "review", label: "Review" },
-    { key: "done", label: "Done" },
-  ];
-
-  return (
-    <div className="flex items-center gap-2 text-xs mb-4">
-      {steps.map((s, i) => {
-        const active = stage === s.key;
-        const done = steps.findIndex(x => x.key === stage) > i;
-
-        return (
-          <div key={s.key} className="flex items-center gap-2">
-            <div
-              className={
-                "px-3 py-1 rounded-full border " +
-                (done
-                  ? "bg-green-500/20 border-green-400 text-green-200"
-                  : active
-                  ? "bg-indigo-500/20 border-indigo-400 text-indigo-200"
-                  : "bg-white/5 border-white/10 text-gray-400")
-              }
-            >
-              {done ? "✓ " : ""}
-              {s.label}
-            </div>
-            {i < steps.length - 1 && (
-              <div className="w-4 h-[1px] bg-white/20" />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 
 // PEAKOPS_ACTIVE_JOB_CARD_V1
@@ -124,7 +90,7 @@ function isJobLocked(job: any): boolean {
 // PEAKOPS_LABEL_PERSIST_V1
 async function persistEvidenceLabel(orgId: string, incidentId: string, evidenceId: string, label: string) {
   try {
-    await fetch("/api/fn/setEvidenceLabelV1", {
+    await authedFetch("/api/fn/setEvidenceLabelV1", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ orgId, incidentId, evidenceId, label, actorUid: "dev-admin" }),
@@ -275,12 +241,12 @@ function fmtAgo(sec?: number) {
 function prettyType(t: string) {
   const m: Record<string, string> = {
     NOTES_SAVED: "Notes saved",
-    EVIDENCE_ADDED: "Evidence secured",
+    EVIDENCE_ADDED: "Photos saved",
     FIELD_ARRIVED: "Arrived on site",
     FIELD_APPROVED: "Supervisor approved",
     MATERIAL_ADDED: "Material logged",
-    INCIDENT_OPENED: "Incident opened",
-    SESSION_STARTED: "Field session started",
+    INCIDENT_OPENED: "Job opened",
+    SESSION_STARTED: "Session started",
     DEBUG_EVENT: "Debug event",
   };
   return m[t] || t.replace(/_/g, " ").toLowerCase().replace(/(^|\s)\S/g, (x) => x.toUpperCase());
@@ -417,7 +383,11 @@ function isConvertingHeic(ev: EvidenceDoc) {
 }
 
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  // PEAKOPS_PHASE3_AUTHED_FETCH_V1 (2026-04-27)
+  // postJson is only called with /api/fn/* URLs in this file; routing
+  // through authedFetch attaches the Firebase ID token so Phase 3
+  // enforcement accepts the call.
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -428,20 +398,44 @@ async function postJson<T>(url: string, body: any): Promise<T> {
 }
 
 function FlowStageBar({ stage }: { stage: "arrive" | "evidence" | "notes" | "submit" | "review" | "done" }) {
+  // PEAKOPS_FLOWBAR_V2 (2026-04-30)
+  // Collapsed to the 5 operator-facing steps: Arrive → Capture → Notes
+  // → Send → Closed. The legacy "Review" stage is no longer rendered
+  // as its own step (it's a supervisor-side state, not a field
+  // action) — when stage === "review" we treat Send as complete and
+  // the only remaining step is Closed.
   const steps = [
     { key: "arrive", label: "Arrive" },
-    { key: "evidence", label: "Evidence" },
+    { key: "evidence", label: "Capture" },
     { key: "notes", label: "Notes" },
-    { key: "submit", label: "Submit" },
-    { key: "review", label: "Review" },
-    { key: "done", label: "Done" },
+    { key: "submit", label: "Send to Supervisor" },
+    { key: "done", label: "Closed" },
   ] as const;
+  const normalizedStage: typeof steps[number]["key"] =
+    stage === "review" ? "submit" : (stage as typeof steps[number]["key"]);
+  const stageIdx = steps.findIndex((x) => x.key === normalizedStage);
+  // Boost the effective index by 1 when the actual stage was "review",
+  // so "submit" reads as done rather than active.
+  const effectiveIdx = stage === "review" ? stageIdx + 1 : stageIdx;
+  // PEAKOPS_FLOWBAR_DONE_FILL_V1 (2026-05-05)
+  // When the job is fully Closed, every step (including the
+  // terminal "Closed" step itself) reads as done — not as the
+  // current active step. Buyers expect a Closed job's stepper to
+  // show all-green, not the last node lit gold.
+  const isFullyDone = stage === "done";
+  // PEAKOPS_FLOWBAR_REVIEW_NO_ACTIVE_V1 (2026-05-05)
+  // When the job is Awaiting Supervisor Review or Approved, the
+  // field crew has nothing to do — the supervisor is the bottleneck.
+  // Render 4 done + Closed pending-gray (no gold-active highlight).
+  // Lighting Closed gold while the header pill says "Approved" was
+  // the buyer-visible contradiction QA flagged.
+  const isAwaitingClose = stage === "review";
 
   return (
     <div style={{ padding: "7px 16px", background: "#050505", borderBottom: "1px solid #1c1c1c", display: "flex", alignItems: "center", gap: 4, overflowX: "auto" }}>
         {steps.map((s, i) => {
-          const active = stage === s.key;
-          const done = steps.findIndex(x => x.key === stage) > i;
+          const active = !isFullyDone && !isAwaitingClose && effectiveIdx === i;
+          const done = isFullyDone || effectiveIdx > i;
           return (
             <div key={s.key} style={{ display: "flex", alignItems: "center" }}>
               <div style={{
@@ -500,10 +494,16 @@ const invalidIncidentRoute = useMemo(() => {
   useEffect(() => {
     try { outboxFlushSupervisorRequests(); } catch {}
 
-    const onFocus = () => { syncNotesSavedLocal(); syncArrivedLocal(); };
+    const onFocus = () => { syncNotesSavedLocal(); syncArrivedLocal(); syncNotesBypassedLocal(); };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [incidentId]);
+
+  // PEAKOPS_INCIDENT_IDENTITY_BAR_V1 (2026-04-27)
+  // Firebase Auth user + custom claims (role / orgIds). Drives the small
+  // identity strip at the top of the page so the operator can see who
+  // they're signed in as and which org context they're acting in.
+  const { user: authUser, claims: authClaims } = useAuth();
 
   const [arrived, setArrived] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -511,10 +511,20 @@ const invalidIncidentRoute = useMemo(() => {
   const [incidentStatus, setIncidentStatus] = useState<string>("open");
   const [incidentTitle, setIncidentTitle] = useState<string>("");
   const [incidentUpdatedAtSec, setIncidentUpdatedAtSec] = useState<number | null>(null);
+  // PEAKOPS_NEXT_BEST_ACTION_V1 (2026-04-27)
+  // packetReady drives the "Generate Report" vs "Download Report" branch
+  // of the Next Best Action card. Populated from getIncidentV1's
+  // packetMeta during the existing refresh path.
+  const [packetReady, setPacketReady] = useState<boolean>(false);
   const [nowTick, setNowTick] = useState(Date.now());
-  const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
+  // PEAKOPS_INCIDENT_TAB_RENAME_V1 (2026-04-29)
+  // Tab id "jobs" renamed to "tasks" so the URL fragment reads
+  // /incidents/<id>#tasks (not #jobs). Legacy bookmarks pointing at
+  // #jobs still resolve here — applyHashTab() treats "jobs" as an
+  // alias for "tasks" without writing the legacy form back.
+  const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "tasks">("overview");
   const [pendingJumpToEvidenceMapping, setPendingJumpToEvidenceMapping] = useState(false);
-  const setTab = (tab: "overview" | "timeline" | "evidence" | "jobs") => {
+  const setTab = (tab: "overview" | "timeline" | "evidence" | "tasks") => {
     if (previewOpen) setPreviewOpen(false);
     setActiveTab(tab);
     try {
@@ -532,8 +542,15 @@ const invalidIncidentRoute = useMemo(() => {
     const applyHashTab = () => {
       try {
         const raw = String(window.location.hash || "").replace(/^#/, "").trim().toLowerCase();
-        if (raw === "overview" || raw === "timeline" || raw === "evidence" || raw === "jobs") {
-          setActiveTab(raw as "overview" | "timeline" | "evidence" | "jobs");
+        // Backward-compat: "jobs" → "tasks" (legacy bookmarks).
+        const normalized = raw === "jobs" ? "tasks" : raw;
+        if (
+          normalized === "overview" ||
+          normalized === "timeline" ||
+          normalized === "evidence" ||
+          normalized === "tasks"
+        ) {
+          setActiveTab(normalized as "overview" | "timeline" | "evidence" | "tasks");
         }
       } catch {}
     };
@@ -580,6 +597,17 @@ const invalidIncidentRoute = useMemo(() => {
 // PHASE7_2_REQUPDATE_SYNC_V1
 
   const [arriving, setArriving] = useState(false);
+  // PEAKOPS_ARRIVE_REENTRY_GUARD_V1 (2026-05-01)
+  // The button's `disabled` prop checks `arriving`, but state updates
+  // are async — a fast double-click can fire onClick twice before the
+  // second render disables the button. arrivingRef is checked
+  // synchronously at the top of markArrived to no-op the duplicate
+  // call.
+  const arrivingRef = useRef(false);
+  // PEAKOPS_SUBMIT_GUARDRAILS_V1 (2026-05-04)
+  // Same synchronous double-click pattern as arrivingRef. The button's
+  // `submitting` state lags by a render; the ref doesn't.
+  const submittingRef = useRef(false);
   // toast (tiny UX feedback)
 const [toastMsg, setToastMsg] = useState<string | null>(null);
 const [convertingHeic, setConvertingHeic] = useState(false);
@@ -596,7 +624,7 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
   const [addingEvidence, setAddingEvidence] = useState(false);
 
   const goAddEvidence = () => {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isClosed) return toast("Job is closed (read-only).", 2600);
     // PEAKOPS_CAPTURE_WITHOUT_JOB_V1
     // Evidence capture no longer requires an active field job.
     // Backend (addEvidenceV1) treats jobId as optional: when omitted, the doc
@@ -630,6 +658,14 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
 
   // V6_SESSION_HELPERS__WIRE
 async function markArrived() {
+    // PEAKOPS_ARRIVE_REENTRY_GUARD_V1 (2026-05-01)
+    // Synchronous re-entry check. If a click already triggered
+    // markArrived and the call is still in flight, a fast second click
+    // is a no-op — `setArriving(true)` is async, so the button's
+    // `disabled` prop wouldn't reflect "in flight" yet on a fast
+    // double-click without this ref. The ref is released in the
+    // finally block below.
+    if (arrivingRef.current) return;
     // PEAKOPS_ARRIVE_RETRY_SESSION_V1
     // If sessionId is missing or stale, create a new field session and retry once.
     const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
@@ -649,7 +685,7 @@ async function markArrived() {
 
     if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
     if (!org) return toast("Missing orgId in URL — reload /incidents/<id>?orgId=<your-org>", 3500);
-    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
+    if (String(incidentStatus).toLowerCase() === "closed") return toast("Job is closed (read-only).", 2600);
 
     let sid = String(activeSessionId || "").trim();
     if (!sid) {
@@ -661,7 +697,7 @@ async function markArrived() {
       // orgId in both query string (parity with getTimelineEventsV1) and body
       // (markArrivedV1 / startFieldSessionV1 read from body via mustStr).
       const url = `/api/fn/startFieldSessionV1?orgId=${encodeURIComponent(org)}`;
-      const res = await fetch(url, {
+      const res = await authedFetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: org, incidentId, createdBy: "ui", techUserId }),
@@ -675,7 +711,7 @@ async function markArrived() {
 
     async function postArrived(sessionId: string): Promise<any> {
       const url = `/api/fn/markArrivedV1?orgId=${encodeURIComponent(org)}`;
-      const res = await fetch(url, {
+      const res = await authedFetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: org, incidentId, sessionId: String(sessionId), updatedBy: "ui", techUserId }),
@@ -692,6 +728,11 @@ async function markArrived() {
 
     let __optId = "";
     try {
+      // PEAKOPS_ARRIVE_REENTRY_GUARD_V1 (2026-05-01)
+      // Acquire the in-flight lock here (after the early returns) so
+      // a no-op early exit doesn't leave the ref stuck. The finally
+      // block clears it.
+      arrivingRef.current = true;
       setArriving(true);
 
       // Optimistic UI event id (stable across try/catch)
@@ -788,6 +829,8 @@ async function markArrived() {
       console.error(e);
     } finally {
       setArriving(false);
+      // PEAKOPS_ARRIVE_REENTRY_GUARD_V1 (2026-05-01)
+      arrivingRef.current = false;
     }
 }
 
@@ -829,16 +872,87 @@ async function markArrived() {
   }
 
   async function submitSession() {
-    toast("DEBUG: submitSession entered", 1200);
-    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
+    // PEAKOPS_SUBMIT_GUARDRAILS_V1 (2026-05-04)
+    // Synchronous re-entry guard — fast double-click on Submit can't
+    // fire two POSTs because submittingRef is checked before any state
+    // update. The visible `submitting` state lags by a render; the ref
+    // doesn't.
+    if (submittingRef.current) return;
+
+    if (String(incidentStatus).toLowerCase() === "closed") return toast("Job is closed (read-only).", 2600);
+
+    // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+    // Backstop the new notes gate at the API edge so a stale UI or
+    // an alternate code path cannot submit without an explicit notes
+    // decision. The NBA + bottom dock both block the click; this is
+    // belt-and-braces for any programmatic caller.
+    if (!_hasNotes && !notesBypassedLocal) {
+      toast("Add a note or tap 'No note needed' before submitting.", 3000);
+      return;
+    }
+
+    // PEAKOPS_SUBMIT_GUARDRAILS_V1 (2026-05-04)
+    // Hard data-integrity gates. Run BEFORE the session-id lookup so
+    // a user with a fresh session can't bypass these by submitting
+    // before their tasks/photos exist. Each gate maps 1:1 to a copy
+    // string the user sees — never a raw backend error.
+    const safeJobs = Array.isArray(jobs) ? jobs : [];
+    const safeEvidence = Array.isArray(evidence) ? evidence : [];
+
+    if (safeJobs.length === 0) {
+      toast("Create at least one task before submitting.", 3500);
+      return;
+    }
+
+    const isJobComplete = (j: any) => {
+      const s = normalizeJobStatus(j?.status);
+      return s === "complete" || s === "review" || s === "approved";
+    };
+    const incompleteJobs = safeJobs.filter((j: any) => !isJobComplete(j));
+    if (incompleteJobs.length > 0) {
+      toast("You must complete all tasks before submitting.", 3500);
+      return;
+    }
+
+    // Per-task evidence count. Photo is "linked" if either top-level
+    // jobId or nested evidence.jobId is set — same rule the NBA uses.
+    const photoCountByJobId: Record<string, number> = {};
+    for (const ev of safeEvidence) {
+      const top = String((ev as any)?.jobId || "").trim();
+      const nested = String((ev as any)?.evidence?.jobId || "").trim();
+      const linked = top || nested;
+      if (linked) photoCountByJobId[linked] = (photoCountByJobId[linked] || 0) + 1;
+    }
+    const tasksWithoutPhotos = safeJobs.filter((j: any) => {
+      const id = String(j?.id || j?.jobId || "").trim();
+      return !id || (photoCountByJobId[id] || 0) === 0;
+    });
+    if (tasksWithoutPhotos.length > 0) {
+      toast("Each task must have at least one photo attached.", 3500);
+      return;
+    }
+
+    // Unassigned photos — soft block (warn + confirm bypass). The
+    // photos still ship in the export, just not under any task in
+    // the audit doc; making the user explicitly opt in stops the
+    // accidental "I forgot to attach" case while preserving the
+    // legitimate "these are extras" case.
+    const unassignedCount = safeEvidence.length - Object.values(photoCountByJobId).reduce((s, n) => s + n, 0);
+    if (unassignedCount > 0) {
+      const word = unassignedCount === 1 ? "photo" : "photos";
+      const ok = (typeof window !== "undefined")
+        ? window.confirm(
+            `You have ${unassignedCount} unassigned ${word}. Submit anyway — these ${word} won't be tied to a task.`,
+          )
+        : true;
+      if (!ok) return;
+    }
 
     let sid = getSubmitSessionCandidates()[0] || "";
     if (!sid) return toast("No active session yet — add evidence first.", 3000);
 
-    const ok = true;
-    if (!ok) return;
-
     try {
+      submittingRef.current = true;
       setSubmitting(true);
 
       console.warn("[submitSession] initial candidates", {
@@ -877,10 +991,17 @@ async function markArrived() {
       toast("Session submitted ✓", 2200);
       await refresh();
     } catch (e: any) {
-      const msg = (e && (e.message || String(e))) || "submit failed";
-      toast("Submit failed: " + msg, 3500);
+      // PEAKOPS_SUBMIT_GUARDRAILS_V1 (2026-05-04)
+      // Customer-safe message. Raw e.message can include backend
+      // identifiers / stack info; it goes to the dev console only.
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[submitSession] failure", String(e?.message || e));
+      }
+      toast("Submit failed. Please refresh and try again.", 3500);
     } finally {
       setSubmitting(false);
+      submittingRef.current = false;
     }
   }
 
@@ -1051,11 +1172,36 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   // not rely on it as the primary signal; read `hasArrival` instead.
   const [arrivedLocal, setArrivedLocal] = useState<boolean>(false);
 
+  // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+  // Sticky local flag for the notes-bypass acknowledgment. The
+  // authoritative copy is persisted server-side via saveIncidentNotesV1
+  // ({ notesStatus: "bypassed", notesBypassReason: "..." }). The local
+  // flag flips immediately on click so the NBA advances without
+  // waiting for a refresh round-trip.
+  const [notesBypassedLocal, setNotesBypassedLocal] = useState<boolean>(false);
+  const [bypassNotesBusy, setBypassNotesBusy] = useState<boolean>(false);
+
   const syncArrivedLocal = () => {
     try {
       const k = "peakops_arrived_" + String(incidentId);
       const v = localStorage.getItem(k);
       setArrivedLocal(!!v);
+    } catch {
+      // ignore
+    }
+  };
+
+  // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+  // Cross-page sync for the bypass flag. localStorage is the
+  // optimistic mirror; the authoritative state lives at
+  // incidents/<id>/notes/main.notesStatus once saveIncidentNotesV1
+  // returns. Lets the NBA advance instantly on click without waiting
+  // for a refresh.
+  const syncNotesBypassedLocal = () => {
+    try {
+      const k = "peakops_notes_bypassed_" + String(incidentId);
+      const v = localStorage.getItem(k);
+      setNotesBypassedLocal(!!v);
     } catch {
       // ignore
     }
@@ -1084,6 +1230,55 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
     const tlSid = (Array.isArray(timeline) && timeline.length ? (timeline[0] as any)?.sessionId : "") || "";
     return String(evSid || tlSid || "").trim();
   };
+
+  // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+  // "No note needed — photos tell the story." Persists the bypass via
+  // saveIncidentNotesV1 with notesStatus="bypassed" and a fixed
+  // reason, optimistically flips the local sticky flag, and surfaces
+  // a toast so the user sees the choice was recorded.
+  async function bypassNotes() {
+    if (bypassNotesBusy) return;
+    if (isClosed) {
+      toast("Job is closed (read-only).", 2600);
+      return;
+    }
+    setBypassNotesBusy(true);
+    // Optimistic: flip immediately so the NBA advances on this render.
+    setNotesBypassedLocal(true);
+    try {
+      localStorage.setItem("peakops_notes_bypassed_" + String(incidentId || ""), "1");
+    } catch {}
+    let saveFailed = false;
+    try {
+      const out: any = await postJson(`/api/fn/saveIncidentNotesV1`, {
+        orgId,
+        incidentId,
+        incidentNotes: "",
+        siteNotes: "",
+        notesStatus: "bypassed",
+        notesBypassReason: "Photos provide sufficient context",
+        updatedBy: "ui",
+      });
+      if (!out?.ok) throw new Error(out?.error || "saveIncidentNotesV1 failed");
+    } catch (e: any) {
+      // Backend is best-effort. The local sticky still allows the user
+      // to advance to Submit; the supervisor view will show the
+      // bypass once the next save round-trips.
+      saveFailed = true;
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[bypass-notes] save failed", e);
+      }
+    } finally {
+      setBypassNotesBusy(false);
+    }
+    // PEAKOPS_NOTES_CHECKPOINT_V2 (2026-04-29)
+    // Single toast at end-of-flow regardless of save outcome — the
+    // local sticky is what unlocks the user's flow, and the backend
+    // sync is best-effort (a debug warning surfaces failures in dev).
+    void saveFailed;
+    toast("Skipped — photos are enough.", 2000);
+  }
 
   const v6MarkArrived = async () => {
     try {
@@ -1130,6 +1325,8 @@ const [heicRowDebugById, setHeicRowDebugById] = useState<Record<string, string>>
   const [hi, setHi] = useState<string | null>(null);
   const [dataStatus, setDataStatus] = useState<"live" | "error">("live");
   const [refreshError, setRefreshError] = useState<{ endpoint?: string; status?: number; body?: string; message: string; base?: string; fallback?: boolean } | null>(null);
+  // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+  const [incidentNotFound, setIncidentNotFound] = useState(false);
 
   // Thumbnails (evidenceId -> signed url)
   const [thumbUrl, setThumbUrl] = useState<Record<string, string>>({});
@@ -1507,7 +1704,6 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function closeIncident() {
-    toast("DEBUG: closeIncident entered", 1200);
     if (isClosed) {
       toast("Incident already closed.", 1800);
       return;
@@ -1524,7 +1720,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     }
     try {
       setClosingIncident(true);
-      const res = await fetch("/api/fn/closeIncidentV1", {
+      const res = await authedFetch("/api/fn/closeIncidentV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -1539,7 +1735,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       if (!res.ok || !out?.ok) throw new Error(out?.error || `closeIncidentV1 failed (${res.status})`);
       setIncidentStatus("closed");
       await refresh();
-      toast("Incident closed ✓", 2200);
+      toast("Job closed ✓", 2200);
     } catch (e: any) {
       toast("Close failed: " + String(e?.message || e), 3200);
     } finally {
@@ -1548,9 +1744,9 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function createJob() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isClosed) return toast("Job is closed (read-only).", 2600);
     const title = String(jobTitle || "").trim();
-    if (!title) return toast("Job title is required.", 2200);
+    if (!title) return toast("Task name is required.", 2200);
     // PEAKOPS_CREATE_JOB_INFLIGHT_V1: dedicated re-entry guard. Short-circuits
     // a double-click even if React hasn't re-rendered to reflect jobsBusy yet.
     if (createJobInflightRef.current) return;
@@ -1568,18 +1764,51 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         actorEmail: actorEmail(),
       });
       if (!out?.ok) throw new Error(out?.error || "createJobV1 failed");
+
+      // PEAKOPS_AUTO_ATTACH_ON_CREATE_V1 (2026-04-29)
+      // The user thinks in "incident → photos → tasks", not in
+      // "create job, then map evidence". When unassigned photos
+      // exist at the moment a task is created, auto-attach them all
+      // to the new task and roll the result into a single confirmation
+      // toast. Eliminates the manual mapping step entirely for the
+      // common-case "I shot photos, now I'm logging the task" flow.
+      const newJobId = String(out?.jobId || out?.id || "").trim();
+      let attached = 0;
+      let attachClosedHit = false;
+      if (newJobId) {
+        const r = await attachUnassignedEvidenceToJob(newJobId);
+        attached = r.assigned;
+        attachClosedHit = r.closedHit;
+        // Make the new task the active one so subsequent captures
+        // auto-attach to it without the user picking from a dropdown.
+        setCurrentJobId(newJobId);
+        try {
+          localStorage.setItem(
+            `peakops_current_job_${String(incidentId || "").trim()}`,
+            newJobId,
+          );
+        } catch {}
+      }
+
       setShowCreateJob(false);
       setJobTitle("");
       setJobAssignedTo("");
       setJobNotes("");
       await refresh();
-      toast("Job created ✓", 1800);
+
+      if (attachClosedHit) {
+        toast("Job is closed (read-only).", 2600);
+      } else if (attached > 0) {
+        toast(`Task created · ${attached} photo${attached === 1 ? "" : "s"} attached`, 2400);
+      } else {
+        toast("Task created", 1800);
+      }
     } catch (e: any) {
       if (isIncidentClosedError(e)) {
-        toast("Incident is closed (read-only).", 2600);
+        toast("Job is closed (read-only).", 2600);
         return;
       }
-      toast("Create job failed: " + String(e?.message || e), 3200);
+      toast("Create task failed: " + String(e?.message || e), 3200);
     } finally {
       setJobsBusy(false);
       createJobInflightRef.current = false;
@@ -1588,7 +1817,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function setJobStatus(jobId: string, status: JobStatus) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isClosed) return toast("Job is closed (read-only).", 2600);
     try {
       setJobsBusy(true);
       const out: any = await postJson(`/api/fn/updateJobStatusV1`, {
@@ -1608,11 +1837,11 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
           status: String(out?.status || status),
         });
       }
-      toast("Job status updated ✓", 1500);
+      toast("Task status updated ✓", 1500);
       return true;
     } catch (e: any) {
       if (isIncidentClosedError(e)) {
-        toast("Incident is closed (read-only).", 2600);
+        toast("Job is closed (read-only).", 2600);
         return false;
       }
       const msg = String(e?.message || e);
@@ -1628,7 +1857,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignJobOrg(jobId: string, assignedOrgIdRaw: string) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isClosed) return toast("Job is closed (read-only).", 2600);
     const assignedOrgId = String(assignedOrgIdRaw || "").trim();
     try {
       setJobsBusy(true);
@@ -1642,7 +1871,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       });
       if (!out?.ok) throw new Error(out?.error || "assignJobOrgV1 failed");
       await refresh();
-      toast("Job assignment updated ✓", 1800);
+      toast("Task assignment updated ✓", 1800);
     } catch (e: any) {
       toast("Assign org failed: " + String(e?.message || e), 3200);
     } finally {
@@ -1654,7 +1883,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     if (!functionsBase) return;
     try {
       setOrgDebugBusy(true);
-      const res = await fetch(`/api/fn/debugOrgsV1`, { method: "GET" });
+      const res = await authedFetch(`/api/fn/debugOrgsV1`, { method: "GET" });
       const text = await res.text();
       let parsed: any = null;
       try { parsed = text ? JSON.parse(text) : null; } catch {}
@@ -1699,18 +1928,24 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function markCurrentJobComplete() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isClosed) return toast("Job is closed (read-only).", 2600);
     const jid = String(currentJobId || "").trim();
-    if (!jid) return toast("Select My job first.", 2200);
+    if (!jid) return toast("Select a task first.", 2200);
     const completeOk = window.confirm("Mark complete?");
     if (!completeOk) return;
     await setJobStatus(jid, "complete");
   }
 
-  async function assignAllUnassignedToCurrentJob() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
-    const jid = String(currentJobId || "").trim();
-    if (!jid) return toast("Select My job first.", 2200);
+  // PEAKOPS_ATTACH_UNASSIGNED_TO_JOB_V1 (2026-04-29)
+  // Inner attach-loop extracted so the create-task auto-attach path
+  // and the manual "Assign all to my task" button can share one
+  // implementation. Returns the count attached + whether the
+  // incident was already closed; lets the caller phrase the toast.
+  async function attachUnassignedEvidenceToJob(
+    jid: string,
+  ): Promise<{ assigned: number; closedHit: boolean; attempted: number }> {
+    const targetJid = String(jid || "").trim();
+    if (!targetJid) return { assigned: 0, closedHit: false, attempted: 0 };
 
     const unassignedIds = (evidence || [])
       .filter((ev: any) => !String(ev?.jobId || ev?.evidence?.jobId || "").trim())
@@ -1718,55 +1953,68 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       .filter(Boolean);
 
     if (unassignedIds.length === 0) {
-      toast("No unassigned evidence found.", 2000);
-      return;
+      return { assigned: 0, closedHit: false, attempted: 0 };
     }
 
-    // Optimistic: show immediate attachment in rows.
+    // Optimistic: show immediate attachment in rows so the UI doesn't
+    // flash "unassigned" while parallel calls round-trip.
     const unassignedSet = new Set(unassignedIds);
     setEvidence((prev: any[]) =>
       (Array.isArray(prev) ? prev : []).map((ev: any) =>
         unassignedSet.has(String(ev?.id || ""))
           ? {
               ...ev,
-              evidence: { ...(ev?.evidence || {}), jobId: jid },
-              jobId: jid,
+              evidence: { ...(ev?.evidence || {}), jobId: targetJid },
+              jobId: targetJid,
             }
-          : ev
-      )
+          : ev,
+      ),
     );
 
     let assigned = 0;
     let closedHit = false;
     let idx = 0;
     const limit = Math.min(5, unassignedIds.length);
+    const worker = async () => {
+      while (true) {
+        const i = idx++;
+        if (i >= unassignedIds.length) return;
+        const evidenceId = unassignedIds[i];
+        try {
+          const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
+            orgId,
+            incidentId,
+            evidenceId,
+            jobId: targetJid,
+          });
+          if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
+          assigned += 1;
+        } catch (e: any) {
+          if (isIncidentClosedError(e)) closedHit = true;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: limit }, () => worker()));
+    return { assigned, closedHit, attempted: unassignedIds.length };
+  }
+
+  async function assignAllUnassignedToCurrentJob() {
+    if (isClosed) return toast("Job is closed (read-only).", 2600);
+    const jid = String(currentJobId || "").trim();
+    if (!jid) return toast("Select a task first.", 2200);
+
     setJobsBusy(true);
     try {
-      const worker = async () => {
-        while (true) {
-          const i = idx++;
-          if (i >= unassignedIds.length) return;
-          const evidenceId = unassignedIds[i];
-          try {
-            const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
-              orgId,
-              incidentId,
-              evidenceId,
-              jobId: jid,
-            });
-            if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
-            assigned += 1;
-          } catch (e: any) {
-            if (isIncidentClosedError(e)) closedHit = true;
-          }
-        }
-      };
-      await Promise.all(Array.from({ length: limit }, () => worker()));
+      const { assigned, closedHit, attempted } = await attachUnassignedEvidenceToJob(jid);
+      if (attempted === 0) {
+        toast("No unassigned evidence found.", 2000);
+        return;
+      }
       await refresh();
       if (closedHit) {
-        toast("Incident is closed (read-only).", 2600);
+        toast("Job is closed (read-only).", 2600);
       } else {
-        toast(`Assigned ${assigned} evidence items.`, 2200);
+        toast(`Attached ${assigned} photo${assigned === 1 ? "" : "s"} to this task.`, 2200);
       }
     } finally {
       setJobsBusy(false);
@@ -1774,11 +2022,24 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignEvidenceJob(evidenceId: string, jobIdRaw: string) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isClosed) return toast("Job is closed (read-only).", 2600);
+    const eid = String(evidenceId || "").trim();
+    if (!eid) {
+      toast("Could not attach: evidence ID missing.", 2600);
+      return;
+    }
+    const trimmedOrgId = String(orgId || "").trim();
+    if (!trimmedOrgId) {
+      toast("Could not attach: org context missing — reload with ?orgId=… in the URL.", 3200);
+      return;
+    }
     const nextJobId = String(jobIdRaw || "").trim();
+    // Optimistic local update so the row reflects the new attachment
+    // immediately. The await refresh() below confirms (or reverts via the
+    // catch path) once the server responds.
     setEvidence((prev: any[]) =>
       (Array.isArray(prev) ? prev : []).map((ev: any) =>
-        String(ev?.id || "") === String(evidenceId || "")
+        String(ev?.id || "") === eid
           ? {
               ...ev,
               evidence: { ...(ev?.evidence || {}), jobId: nextJobId || null },
@@ -1789,20 +2050,31 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     );
     try {
       setJobsBusy(true);
-      const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
-        orgId,
+      const payload = {
+        orgId: trimmedOrgId,
         incidentId,
-        evidenceId,
+        evidenceId: eid,
         jobId: nextJobId || null,
-      });
+      };
+      // PEAKOPS_DROPDOWN_DEBUG_V1 (2026-04-27, dev-only) — strip noisy
+      // logging in prod bundles via the standard NODE_ENV gate.
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.debug("[assignEvidenceToJobV1] payload", payload);
+      }
+      const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, payload);
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.debug("[assignEvidenceToJobV1] response", out);
+      }
       if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
       await refresh();
-      toast("Evidence job assignment updated ✓", 1600);
+      toast(nextJobId ? "Evidence attached to task ✓" : "Evidence detached from task ✓", 1600);
     } catch (e: any) {
       if (isIncidentClosedError(e)) {
-        toast("Incident is closed (read-only).", 2600);
+        toast("Job is closed (read-only).", 2600);
       } else {
-        toast("Assign evidence failed: " + String(e?.message || e), 3200);
+        toast("Attach evidence failed: " + String(e?.message || e), 3200);
       }
       await refresh();
     } finally {
@@ -1883,6 +2155,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     }
     setLoading(true);
     setRefreshError(null);
+    setIncidentNotFound(false);
 
     try {
       // Single source of truth: URL query param captured at component top.
@@ -1902,7 +2175,8 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         throw err;
       };
       const fetchTextOrThrow = async (name: string, url: string) => {
-        const res = await fetch(url);
+        // Refresh path only fetches /api/fn/* URLs; route through authedFetch.
+        const res = await authedFetch(url);
         const body = await res.text();
         if (!res.ok) failHttp(name, url, res.status, body);
         return body;
@@ -1924,6 +2198,13 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         setIncidentStatus(st || "open");
         setIncidentTitle(String(inc?.doc?.title || "").trim());
         setIncidentUpdatedAtSec(updatedSec || null);
+        const pm: any = inc?.doc?.packetMeta || {};
+        const pmReady =
+          String(pm?.status || "").toLowerCase() === "ready" ||
+          !!String(pm?.downloadUrl || "").trim() ||
+          !!String(pm?.packetHash || pm?.zipSha256 || "").trim() ||
+          (!!String(pm?.bucket || "").trim() && !!String(pm?.storagePath || "").trim());
+        setPacketReady(pmReady);
       }
 
       // Jobs (GET-only, non-fatal — empty jobs list should not kill the field page)
@@ -1932,7 +2213,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
           `/api/fn/listJobsV1?orgId=${encodeURIComponent(requestOrgId)}` +
           `&incidentId=${encodeURIComponent(incidentId)}&limit=50` +
           `&actorUid=${encodeURIComponent(actorUid())}&actorRole=${encodeURIComponent(actorRole())}`;
-        const jobsRes = await fetch(jobsUrl);
+        const jobsRes = await authedFetch(jobsUrl);
         const jobsBody = await jobsRes.text();
         if (!jobsRes.ok) {
           if (process.env.NODE_ENV !== "production") {
@@ -1985,7 +2266,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       setOrgOptionsLoadError(false);
       setOrgOptionsLoaded(false);
       try {
-        const orgsRes = await fetch(orgsUrl);
+        const orgsRes = await authedFetch(orgsUrl);
         const orgsBody = await orgsRes.text();
         if (!orgsRes.ok) {
           setOrgOptions([]);
@@ -2013,7 +2294,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         const evUrl =
           `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(requestOrgId)}` +
           `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
-        const evRes = await fetch(evUrl);
+        const evRes = await authedFetch(evUrl);
         const evBody = await evRes.text();
         if (process.env.NODE_ENV !== "production") {
           let evidenceCount = 0;
@@ -2063,7 +2344,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         const tlUrl =
           `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(requestOrgId)}` +
           `&incidentId=${encodeURIComponent(incidentId)}&limit=50`;
-        const tlRes = await fetch(tlUrl);
+        const tlRes = await authedFetch(tlUrl);
         const tlBody = await tlRes.text();
         if (tlRes.ok) {
           const tl = tlBody ? JSON.parse(tlBody) : {};
@@ -2112,6 +2393,14 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         return;
       }
       setRefreshError(diag);
+      // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+      if (
+        Number(diag.status) === 404 ||
+        /incident_not_found/i.test(String(diag.body || "")) ||
+        /incident not found/i.test(String(diag.message || ""))
+      ) {
+        setIncidentNotFound(true);
+      }
       if (process.env.NODE_ENV !== "production") {
         console.debug("[inc-refresh] error", {
           endpoint: diag.endpoint,
@@ -2121,12 +2410,17 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
           stack: String((e as any)?.stack || ""),
         });
       }
-      console.error("refresh failed", {
-        functionsBase: base,
-        incidentId,
+      // PEAKOPS_REFRESH_LOG_DOWNGRADE_V1 (2026-04-28)
+      // Refresh path catches every transient/expected failure (offline,
+      // 401, 403, slow network). Logging at error level made the
+      // Next.js dev overlay surface a permanent red "1 Issue" badge
+      // during normal runs. Downgrade to warn — the soft sync banner
+      // already surfaces the user-facing message; engineers still see
+      // the diagnostic via console.warn during dev.
+      // eslint-disable-next-line no-console
+      console.warn("[refresh] non-fatal", {
         endpoint: diag.endpoint,
         status: diag.status,
-        body: String(diag.body || "").slice(0, 500),
         error: diag.message,
         fallback: fallbackUsed,
       });
@@ -2345,6 +2639,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
 
     syncNotesSavedLocal();
     syncArrivedLocal();
+    syncNotesBypassedLocal();
 const t = setInterval(refresh, 60000);
 
   // === ZIP PACK v3: micro-feedback helpers ===
@@ -2382,7 +2677,7 @@ const t = setInterval(refresh, 60000);
 
   async function callFn(path: string, payload: any) {
     const url = `/api/fn/${String(path || "").replace(/^\/+/, "")}`;
-    const res = await fetch(url, {
+    const res = await authedFetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -2432,6 +2727,19 @@ return () => clearInterval(t);
   
   // ZIP: query hi=... -> toast + pulse + auto-scroll
   const sp = useSearchParams();
+  // PEAKOPS_INCIDENT_DEV_MODE_V2 (2026-04-29)
+  // Customer-facing dev tools (Refresh thumbs / Force remint / Show
+  // debug disclosure) gated STRICTLY on ?dev=1. Previous V1 also fired
+  // when NODE_ENV !== "production", which made local QA look dev-leaky
+  // even when the tester hadn't asked for it.
+  const devMode = useMemo(() => {
+    try {
+      const v = String(sp?.get?.("dev") || "").trim();
+      return v === "1" || v.toLowerCase() === "true";
+    } catch {
+      return false;
+    }
+  }, [sp]);
   
   // OPTIMISTIC: Notes saved → flip readiness instantly
   useEffect(() => {
@@ -2662,6 +2970,29 @@ useEffect(() => {
   const _hasSession = _fieldStatus.hasSessionTimeline;
   const _evidenceN = _fieldStatus.evidenceCount;
 
+  // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
+  // Single canonical UI state for the field page. Everything that
+  // varies by lifecycle position — header pill, FlowStageBar stage,
+  // NBA inputs, action visibility, banner copy — derives from this
+  // object. Adding a new lifecycle-aware UI element later means
+  // reading from `fieldJobUiState`, not re-deriving from raw flags.
+  const fieldJobUiState = useMemo(
+    () => buildJobUiState({
+      status: incidentStatus,
+      hasArrival,
+      hasSubmitted: _hasSubmitted,
+      allTasksApproved: !!_hasApproved,
+      anyRejected: Array.isArray(jobs) && jobs.some((j: any) => {
+        const s = String(j?.status || "").toLowerCase();
+        const rs = String(j?.reviewStatus || "").toLowerCase();
+        return s === "rejected" || rs === "rejected";
+      }),
+      evidenceCount: _evidenceN,
+      hasNotes: _hasNotes,
+    }),
+    [incidentStatus, hasArrival, _hasSubmitted, _hasApproved, jobs, _evidenceN, _hasNotes],
+  );
+
   // Prefer the timeline timestamp; if it's missing but we know arrival happened
   // (arrivedLocal sticky flag, or evidence exists), render a neutral "Arrived"
   // instead of "Not started" so the timing card agrees with the CTA/checklist.
@@ -2692,6 +3023,54 @@ useEffect(() => {
           <div style={{ fontSize: 11, color: "#6f6f6f", marginTop: 12, fontFamily: "ui-monospace, monospace" }}>
             /incidents/inc_demo
           </div>
+        </div>
+      </main>
+    ) : incidentNotFound ? (
+      // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+      // Clean customer-facing empty state when getIncidentV1 returns
+      // 404 (deleted, never existed, or not accessible). Replaces the
+      // raw debug panel with a calm card. Dev-only collapsible
+      // preserves diagnostic detail for engineers.
+      <main style={{ minHeight: "100vh", background: "#050505", color: "#f5f5f5", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", color: "#C8A84E", marginBottom: 16 }}>PEAKOPS</div>
+        <div style={{ maxWidth: 440, width: "100%", border: "1px solid #1c1c1c", background: "#0b0b0b", borderRadius: 8, padding: 24, textAlign: "center" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#6f6f6f", textTransform: "uppercase" as const }}>Not found</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#f5f5f5", marginTop: 6 }}>Job not found</div>
+          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 6, lineHeight: 1.5 }}>
+            This incident may have been deleted, moved, or you may not have access.
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+            style={{
+              marginTop: 16,
+              padding: "10px 18px",
+              borderRadius: 8,
+              border: "1px solid #1c1c1c",
+              background: "transparent",
+              color: "#b3b3b3",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Back to incidents
+          </button>
+          {/* PEAKOPS_NOT_FOUND_DEV_GATE_V1 (2026-04-30)
+              Strictly ?dev=1. Customer-facing 404 stays clean even
+              in local dev unless the tester opts in. */}
+          {devMode ? (
+            <details style={{ marginTop: 18, fontSize: 10, color: "#6f6f6f", textAlign: "left" }}>
+              <summary style={{ cursor: "pointer" }}>Technical details (dev only)</summary>
+              <div style={{ marginTop: 6, fontFamily: "ui-monospace, monospace", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                <div>incidentId: {incidentId}</div>
+                <div>orgId: {orgId || "(none)"}</div>
+                {refreshError?.endpoint ? <div>endpoint: {refreshError.endpoint}</div> : null}
+                {refreshError?.status ? <div>status: {refreshError.status}</div> : null}
+                {refreshError?.message ? <div>message: {refreshError.message}</div> : null}
+              </div>
+            </details>
+          ) : null}
         </div>
       </main>
     ) : !hasUsableOrgId(orgId) ? (
@@ -2736,33 +3115,139 @@ useEffect(() => {
         } catch {}
       }}
     >
-      <FlowStageBar stage={currentStage} />
-      {/* Top bar */}
+      {/* PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
+          Stage derived from canonical UI state. The `currentStage`
+          local from the older fieldStatus helper still exists for
+          legacy bottom-dock reads, but the visible stepper now
+          tracks the same `displayState` the header pill uses. */}
+      <FlowStageBar stage={fieldJobUiState.stage} />
+      {/* PEAKOPS_INCIDENT_HEADER_V3 (2026-04-30)
+          Header now mirrors the cleaned Supervisor Review style:
+          - Single "← Jobs" back link on the left.
+          - Subtle "FIELD JOB" eyebrow + job title.
+          - Status pill (color-coded by lifecycle truth) + updated
+            timestamp on the subtitle row.
+          - Right side keeps Supervisor Review (gold) + Summary as
+            compact ghost utilities. Mission Control link folded into
+            "← Jobs" — one-tap return.
+          - Dev chrome (ROLE pill, identity strip, QA chip, demo
+            buttons) all gated on devMode so customers see a clean
+            premium header. */}
       <div style={{ padding: "10px 16px", borderBottom: "1px solid #1c1c1c", position: "sticky", top: 0, background: "rgba(5,5,5,0.95)", backdropFilter: "blur(8px)", zIndex: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#C8A84E" }}>PEAKOPS</span>
-              <span style={{
-                padding: "1px 6px", borderRadius: 3, fontWeight: 600, fontSize: 9,
-                border: isClosed ? "1px solid #1c1c1c" : "1px solid rgba(34,197,94,0.2)",
-                background: isClosed ? "#0b0b0b" : "rgba(34,197,94,0.06)",
-                color: isClosed ? "#6f6f6f" : "#22c55e",
-              }}>
-                {String(incidentStatus || "open").toUpperCase()}
-              </span>
-            </div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#f5f5f5", marginTop: 2 }}>{incidentTitle || incidentId}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, fontSize: 10, color: "#6f6f6f", flexWrap: "wrap" }}>
-              {incidentTitle ? <span style={{ fontFamily: "ui-monospace, monospace" }}>{incidentId}</span> : null}
-              {incidentTitle ? <span>·</span> : null}
-              <span>{orgId}</span>
-              {incidentUpdatedAtSec ? <span>· {fmtAgo(incidentUpdatedAtSec)}</span> : null}
-                           {isDemoMode ? (
-                <>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
+            <button
+              type="button"
+              style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", flexShrink: 0, marginTop: 2 }}
+              title="Back to Jobs"
+              onClick={() => router.push(`/incidents?orgId=${encodeURIComponent(String(orgId || ""))}`)}
+            >
+              ← Jobs
+            </button>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#6f6f6f", textTransform: "uppercase" as const }}>Field Job</span>
+                {/* PEAKOPS_HIDE_ROLE_BADGE_V1 (2026-04-30)
+                    ROLE pill strictly gated on ?dev=1 + NODE_ENV !== production. */}
+                {devMode && authClaims?.role ? (
+                  <span
+                    style={{
+                      padding: "1px 6px",
+                      borderRadius: 3,
+                      fontWeight: 600,
+                      fontSize: 9,
+                      border: "1px dashed rgba(200,168,78,0.35)",
+                      background: "rgba(200,168,78,0.06)",
+                      color: "#C8A84E",
+                    }}
+                    title="Current Firebase Auth role claim (dev only)"
+                  >
+                    ROLE: {String(authClaims.role).toUpperCase()}
+                  </span>
+                ) : null}
+              </div>
+              {/* PEAKOPS_HEADER_TITLE_V2 (2026-04-28)
+                  Routed through the shared displayIncidentTitle helper
+                  so the field, review, summary, and add-evidence pages
+                  all render the same label. */}
+              <div
+                style={{ fontSize: 16, fontWeight: 700, color: "#f5f5f5", marginTop: 2 }}
+                title={incidentId}
+              >
+                {displayIncidentTitle(incidentId, { title: incidentTitle }, jobs)}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                {(() => {
+                  // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
+                  // Header pill reads off the page-level
+                  // fieldJobUiState. FlowStageBar (above) and NBA
+                  // (below) read off the same object — they cannot
+                  // disagree about which lifecycle position the user
+                  // is in.
+                  const ds = fieldJobUiState.displayState;
+                  // Compact pill copy — header has limited width, so
+                  // "Awaiting Supervisor Review" abbreviates to
+                  // "Awaiting Review" here only. Other surfaces keep
+                  // the full label.
+                  const label = ds === "Awaiting Supervisor Review" ? "Awaiting Review" : ds;
+                  const tone =
+                    ds === "Closed" ? { bg: "#0b0b0b", border: "#1c1c1c", color: "#6f6f6f" } :
+                    ds === "Approved" ? { bg: "rgba(34,197,94,0.08)", border: "rgba(34,197,94,0.30)", color: "#22c55e" } :
+                    ds === "Awaiting Supervisor Review" ? { bg: "rgba(200,168,78,0.08)", border: "rgba(200,168,78,0.30)", color: "#C8A84E" } :
+                    ds === "Sent Back" ? { bg: "rgba(220,60,60,0.08)", border: "rgba(220,60,60,0.30)", color: "#fca5a5" } :
+                    ds === "In Progress" ? { bg: "rgba(34,197,94,0.06)", border: "rgba(34,197,94,0.20)", color: "#22c55e" } :
+                    { bg: "rgba(34,197,94,0.06)", border: "rgba(34,197,94,0.20)", color: "#22c55e" };
+                  return (
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: 999,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        letterSpacing: "0.04em",
+                        border: `1px solid ${tone.border}`,
+                        background: tone.bg,
+                        color: tone.color,
+                      }}
+                    >
+                      {label}
+                    </span>
+                  );
+                })()}
+                {incidentUpdatedAtSec ? (
+                  <span style={{ fontSize: 10, color: "#6f6f6f" }}>Updated {fmtAgo(incidentUpdatedAtSec)} ago</span>
+                ) : null}
+              </div>
+              {/* PEAKOPS_IDENTITY_BAR_V2 (2026-04-30)
+                  Identity strip is dev-only. */}
+              {devMode && authUser?.email ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, fontSize: 10, color: "#6f6f6f", flexWrap: "wrap" }}>
+                  <span>Signed in as</span>
+                  <span style={{ color: "#b3b3b3", fontFamily: "ui-monospace, monospace" }}>{authUser.email}</span>
+                  {authClaims.role ? (
+                    <>
+                      <span>·</span>
+                      <span style={{ color: "#C8A84E", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" as const }}>
+                        {authClaims.role}
+                      </span>
+                    </>
+                  ) : null}
+                  <span>·</span>
+                  <span style={{ color: "#b3b3b3", fontFamily: "ui-monospace, monospace" }}>{orgId || "no org"}</span>
+                </div>
+              ) : null}
+              {/* PEAKOPS_QA_AUTH_DEBUG_V1 mount (incident page) — gated on devMode */}
+              {devMode ? (
+                <div style={{ marginTop: 6 }}>
+                  <QaAuthDebugChip />
+                </div>
+              ) : null}
+              {/* Demo-mode reset / seed buttons stay gated on isDemoMode */}
+              {isDemoMode ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
                   <button
                     type="button"
-                    style={{ marginLeft: 8, padding: "1px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }}
+                    style={{ padding: "1px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }}
                     onClick={() => { void resetDemoNow(); }}
                     title="Fully reset demo data and reload clean"
                   >
@@ -2770,7 +3255,7 @@ useEffect(() => {
                   </button>
                   <button
                     type="button"
-                    style={{ marginLeft: 4, padding: "1px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }}
+                    style={{ padding: "1px 8px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }}
                     onClick={async () => {
                       try {
                         toast("Seeding demo evidence…", 1500);
@@ -2797,51 +3282,349 @@ useEffect(() => {
                   >
                     Seed demo evidence
                   </button>
-                </>
+                </div>
               ) : null}
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", color: "#C8A84E" }}
-              title="Supervisor review + approve/lock"
+              style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", color: "#C8A84E" }}
+              title="Open Supervisor Review"
               onClick={() => {
                 const id = String(incidentId || "");
                 if (!id || id.includes("${")) return;
                 router.push(reviewPath(id, orgId));
               }}
             >
-              Review
+              Supervisor Review
             </button>
-            {isClosed ? (
-              <span style={{ fontSize: 10, color: "#6f6f6f" }}>Incident closed</span>
-            ) : _hasApproved ? (
-              <span style={{ fontSize: 10, color: "#22c55e" }}>Approved</span>
-            ) : _hasSubmitted ? (
-              <span style={{ fontSize: 10, color: "#C8A84E" }}>Submitted</span>
-            ) : null}
             <button
               type="button"
-              style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3" }}
+              style={{ padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: "pointer", border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3" }}
               onClick={() => { try { router.push(summaryPath(incidentId, orgId)); } catch {} }}
-              title="Open incident summary"
+              title="Open job summary"
             >
               Summary
             </button>
           </div>
         </div>
 
-        {/* PEAKOPS_UX_TOAST_RENDER_V1 */}
+        {/* PEAKOPS_UX_TOAST_RENDER_V1
+            Single source-of-truth toast renderer. The legacy ZIP_TOAST
+            duplicate was removed in PEAKOPS_TOAST_DEDUP_V1 — do not
+            reintroduce a second renderer that reads `toastMsg`, or
+            users will see overlapping toast bars. data-toast-id is
+            provided so QA can assert visibility with a single
+            selector. */}
         {toastMsg ? (
-          <div style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", top: 72, zIndex: 50, padding: "8px 14px", borderRadius: 6, background: "rgba(11,11,11,0.95)", border: "1px solid #1c1c1c", fontSize: 12, color: "#b3b3b3", backdropFilter: "blur(8px)", pointerEvents: "none" }}>
+          <div
+            data-toast-id="peakops-toast"
+            role="status"
+            aria-live="polite"
+            style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", top: 72, zIndex: 50, padding: "8px 14px", borderRadius: 6, background: "rgba(11,11,11,0.95)", border: "1px solid #1c1c1c", fontSize: 12, color: "#b3b3b3", backdropFilter: "blur(8px)", pointerEvents: "none" }}
+          >
             {toastMsg}
           </div>
         ) : null}
-        <div style={{ marginTop: 10, display: "flex", gap: 4 }}>
-          {(["overview", "timeline", "evidence", "jobs"] as const).map((tab) => (
+
+        {/* PEAKOPS_NEXT_BEST_ACTION_V2 (2026-04-27)
+            Now sourced from the shared deriveNextAction helper at
+            src/lib/workflow/nextBestAction.ts so the logic is shared
+            with SummaryClient and the priority order (esp. the
+            unassigned-evidence blocker) is enforced in one place. */}
+        {(() => {
+          const safeJobs = Array.isArray(jobs) ? jobs : [];
+          const safeEvidence = Array.isArray(evidence) ? evidence : [];
+          const role = String(authClaims?.role || "").toLowerCase();
+
+          const evidenceWithJob = safeEvidence.filter((ev: any) => {
+            const top = String(ev?.jobId || "").trim();
+            const nested = String(ev?.evidence?.jobId || "").trim();
+            return !!(top || nested);
+          });
+          const unassignedEvidenceCount = safeEvidence.length - evidenceWithJob.length;
+          const anyWorkItemComplete = safeJobs.some((j: any) => {
+            const s = normalizeJobStatus(j?.status);
+            return s === "complete" || s === "review" || s === "approved";
+          });
+          const hasReviewableWorkItem = safeJobs.some((j: any) => {
+            const s = normalizeJobStatus(j?.status);
+            return s === "complete" || s === "review";
+          });
+
+          // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
+          // NBA inputs read the same lifecycle facts that built
+          // fieldJobUiState above. The closed/approved/submitted
+          // gates are sourced from fieldJobUiState.displayState so
+          // they cannot drift away from the header pill or stepper.
+          let action = deriveNextAction({
+            hasArrival,
+            evidenceCount: safeEvidence.length,
+            unassignedEvidenceCount,
+            workItemCount: safeJobs.length,
+            anyWorkItemComplete,
+            allWorkItemsApproved: fieldJobUiState.displayState === "Approved" || fieldJobUiState.displayState === "Closed" || !!_hasApproved,
+            hasReviewableWorkItem,
+            hasSubmitted: fieldJobUiState.displayState === "Awaiting Supervisor Review" || !!_hasSubmitted,
+            isClosed: fieldJobUiState.displayState === "Closed",
+            packetReady,
+            role,
+            currentWorkItemId: String(currentJobId || ""),
+            // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+            // Drives the new "Add a note or skip" gate between
+            // task-complete and submit. Either path satisfies it:
+            // a real note saved, or an explicit bypass.
+            hasNotes: !!_hasNotes,
+            notesBypassed: !!notesBypassedLocal,
+          });
+
+          // PEAKOPS_UI_STATE_NBA_OVERRIDE_V1 (2026-05-05)
+          // The shared deriveNextAction helper checks
+          // `evidenceCount === 0` BEFORE its closed/approved
+          // branches, so an Approved/Awaiting/Closed job with no
+          // evidence loaded yet still falls into "Add Photos". That
+          // contradicts the canonical lifecycle the rest of the page
+          // displays (Approved header, Closed stepper). Override the
+          // NBA result whenever the canonical state is past
+          // In Progress so the field-page primary action always
+          // matches the header pill.
+          //
+          // Approved → "View Summary" (read-only post-approval; the
+          //            actual close action lives on /review).
+          // Closed   → "Open Report".
+          // Awaiting → "View Supervisor Review".
+          // Sent Back → falls through to deriveNextAction (work resumes).
+          //
+          // No mutation of action enum types — we cast a fresh
+          // object that matches the NextAction shape the renderer
+          // already consumes.
+          const _canonical = fieldJobUiState.displayState;
+          if (_canonical === "Closed") {
+            action = {
+              state: "download_report",
+              title: "Report ready",
+              helper: "This job is closed. Open the report to download or share it.",
+              buttonLabel: "Open Report",
+              primaryAction: "open_report",
+              enabled: true,
+              tone: "success",
+            };
+          } else if (_canonical === "Approved") {
+            action = {
+              state: "waiting",
+              title: "Approved — ready to close",
+              helper: "Supervisor approval complete. Close the job from the Supervisor Review page to generate the report.",
+              buttonLabel: "Open Supervisor Review",
+              primaryAction: "review",
+              enabled: true,
+              tone: "primary",
+            };
+          } else if (_canonical === "Awaiting Supervisor Review") {
+            action = {
+              state: "review",
+              title: "Sent to supervisor",
+              helper: "Your work is with the supervisor for review.",
+              buttonLabel: "Open Supervisor Review",
+              primaryAction: "review",
+              enabled: true,
+              tone: "primary",
+            };
+          }
+
+          // Bind the shared discriminator to local handlers. Each key
+          // corresponds to exactly one user-facing intent; if a new
+          // intent is added to the helper, add the matching handler
+          // here (TS will catch unhandled keys via `never`).
+          const runAction = (key: NextActionKey) => {
+            switch (key) {
+              case "mark_arrived": try { markArrived(); } catch {} return;
+              case "add_evidence": try { goAddEvidence(); } catch {} return;
+              case "create_work_item": setTab("tasks"); return;
+              case "attach_evidence": {
+                // PEAKOPS_NBA_SMART_ATTACH_V1 (2026-04-28)
+                // If exactly one task exists, attach all unassigned
+                // evidence to it directly — saves the user a tab switch
+                // + N clicks. If 0 or 2+ tasks exist, fall back
+                // to the Evidence tab so the user picks per-item.
+                if (safeJobs.length === 1) {
+                  const target = safeJobs[0] as any;
+                  const targetId = String(target?.id || target?.jobId || "").trim();
+                  const unassigned = safeEvidence.filter((ev: any) => {
+                    const top = String(ev?.jobId || "").trim();
+                    const nested = String(ev?.evidence?.jobId || "").trim();
+                    return !(top || nested);
+                  });
+                  if (targetId && unassigned.length > 0) {
+                    (async () => {
+                      for (const ev of unassigned) {
+                        const eid = String((ev as any)?.id || "").trim();
+                        if (!eid) continue;
+                        try { await assignEvidenceJob(eid, targetId); } catch {}
+                      }
+                    })();
+                    return;
+                  }
+                }
+                setTab("evidence");
+                return;
+              }
+              case "finish_work_item": try { markCurrentJobComplete(); } catch {} return;
+              case "add_notes":
+                try { router.push(notesPath(incidentId, orgId)); } catch {}
+                return;
+              case "bypass_notes":
+                void bypassNotes();
+                return;
+              case "submit": void submitSession(); return;
+              case "review": try { router.push(reviewPath(incidentId, orgId)); } catch {} return;
+              case "approve_work":
+              case "send_back":
+                // /review-only actions; from the field page send the
+                // user there.
+                try { router.push(reviewPath(incidentId, orgId)); } catch {} return;
+              case "close":
+                // PEAKOPS_NBA_CONFIRM_CLOSE_V1 (2026-04-28)
+                if (typeof window !== "undefined" &&
+                    !window.confirm("Close this job? Field edits will be locked and the report can be generated.")) {
+                  return;
+                }
+                void closeIncident();
+                return;
+              case "open_report":
+              case "download_report":
+                try { router.push(summaryPath(incidentId, orgId)); } catch {} return;
+              case "back_to_incident": return; // no-op on incident page
+              case "none": return;
+            }
+          };
+
+          const primaryBg = !action.enabled
+            ? "#101010"
+            : action.tone === "success"
+              ? "linear-gradient(180deg, #22c55e 0%, #15803d 100%)"
+              : action.tone === "muted"
+                ? "#101010"
+                : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)";
+          const primaryColor = !action.enabled
+            ? "#6f6f6f"
+            : action.tone === "success"
+              ? "#050505"
+              : action.tone === "muted"
+                ? "#6f6f6f"
+                : "#050505";
+          const primaryBorder = action.enabled && action.tone !== "success" && action.tone !== "muted"
+            ? "none"
+            : "1px solid #1c1c1c";
+
+          return (
+            <section
+              style={{
+                marginTop: 12,
+                borderRadius: 12,
+                border: "1px solid #1c1c1c",
+                background: "#0b0b0b",
+                padding: "16px 18px",
+                display: "flex",
+                alignItems: "center",
+                gap: 16,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: "0.14em",
+                    color: "#C8A84E",
+                    textTransform: "uppercase" as const,
+                  }}
+                >
+                  Next best action
+                </div>
+                <div style={{ marginTop: 4, fontSize: 16, fontWeight: 700, color: "#f5f5f5" }}>
+                  {action.title}
+                </div>
+                <div style={{ marginTop: 4, fontSize: 12, color: "#b3b3b3", lineHeight: 1.5 }}>
+                  {action.helper}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+                {action.secondaryLabel && action.secondaryAction ? (
+                  <button
+                    type="button"
+                    onClick={() => runAction(action.secondaryAction!)}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      border: "1px solid #1c1c1c",
+                      background: "transparent",
+                      color: "#b3b3b3",
+                    }}
+                  >
+                    {action.secondaryLabel}
+                  </button>
+                ) : null}
+                {/* PEAKOPS_NBA_PASSIVE_STATE_V1 (2026-04-28)
+                    primaryAction === "none" means the user has no
+                    action available — render just the title/helper
+                    block without a button or pill. tone === "muted"
+                    with an action that's still meaningful (e.g.
+                    Submitted with a "go to" affordance) keeps the
+                    green ✓ pill. */}
+                {action.primaryAction === "none" ? null : action.tone === "muted" && !action.enabled ? (
+                  <span
+                    style={{
+                      padding: "10px 16px",
+                      borderRadius: 999,
+                      fontSize: 12,
+                      fontWeight: 700,
+                      letterSpacing: "0.04em",
+                      textTransform: "uppercase" as const,
+                      border: "1px solid rgba(34,197,94,0.30)",
+                      background: "rgba(34,197,94,0.08)",
+                      color: "#86efac",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    ✓ {action.buttonLabel}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!action.enabled}
+                    onClick={() => runAction(action.primaryAction)}
+                    style={{
+                      padding: "12px 22px",
+                      borderRadius: 8,
+                      fontSize: 13,
+                      fontWeight: 800,
+                      letterSpacing: "0.02em",
+                      cursor: action.enabled ? "pointer" : "not-allowed",
+                      border: primaryBorder,
+                      background: primaryBg,
+                      color: primaryColor,
+                      boxShadow: action.enabled && action.tone !== "muted"
+                        ? "0 2px 12px rgba(200,168,78,0.20)"
+                        : "none",
+                      transition: "background 120ms ease",
+                    }}
+                  >
+                    {action.buttonLabel}
+                  </button>
+                )}
+              </div>
+            </section>
+          );
+        })()}
+
+        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 4 }}>
+          {(["overview", "timeline", "evidence", "tasks"] as const).map((tab) => (
             <button
               key={tab}
               type="button"
@@ -2853,13 +3636,37 @@ useEffect(() => {
               }}
               onClick={() => setTab(tab)}
             >
-              {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Evidence" : "Jobs"}
+              {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Photos" : "Tasks"}
             </button>
           ))}
+          {/* PEAKOPS_SYNC_INDICATOR_V1 (2026-04-27)
+              Small inline badge that surfaces in-flight refreshes instead
+              of blanking the tab. The `loading` state was already wired
+              by refresh() but never rendered, so users had no signal
+              that data was updating — this fills that gap without
+              touching the data-loading logic. */}
+          {loading ? (
+            <span
+              style={{
+                marginLeft: 8,
+                fontSize: 10,
+                color: "#6f6f6f",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase" as const,
+              }}
+            >
+              Refreshing…
+            </span>
+          ) : null}
         </div>
 
-{/* PEAKOPS_ACTIVE_JOB_CARD_UI_V1 */}
-{(() => {
+{/* PEAKOPS_ACTIVE_JOB_CARD_UI_V1 /
+    PEAKOPS_UI_STATE_V2 (2026-05-05)
+    Active Task panel is a field-action surface — it shouldn't
+    appear once the job is past field hands (Awaiting Supervisor
+    Review / Approved / Closed). Hides automatically when the
+    canonical UI state has moved on. */}
+{(fieldJobUiState.displayState === "Open" || fieldJobUiState.displayState === "In Progress" || fieldJobUiState.displayState === "Sent Back") ? (() => {
   try {
     const req = latestSupervisorRequest(timeline as any[]);
     const reqMsg = String(req?.message || "").trim();
@@ -2879,10 +3686,10 @@ useEffect(() => {
                 <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4, wordBreak: "break-word" }}>
                   {reqMsg ? reqMsg : "Supervisor requested an update."}
                 </div>
-                {reqJobId ? <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>Job: {reqJobId}</div> : null}
+                {reqJobId ? <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>Task: {String(reqJobId).slice(-6)}</div> : null}
               </div>
               <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <button type="button" style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", fontSize: 11, cursor: "pointer" }} onClick={() => { setTab("evidence"); }}>Evidence</button>
+                <button type="button" style={{ padding: "6px 10px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", fontSize: 11, cursor: "pointer" }} onClick={() => { setTab("evidence"); }}>Photos</button>
               </div>
             </div>
           </div>
@@ -2891,21 +3698,27 @@ useEffect(() => {
         <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "10px 14px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f" }}>Active Job</div>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f" }}>Active Task</div>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#f5f5f5", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "No active job assigned yet")}
+                {jobTitle ? jobTitle : (activeJobId ? `Task ${String(activeJobId).slice(-6)}` : "No active task yet")}
               </div>
               <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>
                 {activeJobId ? (
                   <>
                     {String(jobStatus || "n/a").toUpperCase()}
-                    {locked ? <span style={{ color: "#22c55e", marginLeft: 6 }}>Locked</span> : null}
+                    {locked ? <span style={{ color: "#22c55e", marginLeft: 6 }}>Approved</span> : null}
                   </>
                 ) : (
-                  "You can capture evidence now — it will save to this incident and can be assigned to a job later."
+                  "Photos you capture will save to this job and can be attached to a task later."
                 )}
               </div>
             </div>
+            {/* PEAKOPS_OVERVIEW_CTA_DEDUP_V3 (2026-04-30)
+                The inline "+ Evidence" shortcut was removed in this
+                pass — it duplicated the NBA card's primary CTA which
+                is always the canonical place to "Add Photos". The
+                "Open" navigation button stays because it routes to
+                the task detail page (different action than NBA). */}
             <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
               {activeJobId ? (
                 <button
@@ -2918,32 +3731,9 @@ useEffect(() => {
                     } catch (e) { console.error(e); }
                   }}
                 >
-                  Open
+                  Open task
                 </button>
               ) : null}
-              {/* PEAKOPS_OVERVIEW_CTA_HIERARCHY_V1
-                  Pre-arrival: Mark Arrived is the single dominant primary (inside NextBestAction).
-                  This "+ Evidence" is a muted secondary shortcut until the user marks arrived.
-                  Post-arrival: Evidence is the next primary action, so this button promotes to gold-gradient. */}
-              <button
-                type="button"
-                style={{
-                  padding: "6px 10px", borderRadius: 4, fontSize: 11, fontWeight: 600,
-                  cursor: isClosed ? "not-allowed" : "pointer",
-                  border: (isClosed || !hasArrival) ? "1px solid #1c1c1c" : "none",
-                  background: isClosed
-                    ? "#0b0b0b"
-                    : !hasArrival
-                      ? "transparent"
-                      : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
-                  color: isClosed ? "#6f6f6f" : !hasArrival ? "#6f6f6f" : "#050505",
-                }}
-                onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
-                disabled={isClosed}
-                title={!hasArrival ? "Optional — you can also capture after you mark arrived" : "Add evidence"}
-              >
-                + Evidence
-              </button>
             </div>
           </div>
         </div>
@@ -2952,7 +3742,7 @@ useEffect(() => {
   } catch (e) {
     return null;
   }
-})()}
+})() : null}
 
 
       </div>
@@ -2961,7 +3751,13 @@ useEffect(() => {
 
 {/* Overview 2-column layout */}
 {activeTab === "overview" ? (
-  <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(200px, 2fr)", gap: 8, alignItems: "start" }}>
+  <>
+    {/* PEAKOPS_GUIDED_WORKFLOW_REMOVED_V2 (2026-04-30)
+        Removed in the IncidentClient cleanup pass. The FlowStageBar
+        at the top of the page is now the single progress widget;
+        the NBA card is the single primary action. The "How this
+        incident gets reviewed" checklist duplicated both signals. */}
+  <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(200px, 2fr)", gap: 8, alignItems: "start", marginTop: 8 }}>
     {/* LEFT: Primary action */}
     <div style={{ display: "grid", gap: 8 }}>
       {/* PEAKOPS_INCIDENT_CLOSED_AFFORDANCE_V1 (2026-04-24)
@@ -2970,42 +3766,84 @@ useEffect(() => {
           a confident "Incident closed" affordance with a Summary CTA instead.
           When the field has submitted but the incident isn't closed, keep
           the existing review-pending card. */}
+      {/* PEAKOPS_OVERVIEW_CTA_DEMOTE_V1 (2026-04-27)
+          The Next Best Action card above is now the single dominant
+          gold primary CTA on the field page. The closed and
+          submitted cards below stay (still useful as status context
+          + a navigation shortcut), but their buttons demote from
+          gold-gradient primary to a dark-bordered secondary so they
+          don't visually compete with the NBA. */}
       {isClosed ? (
         <section style={{ borderRadius: 10, border: "1px solid rgba(34,197,94,0.30)", background: "rgba(34,197,94,0.06)", padding: 14 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.10em", textTransform: "uppercase" as const, color: "#22c55e" }}>Incident closed</div>
-          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>This incident is finalized. Open the summary to review the artifact.</div>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.10em", textTransform: "uppercase" as const, color: "#22c55e" }}>Job closed</div>
+          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>This job is finalized. Open the report to download or share it.</div>
           <div style={{ marginTop: 10 }}>
-            <button type="button" style={{ width: "100%", padding: "14px 0", borderRadius: 8, border: "none", background: "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: "#050505", fontSize: 16, fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 12px rgba(200,168,78,0.20)" }} onClick={() => { try { router.push(summaryPath(incidentId, orgId)); } catch {} }}>
-              View Summary
+            <button
+              type="button"
+              style={{
+                width: "100%",
+                padding: "10px 0",
+                borderRadius: 8,
+                border: "1px solid #1c1c1c",
+                background: "transparent",
+                color: "#b3b3b3",
+                fontSize: 13,
+                fontWeight: 600,
+                letterSpacing: "0.02em",
+                cursor: "pointer",
+              }}
+              onClick={() => { try { router.push(summaryPath(incidentId, orgId)); } catch {} }}
+            >
+              Open Report
             </button>
           </div>
         </section>
       ) : _hasSubmitted ? (
         <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: 14 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#22c55e" }}>Submitted for review</div>
-          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>Session submitted. Waiting for supervisor approval.</div>
-          <div style={{ marginTop: 10 }}>
-            <button type="button" style={{ width: "100%", padding: "14px 0", borderRadius: 8, border: "none", background: "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)", color: "#050505", fontSize: 16, fontWeight: 800, cursor: "pointer", boxShadow: "0 2px 12px rgba(200,168,78,0.20)" }} onClick={() => { try { router.push(reviewPath(incidentId, orgId)); } catch {} }}>
-              Go to Review
-            </button>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#22c55e" }}>Sent to supervisor</div>
+          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 4 }}>
+            {(String(authClaims?.role || "").toLowerCase() === "supervisor" ||
+              String(authClaims?.role || "").toLowerCase() === "admin")
+              ? "Session sent. Open Supervisor Review to approve."
+              : "Session sent. Waiting for supervisor approval."}
           </div>
+          {/* PEAKOPS_FIELD_REVIEW_GATE_V1 (2026-04-28)
+              Field role doesn't get a "Go to Review" link from here —
+              the NBA card above already shows the calm waiting pill,
+              and field users have no actions to take in /review. */}
+          {(String(authClaims?.role || "").toLowerCase() === "supervisor" ||
+            String(authClaims?.role || "").toLowerCase() === "admin") ? (
+            <div style={{ marginTop: 10 }}>
+              <button
+                type="button"
+                style={{
+                  width: "100%",
+                  padding: "10px 0",
+                  borderRadius: 8,
+                  border: "1px solid #1c1c1c",
+                  background: "transparent",
+                  color: "#b3b3b3",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  letterSpacing: "0.02em",
+                  cursor: "pointer",
+                }}
+                onClick={() => { try { router.push(reviewPath(incidentId, orgId)); } catch {} }}
+              >
+                Open Supervisor Review
+              </button>
+            </div>
+          ) : null}
         </section>
       ) : (
-        <NextBestAction
-          arrived={hasArrival}
-          hasSession={_hasSession}
-          hasEvidence={_hasEvidence}
-          hasNotes={_hasNotes}
-          hasApproved={_hasApproved}
-          evidenceCount={evidenceCount}
-          onOpenNotes={() => router.push(notesPath(incidentId, orgId))}
-          onAddEvidence={() => {
-            if (isClosed) return toast("Incident is closed (read-only).", 2600);
-            goAddEvidence();
-          }}
-          onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
-          onSubmitSession={() => { if (!isClosed) { void submitSession(); } else toast("Incident is closed (read-only).", 2600); }}
-        />
+        /* PEAKOPS_OVERVIEW_NBA_DEDUP_V2 (2026-04-30)
+            The in-tab <NextBestAction /> component duplicated the
+            top-level NBA card at the top of the page. Removed —
+            the top-level card is now the single primary action
+            surface for active jobs. The closed / sent-to-supervisor
+            branches above still render (status affirmation, not
+            duplicate action). */
+        null
       )}
 
       {reqUpdateText ? (
@@ -3017,26 +3855,138 @@ useEffect(() => {
           <div style={{ marginTop: 4, fontSize: 12, color: "#b3b3b3", lineHeight: 1.4 }}>{reqUpdateText}</div>
         </div>
       ) : null}
+
+      {/* PEAKOPS_NOTES_PROMPT_V2 (2026-04-28)
+          Subtle, non-blocking nudge surfaced before submit when the
+          field tech has captured evidence + a complete task but has
+          not added a note. "Skip for now" persists in localStorage
+          per-incident so the prompt stops nagging once dismissed.
+          Auto-dismisses if notes are saved or the field session is
+          submitted. */}
+      {(() => {
+        if (isClosed || !_hasEvidence || _hasNotes || _hasSubmitted) return null;
+        if (typeof window === "undefined") return null;
+        const skipKey = `peakops_notes_prompt_skipped_${String(incidentId || "")}`;
+        let skipped = false;
+        try { skipped = window.localStorage.getItem(skipKey) === "1"; } catch {}
+        if (skipped) return null;
+        return (
+          <div
+            style={{
+              borderRadius: 8,
+              border: "1px dashed #1c1c1c",
+              background: "#0b0b0b",
+              padding: "10px 12px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase" as const,
+                  color: "#6f6f6f",
+                }}
+              >
+                Optional
+              </div>
+              <div style={{ fontSize: 13, color: "#f5f5f5", marginTop: 2, fontWeight: 600 }}>
+                Anything to tell your supervisor?
+              </div>
+              <div style={{ fontSize: 11, color: "#6f6f6f", marginTop: 2, lineHeight: 1.4 }}>
+                Add a quick note about what happened, what changed, or what to watch.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+              <button
+                type="button"
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 500,
+                  border: "1px solid #1c1c1c",
+                  background: "transparent",
+                  color: "#6f6f6f",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  try { window.localStorage.setItem(skipKey, "1"); } catch {}
+                  // Force a re-render via a benign state nudge — toast
+                  // suffices and keeps this self-contained without new
+                  // state hooks.
+                  toast("Reminder dismissed.", 1200);
+                }}
+              >
+                Skip for now
+              </button>
+              <button
+                type="button"
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  border: "1px solid #1c1c1c",
+                  background: "transparent",
+                  color: "#b3b3b3",
+                  cursor: "pointer",
+                }}
+                onClick={() => { try { router.push(notesPath(incidentId, orgId)); } catch {} }}
+              >
+                Add Note
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
 
     {/* RIGHT: Status + Timers + Sync */}
     <div style={{ display: "grid", gap: 8 }}>
       {/* Timers */}
-      <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "10px 14px" }}>
-        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f", marginBottom: 8 }}>Field Timing</div>
-        <div style={{ display: "grid", gap: 0 }}>
-          {[
-            { label: "Arrival", value: _arrivalAgo, empty: _arrivalAgo === "—", emptyText: "Not started" },
-            { label: "Evidence", value: _evidenceAgo, empty: _evidenceAgo === "—", emptyText: "No evidence" },
-            { label: "Notes", value: _notesAgo, empty: _notesAgo === "—", emptyText: "No notes" },
-          ].map((t, i) => (
-            <div key={t.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "7px 0", borderBottom: i < 2 ? "1px solid #1c1c1c" : "none" }}>
-              <span style={{ fontSize: 12, fontWeight: 500, color: "#b3b3b3" }}>{t.label}</span>
-              <span style={{ fontSize: 16, fontWeight: 800, color: t.empty ? "#C8A84E" : "#f5f5f5" }}>{t.empty ? t.emptyText : t.value}</span>
-            </div>
-          ))}
+      {/* PEAKOPS_FIELD_TIMING_FINAL_STATE_V1 (2026-05-05)
+          Field Timing on Approved/Closed jobs collapses into a quiet
+          "Field actions are locked" affirmation. The empty-state
+          "No photos / No notes" yellow callouts read as warnings,
+          which is wrong for a record that's already past field
+          hands — they were the exact "Approved + No photos" buyer
+          contradiction QA flagged. Active states still show the
+          full timing grid. */}
+      {fieldJobUiState.displayState === "Closed" || fieldJobUiState.displayState === "Approved" ? (
+        <div style={{ borderRadius: 8, border: "1px solid rgba(34,197,94,0.20)", background: "rgba(34,197,94,0.04)", padding: "12px 14px" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#86efac", marginBottom: 6 }}>
+            {fieldJobUiState.displayState === "Closed" ? "Job closed" : "Job approved"}
+          </div>
+          <div style={{ fontSize: 12, color: "#b3b3b3", lineHeight: 1.5 }}>
+            {fieldJobUiState.displayState === "Closed"
+              ? "Field actions are locked. The audit-ready report is available on the Summary page."
+              : "Field actions are locked. Final close happens on the Supervisor Review page."}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "10px 14px" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f", marginBottom: 8 }}>Field Timing</div>
+          <div style={{ display: "grid", gap: 0 }}>
+            {[
+              { label: "Arrival", value: _arrivalAgo, empty: _arrivalAgo === "—", emptyText: "Not started" },
+              { label: "Photos", value: _evidenceAgo, empty: _evidenceAgo === "—", emptyText: "No photos" },
+              { label: "Notes", value: _notesAgo, empty: _notesAgo === "—", emptyText: "No notes" },
+            ].map((t, i) => (
+              <div key={t.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "7px 0", borderBottom: i < 2 ? "1px solid #1c1c1c" : "none" }}>
+                <span style={{ fontSize: 12, fontWeight: 500, color: "#b3b3b3" }}>{t.label}</span>
+                <span style={{ fontSize: 16, fontWeight: 800, color: t.empty ? "#C8A84E" : "#f5f5f5" }}>{t.empty ? t.emptyText : t.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Sync state */}
       {refreshError ? (
@@ -3044,30 +3994,42 @@ useEffect(() => {
           <div style={{ width: 3, flexShrink: 0, background: "rgba(220,60,60,0.4)" }} />
           <div style={{ flex: 1, padding: "8px 12px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 10, fontWeight: 600, color: "#b3b3b3" }}>Offline</span>
+              <span style={{ fontSize: 10, fontWeight: 600, color: "#b3b3b3" }}>
+                {/* PEAKOPS_FRIENDLY_SYNC_ERROR_V1 (2026-04-27)
+                    Customer-facing soft copy. Raw failure remains in
+                    the collapsible Details for support diagnosis. */}
+                We had trouble refreshing — your last loaded data is still visible.
+              </span>
               {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
                 <button type="button" style={{ padding: "2px 6px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#6f6f6f", fontSize: 9, cursor: "pointer" }} onClick={() => { clearRememberedFunctionsBase(); location.reload(); }}>Retry</button>
               ) : null}
             </div>
-            <details style={{ marginTop: 4 }}>
-              <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f" }}>Details</summary>
-              <div style={{ marginTop: 4, fontSize: 9, color: "#6f6f6f", wordBreak: "break-all" }}>
-                {refreshError.message}
-                {refreshError.endpoint ? <div>endpoint: {refreshError.endpoint}</div> : null}
-                {refreshError.status ? <div>status: {refreshError.status}</div> : null}
-              </div>
-            </details>
+            {/* PEAKOPS_DEV_GATE_TECH_DETAILS_V1 (2026-04-30)
+                Technical details (endpoint, status, raw message) are
+                engineering chrome. Gated on devMode so the operator
+                sees only the friendly copy above. */}
+            {devMode ? (
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f" }}>Technical details</summary>
+                <div style={{ marginTop: 4, fontSize: 9, color: "#6f6f6f", wordBreak: "break-all" }}>
+                  {refreshError.message}
+                  {refreshError.endpoint ? <div>endpoint: {refreshError.endpoint}</div> : null}
+                  {refreshError.status ? <div>status: {refreshError.status}</div> : null}
+                </div>
+              </details>
+            ) : null}
           </div>
         </div>
       ) : null}
     </div>
   </div>
+  </>
 ) : null}
 
 {/* Non-overview content continues below */}
 {activeTab !== "overview" && refreshError ? (
   <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "8px 12px", fontSize: 10, color: "#b3b3b3" }}>
-    Offline: {refreshError.message}
+    We had trouble refreshing. Your last loaded data is still visible.
   </div>
 ) : null}
 
@@ -3076,14 +4038,18 @@ useEffect(() => {
         <section ref={myJobSectionRef} style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-      <h2 id="evidence" style={{ margin: 0, fontSize: 13, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#f5f5f5" }}>Evidence</h2>
+      <h2 id="evidence" style={{ margin: 0, fontSize: 13, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#f5f5f5" }}>Photos</h2>
       <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", lineHeight: 1.6 }}>
         {evidence.length} {evidence.length === 1 ? "item" : "items"}
       </span>
     </div>
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <button type="button" style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", cursor: isClosed ? "not-allowed" : "pointer", opacity: isClosed ? 0.5 : 1 }} disabled={isClosed} onClick={() => { try { goAddEvidence(); } catch {} }}>+ Add evidence</button>
-      {process.env.NODE_ENV !== "production" ? (
+      {/* PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
+          Add Photo gated on fieldJobUiState.canAddPhotos so an
+          approved or awaiting-review job can't take new photos —
+          previously only `isClosed` blocked the action. */}
+      <button type="button" style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #1c1c1c", background: "#101010", color: !fieldJobUiState.canAddPhotos ? "#6f6f6f" : "#b3b3b3", fontSize: 11, fontWeight: 600, letterSpacing: "0.02em", cursor: !fieldJobUiState.canAddPhotos ? "not-allowed" : "pointer", opacity: !fieldJobUiState.canAddPhotos ? 0.5 : 1 }} disabled={!fieldJobUiState.canAddPhotos} onClick={() => { try { goAddEvidence(); } catch {} }}>+ Add photo</button>
+      {devMode ? (
         <details style={{ display: "inline" }}>
           <summary style={{ cursor: "pointer", fontSize: 9, color: "#6f6f6f", padding: "2px 6px" }}>Dev</summary>
           <div style={{ position: "absolute", zIndex: 20, background: "#0b0b0b", border: "1px solid #1c1c1c", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
@@ -3101,37 +4067,52 @@ useEffect(() => {
       <div style={{ width: 44, height: 44, margin: "0 auto 12px", borderRadius: 10, border: "1px solid #1c1c1c", background: "#050505", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" stroke="#6f6f6f" strokeWidth="1.5"/><circle cx="8.5" cy="9" r="1.5" fill="#6f6f6f"/><path d="M3 16l5-5 3 3 4-5 6 7" stroke="#6f6f6f" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
       </div>
-      <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>No evidence yet</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "#f5f5f5" }}>No photos yet</div>
       <div style={{ marginTop: 4, fontSize: 12, color: "#6f6f6f", lineHeight: 1.5, maxWidth: 320, marginLeft: "auto", marginRight: "auto" }}>
-        Capture photos and files now — they save to this incident and can be assigned to a job later.
+        Add photos to show what happened on site.
       </div>
+      {/* PEAKOPS_PRIMARY_CTA_DEDUP_V1 (2026-04-29)
+          Demoted to secondary (gray) so the Next Best Action card stays
+          the only yellow CTA on the screen. The same action is exposed
+          there as "Add Evidence" when evidence is empty. */}
       <button
         type="button"
         style={{
           marginTop: 14,
           padding: "12px 22px",
           borderRadius: 8,
-          border: "none",
-          background: isClosed ? "#1c1c1c" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
-          color: isClosed ? "#6f6f6f" : "#050505",
+          border: "1px solid #1c1c1c",
+          background: "#101010",
+          color: !fieldJobUiState.canAddPhotos ? "#6f6f6f" : "#b3b3b3",
           fontSize: 13,
-          fontWeight: 800,
+          fontWeight: 600,
           letterSpacing: "0.02em",
-          cursor: isClosed ? "not-allowed" : "pointer",
-          boxShadow: isClosed ? "none" : "0 2px 12px rgba(200,168,78,0.20)",
+          cursor: !fieldJobUiState.canAddPhotos ? "not-allowed" : "pointer",
         }}
-        disabled={isClosed}
+        disabled={!fieldJobUiState.canAddPhotos}
         onClick={() => { try { goAddEvidence(); } catch {} }}
       >
-        + Add Evidence
+        + Add Photo
       </button>
-      {isClosed ? (
+      {/* PEAKOPS_UI_STATE_ORCHESTRATION_V2 (2026-05-05)
+          Empty-state caption follows canonical UI state. Approved
+          and Awaiting Review now read "this job no longer accepts
+          photos" instead of looking like an active capture surface. */}
+      {fieldJobUiState.displayState === "Closed" ? (
         <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f" }}>
-          Incident is closed (read-only).
+          Job is closed — no new photos can be added.
+        </div>
+      ) : fieldJobUiState.displayState === "Approved" ? (
+        <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f" }}>
+          Job is approved — no further photos accepted.
+        </div>
+      ) : fieldJobUiState.displayState === "Awaiting Supervisor Review" ? (
+        <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f" }}>
+          Job is with the supervisor for review.
         </div>
       ) : !hasActiveFieldJobs ? (
         <div style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f", maxWidth: 320, marginLeft: "auto", marginRight: "auto", lineHeight: 1.5 }}>
-          No active job yet — your upload will attach to this incident. You can assign it to a job from the Evidence Mapping section below once a job exists.
+          Photos save to this job — you can attach them to a task from the Tasks tab any time.
         </div>
       ) : null}
     </div>
@@ -3153,17 +4134,81 @@ useEffect(() => {
     const ready = total > 0 && unlabeled === 0 && unassigned === 0;
     const needsParts: string[] = [];
     if (unlabeled > 0) needsParts.push(`${unlabeled} unlabeled`);
-    if (unassigned > 0) needsParts.push(`${unassigned} unassigned`);
+    if (unassigned > 0) needsParts.push(`${unassigned} not yet attached to a task`);
     return (
       <>
         <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
           <span style={chipStyle(false)}>{total} captured</span>
           <span style={chipStyle(total > 0 && labeled === total)}>{labeled}/{total} labeled</span>
-          <span style={chipStyle(total > 0 && assigned === total)}>{assigned}/{total} assigned</span>
+          <span style={chipStyle(total > 0 && assigned === total)}>{assigned}/{total} attached to task</span>
         </div>
         <div style={{ marginTop: 6, fontSize: 11, fontWeight: 500, color: ready ? "#22c55e" : "#b3b3b3" }}>
           {ready ? "✓ Ready for review" : <>Needs: <span style={{ color: "#f5f5f5" }}>{needsParts.join(", ")}</span></>}
         </div>
+        {/* PEAKOPS_EVIDENCE_ATTACH_HINT_V1 (2026-04-27)
+            Customer-facing nudge that turns the gold-dot signal into a
+            discoverable action. Only renders when at least one item
+            still needs attachment AND there's at least one task
+            available to attach to. If no task exists, route the
+            user to create one first. */}
+        {unassigned > 0 ? (
+          (Array.isArray(jobs) && jobs.length > 0) ? (
+            <div
+              style={{
+                marginTop: 8,
+                padding: "8px 10px",
+                borderRadius: 6,
+                border: "1px solid rgba(200,168,78,0.30)",
+                background: "rgba(200,168,78,0.06)",
+                color: "#C8A84E",
+                fontSize: 11,
+                lineHeight: 1.5,
+              }}
+            >
+              ⚠ {unassigned} evidence item{unassigned === 1 ? " is" : "s are"} not attached to a task yet.{" "}
+              <span style={{ color: "#b3b3b3" }}>
+                Tap an item with the gold dot to attach it.
+              </span>
+            </div>
+          ) : (
+            <div
+              style={{
+                marginTop: 8,
+                padding: "8px 10px",
+                borderRadius: 6,
+                border: "1px solid rgba(200,168,78,0.30)",
+                background: "rgba(200,168,78,0.06)",
+                color: "#C8A84E",
+                fontSize: 11,
+                lineHeight: 1.5,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <span>
+                ⚠ Evidence cannot be reviewed until it is attached to a task.
+              </span>
+              <button
+                type="button"
+                onClick={() => setTab("tasks")}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: 4,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  border: "1px solid #1c1c1c",
+                  background: "#101010",
+                  color: "#b3b3b3",
+                  cursor: "pointer",
+                }}
+              >
+                Create Task →
+              </button>
+            </div>
+          )
+        ) : null}
       </>
     );
   })()}
@@ -3217,7 +4262,7 @@ useEffect(() => {
 
                   <div
                     style={{ position: "absolute", top: 6, right: 6, display: "flex", gap: 3, padding: "3px 6px", borderRadius: 999, background: "rgba(5,5,5,0.82)", border: "1px solid #1c1c1c" }}
-                    title={`${hasLabels ? "Labeled" : "Needs label"} · ${hasJob ? "Assigned" : "Needs job"}`}
+                    title={`${hasLabels ? "Has label" : "Needs label"} · ${hasJob ? "Attached to task" : "Needs task"}`}
                   >
                     <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: hasLabels ? "#22c55e" : "#C8A84E" }} />
                     <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: hasJob ? "#22c55e" : "#C8A84E" }} />
@@ -3274,7 +4319,7 @@ useEffect(() => {
   </div>
 
   <div style={{ marginTop: 8, fontSize: 10, color: "#6f6f6f", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-    <span>Tap a tile to preview, label, or assign to a job.</span>
+    <span>Tap a tile to preview, label, or assign to a task.</span>
     {evidence.length > 12 ? (
       <span style={{ color: "#b3b3b3" }}>Showing 12 of {evidence.length}</span>
     ) : null}
@@ -3326,19 +4371,19 @@ useEffect(() => {
             </div>
             <div style={{ fontSize: 11, color: "#b3b3b3", marginTop: 2, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               {selJobId ? (
-                <span>Job: <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{selJobTitle}</span></span>
+                <span>Task: <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{selJobTitle}</span></span>
               ) : (
                 <>
-                  <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>Needs a job</span>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>Needs a task</span>
                   {currentJobId ? (
                     <button
                       type="button"
-                      style={{ padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", cursor: isClosed ? "not-allowed" : "pointer" }}
-                      disabled={isClosed}
+                      style={{ padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 600, border: "1px solid rgba(200,168,78,0.35)", background: "rgba(200,168,78,0.1)", color: "#C8A84E", cursor: fieldJobUiState.isReadOnly ? "not-allowed" : "pointer" }}
+                      disabled={fieldJobUiState.isReadOnly}
                       onClick={() => { try { assignEvidenceJob(selId, String(currentJobId)); } catch {} }}
-                      title="Attach this evidence to your active job"
+                      title="Attach this photo to your active task"
                     >
-                      Assign to my job
+                      Assign to my task
                     </button>
                   ) : null}
                 </>
@@ -3393,20 +4438,20 @@ useEffect(() => {
 </section>
         ) : null}
 
-        {activeTab === "jobs" ? (
+        {activeTab === "tasks" ? (
         <section style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>My Job</span>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Active Task</span>
             <span style={{ fontSize: 10, color: "#6f6f6f" }}>default for new evidence</span>
           </div>
-          <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.4 }}>Active field jobs appear here. Completed jobs move to Review.</div>
+          <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.4 }}>Active tasks appear here. Completed items move to Review.</div>
           <div style={{ marginTop: 2, fontSize: 11, color: "#b3b3b3" }}>
             {(() => {
               const reviewReadyCount = (jobs || []).filter((j: any) => {
                 const s = normalizeJobStatus(j?.status);
                 return s !== "open" && s !== "in_progress" && s !== "assigned";
               }).length;
-              return reviewReadyCount > 0 ? `${reviewReadyCount} job${reviewReadyCount === 1 ? "" : "s"} ready in Review` : "";
+              return reviewReadyCount > 0 ? `${reviewReadyCount} task${reviewReadyCount === 1 ? "" : "s"} ready in Review` : "";
             })()}
           </div>
 
@@ -3430,14 +4475,14 @@ useEffect(() => {
               !current ||
               !currentIsFieldSelectable;
             const markCompleteDisabledReason = isClosed
-              ? "Incident is closed (read-only)"
+              ? "Job is closed (read-only)"
               : jobsBusy
-                ? "Job update in progress…"
+                ? "Task update in progress…"
                 : !currentJid || !current
-                  ? "Select a job first"
+                  ? "Select a task first"
                   : !currentIsFieldSelectable
-                    ? `Job is already ${currentNormalizedStatus || "past complete"}`
-                    : "Mark this job complete so it becomes reviewable";
+                    ? `Task is already ${currentNormalizedStatus || "past complete"}`
+                    : "Mark this task complete so it becomes reviewable";
 
             // PEAKOPS_CREATE_JOB_INLINE_V1
             // When the incident has zero jobs the select / Mark complete /
@@ -3459,17 +4504,17 @@ useEffect(() => {
                 {showCreateJobInline ? (
                   <div style={{ padding: 12, borderRadius: 8, border: "1px dashed #1c1c1c", background: "#050505" }}>
                     <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>
-                      Create first job
+                      Create first task
                     </div>
                     <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
-                      A job groups evidence under a specific task. Create one to enable Evidence Mapping and supervisor review.
+                      A task groups evidence under a specific task. Create one so evidence can be attached and reviewed.
                     </div>
                     <input
                       type="text"
                       value={jobTitle}
                       onChange={(e) => setJobTitle(e.target.value)}
-                      placeholder="Job name (e.g. Pole inspection)"
-                      disabled={isClosed || createJobInflight}
+                      placeholder="Task name (e.g. Pole inspection)"
+                      disabled={fieldJobUiState.isReadOnly || createJobInflight}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !createJobDisabled) {
                           e.preventDefault();
@@ -3493,12 +4538,12 @@ useEffect(() => {
                       disabled={createJobDisabled}
                       title={
                         isClosed
-                          ? "Incident is closed (read-only)"
+                          ? "Job is closed (read-only)"
                           : createJobInflight
-                            ? "Job create in progress…"
+                            ? "Task create in progress…"
                             : !createJobTitle
-                              ? "Enter a job name"
-                              : "Create this job and auto-select it"
+                              ? "Enter a task name"
+                              : "Create this task"
                       }
                       style={{
                         width: "100%",
@@ -3506,27 +4551,27 @@ useEffect(() => {
                         padding: "9px 14px",
                         borderRadius: 6,
                         fontSize: 12,
-                        fontWeight: 700,
+                        fontWeight: 600,
                         letterSpacing: "0.02em",
                         cursor: createJobDisabled ? "not-allowed" : "pointer",
-                        border: createJobDisabled ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
-                        background: createJobDisabled ? "#101010" : "rgba(200,168,78,0.1)",
-                        color: createJobDisabled ? "#6f6f6f" : "#C8A84E",
+                        border: "1px solid #1c1c1c",
+                        background: "#101010",
+                        color: createJobDisabled ? "#6f6f6f" : "#b3b3b3",
                       }}
                     >
-                      {createJobInflight ? "Creating…" : "+ Create Job"}
+                      {createJobInflight ? "Creating…" : "+ Create Task"}
                     </button>
                   </div>
                 ) : null}
 
                 <select
                   style={{ width: "100%", fontSize: 13, background: "#101010", border: "1px solid #1c1c1c", borderRadius: 6, padding: "8px 10px", color: "#f5f5f5" }}
-                  disabled={isClosed || jobsBusy || jobsForMapping.length === 0}
+                  disabled={fieldJobUiState.isReadOnly || jobsBusy || jobsForMapping.length === 0}
                   value={currentJobId || String(jobsForMapping?.[0]?.id || jobsForMapping?.[0]?.jobId || "")}
                   onChange={(e) => setCurrentJobId(String(e.target.value || ""))}
                 >
                   {jobsForMapping.length === 0 ? (
-                    <option value="">No active field jobs</option>
+                    <option value="">No active tasks</option>
                   ) : null}
                   {jobsForMapping.map((j: any) => {
                     const jid = String(j?.id || j?.jobId || "").trim();
@@ -3541,27 +4586,90 @@ useEffect(() => {
                   })}
                 </select>
 
+                {/* PEAKOPS_VENDOR_ASSIGNMENT_V1 (2026-05-04)
+                    Vendor row for the selected task. Resolves the
+                    selected job once (falls back to the first job if
+                    the user hasn't picked yet, mirroring the select's
+                    own value resolution above). canEdit gates on
+                    admin/supervisor role; the picker handles the
+                    archived-vendor display when relevant. */}
+                {(() => {
+                  const _selectedJobId = String(
+                    currentJobId ||
+                    jobsForMapping?.[0]?.id ||
+                    jobsForMapping?.[0]?.jobId ||
+                    ""
+                  ).trim();
+                  const _selectedJob: any = jobsForMapping.find(
+                    (j: any) => String(j?.id || j?.jobId || "") === _selectedJobId
+                  ) || null;
+                  if (!_selectedJob) return null;
+                  const _role = String(authClaims?.role || "").toLowerCase();
+                  const _canEditVendor =
+                    !isClosed &&
+                    (_role === "admin" || _role === "supervisor");
+                  return (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "8px 10px",
+                      border: "1px solid #1c1c1c", borderRadius: 6,
+                      background: "#0a0a0a",
+                    }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
+                        color: "#6f6f6f", textTransform: "uppercase" as const,
+                        minWidth: 60,
+                      }}>Vendor</span>
+                      <div style={{ flex: 1 }}>
+                        <VendorPicker
+                          orgId={String(orgId || "")}
+                          currentVendorId={String(_selectedJob?.vendorId || "")}
+                          currentVendorName={String(_selectedJob?.vendorName || "")}
+                          canEdit={_canEditVendor}
+                          onChange={async (next) => {
+                            try {
+                              await assignVendorToJob(incidentId, _selectedJobId, next);
+                              toast(next ? `Vendor assigned: ${next.vendorName}` : "Vendor cleared.", 2200);
+                              await refresh();
+                            } catch (e: any) {
+                              if (process.env.NODE_ENV !== "production") {
+                                // eslint-disable-next-line no-console
+                                console.warn("[vendor-assign]", {
+                                  path: `incidents/${incidentId}/jobs/${_selectedJobId}`,
+                                  code: e?.code || null,
+                                  message: String(e?.message || e),
+                                });
+                              }
+                              toast("We couldn't update the vendor. Please try again.", 3500);
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 <button
                   type="button"
                   style={{
                     padding: "9px 14px",
                     borderRadius: 6,
                     fontSize: 12,
-                    fontWeight: 700,
+                    fontWeight: 600,
                     letterSpacing: "0.02em",
                     cursor: markCompleteDisabled ? "not-allowed" : "pointer",
-                    border: markCompleteDisabled ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
-                    background: markCompleteDisabled ? "#101010" : "rgba(200,168,78,0.1)",
-                    color: markCompleteDisabled ? "#6f6f6f" : "#C8A84E",
+                    border: "1px solid #1c1c1c",
+                    background: "#101010",
+                    color: markCompleteDisabled ? "#6f6f6f" : "#b3b3b3",
                   }}
                   disabled={markCompleteDisabled}
                   onClick={() => { try { markCurrentJobComplete(); } catch {} }}
                   title={markCompleteDisabledReason}
                 >
-                  ✓ Mark job complete
+                  ✓ Mark task complete
                 </button>
                 <div style={{ fontSize: 10, color: "#6f6f6f", lineHeight: 1.5, marginTop: -2 }}>
-                  A complete job with at least one linked evidence item becomes reviewable by the supervisor.
+                  A complete task with at least one attached photo becomes reviewable by the supervisor.
                 </div>
 
                 <button
@@ -3583,7 +4691,7 @@ useEffect(() => {
                     } catch {}
                   }}
                 >
-                  Jump to evidence mapping
+                  Attach photos →
                 </button>
               </div>
             );
@@ -3613,7 +4721,7 @@ useEffect(() => {
           ) : null}
 
           <div style={{ marginTop: 8, fontSize: 11, color: "#6f6f6f" }}>
-            Field view is simplified. Job status management is in Review.
+            New photos auto-attach to your active task. Otherwise, you can attach them above.
           </div>
         </section>
         ) : null}
@@ -3622,30 +4730,35 @@ useEffect(() => {
         <section ref={evidenceMappingSectionRef} style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "14px 16px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
-              <h2 id="evidence-mapping" style={{ margin: 0, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#f5f5f5" }}>Evidence Mapping</h2>
-              <span style={{ fontSize: 10, color: "#6f6f6f" }}>job assignment</span>
+              <h2 id="evidence-mapping" style={{ margin: 0, fontSize: 12, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" as const, color: "#f5f5f5" }}>Attach Photos</h2>
+              <span style={{ fontSize: 10, color: "#6f6f6f" }}>
+                {(jobs || []).length === 0
+                  ? "No tasks yet — photos save to the job"
+                  : `${(jobs || []).length} task${(jobs || []).length === 1 ? "" : "s"} available`}
+              </span>
             </div>
             <button
               type="button"
               style={{
-                padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", cursor: (isClosed || jobsBusy || !currentJobId) ? "not-allowed" : "pointer",
-                border: (isClosed || jobsBusy || !currentJobId) ? "1px solid #1c1c1c" : "1px solid rgba(200,168,78,0.35)",
-                background: (isClosed || jobsBusy || !currentJobId) ? "#101010" : "rgba(200,168,78,0.1)",
-                color: (isClosed || jobsBusy || !currentJobId) ? "#6f6f6f" : "#C8A84E",
+                padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 600, letterSpacing: "0.02em",
+                cursor: (isClosed || jobsBusy || !currentJobId) ? "not-allowed" : "pointer",
+                border: "1px solid #1c1c1c",
+                background: "#101010",
+                color: (fieldJobUiState.isReadOnly || jobsBusy || !currentJobId) ? "#6f6f6f" : "#b3b3b3",
               }}
-              disabled={isClosed || jobsBusy || !currentJobId}
+              disabled={fieldJobUiState.isReadOnly || jobsBusy || !currentJobId}
               onClick={() => { try { assignAllUnassignedToCurrentJob(); } catch {} }}
-              title={currentJobId ? "Assign all unassigned evidence to My Job" : "Select My Job first"}
+              title={currentJobId ? "Attach all unattached photos to your task" : "Select a task first"}
             >
-              Assign all to My Job
+              Assign all to my task
             </button>
           </div>
           <div style={{ marginTop: 6, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
-            When a job is active, new evidence auto-attaches to it. Otherwise it stays on the incident and you can assign it here once a job is available.
+            When a task is active, new photos auto-attach to it. Otherwise they stay on the job and you can attach them from the dropdown below — any task, regardless of status, can receive photos.
           </div>
           {(evidence || []).length === 0 ? (
             <div style={{ marginTop: 12, padding: "14px 10px", borderRadius: 8, border: "1px dashed #1c1c1c", background: "#050505", textAlign: "center", fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
-              Nothing to map yet. Evidence you add will show up here with a job selector.
+              Nothing to map yet. Photos you add will show up here with a task selector.
             </div>
           ) : null}
           {(evidence || []).length > 0 ? (
@@ -3662,36 +4775,115 @@ useEffect(() => {
                 <div key={eid} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="text-sm text-gray-100 truncate">{String(ev?.file?.originalName || ev?.id || "evidence")}</div>
-                      <div className="text-[11px] text-gray-400 truncate">evidenceId: {eid}</div>
+                      <div className="text-sm text-gray-100 truncate">{String(ev?.file?.originalName || "Photo")}</div>
                       <div className="text-[10px] text-gray-500 truncate">
-                        {evSec ? `uploaded ${fmtAgo(evSec)}` : `id: …${eid ? eid.slice(-6) : "—"}`}
+                        {evSec ? `uploaded ${fmtAgo(evSec)}` : "uploading…"}
                       </div>
                       {linkedJob ? (
                         <div className="text-[11px] text-cyan-200/85 truncate">
-                          job: {String(linkedJob?.title || linkedJob?.id || linkedJob?.jobId || "")}
+                          task: {String(linkedJob?.title || linkedJob?.id || linkedJob?.jobId || "")}
                         </div>
                       ) : (
                         <div style={{ marginTop: 2 }}>
                           <span style={{ fontSize: 10, fontWeight: 600, color: "#C8A84E", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)" }}>
-                            Unassigned — stays on this incident
+                            Unassigned — stays on the job
                           </span>
                         </div>
                       )}
                     </div>
-                    <select
-                      className="text-xs bg-black/50 border border-white/15 rounded px-2 py-1 min-w-[180px]"
-                      disabled={isClosed || jobsBusy}
-                      value={currentEvidenceJobId}
-                      onChange={(e) => { try { assignEvidenceJob(String(ev?.id || ""), String(e.target.value || "")); } catch {} }}
-                    >
-                      <option value="">(no job)</option>
-                      {jobs.map((j: any) => (
-                        <option key={String(j?.id || j?.jobId)} value={String(j?.id || j?.jobId)}>
-                          {String(j?.title || "(untitled)")} ({jobStatusText(j?.status)})
-                        </option>
-                      ))}
-                    </select>
+                    {/* PEAKOPS_EVIDENCE_ATTACH_DROPDOWN_V1 (2026-04-27)
+                        The per-evidence attach dropdown. Source is the full
+                        `jobs` array (no client-side filter) so every status
+                        — open, in_progress, complete, review, approved,
+                        locked — is a valid attachment target. Backend
+                        `assignEvidenceToJobV1` accepts assignment to
+                        approved/locked jobs (lock gate was removed in
+                        PEAKOPS_ASSIGN_EVIDENCE_TO_JOB_V2). */}
+                    {(() => {
+                      const availableWorkItems = Array.isArray(jobs) ? jobs : [];
+                      // PEAKOPS_EVIDENCE_ATTACH_CLOSED_STATE_V1 (2026-04-27)
+                      // The biggest cause of "the dropdown won't attach" was
+                      // the closed-incident silent-disable. Surface it as
+                      // explicit copy so the operator knows why the control
+                      // isn't responding.
+                      if (isClosed) {
+                        return (
+                          <div
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 6,
+                              border: "1px solid #1c1c1c",
+                              background: "#0b0b0b",
+                              color: "#6f6f6f",
+                              fontSize: 11,
+                              fontWeight: 500,
+                              lineHeight: 1.4,
+                              minWidth: 180,
+                            }}
+                            title="Closed jobs are read-only. Open a new job to capture and attach more photos."
+                          >
+                            Job closed — read-only.
+                          </div>
+                        );
+                      }
+                      if (availableWorkItems.length === 0) {
+                        return (
+                          <div
+                            style={{
+                              padding: "6px 10px",
+                              borderRadius: 6,
+                              border: "1px solid rgba(200,168,78,0.30)",
+                              background: "rgba(200,168,78,0.06)",
+                              color: "#C8A84E",
+                              fontSize: 11,
+                              fontWeight: 500,
+                              lineHeight: 1.4,
+                              minWidth: 180,
+                            }}
+                          >
+                            Create a task before attaching evidence.
+                          </div>
+                        );
+                      }
+                      // PEAKOPS_DROPDOWN_DEBUG_V1 (2026-04-27, dev-only)
+                      // Dev-gated visibility so the operator/engineer can
+                      // confirm what state the dropdown sees (was: silent
+                      // failures with no console signal). Stripped from prod
+                      // bundles by Next.js dead-code elimination.
+                      if (process.env.NODE_ENV !== "production") {
+                        // eslint-disable-next-line no-console
+                        console.debug("[evidence-mapping]", {
+                          evidenceId: String(ev?.id || ""),
+                          currentEvidenceJobId,
+                          availableWorkItemsCount: availableWorkItems.length,
+                          firstWorkItemId: String(availableWorkItems[0]?.id || availableWorkItems[0]?.jobId || ""),
+                          isClosed,
+                          jobsBusy,
+                        });
+                      }
+                      return (
+                        <select
+                          className="text-xs bg-black/50 border border-white/15 rounded px-2 py-1 min-w-[180px]"
+                          disabled={jobsBusy}
+                          value={currentEvidenceJobId}
+                          onChange={(e) => { void assignEvidenceJob(String(ev?.id || ""), String(e.target.value || "")); }}
+                          title={`${availableWorkItems.length} task${availableWorkItems.length === 1 ? "" : "s"} available — any status can receive evidence`}
+                        >
+                          <option value="">— Attach to task —</option>
+                          {availableWorkItems.map((j: any) => {
+                            const wid = String(j?.id || j?.jobId || "").trim();
+                            if (!wid) return null;
+                            const wtitle = String(j?.title || "(untitled)").trim();
+                            const wstatus = jobStatusText(j?.status);
+                            return (
+                              <option key={wid} value={wid}>
+                                {wtitle} ({wstatus})
+                              </option>
+                            );
+                          })}
+                        </select>
+                      );
+                    })()}
                   </div>
                   {showOrgDevTools ? (
                     <div className="mt-2 flex items-center gap-2">
@@ -3743,7 +4935,12 @@ useEffect(() => {
         <section style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 14px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" as const, color: "#C8A84E" }}>Timeline</span>
-            <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#101010", color: "#6f6f6f" }}>Auto-log</span>
+            {/* PEAKOPS_DEV_GATE_AUTOLOG_V1 (2026-04-30)
+                "Auto-log" was system jargon — gated to devMode so a
+                normal operator only sees the Timeline label. */}
+            {devMode ? (
+              <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 7px", borderRadius: 3, border: "1px solid #1c1c1c", background: "#101010", color: "#6f6f6f" }}>Auto-log</span>
+            ) : null}
           </div>
           {/* PEAKOPS_TIMELINE_VS_GALLERY_DISCLOSURE_V1
               Timeline = count of logged events (FIELD_ARRIVED / EVIDENCE_ADDED / NOTES_SAVED / …).
@@ -3753,7 +4950,11 @@ useEffect(() => {
               gallery is authoritative for "how many photos do we have"; the timeline is
               authoritative for "what events were logged". Showing both with a one-line
               caption so neither number contradicts the other. */}
-          {(() => {
+          {/* PEAKOPS_DEV_GATE_DRIFT_NOTICE_V1 (2026-04-30)
+              Gallery-vs-timeline drift notice is engineering chrome —
+              it explains an internal reconciliation that operators
+              shouldn't have to think about. Gated on devMode. */}
+          {devMode ? (() => {
             const eventCount = (Array.isArray(timeline) ? timeline : []).filter((t: any) => String(t?.type) === "EVIDENCE_ADDED").length;
             const galleryCount = _evidenceN;
             if (eventCount === galleryCount) return null;
@@ -3762,7 +4963,7 @@ useEffect(() => {
                 Timeline logs <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{eventCount}</span> evidence-added event{eventCount === 1 ? "" : "s"}; gallery holds <span style={{ color: "#f5f5f5", fontWeight: 600 }}>{galleryCount}</span> item{galleryCount === 1 ? "" : "s"}. Gallery is authoritative.
               </div>
             );
-          })()}
+          })() : null}
 
 
 <TimelinePanel
@@ -3774,78 +4975,21 @@ useEffect(() => {
         ) : null}
 
         {/* Readiness — consolidated into the NextBestAction card above */}
-
-        <div className="h-20" />
       </div>
 
-      {/* Bottom dock */}
-      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "10px 16px 12px", background: "rgba(5,5,5,0.96)", borderTop: "1px solid #1c1c1c", backdropFilter: "blur(12px)", zIndex: 20 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
-          {[
-            { label: "Arrive", done: hasArrival, onClick: () => { try { markArrived(); } catch {} }, disabled: hasArrival || isClosed },
-            { label: "Evidence", done: _hasEvidence, onClick: () => { try { goAddEvidence(); } catch {} }, disabled: isClosed },
-            { label: "Notes", done: _hasNotes, onClick: () => { try { router.push(notesPath(incidentId, orgId)); } catch {} }, disabled: false },
-          ].map((b) => (
-            <button
-              key={b.label}
-              type="button"
-              disabled={b.disabled}
-              onClick={b.onClick}
-              style={{
-                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: b.disabled ? "not-allowed" : "pointer",
-                borderLeft: b.done ? "2px solid #22c55e" : "none",
-                borderRight: "none", borderTop: "none", borderBottom: "none",
-                background: b.done ? "rgba(34,197,94,0.06)" : "#101010",
-                color: b.done ? "#22c55e" : b.disabled ? "#6f6f6f" : "#f5f5f5",
-                boxShadow: b.done ? "none" : "inset 0 -1px 0 rgba(255,255,255,0.03)",
-                outline: b.done ? "none" : "1px solid #1c1c1c",
-              }}
-            >
-              {b.done && <span style={{ marginRight: 4 }}>&#10003;</span>}
-              {b.label}
-            </button>
-          ))}
-
-          {_hasSubmitted ? (
-            <button
-              type="button"
-              onClick={() => { try { router.push(reviewPath(incidentId, orgId)); } catch {} }}
-              style={{
-                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: "pointer",
-                border: "none",
-                background: "linear-gradient(180deg, #9A7E2A 0%, #B89A3E 100%)",
-                color: "#050505",
-                boxShadow: "0 2px 8px rgba(200,168,78,0.15), inset 0 1px 0 rgba(255,255,255,0.08)",
-              }}
-            >
-              Review
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={submitting || !hasArrival || (!(_hasEvidence || _hasNotes)) || isClosed}
-              onClick={() => { void submitSession(); }}
-              style={{
-                padding: "12px 0", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: (submitting || !hasArrival || (!(_hasEvidence || _hasNotes)) || isClosed) ? "not-allowed" : "pointer",
-                border: "none",
-                background: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "linear-gradient(180deg, #9A7E2A 0%, #B89A3E 100%)" : "#101010",
-                color: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "#050505" : "#6f6f6f",
-                boxShadow: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "0 2px 8px rgba(200,168,78,0.15), inset 0 1px 0 rgba(255,255,255,0.08)" : "inset 0 -1px 0 rgba(255,255,255,0.03)",
-                outline: (hasArrival && (_hasEvidence || _hasNotes) && !submitting && !isClosed) ? "none" : "1px solid #1c1c1c",
-              }}
-            >
-              Submit
-            </button>
-          )}
-        </div>
-      </div>
+      {/* PEAKOPS_BOTTOM_DOCK_REMOVED_V2 (2026-04-30)
+          The fixed bottom action bar duplicated the FlowStageBar
+          (progress) and the NBA card (primary action). Removed in
+          the IncidentClient cleanup pass — operators now have one
+          progress visualization (FlowStageBar at the top) and one
+          primary action (NBA card). */}
 
 {/* Modal */}
       {showCreateJob ? (
         <div className="fixed inset-0 bg-black/70 backdrop-blur flex items-center justify-center p-6 z-50">
           <div className="w-full max-w-lg rounded-2xl bg-black border border-white/10 overflow-hidden">
             <div className="flex items-center justify-between p-3 border-b border-white/10">
-              <div className="text-sm text-gray-200">Create Job</div>
+              <div className="text-sm text-gray-200">Create Task</div>
               <button className="text-xs px-2 py-1 rounded bg-white/10 hover:bg-white/15" onClick={() => setShowCreateJob(false)}>
                 Close
               </button>
@@ -3853,7 +4997,7 @@ useEffect(() => {
             <div className="p-3 space-y-3">
               <input
                 className="w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200"
-                placeholder="Job title"
+                placeholder="Task name"
                 value={jobTitle}
                 onChange={(e) => setJobTitle(e.target.value)}
               />
@@ -3875,7 +5019,7 @@ useEffect(() => {
                 disabled={jobsBusy || isClosed}
                 onClick={() => { try { createJob(); } catch {} }}
               >
-                {jobsBusy ? "Creating..." : "Create Job"}
+                {jobsBusy ? "Creating..." : "Create Task"}
               </button>
             </div>
           </div>
@@ -3961,16 +5105,12 @@ useEffect(() => {
         </div>
       ) : null}
 
-      {/* ZIP_TOAST */}
-      
-
-      
-    
-      {toastMsg ? (
-        <div className="pointer-events-none fixed top-4 right-4 z-50 rounded-xl bg-black/70 border border-white/10 px-4 py-3 text-sm text-gray-200 backdrop-blur">
-          {toastMsg}
-        </div>
-      ) : null}
+      {/* PEAKOPS_TOAST_DEDUP_V1 (2026-04-29)
+          The legacy ZIP_TOAST renderer used to live here and read the
+          same `toastMsg` state as PEAKOPS_UX_TOAST_RENDER_V1 above —
+          which meant any toast() call rendered TWO overlapping bars
+          (top-center + top-right). Removed; the V1 renderer above is
+          now the only path. */}
 
     </main>
     )

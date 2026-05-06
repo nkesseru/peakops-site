@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
 import crypto from "crypto";
+import { requireOrgAccess } from "../../../../lib/verifyAuth";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type AnyJson = any;
 
@@ -31,7 +33,15 @@ function stableJson(obj: AnyJson): string {
 async function getJsonSameOrigin(req: NextRequest, path: string): Promise<any> {
   const url = new URL(req.url);
   const u = `${url.origin}${path}`;
-  const r = await fetch(u, { method: "GET", cache: "no-store" });
+  // Phase 3: forward the bearer token so cascading /api/fn/* calls
+  // pass their own enforceOrgAndProxy gate. Without this the same-origin
+  // fetch inherits no auth and the downstream route 401s.
+  const auth = req.headers.get("authorization") || "";
+  const r = await fetch(u, {
+    method: "GET",
+    cache: "no-store",
+    headers: auth ? { authorization: auth } : {},
+  });
   const text = await r.text();
   let j: any = null;
   try { j = JSON.parse(text); } catch {
@@ -50,9 +60,27 @@ export async function GET(req: NextRequest) {
     const u = new URL(req.url);
     const orgId = u.searchParams.get("orgId") || "";
     const incidentId = u.searchParams.get("incidentId") || "";
-    if (!orgId || !incidentId) {
-      return NextResponse.json({ ok: false, error: "missing orgId or incidentId" }, { status: 400 });
+    if (!incidentId) {
+      return NextResponse.json({ ok: false, error: "missing incidentId" }, { status: 400 });
     }
+
+    // Phase 3 enforcement: verify token + org membership.
+    let authCtx;
+    try {
+      authCtx = await requireOrgAccess(req, orgId);
+    } catch (e: any) {
+      const status = Number(e?.status || 401);
+      return NextResponse.json(
+        { ok: false, error: String(e?.message || "unauthorized") },
+        { status },
+      );
+    }
+    console.log("[downloadIncidentPacketZip] org-authenticated", {
+      uid: authCtx.uid,
+      email: authCtx.email,
+      orgId: authCtx.orgId,
+      role: authCtx.role,
+    });
 
     // Pull canonical sources (all same-origin /api/fn routes)
     const bundle = await getJsonSameOrigin(req, `/api/fn/getIncidentBundleV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
