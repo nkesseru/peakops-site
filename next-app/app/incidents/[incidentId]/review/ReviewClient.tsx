@@ -1650,7 +1650,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             Job not found
           </div>
           <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 6, lineHeight: 1.5 }}>
-            This incident may have been deleted, moved, or you may not have access.
+            This job may have been deleted, moved, or you may not have access.
           </div>
           <button
             type="button"
@@ -1667,7 +1667,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
               cursor: "pointer",
             }}
           >
-            Back to incidents
+            Back to jobs
           </button>
           {/* PEAKOPS_NOT_FOUND_DEV_GATE_V1 (2026-04-30) */}
           {devMode ? (

@@ -801,6 +801,13 @@ function IncidentsIndexBody() {
   const role = String((claims as any)?.role || "").toLowerCase();
   const isSupervisor = SUPERVISOR_ROLES.has(role);
   const isAdmin = role === "admin";
+  // PEAKOPS_SLICE12_2_VIEWER_GATE_V1 (2026-05-07)
+  // Viewer is read-only across the lifecycle. Mission Control hides
+  // the Start Job CTA and replaces the create-form expander with a
+  // quiet view-only note so the page still reads as intentional
+  // rather than broken. The createIncidentV1 callable is itself
+  // role-gated server-side; this is the matching UI affordance.
+  const isViewer = role === "viewer";
 
   // PEAKOPS_NOTIFICATIONS_DEBUG_TRIGGER_V1 (2026-05-05)
   // Admin-only, dev-only one-click test write. Hits the existing
@@ -1873,13 +1880,18 @@ function IncidentsIndexBody() {
                   textTransform: "uppercase" as const,
                 }}
               >
-                Start a Job
+                {isViewer ? "View only" : "Start a Job"}
               </div>
               <div style={{ marginTop: 4, fontSize: 13, color: "#b3b3b3", lineHeight: 1.5 }}>
-                Open a new job and start capturing photos.
+                {isViewer
+                  ? "You can review jobs but cannot start new work."
+                  : "Open a new job and start capturing photos."}
               </div>
             </div>
-            {!createOpen ? (
+            {/* PEAKOPS_SLICE12_2_VIEWER_GATE_V1 (2026-05-07)
+                Viewer role: hide the Start Job CTA. Section copy
+                above already reflects the view-only posture. */}
+            {!createOpen && !isViewer ? (
               <button
                 type="button"
                 disabled={orgIdMissing}
@@ -2784,7 +2796,9 @@ function IncidentsIndexBody() {
             ) : myIncidents.length === 0 ? (
               incidents.length === 0 ? (
                 <div style={{ marginTop: 12, fontSize: 13, color: "#6f6f6f", lineHeight: 1.55 }}>
-                  Start your first job — tap <span style={{ color: "#C8A84E", fontWeight: 600 }}>Start Job</span> above to get started.
+                  {isViewer
+                    ? "No jobs to review yet."
+                    : (<>Start your first job — tap <span style={{ color: "#C8A84E", fontWeight: 600 }}>Start Job</span> above to get started.</>)}
                 </div>
               ) : (
                 <div style={{ marginTop: 12, fontSize: 13, color: "#6f6f6f", lineHeight: 1.55 }}>

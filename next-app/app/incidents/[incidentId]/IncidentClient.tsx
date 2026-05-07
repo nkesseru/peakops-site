@@ -3037,7 +3037,7 @@ useEffect(() => {
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#6f6f6f", textTransform: "uppercase" as const }}>Not found</div>
           <div style={{ fontSize: 18, fontWeight: 700, color: "#f5f5f5", marginTop: 6 }}>Job not found</div>
           <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 6, lineHeight: 1.5 }}>
-            This incident may have been deleted, moved, or you may not have access.
+            This job may have been deleted, moved, or you may not have access.
           </div>
           <button
             type="button"
@@ -3054,7 +3054,7 @@ useEffect(() => {
               cursor: "pointer",
             }}
           >
-            Back to incidents
+            Back to jobs
           </button>
           {/* PEAKOPS_NOT_FOUND_DEV_GATE_V1 (2026-04-30)
               Strictly ?dev=1. Customer-facing 404 stays clean even

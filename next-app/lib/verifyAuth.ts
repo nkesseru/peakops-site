@@ -61,12 +61,27 @@ export async function requireOrgAccess(
     throw new AuthError("Missing orgId", 400);
   }
 
+  // PEAKOPS_SLICE17C_LEGACY_ORGID_ACCEPT_V1 (2026-05-07)
+  // Slice 12 introduced the orgIds (plural array) claim shape. Some
+  // existing pilot accounts still carry the legacy orgId (singular
+  // string) shape minted by the pre-Slice-17C setClaims.cjs. Accept
+  // either: prefer the array, fall back to a single-element array
+  // built from the string. The singular form is transitional —
+  // Slice 17C's setClaims.cjs writes both fields so newly-minted
+  // tokens always have orgIds populated. Returns OrgAuthContext with
+  // orgIds as array regardless of which input shape was present, so
+  // every downstream caller sees a single canonical shape.
+  let orgIds: string[];
   const claimsOrgIds = (decoded as any).orgIds;
-  if (!Array.isArray(claimsOrgIds)) {
+  const claimsLegacyOrgId = (decoded as any).orgId;
+  if (Array.isArray(claimsOrgIds)) {
+    orgIds = claimsOrgIds.map((v) => String(v));
+  } else if (typeof claimsLegacyOrgId === "string" && claimsLegacyOrgId.trim()) {
+    orgIds = [String(claimsLegacyOrgId).trim()];
+  } else {
     throw new AuthError("Forbidden: missing orgIds claim", 403);
   }
 
-  const orgIds = claimsOrgIds.map((v) => String(v));
   if (!orgIds.includes(orgId)) {
     throw new AuthError("Forbidden: orgId not allowed", 403);
   }

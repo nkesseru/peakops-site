@@ -88,7 +88,13 @@ function loadServiceAccount() {
   const b64  = process.env.FIREBASE_SA_JSON_BASE64;
   let raw = json || (b64 ? Buffer.from(b64, "base64").toString("utf8") : null);
   if (!raw) {
-    try { raw = fs.readFileSync("./sa.json", "utf8"); } catch (_e) { /* no fallback */ }
+    // PEAKOPS_SLICE17C_SA_FILE_PRIORITY_V1 (2026-05-07)
+    // Prefer ./.secrets/sa.json (the current key) over the legacy
+    // repo-root ./sa.json (older, often revoked).
+    try { raw = fs.readFileSync("./.secrets/sa.json", "utf8"); } catch (_e) { /* try next */ }
+    if (!raw) {
+      try { raw = fs.readFileSync("./sa.json", "utf8"); } catch (_e) { /* no fallback */ }
+    }
   }
   if (!raw) return null;
   const sa = JSON.parse(raw);

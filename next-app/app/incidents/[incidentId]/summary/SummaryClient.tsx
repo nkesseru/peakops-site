@@ -1325,8 +1325,32 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, incidentClosed, artifactDownloadable, artifactBusy, downloadBusy, orgId, incidentId, truthMismatchReasons]);
 
+  // PEAKOPS_SLICE12_2_APPROVAL_GATE_V1 (2026-05-07)
+  // Slice 12.1 QA caught the closed-but-no-report fixture
+  // (inc_20260429_071222_n3ss11) showing "Awaiting supervisor
+  // approval" with a disabled Generate Report button — even though
+  // the lifecycle was Approved/Closed and the supervisor sign-off
+  // was already on the audit trail. Root cause: the prior bannerKind
+  // computed `hasFieldIssues` first (timeline fixtures can be
+  // missing one of field_submitted / incident_closed events), which
+  // routed Approved/Closed jobs into the "error" branch and the
+  // accompanying supervisorOnlyMissing logic claimed approval was
+  // pending. Fix: detect "supervisor approved" from displayState
+  // (which is already downgraded by the resolver if the audit event
+  // is missing — see the Approved/Closed downgrade at line ~441), and
+  // when supervisor approval is complete but the report hasn't been
+  // generated yet, take the "info" branch ahead of hasFieldIssues.
+  // Approval state and report-generation state are separate concerns
+  // per the Slice 12.2 spec.
+  const supervisorApproved = useMemo(() => {
+    const ds = reportUiState.displayState;
+    return ds === "Approved" || ds === "Closed";
+  }, [reportUiState.displayState]);
+
   const bannerKind =
-    hasFieldIssues
+    supervisorApproved && !artifactDownloadable
+      ? "info"
+      : hasFieldIssues
       ? "error"
       : incidentClosed && !artifactDownloadable
       ? "info"
@@ -1366,16 +1390,22 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   // genuinely the supervisor's. Tells the buyer exactly what's
   // blocking the report instead of pointing them at "items below"
   // that are already green.
+  // PEAKOPS_SLICE12_2_APPROVAL_GATE_V1 (2026-05-07)
+  // After Slice 12.2: "supervisorOnlyMissing" now ONLY captures the
+  // genuinely-pending approval states. Approved/Closed are handled
+  // by the supervisorApproved branch above.
   const supervisorOnlyMissing = useMemo(() => {
     const ds = reportUiState.displayState;
-    return ds === "Awaiting Supervisor Review" || ds === "Sent Back" || ds === "Approved";
+    return ds === "Awaiting Supervisor Review" || ds === "Sent Back";
   }, [reportUiState.displayState]);
   const bannerIcon = bannerKind === "success" ? "✓" : bannerKind === "error" ? (supervisorOnlyMissing ? "ℹ" : "⚠") : bannerKind === "info" ? "ℹ" : "";
   const bannerTitle =
     bannerKind === "error"
       ? (supervisorOnlyMissing ? "Awaiting supervisor approval" : "A few steps left before export")
       : bannerKind === "info"
-      ? "Ready to finalize the report"
+      ? (supervisorApproved
+          ? "Ready to generate report"
+          : "Ready to finalize the report")
       : "Job complete";
   const bannerBody =
     bannerKind === "error"
@@ -1383,7 +1413,9 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           ? "Field documentation is complete. The report can be generated after supervisor approval."
           : "Finish the items below, then return here to generate the report.")
       : bannerKind === "info"
-      ? "All field steps are complete. Generate the report to finalize this job."
+      ? (supervisorApproved
+          ? "Supervisor approval is complete. Generate the report to create the audit-ready record."
+          : "All field steps are complete. Generate the report to finalize this job.")
       : lastArtifactFilename
       ? `Report ready: ${lastArtifactFilename}.`
       : "Your job report is ready. Use Download Report to save or share it.";
@@ -1435,7 +1467,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#6f6f6f", textTransform: "uppercase" as const }}>Not found</div>
           <div style={{ fontSize: 18, fontWeight: 700, color: "#f5f5f5", marginTop: 6 }}>Job not found</div>
           <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 6, lineHeight: 1.5 }}>
-            This incident may have been deleted, moved, or you may not have access.
+            This job may have been deleted, moved, or you may not have access.
           </div>
           <button
             type="button"
@@ -1452,7 +1484,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               cursor: "pointer",
             }}
           >
-            Back to incidents
+            Back to jobs
           </button>
           {/* PEAKOPS_NOT_FOUND_DEV_GATE_V1 (2026-04-30) */}
           {devMode ? (
