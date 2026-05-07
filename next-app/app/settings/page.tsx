@@ -6,12 +6,15 @@
 // on the Back link); without it, Next 14+ aborts the static
 // prerender for the page.
 import { Suspense } from "react";
+import RequireAuth from "@/components/RequireAuth";
 import SettingsClient from "./SettingsClient";
 
 export default function SettingsPage() {
   return (
     <Suspense fallback={null}>
-      <SettingsClient />
+      <RequireAuth>
+        <SettingsClient />
+      </RequireAuth>
     </Suspense>
   );
 }

@@ -3,12 +3,15 @@
 // because SettingsTeamClient calls useSearchParams() (orgId
 // preservation on the back link, same pattern as /settings).
 import { Suspense } from "react";
+import RequireAuth from "@/components/RequireAuth";
 import SettingsTeamClient from "./SettingsTeamClient";
 
 export default function SettingsTeamPage() {
   return (
     <Suspense fallback={null}>
-      <SettingsTeamClient />
+      <RequireAuth>
+        <SettingsTeamClient />
+      </RequireAuth>
     </Suspense>
   );
 }

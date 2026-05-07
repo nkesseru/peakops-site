@@ -4,12 +4,15 @@
 // preservation on the back link, same pattern as /settings and
 // /settings/team).
 import { Suspense } from "react";
+import RequireAuth from "@/components/RequireAuth";
 import SettingsVendorsClient from "./SettingsVendorsClient";
 
 export default function SettingsVendorsPage() {
   return (
     <Suspense fallback={null}>
-      <SettingsVendorsClient />
+      <RequireAuth>
+        <SettingsVendorsClient />
+      </RequireAuth>
     </Suspense>
   );
 }

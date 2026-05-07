@@ -9,6 +9,7 @@ import { incidentPath } from "@/lib/navigation/incidentRoutes";
 import { authedFetch } from "@/lib/apiClient";
 import { resolveJobDisplayState, jobDisplayStateKey, type JobDisplayState } from "@/lib/incidents/resolveJobDisplayState";
 import NotificationsBell from "@/components/NotificationsBell";
+import RequireAuth from "@/components/RequireAuth";
 import { loadActiveVendorsForOrg } from "@/lib/jobVendor";
 import {
   buildVendorSlugMap,
@@ -188,7 +189,9 @@ function priorityPill(priority?: string): { label: string; color: string; bg: st
 export default function IncidentsIndexPage() {
   return (
     <Suspense fallback={null}>
-      <IncidentsIndexBody />
+      <RequireAuth>
+        <IncidentsIndexBody />
+      </RequireAuth>
     </Suspense>
   );
 }
