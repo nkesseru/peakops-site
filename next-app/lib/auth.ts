@@ -12,15 +12,54 @@ import { auth } from "./firebaseClient";
 
 const EMAIL_STORAGE_KEY = "emailForSignIn";
 
+// PEAKOPS_AUTH_CONTINUE_URL_V2 (2026-05-07)
+// Resolve actionCodeSettings.url from `window.location.origin`
+// instead of `process.env.NEXT_PUBLIC_APP_URL`. Reasons:
+//
+//   1. The env-var version was empty in Vercel Production (we never
+//      set NEXT_PUBLIC_APP_URL — it's not in INTERNAL_ALPHA_DEPLOY_
+//      CHECKLIST.md § 1), so the resulting `url` was literally
+//      "/login" — Firebase rejected it with
+//      auth/invalid-continue-uri because no authorized domain
+//      matched.
+//   2. window.location.origin always names the exact host the user
+//      is on, which is the host they'd already have to be hitting
+//      to reach this code. That host is by definition the one we
+//      need to add to Firebase Authorized Domains, and it
+//      automatically tracks if/when we attach a custom domain
+//      (peakops-stormwatch.vercel.app today, custom domain later).
+//   3. We deliberately don't use VERCEL_URL: that string changes
+//      every preview deploy, and the magic-link email persists for
+//      hours. A user clicking yesterday's link would land on a
+//      URL that's no longer the canonical production host.
+//
+// Fallback order:
+//   1. window.location.origin (browser only)
+//   2. NEXT_PUBLIC_APP_URL (server / non-browser caller; useful for
+//      tests or any future server-side flow)
+//   3. relative "/login" — Firebase will reject this loudly, which
+//      is preferable to silently sending the wrong URL.
+//
+// returnTo handling stays in sessionStorage (`peakops_return_to`,
+// set by RequireAuth and authedFetch's redirect path) — never
+// embedded into actionCodeSettings.url, so we never accidentally
+// ship an unauthorized-domain URL to Firebase.
 function getActionCodeSettings(): ActionCodeSettings {
-  const base = String(process.env.NEXT_PUBLIC_APP_URL || "").replace(/\/+$/, "");
+  let origin = "";
+  if (
+    typeof window !== "undefined" &&
+    window.location &&
+    typeof window.location.origin === "string"
+  ) {
+    origin = window.location.origin.replace(/\/+$/, "");
+  } else if (process.env.NEXT_PUBLIC_APP_URL) {
+    origin = String(process.env.NEXT_PUBLIC_APP_URL).replace(/\/+$/, "");
+  }
 
-  const actionCodeSettings = {
-    url: `${base}/login`,
+  return {
+    url: origin ? `${origin}/login` : "/login",
     handleCodeInApp: true,
   };
-
-  return actionCodeSettings;
 }
 
 export async function sendMagicLink(email: string): Promise<void> {
