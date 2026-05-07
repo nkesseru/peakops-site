@@ -11,8 +11,19 @@ function normalizeLocalFunctionsBase(v: string): string {
 }
 
 export function functionsBase(): string {
-  // Prefer env override, else default emulator
+  // PEAKOPS_PROXY_FN_BASE_RESOLVE_V1 (2026-05-07)
+  // Resolution order:
+  //   1. NEXT_PUBLIC_PEAKOPS_FN_BASE — canonical name documented in
+  //      INTERNAL_ALPHA_DEPLOY_CHECKLIST.md and matched by the legacy
+  //      src/app/api/fn/[...path]/route.ts proxy. This is the value
+  //      Vercel Production has set.
+  //   2. NEXT_PUBLIC_FUNCTIONS_BASE — legacy alias, kept for any
+  //      environment that already wires this name. .env.local.example
+  //      still references it for emulator-mode dev.
+  //   3. FUNCTIONS_BASE — server-side companion for emulator dev.
+  //   4. Local emulator fallback for first-run dev sessions.
   const base =
+    process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE ||
     process.env.NEXT_PUBLIC_FUNCTIONS_BASE ||
     process.env.FUNCTIONS_BASE ||
     "http://127.0.0.1:5004/peakops-pilot/us-central1";
