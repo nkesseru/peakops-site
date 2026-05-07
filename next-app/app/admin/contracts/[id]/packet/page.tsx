@@ -6,6 +6,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams, useRouter }  from "next/navigation";
 import JSZip from "jszip";
 import JsonCodeBlock from "../../../_components/JsonCodeBlock";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 import { useToast } from "../../../_components/useToast";
 import PrettyJson from "../../../_components/PrettyJson";
 function isProbablyJson(text: string) {
@@ -94,7 +96,7 @@ export default function PacketPreview() {
   async function load() {
     setBusy(true); setErr("");
     try {
-      const r = await fetch(`/api/fn/exportContractPacketV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}&versionId=${encodeURIComponent(versionId)}&limit=200`);
+      const r = await authedFetch(`/api/fn/exportContractPacketV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}&versionId=${encodeURIComponent(versionId)}&limit=200`);
       const j = await r.json();
       if (!j?.ok) throw new Error(j?.error || "exportContractPacketV1 failed");
       

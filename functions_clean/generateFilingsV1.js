@@ -1,6 +1,12 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_GENERATE_REPORT,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -18,8 +24,46 @@ exports.generateFilingsV1 = onRequest({ cors: true }, async (req, res) => {
     const payload = readJson(req);
     const orgId = String(payload.orgId || req.query.orgId || "").trim();
     const incidentId = String(payload.incidentId || req.query.incidentId || "").trim();
-    const requestedBy = String(payload.requestedBy || req.query.requestedBy || "unknown").trim();
     if (!orgId || !incidentId) return res.status(400).json({ ok:false, error:"Missing orgId/incidentId" });
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 4: filing generation is admin-or-supervisor only.
+    // Filings (DIRS / OE-417 drafts today) are compliance-shaped
+    // artifacts so the gate runs before any read of the incident.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, payload));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_GENERATE_REPORT);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[generateFilingsV1] authz_denied", {
+        fn: "generateFilingsV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_GENERATE_REPORT,
+        code: e && e.code,
+      });
+      return res.status(httpStatusFromAuthzError(e)).json({
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[generateFilingsV1] authz_ok", {
+      fn: "generateFilingsV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_GENERATE_REPORT,
+    });
+
+    // requestedBy now prefers the verified actor uid; payload field
+    // remains as a legacy fallback for callers that don't yet send a
+    // Firebase Auth bearer token.
+    const requestedBy = String(actorUid || payload.requestedBy || req.query.requestedBy || "unknown").trim();
 
     let incidentRef = db.doc(`orgs/${orgId}/incidents/${incidentId}`);
     let snap = await incidentRef.get();

@@ -1,6 +1,12 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -38,6 +44,47 @@ exports.assignEvidenceToJobV1 = onRequest({ cors: true }, async (req, res) => {
     const incidentId = mustStr(body.incidentId, "incidentId");
     const evidenceId = mustStr(body.evidenceId, "evidenceId");
     const jobId = String(body.jobId || "").trim();
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 5: assigning evidence to a job is field-or-above.
+    // The existing AddEvidenceClient and JobDetailClient flows have
+    // field crews tag their captured photos to specific jobs, so
+    // field is in the allow-list. Viewer/ghost denied. Upgraded from
+    // the Slice 3 membership-only gate.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[assignEvidenceToJobV1] authz_denied", {
+        fn: "assignEvidenceToJobV1",
+        orgId,
+        incidentId,
+        evidenceId,
+        jobId: jobId || null,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[assignEvidenceToJobV1] authz_ok", {
+      fn: "assignEvidenceToJobV1",
+      orgId,
+      incidentId,
+      evidenceId,
+      jobId: jobId || null,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
     const db = getFirestore();
 
     // PEAKOPS_ASSIGN_EVIDENCE_TO_JOB_V2 (2026-04-24)

@@ -2,6 +2,12 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getStorage } = require("firebase-admin/storage");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -37,6 +43,46 @@ exports.createEvidenceUploadUrlV1 = onRequest({ cors: true }, async (req, res) =
     const sessionId = mustStr(body.sessionId, "sessionId");
     const fileName = mustStr(body.fileName, "fileName");
     const contentType = String(body.contentType || "application/octet-stream").trim() || "application/octet-stream";
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 6.1: this endpoint mints a signed PUT URL that
+    // grants Storage write access. From a leakage-surface perspective
+    // it's analogous to addEvidenceV1 — anyone who can mint the URL
+    // can upload arbitrary content into the org's evidence path.
+    // Gate as ROLES_FIELD_WORK (field crews upload photos), denying
+    // viewer/ghost. Without this gate any caller with an orgId guess
+    // could mint upload credentials.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[createEvidenceUploadUrlV1] authz_denied", {
+        fn: "createEvidenceUploadUrlV1",
+        orgId,
+        incidentId,
+        sessionId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[createEvidenceUploadUrlV1] authz_ok", {
+      fn: "createEvidenceUploadUrlV1",
+      orgId,
+      incidentId,
+      sessionId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
 
     const bucketObj = getStorage().bucket();
     const bucket = bucketObj.name;

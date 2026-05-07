@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 function fmtTs(iso?: string) {
   if (!iso) return "—";
@@ -259,7 +261,12 @@ export default function SupervisorIncidentDetail() {
   const [banner, setBanner] = useState<string | null>(null);
 
   async function jfetch(url: string) {
-    const r = await fetch(url);
+    // PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+    // Replaces an unauthenticated fetch with the project's standard
+    // wrapper so /api/fn/* requests carry a Firebase ID token. Under
+    // the Slice 8 default-deny posture, the prior version returned
+    // 401 in production for any signed-in supervisor.
+    const r = await authedFetch(url);
     return r.json();
   }
 
@@ -286,7 +293,7 @@ export default function SupervisorIncidentDetail() {
   }, [incidentId]);
 
   async function postFn(path: string, body: any) {
-    const r = await fetch(`/api/fn/${path}`, {
+    const r = await authedFetch(`/api/fn/${path}`, {
       method: "POST",
       headers: { "Content-Type":"application/json" },
       body: JSON.stringify(body),

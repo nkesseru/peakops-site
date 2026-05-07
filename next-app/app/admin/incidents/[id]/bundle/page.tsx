@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import JSZip from "jszip";
 import { mintEvidenceReadUrl, getBestEvidenceImageRef, getBestEvidencePreviewRef } from "@/lib/evidence/signedThumb";
+// PEAKOPS_SLICE12_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 type ToastKind = "ok" | "warn" | "err";
 type EvidenceItem = {
@@ -390,7 +392,7 @@ async function hydrateZipVerification() {
       setBusyAction("Finalize");
       pushToast("Finalizing incident…", "ok");
 
-      const r = await fetch("/api/fn/finalizeIncidentV1", {
+      const r = await authedFetch("/api/fn/finalizeIncidentV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId, incidentId, immutableBy: "ui" }),
@@ -411,7 +413,7 @@ async function handleGeneratePacket() {
     if (busyAction) return;
     try {
       setBusyAction("Generate");
-      const r = await fetch(`/api/fn/exportIncidentPacketV1`, {
+      const r = await authedFetch(`/api/fn/exportIncidentPacketV1`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orgId, incidentId, requestedBy: "ui" }),
@@ -457,7 +459,7 @@ async function handleGeneratePacket() {
 
       // Persist "ZIP Verified" into Firestore so it survives refresh/restart
       try {
-        const pr = await fetch(`/api/fn/persistZipVerificationV1`, {
+        const pr = await authedFetch(`/api/fn/persistZipVerificationV1`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({

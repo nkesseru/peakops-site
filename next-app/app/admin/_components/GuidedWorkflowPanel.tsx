@@ -1,5 +1,7 @@
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 /*__GWP_UI_HELPERS_V1__*/
 type Role = "admin" | "tech" | "viewer";
@@ -252,7 +254,7 @@ const [timelineLoaded, setTimelineLoaded] = useState(false);
 
 useEffect(() => {
   if (!orgId || !incidentId) return;
-  fetch(`/api/fn/getTimelineEventsV1?orgId=${orgId}&incidentId=${incidentId}&limit=50`)
+  authedFetch(`/api/fn/getTimelineEventsV1?orgId=${orgId}&incidentId=${incidentId}&limit=50`)
     .then(r => r.json())
     .then(j => {
       if (j?.ok && Array.isArray(j.docs)) {

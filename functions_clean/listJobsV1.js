@@ -1,6 +1,11 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore } = require("firebase-admin/firestore");
+const {
+  assertActorCanReadOrg,
+  httpStatusFromAuthzError,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -25,6 +30,43 @@ exports.listJobsV1 = onRequest({ cors: true }, async (req, res) => {
     const incidentId = String(req.query.incidentId || "").trim();
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
     if (!orgId || !incidentId) return j(res, 400, { ok: false, error: "orgId and incidentId required" });
+
+    // PEAKOPS_AUTHZ_READ_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 6: list jobs is members-only. The existing
+    // assignedOrgId cross-org filter below remains — it lets a
+    // partner org see only jobs explicitly assigned to it. The new
+    // gate ensures non-members see nothing at all.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, req.query || {}));
+      const gate = await assertActorCanReadOrg(orgId, actorUid);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[listJobsV1] authz_denied", {
+        fn: "listJobsV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        capability: "read",
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+        count: 0,
+        docs: [],
+      });
+    }
+    console.log("[listJobsV1] authz_ok", {
+      fn: "listJobsV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      capability: "read",
+    });
 
     const db = getFirestore();
     const { incOrgId } = await getIncidentInfo(db, incidentId);

@@ -4,6 +4,8 @@ import JsonViewer from "../../../_components/JsonViewer";
 
 import { useEffect, useState } from "react";
 import {useParams, useSearchParams, useRouter} from "next/navigation";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 function mono(s: string) {
   return <span style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{s}</span>;
@@ -31,7 +33,7 @@ export default function AdminContractPayloads() {
     setBusy(true);
     setErr("");
     try {
-      const r = await fetch(`/api/fn/getContractPayloadsV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}&limit=200`);
+      const r = await authedFetch(`/api/fn/getContractPayloadsV1?orgId=${encodeURIComponent(orgId)}&contractId=${encodeURIComponent(contractId)}&limit=200`);
       const j = await r.json();
       if (!j?.ok) throw new Error(j?.error || "getContractPayloadsV1 failed");
       setDocs(Array.isArray(j.docs) ? j.docs : []);

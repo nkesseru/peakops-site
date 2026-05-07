@@ -3,6 +3,11 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getStorage } = require("firebase-admin/storage");
+const {
+  assertActorCanReadOrg,
+  httpStatusFromAuthzError,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 // Ensure admin initialized once
 try {
@@ -112,6 +117,43 @@ exports.createEvidenceReadUrlV1 = onRequest({ cors: true }, async (req, res) => 
     const incidentId = mustStr(body.incidentId, "incidentId");
     const storagePath = mustStr(body.storagePath, "storagePath");
     const expiresSec = Number(body.expiresSec || 900);
+
+    // PEAKOPS_AUTHZ_READ_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 6: signed evidence read URLs are the highest-
+    // sensitivity read in the system — a non-member with a guessable
+    // storagePath could otherwise download photos. Gate runs before
+    // any Storage probe or signed-URL generation.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorCanReadOrg(orgId, actorUid);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[createEvidenceReadUrlV1] authz_denied", {
+        fn: "createEvidenceReadUrlV1",
+        orgId,
+        incidentId,
+        storagePath,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        capability: "read",
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[createEvidenceReadUrlV1] authz_ok", {
+      fn: "createEvidenceReadUrlV1",
+      orgId,
+      incidentId,
+      storagePath,
+      uid: actorUid,
+      role: actorRole,
+      capability: "read",
+    });
 
     // Determine admin default bucket if possible
     let adminDefaultBucket = "";

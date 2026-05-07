@@ -2,6 +2,8 @@
 import AdminNav from "../_components/AdminNav";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 function mono(s: string) {
   return <span style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{s}</span>;
@@ -31,7 +33,7 @@ function AdminContractsListInner() {
     setBusy(true);
     setErr("");
     try {
-      const r = await fetch(`/api/fn/getContractsV1?orgId=${encodeURIComponent(orgId)}&limit=50`);
+      const r = await authedFetch(`/api/fn/getContractsV1?orgId=${encodeURIComponent(orgId)}&limit=50`);
       const j = await r.json();
       if (!j?.ok) throw new Error(j?.error || "getContractsV1 failed");
       setDocs(Array.isArray(j.docs) ? j.docs : []);

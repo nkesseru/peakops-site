@@ -2,6 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 export default function AdminIncidentsPage() {
   const [orgId, setOrgId] = useState("org_001");
@@ -12,7 +14,7 @@ export default function AdminIncidentsPage() {
   async function refresh() {
     setErr(null);
     try {
-      const res = await fetch(`/api/fn/listIncidentsV1?orgId=${encodeURIComponent(orgId)}`);
+      const res = await authedFetch(`/api/fn/listIncidentsV1?orgId=${encodeURIComponent(orgId)}`);
       const j = await res.json();
       if (!j.ok) throw new Error(j.error || "listIncidentsV1 failed");
       setData(j);
@@ -33,7 +35,7 @@ export default function AdminIncidentsPage() {
     setErr(null);
     try {
       const incidentId = `inc_${Math.random().toString(36).slice(2, 8)}`;
-      const res = await fetch(`/api/fn/createIncidentV1`, {
+      const res = await authedFetch(`/api/fn/createIncidentV1`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

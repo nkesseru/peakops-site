@@ -1,5 +1,7 @@
 "use client";
 
+import { authedFetch } from "@/../lib/apiClient";
+
 function bucketTone(bucket: string) {
   switch (String(bucket || "")) {
     case "needs_review":
@@ -170,7 +172,10 @@ function StatCard({
 }
 
 async function doExport(i: Incident) {
-  const r = await fetch("/api/fn/exportIncidentPacketV1", {
+  // PEAKOPS_SLICE12_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+  // Slice 12 migrated this off raw fetch so the bearer token from
+  // the signed-in dashboard user reaches the proxy at /api/fn/[name].
+  const r = await authedFetch("/api/fn/exportIncidentPacketV1", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ incidentId: i.incidentId, orgId: i.orgId }),

@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 type Step = { key: string; title: string; status: string; hint?: string };
 
@@ -14,7 +16,7 @@ export default function WorkflowPanel(props: { orgId: string; incidentId: string
     setBusy(true);
     setErr("");
     try {
-      const r = await fetch(`/api/fn/getWorkflowV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
+      const r = await authedFetch(`/api/fn/getWorkflowV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`);
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || "getWorkflowV1 failed");
       setSteps(j.workflow?.steps || []);

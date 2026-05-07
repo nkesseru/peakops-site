@@ -197,7 +197,7 @@ function IncidentsIndexBody() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const orgId = String(searchParams?.get?.("orgId") || "").trim();
-  const { user, claims } = useAuth();
+  const { user, loading: authLoading, claims } = useAuth();
   const [incidentId, setIncidentId] = useState("");
 
   // PEAKOPS_MISSION_CONTROL_V1 (2026-04-29)
@@ -774,15 +774,29 @@ function IncidentsIndexBody() {
     }
   }, [orgId]);
 
+  // PEAKOPS_MC_AUTH_GATE_V1 (2026-05-06)
+  // Slice 12.1: gate listIncidentsV1 on Firebase Auth state having
+  // resolved. Previously this effect fired the call as soon as
+  // orgId was present, which on cold load races the auth-restore
+  // hydration in firebaseClient.ts and produces "Missing
+  // Authorization header" 401 spikes before the token is hot. Now:
+  //   - if authLoading → wait
+  //   - if !authLoading && !user → no fetch; let useEffect below
+  //     surface the signed-out state (or authedFetch redirect to
+  //     /login on first attempt). The state is already covered by
+  //     useAuth's onAuthStateChanged.
+  //   - if !authLoading && user → fire normally.
   useEffect(() => {
     if (!orgId) return;
+    if (authLoading) return;
+    if (!user) return;
     void loadIncidents();
     const onFocus = () => { void loadIncidents(); };
     if (typeof window !== "undefined") window.addEventListener("focus", onFocus);
     return () => {
       if (typeof window !== "undefined") window.removeEventListener("focus", onFocus);
     };
-  }, [orgId, loadIncidents]);
+  }, [orgId, authLoading, user, loadIncidents]);
 
   const role = String((claims as any)?.role || "").toLowerCase();
   const isSupervisor = SUPERVISOR_ROLES.has(role);

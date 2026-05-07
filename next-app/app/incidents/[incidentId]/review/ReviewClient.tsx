@@ -1597,84 +1597,97 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   // disclosure inside the card so engineers can still see the cause
   // when running locally.
   if (incidentNotFound) {
+    // PEAKOPS_REVIEW_NOT_FOUND_CHROME_FIX_V1 (2026-05-06)
+    // Slice 12.1: previously this rendered a "Supervisor Review ·
+    // Untitled incident" header chrome above the not-found panel.
+    // For an unresolved incidentId there is no review session and
+    // no incident title to show — leaking page-specific chrome
+    // makes the empty state read like a broken page. Match the
+    // clean PEAKOPS panel pattern that IncidentClient and
+    // SummaryClient use for the same condition. "Job not found"
+    // (not "Incident not found") matches buyer vocabulary across
+    // the lifecycle.
     return (
-      <main className="min-h-screen bg-black text-white">
-        <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
-              <div className="text-lg font-semibold truncate" title={incidentId}>
-                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
-              </div>
-              <div className="mt-2">
-                <QaAuthDebugChip />
-              </div>
-            </div>
-            <button
-              className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
-            >
-              ← Back to incidents
-            </button>
-          </div>
+      <main
+        style={{
+          minHeight: "100vh",
+          background: "#050505",
+          color: "#f5f5f5",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        }}
+      >
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", color: "#C8A84E", marginBottom: 16 }}>
+          PEAKOPS
         </div>
-        <div className="p-4">
-          <section
+        <div
+          style={{
+            maxWidth: 440,
+            width: "100%",
+            border: "1px solid #1c1c1c",
+            background: "#0b0b0b",
+            borderRadius: 8,
+            padding: 24,
+            textAlign: "center",
+          }}
+        >
+          <div
             style={{
-              borderRadius: 12,
-              border: "1px solid #1c1c1c",
-              background: "#0b0b0b",
-              padding: "24px 22px",
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: "0.14em",
+              color: "#6f6f6f",
+              textTransform: "uppercase" as const,
             }}
           >
-            <div
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                letterSpacing: "0.14em",
-                color: "#6f6f6f",
-                textTransform: "uppercase" as const,
-              }}
-            >
-              Not found
-            </div>
-            <div style={{ marginTop: 6, fontSize: 18, fontWeight: 700, color: "#f5f5f5" }}>
-              Incident not found
-            </div>
-            <div style={{ marginTop: 6, fontSize: 13, color: "#b3b3b3", lineHeight: 1.5 }}>
-              This incident may have been deleted, moved, or you may not have access.
-            </div>
-            <div style={{ marginTop: 14 }}>
-              <button
-                type="button"
-                onClick={() => router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+            Not found
+          </div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#f5f5f5", marginTop: 6 }}>
+            Job not found
+          </div>
+          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 6, lineHeight: 1.5 }}>
+            This incident may have been deleted, moved, or you may not have access.
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+            style={{
+              marginTop: 16,
+              padding: "10px 18px",
+              borderRadius: 8,
+              border: "1px solid #1c1c1c",
+              background: "transparent",
+              color: "#b3b3b3",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Back to incidents
+          </button>
+          {/* PEAKOPS_NOT_FOUND_DEV_GATE_V1 (2026-04-30) */}
+          {devMode ? (
+            <details style={{ marginTop: 18, fontSize: 10, color: "#6f6f6f", textAlign: "left" }}>
+              <summary style={{ cursor: "pointer" }}>Technical details (dev only)</summary>
+              <div
                 style={{
-                  padding: "10px 18px",
-                  borderRadius: 8,
-                  border: "1px solid #1c1c1c",
-                  background: "transparent",
-                  color: "#b3b3b3",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
+                  marginTop: 6,
+                  fontFamily: "ui-monospace, monospace",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
                 }}
               >
-                Back to incidents
-              </button>
-            </div>
-            {/* PEAKOPS_NOT_FOUND_DEV_GATE_V1 (2026-04-30) */}
-            {devMode ? (
-              <details style={{ marginTop: 16, fontSize: 10, color: "#6f6f6f" }}>
-                <summary style={{ cursor: "pointer" }}>Technical details (dev only)</summary>
-                <div style={{ marginTop: 6, fontFamily: "ui-monospace, monospace", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                  incidentId: {incidentId}
-                  {errDiag?.endpoint ? <div>endpoint: {errDiag.endpoint}</div> : null}
-                  {errDiag?.status ? <div>status: {errDiag.status}</div> : null}
-                  {errDiag?.body ? <div>body: {String(errDiag.body).slice(0, 240)}</div> : null}
-                </div>
-              </details>
-            ) : null}
-          </section>
+                <div>incidentId: {incidentId}</div>
+                {errDiag?.endpoint ? <div>endpoint: {errDiag.endpoint}</div> : null}
+                {errDiag?.status ? <div>status: {errDiag.status}</div> : null}
+                {errDiag?.body ? <div>body: {String(errDiag.body).slice(0, 240)}</div> : null}
+              </div>
+            </details>
+          ) : null}
         </div>
       </main>
     );

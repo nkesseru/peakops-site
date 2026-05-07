@@ -4628,7 +4628,7 @@ useEffect(() => {
                           canEdit={_canEditVendor}
                           onChange={async (next) => {
                             try {
-                              await assignVendorToJob(incidentId, _selectedJobId, next);
+                              await assignVendorToJob(String(orgId || ""), incidentId, _selectedJobId, next);
                               toast(next ? `Vendor assigned: ${next.vendorName}` : "Vendor cleared.", 2200);
                               await refresh();
                             } catch (e: any) {

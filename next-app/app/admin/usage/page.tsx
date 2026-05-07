@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 type Action = "all" | "filings" | "timeline" | "both";
 
@@ -35,7 +37,7 @@ export default function UsagePage() {
 
   async function load() {
     setErr(null);
-    const r = await fetch(`/api/fn/listUsageEvents?orgId=${encodeURIComponent(orgId)}`);
+    const r = await authedFetch(`/api/fn/listUsageEvents?orgId=${encodeURIComponent(orgId)}`);
     const j = await r.json();
     if (!j.ok) {
       const msg = j.error || "listUsageEvents failed";

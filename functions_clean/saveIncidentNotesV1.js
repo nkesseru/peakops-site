@@ -2,6 +2,12 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 const db = getFirestore();
@@ -23,20 +29,66 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(b.orgId, "orgId");
     const incidentId = mustStr(b.incidentId, "incidentId");
 
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 4: notes are field-or-above. Field crews routinely
+    // append to incident notes from the field surface, so the gate
+    // accepts admin/supervisor/field/owner. Viewer is denied.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, b));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[saveIncidentNotesV1] authz_denied", {
+        fn: "saveIncidentNotesV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[saveIncidentNotesV1] authz_ok", {
+      fn: "saveIncidentNotesV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
     const incidentNotes = String(b.incidentNotes || "");
     const siteNotes = String(b.siteNotes || "");
-    const updatedBy = String(b.updatedBy || "ui");
+    const updatedBy = String(actorUid || b.updatedBy || "ui");
+
+    // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+    // Optional bypass fields. Saved verbatim when present so the
+    // Summary / report renderer can surface "No note needed" with
+    // the user-acknowledged reason. Backward compatible — older
+    // clients that don't send these fields are unchanged.
+    const notesStatusRaw = String(b.notesStatus || "").trim().toLowerCase();
+    const notesStatus =
+      notesStatusRaw === "bypassed" || notesStatusRaw === "saved"
+        ? notesStatusRaw
+        : "";
+    const notesBypassReason = String(b.notesBypassReason || "").trim();
 
     const ref = db.doc(`incidents/${incidentId}/notes/main`);
-    await ref.set(
-      {
-        incidentNotes,
-        siteNotes,
-        updatedBy,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    const doc = {
+      incidentNotes,
+      siteNotes,
+      updatedBy,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (notesStatus) doc.notesStatus = notesStatus;
+    if (notesBypassReason) doc.notesBypassReason = notesBypassReason;
+    await ref.set(doc, { merge: true });
 
         // Emit audit timeline event
     try {
@@ -50,6 +102,8 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
         meta: {
           incidentNotesLen: incidentNotes.length,
           siteNotesLen: siteNotes.length,
+          notesStatus: notesStatus || undefined,
+          notesBypassReason: notesBypassReason || undefined,
         },
       });
     } catch (e) {

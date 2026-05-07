@@ -3,6 +3,18 @@ const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
 const { resolveIncidentRef } = require("./_incidentPath");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
+
+// PEAKOPS_NOTIFICATIONS_V1 (2026-05-05)
+// Lazy-loaded so notification fan-out failures can never block the
+// submit itself — the in-app feed is best-effort.
+let _notify = null;
+try { _notify = require("./_notify"); } catch (_) { /* ignore */ }
 
 async function hasFieldSubmittedEvent(db, incidentId, sessionId) {
   const snap = await db
@@ -36,7 +48,49 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const sessionId = mustStr(body.sessionId, "sessionId");
-    const submittedBy = String(body.submittedBy || body.techUserId || "ui");
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 5: field session submit is field-or-above (the
+    // field crew's terminal action). Upgraded from the Slice 3
+    // membership-only gate. Runs before resolveIncidentRef /
+    // sesRef.get so a non-member or viewer never triggers the
+    // awaiting_review notification fan-out below.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[submitFieldSessionV1] authz_denied", {
+        fn: "submitFieldSessionV1",
+        orgId,
+        incidentId,
+        sessionId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[submitFieldSessionV1] authz_ok", {
+      fn: "submitFieldSessionV1",
+      orgId,
+      incidentId,
+      sessionId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
+    // submittedBy honors the verified actor uid first; body fields
+    // remain as a legacy fallback for callers that pass the friendly
+    // "techUserId" alias from the field UI.
+    const submittedBy = String(actorUid || body.submittedBy || body.techUserId || "ui");
 
     const db = getFirestore();
     // PEAKOPS_STATUS_WRITE_ALIGN_V1
@@ -95,6 +149,52 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
       },
       { merge: true }
     );
+
+    // PEAKOPS_NOTIFICATIONS_PRODUCER_V2 (2026-05-05)
+    // awaiting_review fan-out. Notifies admin + supervisor members
+    // of the org so the review queue surfaces at the next bell
+    // tick. No setting key — there's no per-user toggle for review
+    // alerts in v1; queue work is on-by-default for the roles that
+    // own it.
+    //
+    // Per debug-patch spec (Notifications Debug v1.1): keep the
+    // actor's notification on; do NOT exclude submitter even if the
+    // submitter happens to also be an admin/supervisor in this org.
+    //
+    // Diagnostic log format: single-line `[notify] awaiting_review
+    // recipients=<n> wrote=<n>` so production log parsers don't
+    // need to stitch two lines together.
+    try {
+      if (_notify && typeof _notify.fanOutOrgNotification === "function") {
+        const _incData = incSnap.exists ? (incSnap.data() || {}) : {};
+        const _incidentTitle =
+          String(_incData.title || "").trim() ||
+          String(_incData.name || "").trim() ||
+          "An incident";
+        const result = await _notify.fanOutOrgNotification({
+          orgId,
+          recipientRoles: ["admin", "supervisor"],
+          payload: {
+            type: "awaiting_review",
+            title: "Incident ready for review",
+            message: `${_incidentTitle} is waiting for supervisor review.`,
+            incidentId,
+            orgId,
+            targetUrl: `/incidents/${encodeURIComponent(incidentId)}/review?orgId=${encodeURIComponent(orgId)}`,
+          },
+        });
+        const wrote = typeof result === "number" ? result : (result?.wrote || 0);
+        const recipients = typeof result === "number" ? result : (result?.recipients || result?.wrote || 0);
+        // eslint-disable-next-line no-console
+        console.log(`[notify] awaiting_review recipients=${recipients} wrote=${wrote}`);
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn("[notify] _notify helper unavailable — awaiting_review fan-out skipped");
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[notify] awaiting_review fan-out failed", e?.message || e);
+    }
 
     return j(res, 200, { ok:true, orgId, incidentId, sessionId, status:"SUBMITTED" });
   } catch (e) {

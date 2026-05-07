@@ -2,6 +2,12 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_APPROVE,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -24,7 +30,47 @@ exports.approveFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const sessionId = mustStr(body.sessionId, "sessionId");
-    const approvedBy = String(body.approvedBy || "supervisor_ui");
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 4: approve/finalize is admin-or-supervisor only.
+    // The gate runs before the session-existence read so a non-member
+    // never even discovers whether the session exists.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_APPROVE);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[approveFieldSessionV1] authz_denied", {
+        fn: "approveFieldSessionV1",
+        orgId,
+        incidentId,
+        sessionId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_APPROVE,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[approveFieldSessionV1] authz_ok", {
+      fn: "approveFieldSessionV1",
+      orgId,
+      incidentId,
+      sessionId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_APPROVE,
+    });
+
+    // approvedBy now prefers the verified actor uid; legacy body field
+    // remains as a UI-friendly fallback for callers that don't yet send
+    // a Firebase Auth bearer token.
+    const approvedBy = String(actorUid || body.approvedBy || "supervisor_ui");
 
     const db = getFirestore();
     const sesRef = db.collection("orgs").doc(orgId)

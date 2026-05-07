@@ -9,6 +9,8 @@ import AdminNav from "../../_components/AdminNav";
 import GuidedWorkflowPanel from "../../_components/GuidedWorkflowPanel";
 import ValidationPanel from "../../_components/ValidationPanel";
 import { mintEvidenceReadUrl, getBestEvidenceImageRef } from "@/lib/evidence/signedThumb";
+// PEAKOPS_SLICE14_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+import { authedFetch } from "@/../lib/apiClient";
 
 
 function btn(primary: boolean): React.CSSProperties {
@@ -27,7 +29,7 @@ function btn(primary: boolean): React.CSSProperties {
 
   async function handleCreateIncidentV1(orgId: string) {
     try {
-      const r = await fetch("/api/fn/createIncidentV1", {
+      const r = await authedFetch("/api/fn/createIncidentV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId, title: "New Incident" }),
@@ -126,7 +128,7 @@ export default function AdminIncidentDetail() {
 
   async function loadEvidence() {
     try {
-      const r = await fetch(`/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=20`);
+      const r = await authedFetch(`/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=20`);
       const j = await r.json().catch(() => null);
       if (!j?.ok) return;
       const items: any[] = Array.isArray(j.docs) ? j.docs : [];

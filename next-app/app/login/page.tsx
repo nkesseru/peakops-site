@@ -164,21 +164,44 @@ export default function LoginPage() {
             ? "Sign in to continue to the page you requested."
             : "We'll email you a one-time link to sign in."}
         </p>
-        {/* PEAKOPS_LOGIN_DEV_SESSION_CHIP_V1 (2026-04-28)
-            Dev-only QA hint surfacing the "not signed in" state and
-            (when present) the captured return-to. Hidden in prod. */}
-        {process.env.NODE_ENV !== "production" ? (
+        {/* PEAKOPS_LOGIN_SESSION_CHIP_V2 (2026-05-06)
+            Buyer-facing session hint. Replaces an earlier dev-only
+            chip that leaked the raw return-to path (e.g.
+            "returning to /incidents/inc_..."), which read as
+            internal product jargon to buyers. The chip now shows
+            friendly copy in any environment. The actual return-to
+            path is preserved as a separate, clearly-labeled "Dev
+            diagnostics" line in non-production builds so QA still
+            sees it.
+
+            The main paragraph copy above (sent / pendingReturnTo /
+            default branches) covers the primary status. This chip
+            is the secondary reassurance line. */}
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 11,
+            color: "rgba(255,255,255,0.55)",
+            lineHeight: 1.45,
+          }}
+        >
+          {pendingReturnTo
+            ? "After sign-in, we'll take you back to your requested page."
+            : "Sign in to continue to PeakOps."}
+        </div>
+        {process.env.NODE_ENV !== "production" && pendingReturnTo ? (
           <div
+            aria-hidden
             style={{
-              marginTop: 8,
+              marginTop: 4,
               fontSize: 10,
-              color: "rgba(255,255,255,0.45)",
+              color: "rgba(255,255,255,0.28)",
               fontFamily: "ui-monospace, monospace",
+              letterSpacing: "0.02em",
               wordBreak: "break-all",
             }}
           >
-            Session: not signed in
-            {pendingReturnTo ? ` · returning to ${pendingReturnTo}` : ""}
+            Dev diagnostics · returnTo={pendingReturnTo}
           </div>
         ) : null}
 

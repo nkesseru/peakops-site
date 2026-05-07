@@ -4,6 +4,12 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
 const { resolveEvidenceBucket } = require("./evidenceBucket");
 const { normalizeContentType, isHeicEvidence } = require("./evidenceHeic");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -87,6 +93,44 @@ exports.addEvidenceV1 = onRequest({ cors: true }, async (req, res) => {
 const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const sessionId = mustStr(body.sessionId, "sessionId");
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 5: evidence upload is field-or-above. Field
+    // crews routinely upload photos as part of capture; viewers are
+    // denied. Upgraded from the Slice 2 membership-only gate. Runs
+    // before the emulator object-existence probe / any Firestore
+    // write so a denied caller never even hits Storage.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[addEvidenceV1] authz_denied", {
+        fn: "addEvidenceV1",
+        orgId,
+        incidentId,
+        sessionId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[addEvidenceV1] authz_ok", {
+      fn: "addEvidenceV1",
+      orgId,
+      incidentId,
+      sessionId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
 
     const phase = cleanLabel(body.phase || "UNSPEC");
     const labelsRaw = Array.isArray(body.labels) ? body.labels : [];
