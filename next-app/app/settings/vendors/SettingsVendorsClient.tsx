@@ -49,8 +49,22 @@ export default function SettingsVendorsClient() {
   // PEAKOPS_VENDOR_SETTINGS_V2 (2026-05-04)
   // Same membership + admin gate as the team page. A user must
   // belong to the org first; admin claim adds write privileges.
+  //
+  // PEAKOPS_VENDOR_OWNER_PRIV_V1 (2026-05-07)
+  // Slice 17 internal-alpha smoke caught that owners (role: "owner",
+  // set by bootstrapPilotOrgV1) were UI-blocked from the vendor
+  // controls — the Add Vendor button was hidden and the row Edit/
+  // Archive buttons were suppressed. Firestore rules already grant
+  // owners the same vendor write privileges as admins
+  // (isOwnerOrAdmin in firestore.rules:155), so this was a UI-only
+  // misalignment, not a data-layer change. Extending the predicate
+  // here keeps `isAdmin` as the boolean privilege gate name (used
+  // in 14+ sites incl. the VendorRow prop) but its semantic now
+  // reads "admin-equivalent vendor management privilege" — owner
+  // OR admin. Viewer / field / supervisor remain read-only,
+  // unchanged.
   const isMemberOfOrg = !!orgId && claims.orgIds.includes(orgId);
-  const isAdmin = isMemberOfOrg && myRole === "admin";
+  const isAdmin = isMemberOfOrg && (myRole === "admin" || myRole === "owner");
 
   const backHref = orgId ? `/incidents?orgId=${encodeURIComponent(orgId)}` : "/incidents";
   const profileHref = orgId ? `/settings?orgId=${encodeURIComponent(orgId)}` : "/settings";
@@ -302,7 +316,7 @@ export default function SettingsVendorsClient() {
 
         {!isAdmin && (
           <div style={readOnlyBannerStyle}>
-            View only — only admins can add or edit vendors.
+            View only — only owners or admins can add or edit vendors.
           </div>
         )}
 
