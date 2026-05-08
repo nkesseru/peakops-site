@@ -297,6 +297,16 @@ export default function OnboardingClient() {
     window.history.replaceState({}, "", url.toString());
   }, [stepIdx, orgId]);
 
+  // PEAKOPS_ONBOARDING_RESUME_AUTO_CLEAR_V1 (2026-05-08)
+  // "Setup progress restored" chip is a one-time hint. Clear it the
+  // moment the user lands on the welcome step (returning to start)
+  // so it doesn't linger across an entire session. The chip also
+  // clears on every persistStep — this handles the back-to-Welcome
+  // case that doesn't go through persistStep.
+  useEffect(() => {
+    if (stepIdx === 0 && resumed) setResumed(false);
+  }, [stepIdx, resumed]);
+
   const goNext = () => setStepIdx((s) => Math.min(STEPS.length - 1, s + 1));
   const goBack = () => setStepIdx((s) => Math.max(0, s - 1));
 
@@ -319,13 +329,24 @@ export default function OnboardingClient() {
     }
   }, [stepIdx, orgName, industry, selectedTemplate]);
 
+  // PEAKOPS_ONBOARDING_INVITE_VALIDATION_V1 (2026-05-08)
+  // Minimal email validator. Not RFC-correct (that path is a tarball);
+  // catches the bulk of typos without forbidding edge-case-but-real
+  // addresses. Used by the Team step to gate Add Invite + drive the
+  // inline helper text.
+  const isValidEmail = (v: string): boolean => {
+    const s = String(v || "").trim();
+    if (!s) return false;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+  };
+
   // Invite handlers write through to the inviteDrafts subcollection.
   // DRAFT only — no email is sent. The honest copy on the Team step
   // says so verbatim. A future invite-send pipeline reads these
   // drafts and promotes them to real members.
   async function addInvite() {
     const email = inviteEmail.trim().toLowerCase();
-    if (!email || !email.includes("@")) return;
+    if (!isValidEmail(email)) return;
     if (invites.some((i) => i.email === email)) { setInviteEmail(""); return; }
     setInviteEmail("");
     try {
@@ -616,33 +637,67 @@ export default function OnboardingClient() {
           invitations go out the moment your organization is provisioned. Skip this and add
           them later from Settings whenever you&apos;re ready.
         </p>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <input
-            type="email"
-            value={inviteEmail}
-            onChange={(e) => setInviteEmail(e.target.value)}
-            placeholder="teammate@example.com"
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addInvite(); } }}
-            style={{ ...inputStyle(), flex: "2 1 240px" }}
-          />
-          <select
-            value={inviteRole}
-            onChange={(e) => setInviteRole(e.target.value as "admin" | "supervisor" | "field")}
-            style={{ ...inputStyle(), flex: "0 0 160px", cursor: "pointer" }}
-          >
-            <option value="field">Field crew</option>
-            <option value="supervisor">Supervisor</option>
-            <option value="admin">Admin</option>
-          </select>
-          <button
-            type="button"
-            onClick={addInvite}
-            disabled={!inviteEmail.trim()}
-            style={secondaryButtonStyle(!inviteEmail.trim())}
-          >
-            + Add invite
-          </button>
-        </div>
+        {/* PEAKOPS_ONBOARDING_INVITE_VALIDATION_V1 (2026-05-08)
+            inviteValid drives both the input visual state and the
+            Add Invite button's gold-active styling. showInvalid only
+            flips true when the user has typed something AND it
+            doesn't pass — silent on empty so the field doesn't
+            scream at first focus. */}
+        {(() => {
+          const inviteValid = isValidEmail(inviteEmail);
+          const showInvalid = inviteEmail.trim().length > 0 && !inviteValid;
+          return (
+            <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="teammate@example.com"
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addInvite(); } }}
+                  aria-invalid={showInvalid || undefined}
+                  style={{
+                    ...inputStyle(),
+                    flex: "2 1 240px",
+                    border: showInvalid
+                      ? "1px solid rgba(220,60,60,0.55)"
+                      : `1px solid ${TOKENS.border}`,
+                  }}
+                />
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value as "admin" | "supervisor" | "field")}
+                  style={{ ...inputStyle(), flex: "0 0 160px", cursor: "pointer" }}
+                >
+                  <option value="field">Field crew</option>
+                  <option value="supervisor">Supervisor</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={addInvite}
+                  disabled={!inviteValid}
+                  style={addInviteButtonStyle(inviteValid)}
+                >
+                  + Add invite
+                </button>
+              </div>
+              {showInvalid ? (
+                <span
+                  role="alert"
+                  style={{
+                    fontSize: 11,
+                    color: "#fca5a5",
+                    lineHeight: 1.5,
+                    paddingLeft: 2,
+                  }}
+                >
+                  Enter a valid email.
+                </span>
+              ) : null}
+            </div>
+          );
+        })()}
         {invites.length > 0 ? (
           <div style={{ display: "grid", gap: 6 }}>
             {invites.map((inv) => (
@@ -988,7 +1043,11 @@ export default function OnboardingClient() {
       case "industry":  return "Continue";
       case "ops_focus": return opsFocusSelected.length > 0 || opsFocusNotes.trim().length > 0 ? "Continue" : "Skip for now";
       case "workflow":  return "Continue";
-      case "team":      return invites.length > 0 ? "Continue" : "Skip for now";
+      // PEAKOPS_ONBOARDING_TEAM_CTA_COPY_V1 (2026-05-08)
+      // "Continue without invites" reads as a deliberate choice
+      // rather than a skip; "Continue" once at least one invite
+      // is queued.
+      case "team":      return invites.length > 0 ? "Continue" : "Continue without invites";
       case "ready":     return "Open Jobs →";
     }
   })();
@@ -1126,9 +1185,17 @@ export default function OnboardingClient() {
           </footer>
         </section>
 
-        <div style={{ textAlign: "center", fontSize: 11, color: TOKENS.textFaint }}>
-          Demo preview — no records are written yet. Refresh this page and we&apos;ll keep you on the same step.
-        </div>
+        {/* PEAKOPS_ONBOARDING_FOOTER_COPY_V1 (2026-05-08)
+            Old copy ("Demo preview — no records are written yet")
+            was misleading: writes DO happen — to either the local
+            emulator (demo-org) or production Firestore (real org).
+            Surface honest copy only on demo-org; hide for real
+            customer orgs to avoid implying they're in a sandbox. */}
+        {orgId === "demo-org" ? (
+          <div style={{ textAlign: "center", fontSize: 11, color: TOKENS.textFaint }}>
+            Local demo — setup progress is saved to the emulator. Refresh and we&apos;ll keep you on the same step.
+          </div>
+        ) : null}
       </div>
     </main>
   );
@@ -1445,5 +1512,28 @@ function secondaryButtonStyle(disabled: boolean): React.CSSProperties {
     background: "transparent",
     color: disabled ? TOKENS.textFaint : TOKENS.textMuted,
     fontFamily: "inherit",
+  };
+}
+
+// PEAKOPS_ONBOARDING_INVITE_VALIDATION_V1 (2026-05-08)
+// Active state for the inline "+ Add invite" button on the Team
+// step. Active = gold border + tinted gold background + gold text
+// (matches the PeakOps tertiary CTA style — strong enough to read
+// as actionable without competing visually with the bottom-of-step
+// gold-fill primary). Inactive = muted, same posture as the prior
+// disabled secondary button so the disabled state still reads as
+// "this is waiting on something."
+function addInviteButtonStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: "11px 18px",
+    borderRadius: 8,
+    fontSize: 13, fontWeight: 700,
+    letterSpacing: "0.02em",
+    cursor: active ? "pointer" : "not-allowed",
+    border: active ? `1px solid ${TOKENS.gold}` : `1px solid ${TOKENS.border}`,
+    background: active ? "rgba(200,168,78,0.10)" : "transparent",
+    color: active ? TOKENS.gold : TOKENS.textFaint,
+    fontFamily: "inherit",
+    transition: "background 120ms ease, border 120ms ease, color 120ms ease",
   };
 }
