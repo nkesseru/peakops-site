@@ -431,13 +431,24 @@ function FlowStageBar({ stage }: { stage: "arrive" | "evidence" | "notes" | "sub
   // the buyer-visible contradiction QA flagged.
   const isAwaitingClose = stage === "review";
 
+  // PEAKOPS_FLOWBAR_DISPLAY_ONLY_V1 (2026-05-08) — Slice Start Job 1.1.
+  // The stepper is a progress indicator, not a navigation control.
+  // role="img" + cursor: default + an aria-label make that explicit
+  // for screen readers, pointer users, and the visual hover. Each
+  // chip is a div (not a button) and carries no onClick / no hover
+  // affordance — clicking does nothing because nothing is wired,
+  // and now nothing about its rendering implies it should be wired.
   return (
-    <div style={{ padding: "7px 16px", background: "#050505", borderBottom: "1px solid #1c1c1c", display: "flex", alignItems: "center", gap: 4, overflowX: "auto" }}>
+    <div
+      role="img"
+      aria-label={`Lifecycle progress: ${steps.find((x) => x.key === normalizedStage)?.label || "—"}`}
+      style={{ padding: "7px 16px", background: "#050505", borderBottom: "1px solid #1c1c1c", display: "flex", alignItems: "center", gap: 4, overflowX: "auto", cursor: "default" }}
+    >
         {steps.map((s, i) => {
           const active = !isFullyDone && !isAwaitingClose && effectiveIdx === i;
           const done = isFullyDone || effectiveIdx > i;
           return (
-            <div key={s.key} style={{ display: "flex", alignItems: "center" }}>
+            <div key={s.key} aria-hidden style={{ display: "flex", alignItems: "center", cursor: "default" }}>
               <div style={{
                 display: "flex", alignItems: "center", gap: 4,
                 padding: "5px 12px", borderRadius: 6, whiteSpace: "nowrap",
@@ -448,6 +459,8 @@ function FlowStageBar({ stage }: { stage: "arrive" | "evidence" | "notes" | "sub
                 borderRight: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
                 borderBottom: active ? "1px solid #C8A84E" : done ? "1px solid rgba(34,197,94,0.2)" : "1px solid #1c1c1c",
                 borderLeft: active ? "1px solid #C8A84E" : done ? "2px solid #22c55e" : "1px solid #1c1c1c",
+                cursor: "default",
+                userSelect: "none",
               }}>
                 {done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                 {s.label}

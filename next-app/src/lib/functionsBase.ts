@@ -19,8 +19,25 @@ function isLocalDev() {
   return process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ENV === "local";
 }
 
+// PEAKOPS_FUNCTIONS_BASE_RESOLVE_V1 (2026-05-08) — Slice Start Job 1.1.
+// Match the env-resolution order used by app/api/fn/_proxy.ts (Slice 17
+// hotfix a085f7e). Vercel Production has NEXT_PUBLIC_PEAKOPS_FN_BASE
+// set as the canonical name; older deploys / local dev may carry
+// NEXT_PUBLIC_FUNCTIONS_BASE. Reading them in this order means every
+// consumer of getFunctionsBase() — IncidentClient.refresh(),
+// IncidentClient.markArrived(), and similar guards elsewhere — picks
+// up the production value and stops short-circuiting their own data
+// loads / mutations. Without this, production refresh() bails at
+// `if (!base) return` and the detail page never fetches the incident
+// or its jobs, which is what produced "Untitled incident" + the
+// missing arrival timestamp + the "Task uqxWDo" fallback in the
+// Slice 17C First Job production smoke.
 export function getEnvFunctionsBase() {
-  const envBase = String(process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "").trim();
+  const envBase = String(
+    process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE ||
+    process.env.NEXT_PUBLIC_FUNCTIONS_BASE ||
+    "",
+  ).trim();
   return envBase ? normalizeLocalFunctionsBase(envBase) : "";
 }
 
