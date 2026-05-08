@@ -6,6 +6,14 @@ import { getFunctionsBase } from "@/lib/functionsBase";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { incidentStatusLabel } from "@/lib/incidents/incidentStatus";
+// PEAKOPS_JOB_DETAIL_AUTH_V1 (2026-05-08) — Slice Start Job 1.3.
+// Production smoke caught markJobCompleteV1 returning 401 Missing
+// Authorization header. Root cause: this file's local postJson +
+// refresh() were using bare fetch() without the Firebase ID token.
+// Route every /api/fn/* call through authedFetch so the
+// enforceOrgAndProxy chain accepts them, matching the pattern
+// IncidentClient established in Slice 17 / 17C.
+import { authedFetch } from "@/../lib/apiClient";
 
 type JobDoc = {
   id: string;
@@ -93,7 +101,12 @@ function actorEmail() {
 }
 
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  // PEAKOPS_JOB_DETAIL_AUTH_V1 (2026-05-08) — must use authedFetch.
+  // Bare fetch was producing 401 Missing Authorization on
+  // markJobCompleteV1 / updateJobNotesV1 in production. Proxy-side
+  // enforceOrgAndProxy validates the Firebase ID token and only
+  // accepts requests that carry it.
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -158,7 +171,14 @@ export default function JobDetailClient({
   }, [job]);
 
   async function refresh() {
-    if (!functionsBase) return;
+    // PEAKOPS_JOB_DETAIL_AUTH_V1 (2026-05-08) — route through the
+    // Vercel /api/fn/* proxy via authedFetch, NOT a direct cloud-
+    // function URL. The direct-URL pattern (a) skipped the bearer
+    // token and (b) required a non-empty getFunctionsBase() — both
+    // of which broke this page in production. The relative path
+    // works regardless of env-var config and the proxy injects the
+    // server-derived actor identity from the verified token, so
+    // actorUid / actorRole query params drop here too.
     if (!incidentId) {
       setErr("This page is missing incident context. Open it from a task tile on the incident page.");
       return;
@@ -167,12 +187,10 @@ export default function JobDetailClient({
     setErr("");
     try {
       const url =
-        `${functionsBase}/getJobV1?orgId=${encodeURIComponent(orgId)}` +
+        `/api/fn/getJobV1?orgId=${encodeURIComponent(orgId)}` +
         `&incidentId=${encodeURIComponent(incidentId)}` +
-        `&jobId=${encodeURIComponent(jobId)}` +
-        `&actorUid=${encodeURIComponent(actorUid())}` +
-        `&actorRole=${encodeURIComponent(actorRole())}`;
-      const res = await fetch(url);
+        `&jobId=${encodeURIComponent(jobId)}`;
+      const res = await authedFetch(url);
       const txt = await res.text();
       const out = txt ? JSON.parse(txt) : {};
       if (!res.ok || !out?.ok) throw new Error(out?.error || `getJobV1 failed (${res.status})`);
@@ -180,7 +198,6 @@ export default function JobDetailClient({
       setIncident(out.incident || null);
       setEvidence(Array.isArray(out.evidence) ? out.evidence : []);
       setNotes(String(out?.job?.notes || ""));
-      const assignedOrg = String(out?.job?.assignedOrgId || "").trim();
       const incidentOrg = String(out?.incident?.orgId || "").trim();
 
       // Keep API calls pinned to the canonical incident org.
@@ -455,7 +472,17 @@ export default function JobDetailClient({
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-xs uppercase tracking-wide text-gray-400">Task</div>
-            <h1 className="text-xl font-semibold">{job?.title || "Task"}</h1>
+            {/* PEAKOPS_JOB_DETAIL_HYDRATION_V1 (2026-05-08) —
+                Slice Start Job 1.3. Show a neutral loading state
+                instead of the "Task" placeholder while the initial
+                refresh is in flight. The placeholder reads as
+                "Task" only when there's no job AND we're not
+                loading (rare — error / not-found cases). */}
+            <h1 className="text-xl font-semibold">
+              {job?.title
+                ? job.title
+                : (loading ? <span className="text-gray-400">Loading…</span> : "Task")}
+            </h1>
           </div>
           <button
             type="button"
@@ -589,7 +616,18 @@ export default function JobDetailClient({
                 </div>
               );
             })}
-            {evidence.length === 0 ? <div className="text-xs text-gray-400">No evidence attached to this task yet.</div> : null}
+            {/* PEAKOPS_JOB_DETAIL_HYDRATION_V1 (2026-05-08) —
+                "No evidence attached" only when the load has
+                actually completed. While loading is in flight, show
+                a quiet skeleton so the buyer doesn't see a false
+                empty state during the post-redirect hydration race. */}
+            {evidence.length === 0 ? (
+              loading ? (
+                <div className="text-xs text-gray-400">Loading evidence…</div>
+              ) : (
+                <div className="text-xs text-gray-400">No evidence attached to this task yet.</div>
+              )
+            ) : null}
           </div>
         </section>
 
