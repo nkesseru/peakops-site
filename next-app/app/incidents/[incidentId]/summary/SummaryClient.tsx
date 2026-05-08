@@ -456,6 +456,22 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     const hasSubmitted = tlTypes.has("field_submitted");
     const hasApprovedEvent = tlTypes.has("job_approved") || tlTypes.has("field_approved") || tlTypes.has("task_approved");
     const hasClosedEvent = tlTypes.has("incident_closed") || tlTypes.has("job_closed");
+    // PEAKOPS_REPORT_PILL_PARITY_V1 (2026-05-08) — Slice Start Job 1.2.
+    // The Summary pill was getting stuck on "Open" after Arrival
+    // because the resolver inputs here didn't include hasArrival /
+    // hasNotes — the same two signals IncidentClient passes to its
+    // buildJobUiState call (next-app/app/incidents/[incidentId]/
+    // IncidentClient.tsx:2992-3007). Without them, the resolver
+    // can't flip from Open -> In Progress on a doc whose `status`
+    // is still "open" even though the timeline records arrival.
+    // Read both from the timeline event types written by the
+    // canonical callables: markArrivedV1 emits FIELD_ARRIVED;
+    // saveIncidentNotesV1 emits NOTES_SAVED.
+    const hasArrival = tlTypes.has("field_arrived");
+    const hasNotes =
+      tlTypes.has("notes_saved") ||
+      tlTypes.has("notes_added") ||
+      tlTypes.has("field_notes_added");
 
     const raw = buildJobUiState({
       status: incidentStatus,
@@ -463,6 +479,8 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       anyRejected,
       hasSubmitted,
       evidenceCount: safeEvidence.length,
+      hasArrival,
+      hasNotes,
     });
 
     // Downgrade path. The resolver itself is correct — it derives
@@ -476,6 +494,8 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         anyRejected,
         hasSubmitted,
         evidenceCount: safeEvidence.length,
+        hasArrival,
+        hasNotes,
       });
     }
     if (raw.displayState === "Approved" && !hasApprovedEvent) {
@@ -485,6 +505,8 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         anyRejected,
         hasSubmitted,
         evidenceCount: safeEvidence.length,
+        hasArrival,
+        hasNotes,
       });
     }
     return raw;
