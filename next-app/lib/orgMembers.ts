@@ -15,7 +15,14 @@ import {
 } from "firebase/firestore";
 import { db } from "./firebaseClient";
 
-export type OrgRole = "admin" | "supervisor" | "field";
+// PEAKOPS_TEAM_OWNER_ROLE_V1 (2026-05-07)
+// Slice 17 internal-alpha smoke caught Nick (role: "owner" set by
+// bootstrapPilotOrgV1) rendering as "FIELD CREW" on the team page,
+// because every helper in this file was admin/supervisor/field-only.
+// Adding "owner" + "viewer" widens the type but keeps the
+// user-assignable subset (ORG_ROLES) at admin/supervisor/field —
+// owner is a bootstrap-only role; viewer is read-only.
+export type OrgRole = "owner" | "admin" | "supervisor" | "field" | "viewer";
 
 // PEAKOPS_TEAM_ARCHIVE_V1 (2026-05-04)
 // Lifecycle status. "active" = real signed-up member, "invited" =
@@ -52,21 +59,36 @@ export type OrgMember = {
   updatedAt?: any;
 };
 
+// User-assignable subset shown in role-edit dropdowns. Owner is
+// deliberately excluded — it's set only by bootstrapPilotOrgV1.
+// Viewer is excluded for now until we expose viewer-invite UX.
 export const ORG_ROLES: OrgRole[] = ["admin", "supervisor", "field"];
 
+// Display sort: owner first (executive), admin next, then supervisor,
+// then field crew (most numerous), then viewer (read-only observers).
 const ROLE_RANK: Record<OrgRole, number> = {
-  admin: 0,
-  supervisor: 1,
-  field: 2,
+  owner: 0,
+  admin: 1,
+  supervisor: 2,
+  field: 3,
+  viewer: 4,
 };
 
 export function isOrgRole(v: unknown): v is OrgRole {
-  return v === "admin" || v === "supervisor" || v === "field";
+  return (
+    v === "owner" ||
+    v === "admin" ||
+    v === "supervisor" ||
+    v === "field" ||
+    v === "viewer"
+  );
 }
 
 export function prettyRoleLabel(role: OrgRole): string {
+  if (role === "owner") return "Owner";
   if (role === "admin") return "Admin";
   if (role === "supervisor") return "Supervisor";
+  if (role === "viewer") return "Viewer";
   return "Field crew";
 }
 
@@ -244,10 +266,22 @@ export function canEditMemberRole(
   currentRole: string,
   member: OrgMember,
 ): boolean {
-  if (currentRole !== "admin") return false;       // non-admins can't change anyone
-  if (member.id === currentUid) return false;      // can't change your own role
+  // PEAKOPS_TEAM_OWNER_ROLE_V1 (2026-05-07)
+  // Owner role inherits admin-equivalent member-management privilege.
+  // Mirrors firestore.rules:isOwnerOrAdmin and the same predicate
+  // pattern used by SettingsVendorsClient. Viewer / field /
+  // supervisor remain read-only — unchanged.
+  const cr = String(currentRole || "").toLowerCase();
+  if (cr !== "admin" && cr !== "owner") return false; // non-privileged can't change anyone
+  if (member.id === currentUid) return false;         // can't change your own role
   // PEAKOPS_TEAM_ARCHIVE_V1 (2026-05-04)
-  if (member.status === "archived") return false;  // archived members are read-only
+  if (member.status === "archived") return false;     // archived members are read-only
+  // PEAKOPS_TEAM_OWNER_ROLE_V1 (2026-05-07)
+  // Don't let a non-owner admin change an owner's role. The
+  // user-assignable role list (ORG_ROLES) excludes "owner" anyway,
+  // so a successful role-change against an owner row would silently
+  // demote them. Refusing here makes that path explicit.
+  if (member.role === "owner" && cr !== "owner") return false;
   return true;
 }
 

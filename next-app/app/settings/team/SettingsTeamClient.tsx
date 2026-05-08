@@ -63,8 +63,15 @@ export default function SettingsTeamClient() {
   // belong to this org. Admin authorization is downstream of this:
   // a user must be a member of the org first, and additionally have
   // the admin claim, to invite or change roles.
+  // PEAKOPS_TEAM_OWNER_ROLE_V1 (2026-05-07)
+  // Owner inherits admin-equivalent member-management privilege —
+  // matches the canEditMemberRole helper, the SettingsVendorsClient
+  // gate, and firestore.rules:isOwnerOrAdmin. Variable name is kept
+  // as `isAdmin` (used in 14+ sites incl. MemberRow + ArchivedRow
+  // props) and now reads as "admin-equivalent privilege gate."
+  // Viewer / field / supervisor remain read-only.
   const isMemberOfOrg = !!orgId && claims.orgIds.includes(orgId);
-  const isAdmin = isMemberOfOrg && myRole === "admin";
+  const isAdmin = isMemberOfOrg && (myRole === "admin" || myRole === "owner");
 
   const backHref = orgId ? `/incidents?orgId=${encodeURIComponent(orgId)}` : "/incidents";
   const profileHref = orgId ? `/settings?orgId=${encodeURIComponent(orgId)}` : "/settings";
@@ -690,10 +697,17 @@ function RoleBadge({ role }: { role: OrgRole }) {
   );
 }
 
+// PEAKOPS_TEAM_OWNER_ROLE_V1 (2026-05-07)
+// Owner is given the same gold accent as admin (it IS the highest
+// privilege) but a slightly stronger border so the chip reads
+// "owner > admin" at a glance. Viewer is dimmer than field — it's
+// the read-only role.
 const ROLE_PALETTE: Record<OrgRole, { bg: string; fg: string; border: string }> = {
+  owner:      { bg: "rgba(200,168,78,0.14)",  fg: "#C8A84E", border: "rgba(200,168,78,0.55)" },
   admin:      { bg: "rgba(200,168,78,0.10)",  fg: "#C8A84E", border: "rgba(200,168,78,0.35)" },
   supervisor: { bg: "rgba(126,182,255,0.10)", fg: "#7eb6ff", border: "rgba(126,182,255,0.30)" },
   field:      { bg: "rgba(180,180,180,0.06)", fg: "#b3b3b3", border: "#1c1c1c" },
+  viewer:     { bg: "rgba(140,140,140,0.06)", fg: "#9a9a9a", border: "#1c1c1c" },
 };
 
 // ---- Invite modal ----------------------------------------------------------
