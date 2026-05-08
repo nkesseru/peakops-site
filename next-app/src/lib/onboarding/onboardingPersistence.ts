@@ -48,19 +48,58 @@ import {
 } from "./industryProfiles";
 import { isDemoOrg } from "../orgKind";
 
+// PEAKOPS_ONBOARDING_V1_1_STEP_REORDER (2026-05-08)
+// Slice Onboarding 1.1 inserts two new steps and reorders the rest:
+//   welcome → org → industry → ops_focus → workflow → team → ready
+// "industry" is split out from "org" (org now captures identity +
+// contact + address, with workspace preview); "ops_focus" is the
+// new per-industry checklist. The "first_job" step was removed
+// from the user-facing flow — first-job draft persistence still
+// happens, but as part of the workflow step's save side-effect,
+// not its own screen.
+//
+// The coercer continues to honor `first_job` as a recognized key
+// so any in-flight state from the prior 6-step flow doesn't break
+// — those users are gracefully bumped to "workflow" or "ready"
+// based on their progress.
 export type OnboardingStepKey =
   | "welcome"
   | "org"
-  | "team"
+  | "industry"
+  | "ops_focus"
   | "workflow"
-  | "first_job"
-  | "ready";
+  | "team"
+  | "ready"
+  | "first_job"; // legacy: preserved for back-compat coercion only
 
 export type FirstJobDraft = {
   workflowKey: WorkflowTemplateKey;
   title: string;
   location: string;
   jobType: "repair" | "damage" | "inspection" | "other";
+};
+
+// PEAKOPS_ONBOARDING_V1_1_ADDRESS (2026-05-08)
+// Structured address for the org's HQ. Free text in v1 — no
+// validation API. Country defaults to "US" but isn't enforced.
+// Stored both on the onboarding state doc (so the wizard can show
+// progress) and mirrored to the org doc by patchOrgFromOnboarding.
+export type OrgAddress = {
+  street1: string;
+  street2: string;
+  city: string;
+  region: string;
+  postalCode: string;
+  country: string;
+};
+
+// PEAKOPS_ONBOARDING_OPS_FOCUS_V1 (2026-05-08)
+// Per-industry checklist selections. Personalization hint only —
+// never gates feature access. selected[] holds keys from the
+// industry profile's opsFocusOptions; notes is free-text.
+export type OpsFocusState = {
+  selected: ReadonlyArray<string>;
+  notes: string;
 };
 
 export type OnboardingState = {
@@ -72,10 +111,24 @@ export type OnboardingState = {
   timezone: string;
   selectedTemplate: WorkflowTemplateKey | "";
   firstJobDraft: FirstJobDraft | null;
+  // PEAKOPS_ONBOARDING_V1_1 (2026-05-08) — new identity + ops fields
+  contactEmail: string;
+  contactPhone: string;
+  address: OrgAddress | null;
+  opsFocus: OpsFocusState | null;
   /** ISO timestamp set when the buyer clicks through Ready. */
   completedAt: string | null;
   /** Set on every save by the helper; surfaces the "Setup progress restored" copy. */
   updatedAt: string | null;
+};
+
+export const EMPTY_ADDRESS: OrgAddress = {
+  street1: "",
+  street2: "",
+  city: "",
+  region: "",
+  postalCode: "",
+  country: "US",
 };
 
 export const DEFAULT_ONBOARDING_STATE: OnboardingState = {
@@ -87,12 +140,17 @@ export const DEFAULT_ONBOARDING_STATE: OnboardingState = {
   timezone: "",
   selectedTemplate: "",
   firstJobDraft: null,
+  contactEmail: "",
+  contactPhone: "",
+  address: null,
+  opsFocus: null,
   completedAt: null,
   updatedAt: null,
 };
 
 const VALID_STEPS: OnboardingStepKey[] = [
-  "welcome", "org", "team", "workflow", "first_job", "ready",
+  "welcome", "org", "industry", "ops_focus", "workflow", "team", "ready",
+  "first_job", // legacy — accepted only on coerce, never written by 1.1
 ];
 const VALID_INDUSTRIES: IndustryKey[] = [
   "utilities", "telecom", "municipality", "contractor", "other",
@@ -147,8 +205,40 @@ function coerceState(raw: unknown): OnboardingState {
       };
     }
   }
+  // PEAKOPS_ONBOARDING_V1_1 (2026-05-08) — coerce the new fields.
+  if (typeof r.contactEmail === "string") out.contactEmail = r.contactEmail;
+  if (typeof r.contactPhone === "string") out.contactPhone = r.contactPhone;
+  if (r.address && typeof r.address === "object") {
+    const a = r.address as Record<string, unknown>;
+    out.address = {
+      street1:    typeof a.street1    === "string" ? a.street1    : "",
+      street2:    typeof a.street2    === "string" ? a.street2    : "",
+      city:       typeof a.city       === "string" ? a.city       : "",
+      region:     typeof a.region     === "string" ? a.region     : "",
+      postalCode: typeof a.postalCode === "string" ? a.postalCode : "",
+      country:    typeof a.country    === "string" && a.country.trim() ? a.country : "US",
+    };
+  }
+  if (r.opsFocus && typeof r.opsFocus === "object") {
+    const f = r.opsFocus as Record<string, unknown>;
+    const selected = Array.isArray(f.selected)
+      ? f.selected.filter((s: unknown) => typeof s === "string").map((s: unknown) => String(s))
+      : [];
+    out.opsFocus = {
+      selected,
+      notes: typeof f.notes === "string" ? f.notes : "",
+    };
+  }
   if (typeof r.completedAt === "string") out.completedAt = r.completedAt;
   if (typeof r.updatedAt === "string") out.updatedAt = r.updatedAt;
+  // PEAKOPS_ONBOARDING_V1_1_LEGACY_STEP_BUMP (2026-05-08)
+  // A user mid-flow on the prior 6-step layout could have
+  // currentStep === "first_job". That step is gone in 1.1 — bump
+  // them to "workflow" so they re-enter the new flow at a sensible
+  // point rather than getting stuck on a removed screen.
+  if (out.currentStep === "first_job") {
+    out.currentStep = "workflow";
+  }
   return out;
 }
 
@@ -207,6 +297,13 @@ export async function patchOrgFromOnboarding(
      * owner is never overwritten by a later teammate's onboarding run.
      */
     ownerUserId?: string;
+    // PEAKOPS_ONBOARDING_V1_1 (2026-05-08) — new identity fields
+    // mirrored to the org doc so other surfaces (settings, future
+    // report headers) can read without re-loading the onboarding
+    // state doc.
+    contactEmail?: string;
+    contactPhone?: string;
+    address?: OrgAddress | null;
   },
 ): Promise<void> {
   if (!orgId) return;
@@ -227,6 +324,22 @@ export async function patchOrgFromOnboarding(
   if (name) out.name = name;
   if (patch.industry) out.industry = patch.industry;
   if (patch.timezone) out.timezone = patch.timezone;
+  if (typeof patch.contactEmail === "string" && patch.contactEmail.trim()) {
+    out.contactEmail = patch.contactEmail.trim();
+  }
+  if (typeof patch.contactPhone === "string" && patch.contactPhone.trim()) {
+    out.contactPhone = patch.contactPhone.trim();
+  }
+  if (patch.address && typeof patch.address === "object") {
+    out.address = {
+      street1:    String(patch.address.street1    || "").trim(),
+      street2:    String(patch.address.street2    || "").trim(),
+      city:       String(patch.address.city       || "").trim(),
+      region:     String(patch.address.region     || "").trim(),
+      postalCode: String(patch.address.postalCode || "").trim(),
+      country:    String(patch.address.country    || "US").trim(),
+    };
+  }
 
   if (!hasKind) {
     if (isDemoOrg(orgId)) {

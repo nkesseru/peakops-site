@@ -1,32 +1,35 @@
 "use client";
 
 // PEAKOPS_ONBOARDING_V1 (2026-05-06)
+// PEAKOPS_ONBOARDING_V1_1 (2026-05-08)
 //
-// First-version onboarding flow — six steps, premium dark+gold
-// shell, one clear primary CTA per step.
+// Onboarding flow — seven steps, premium dark+gold shell,
+// one clear primary CTA per step.
 //
-// Steps (index 0..5):
+// Steps (index 0..6):
 //   0 — Welcome
-//   1 — Organization setup
-//   2 — Team setup
-//   3 — Workflow template selection
-//   4 — First job launch
-//   5 — Operational readiness
+//   1 — Organization identity (name, contact, address, workspace preview)
+//   2 — Industry mode
+//   3 — Operational Focus (per-industry checklist + notes)
+//   4 — Workflow template selection
+//   5 — Team invites
+//   6 — Ready
 //
-// Persistence is intentionally deferred. This scaffold owns the
-// interaction shape, copy, progress, and visual rhythm; backend
-// writes (org doc patch, member invites, template selection,
-// incident create) are wired in the V1.1 pass — flagged inline
-// with TODO(persist:*) markers so the wire-up surface is greppable.
+// Persistence is intentionally per-step. Each forward advance
+// writes the step's data to Firestore via lib/onboarding helpers.
+// Backend writes that DON'T happen yet:
+//   - Real invite-send pipeline (drafts only)
+//   - Real first-job creation (draft on workflow step)
+//   - Logo upload (placeholder UI only — no Storage write in 1.1)
 //
 // What stays decoupled from this route on purpose:
 //   - Lifecycle state machine (canonical resolver) — onboarding
 //     never reads or mutates a job's displayState.
-//   - Existing /incidents flow — Step 5 hands off via router.push,
-//     does not embed the create form.
-//   - Auth — page assumes the user is already signed in; if not,
-//     the existing app shell redirects to /login before this route
-//     ever renders. No local auth gate here.
+//   - Existing /incidents flow — Ready step hands off via
+//     router.push, does not embed the create form.
+//   - Auth — RequireAuth at the route boundary (page.tsx) gates
+//     this client component; we never render onboarding chrome
+//     to an unauthenticated visitor.
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -38,6 +41,7 @@ import {
 } from "@/lib/onboarding/industryProfiles";
 import {
   DEFAULT_ONBOARDING_STATE,
+  EMPTY_ADDRESS,
   addInviteDraft,
   loadInviteDrafts,
   loadOnboardingState,
@@ -47,9 +51,18 @@ import {
   saveOnboardingState,
   type InviteDraft,
   type OnboardingStepKey,
+  type OrgAddress,
+  type OpsFocusState,
 } from "@/lib/onboarding/onboardingPersistence";
 
-type StepKey = "welcome" | "org" | "team" | "workflow" | "first_job" | "ready";
+type StepKey =
+  | "welcome"
+  | "org"
+  | "industry"
+  | "ops_focus"
+  | "workflow"
+  | "team"
+  | "ready";
 
 type StepDef = {
   key: StepKey;
@@ -59,13 +72,20 @@ type StepDef = {
   hint?: string;     // optional one-liner under the title
 };
 
+// PEAKOPS_ONBOARDING_V1_1 (2026-05-08)
+// Seven-step layout. "industry" pulled out of "org"; "ops_focus"
+// inserted; "first_job" removed (its draft persists as a side-effect
+// of the workflow step). Order swap moves "team" after "workflow"
+// so the buyer decides what the operation IS before deciding who
+// runs it.
 const STEPS: ReadonlyArray<StepDef> = [
-  { key: "welcome",   short: "Welcome",       eyebrow: "Step 1 of 6", title: "Welcome to PeakOps.", hint: "Let’s get your first operation ready." },
-  { key: "org",       short: "Organization",  eyebrow: "Step 2 of 6", title: "Set up your organization." },
-  { key: "team",      short: "Team",          eyebrow: "Step 3 of 6", title: "Bring your team in." },
-  { key: "workflow",  short: "Workflow",      eyebrow: "Step 4 of 6", title: "Choose your first workflow." },
-  { key: "first_job", short: "First job",     eyebrow: "Step 5 of 6", title: "Launch your first job." },
-  { key: "ready",     short: "Ready",         eyebrow: "Step 6 of 6", title: "PeakOps is ready." },
+  { key: "welcome",    short: "Welcome",     eyebrow: "Step 1 of 7", title: "Welcome to PeakOps.", hint: "Let’s get your first operation ready." },
+  { key: "org",        short: "Identity",    eyebrow: "Step 2 of 7", title: "Set up your organization." },
+  { key: "industry",   short: "Industry",    eyebrow: "Step 3 of 7", title: "Pick your industry mode." },
+  { key: "ops_focus",  short: "Focus",       eyebrow: "Step 4 of 7", title: "Operational Focus.", hint: "Help PeakOps tailor workflows, reports, and operational guidance for the kind of work your team manages most." },
+  { key: "workflow",   short: "Workflow",    eyebrow: "Step 5 of 7", title: "Choose your first workflow." },
+  { key: "team",       short: "Team",        eyebrow: "Step 6 of 7", title: "Bring your team in." },
+  { key: "ready",      short: "Ready",       eyebrow: "Step 7 of 7", title: "PeakOps is ready." },
 ];
 
 // PEAKOPS_ONBOARDING_INDUSTRY_PROFILE_V1 (2026-05-06)
@@ -157,6 +177,12 @@ export default function OnboardingClient() {
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
     catch { return "UTC"; }
   });
+  // PEAKOPS_ONBOARDING_V1_1 (2026-05-08) — identity + ops_focus state.
+  const [contactEmail, setContactEmail] = useState<string>("");
+  const [contactPhone, setContactPhone] = useState<string>("");
+  const [address, setAddress] = useState<OrgAddress>(EMPTY_ADDRESS);
+  const [opsFocusSelected, setOpsFocusSelected] = useState<string[]>([]);
+  const [opsFocusNotes, setOpsFocusNotes] = useState<string>("");
 
   // Local invite list mirrors the Firestore drafts subcollection;
   // each list entry carries the doc id so removeInviteDraft can
@@ -218,6 +244,14 @@ export default function OnboardingClient() {
           if (state.industry) setIndustry(state.industry);
           if (state.timezone) setTimezone(state.timezone);
           if (state.selectedTemplate) setSelectedTemplate(state.selectedTemplate);
+          // PEAKOPS_ONBOARDING_V1_1 — restore identity + ops_focus.
+          if (state.contactEmail) setContactEmail(state.contactEmail);
+          if (state.contactPhone) setContactPhone(state.contactPhone);
+          if (state.address) setAddress({ ...EMPTY_ADDRESS, ...state.address });
+          if (state.opsFocus) {
+            setOpsFocusSelected([...state.opsFocus.selected]);
+            setOpsFocusNotes(state.opsFocus.notes || "");
+          }
           // Mark which slices have already persisted so the Ready
           // screen can speak honestly.
           setPersisted((p) => ({
@@ -267,15 +301,19 @@ export default function OnboardingClient() {
   const goBack = () => setStepIdx((s) => Math.max(0, s - 1));
 
   // Per-step validity gates the primary CTA. Welcome and Ready are
-  // free — they're transitions, not data steps.
+  // free — they're transitions, not data steps. PEAKOPS_ONBOARDING_V1_1:
+  // org now gates on identity (name only — industry moved to its own
+  // step). ops_focus is skippable. Order: welcome → org → industry →
+  // ops_focus → workflow → team → ready.
   const canAdvance = useMemo(() => {
     const step = STEPS[stepIdx]?.key;
     switch (step) {
       case "welcome":   return true;
-      case "org":       return !!orgName.trim() && !!industry;
-      case "team":      return true; // team setup is skippable
+      case "org":       return !!orgName.trim();
+      case "industry":  return !!industry;
+      case "ops_focus": return true; // skippable — selections are personalization hints
       case "workflow":  return !!selectedTemplate;
-      case "first_job": return true;
+      case "team":      return true; // skippable
       case "ready":     return true;
       default:          return true;
     }
@@ -344,7 +382,11 @@ export default function OnboardingClient() {
     );
   }
 
-  function renderOrgSetup() {
+  // PEAKOPS_ONBOARDING_V1_1 (2026-05-08) — Organization Identity.
+  // Captures name, primary contact, and HQ address. Industry has
+  // its own step now. Includes a lightweight workspace preview so
+  // the buyer sees their org take shape as they type.
+  function renderOrgIdentity() {
     return (
       <div style={{ display: "grid", gap: 18 }}>
         <Field label="Organization name" required>
@@ -357,35 +399,70 @@ export default function OnboardingClient() {
             autoFocus
           />
         </Field>
-        <Field label="What do you do?" required>
+        <Field label="Primary contact email" hint="Where ops alerts and report links land. Separate from your sign-in email.">
+          <input
+            type="email"
+            value={contactEmail}
+            onChange={(e) => setContactEmail(e.target.value)}
+            placeholder="ops@yourcompany.com"
+            style={inputStyle()}
+          />
+        </Field>
+        <Field label="Primary phone" hint="Optional — used only for high-priority operational alerts.">
+          <input
+            type="tel"
+            value={contactPhone}
+            onChange={(e) => setContactPhone(e.target.value)}
+            placeholder="+1 555 123 4567"
+            style={inputStyle()}
+          />
+        </Field>
+        <Field label="Headquarters address" hint="Free text in v1 — no validation. Used on report headers and audit packets.">
           <div style={{ display: "grid", gap: 8 }}>
-            {INDUSTRIES.map((opt) => {
-              const active = industry === opt.key;
-              return (
-                <button
-                  key={opt.key}
-                  type="button"
-                  onClick={() => pickIndustry(opt.key)}
-                  style={{
-                    textAlign: "left",
-                    padding: "12px 14px",
-                    borderRadius: 10,
-                    border: active ? `1px solid ${TOKENS.gold}` : `1px solid ${TOKENS.border}`,
-                    background: active ? "rgba(200,168,78,0.08)" : TOKENS.cardElevated,
-                    cursor: "pointer",
-                    color: TOKENS.text,
-                    transition: "background 120ms ease, border 120ms ease",
-                  }}
-                >
-                  <div style={{ fontSize: 14, fontWeight: 700, color: active ? TOKENS.gold : TOKENS.text }}>
-                    {opt.label}
-                  </div>
-                  <div style={{ marginTop: 2, fontSize: 12, color: TOKENS.textMuted, lineHeight: 1.45 }}>
-                    {opt.sub}
-                  </div>
-                </button>
-              );
-            })}
+            <input
+              type="text"
+              value={address.street1}
+              onChange={(e) => setAddress({ ...address, street1: e.target.value })}
+              placeholder="Street address"
+              style={inputStyle()}
+            />
+            <input
+              type="text"
+              value={address.street2}
+              onChange={(e) => setAddress({ ...address, street2: e.target.value })}
+              placeholder="Suite / unit (optional)"
+              style={inputStyle()}
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 8 }}>
+              <input
+                type="text"
+                value={address.city}
+                onChange={(e) => setAddress({ ...address, city: e.target.value })}
+                placeholder="City"
+                style={inputStyle()}
+              />
+              <input
+                type="text"
+                value={address.region}
+                onChange={(e) => setAddress({ ...address, region: e.target.value })}
+                placeholder="State"
+                style={inputStyle()}
+              />
+              <input
+                type="text"
+                value={address.postalCode}
+                onChange={(e) => setAddress({ ...address, postalCode: e.target.value })}
+                placeholder="ZIP"
+                style={inputStyle()}
+              />
+            </div>
+            <input
+              type="text"
+              value={address.country}
+              onChange={(e) => setAddress({ ...address, country: e.target.value })}
+              placeholder="Country (US)"
+              style={inputStyle()}
+            />
           </div>
         </Field>
         <Field label="Time zone" hint="Used for timestamps in your reports.">
@@ -395,6 +472,136 @@ export default function OnboardingClient() {
             onChange={(e) => setTimezone(e.target.value)}
             placeholder="America/Los_Angeles"
             style={inputStyle()}
+          />
+        </Field>
+        <WorkspacePreview
+          orgName={orgName}
+          industry={industry}
+        />
+      </div>
+    );
+  }
+
+  // PEAKOPS_ONBOARDING_V1_1 (2026-05-08) — Industry mode picker.
+  // Now its own step. Selecting an industry pre-selects the
+  // recommended workflow template via INDUSTRY_TO_TEMPLATE so
+  // the buyer arrives at the workflow step with a sensible default.
+  function renderIndustryPicker() {
+    return (
+      <div style={{ display: "grid", gap: 12 }}>
+        <p style={{ margin: 0, fontSize: 13, color: TOKENS.textMuted, lineHeight: 1.55 }}>
+          We tailor terminology, timer labels, and report structure to your industry.
+          You can change this later from Settings.
+        </p>
+        <div style={{ display: "grid", gap: 8 }}>
+          {INDUSTRIES.map((opt) => {
+            const active = industry === opt.key;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => pickIndustry(opt.key)}
+                style={{
+                  textAlign: "left",
+                  padding: "12px 14px",
+                  borderRadius: 10,
+                  border: active ? `1px solid ${TOKENS.gold}` : `1px solid ${TOKENS.border}`,
+                  background: active ? "rgba(200,168,78,0.08)" : TOKENS.cardElevated,
+                  cursor: "pointer",
+                  color: TOKENS.text,
+                  transition: "background 120ms ease, border 120ms ease",
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700, color: active ? TOKENS.gold : TOKENS.text }}>
+                  {opt.label}
+                </div>
+                <div style={{ marginTop: 2, fontSize: 12, color: TOKENS.textMuted, lineHeight: 1.45 }}>
+                  {opt.sub}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // PEAKOPS_ONBOARDING_OPS_FOCUS_V1 (2026-05-08) — Operational Focus.
+  // Per-industry checklist + free-text notes. Personalization
+  // hints only — never gates feature access. Filing-aware copy
+  // for any option that names a regulator (NORS / DIRS / FEMA /
+  // grants) carries the qualifier inline.
+  function renderOpsFocus() {
+    const profile = getIndustryProfile(industry || "other");
+    const options = profile.opsFocusOptions;
+    function toggle(key: string) {
+      setOpsFocusSelected((cur) =>
+        cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
+      );
+    }
+    return (
+      <div style={{ display: "grid", gap: 14 }}>
+        <p style={{ margin: 0, fontSize: 13, color: TOKENS.textMuted, lineHeight: 1.55 }}>
+          Pick whichever apply. We&apos;ll highlight matching workflow templates and
+          report sections so the system is dialed in for your day-one work.
+        </p>
+        <div style={{ display: "grid", gap: 8 }}>
+          {options.map((opt) => {
+            const active = opsFocusSelected.includes(opt.key);
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => toggle(opt.key)}
+                aria-pressed={active}
+                style={{
+                  textAlign: "left",
+                  padding: "12px 14px",
+                  borderRadius: 10,
+                  border: active ? `1px solid ${TOKENS.gold}` : `1px solid ${TOKENS.border}`,
+                  background: active ? "rgba(200,168,78,0.08)" : TOKENS.cardElevated,
+                  cursor: "pointer",
+                  color: TOKENS.text,
+                  transition: "background 120ms ease, border 120ms ease",
+                  display: "flex",
+                  gap: 12,
+                  alignItems: "flex-start",
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 18, height: 18, borderRadius: 4, flexShrink: 0,
+                    border: active ? `1px solid ${TOKENS.gold}` : `1px solid ${TOKENS.border}`,
+                    background: active ? TOKENS.gold : "transparent",
+                    color: "#050505",
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 12, fontWeight: 800, lineHeight: 1,
+                    marginTop: 1,
+                  }}
+                >
+                  {active ? "✓" : ""}
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 14, fontWeight: 600, color: active ? TOKENS.gold : TOKENS.text }}>
+                    {opt.label}
+                  </span>
+                  {opt.note ? (
+                    <span style={{ display: "block", marginTop: 4, fontSize: 11, color: TOKENS.textFaint, lineHeight: 1.5 }}>
+                      {opt.note}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <Field label="Anything else? (optional)" hint="A line or two about your team's day-to-day.">
+          <textarea
+            value={opsFocusNotes}
+            onChange={(e) => setOpsFocusNotes(e.target.value)}
+            placeholder="e.g. We run weekend storm shifts. Crews split between substation and OSP work."
+            style={{ ...inputStyle(), minHeight: 72, resize: "vertical", fontFamily: "inherit" }}
           />
         </Field>
       </div>
@@ -496,15 +703,28 @@ export default function OnboardingClient() {
   }
 
   function renderWorkflowSelection() {
+    // PEAKOPS_ONBOARDING_V1_1 (2026-05-08) — recommended-first ordering.
+    // Pull the picked industry's recommendedWorkflows[]. Templates in
+    // that list render first with a "Recommended" pill; the rest of
+    // TEMPLATES render after. No filtering — everything stays
+    // reachable, just visually prioritized.
+    const profile = getIndustryProfile(industry || "other");
+    const recommendedSet = new Set<WorkflowTemplateKey>(profile.recommendedWorkflows);
+    const recommended = TEMPLATES.filter((t) => recommendedSet.has(t.key));
+    const recommendedKeys = new Set(recommended.map((t) => t.key));
+    const rest = TEMPLATES.filter((t) => !recommendedKeys.has(t.key));
+    const ordered = [...recommended, ...rest];
     return (
       <div style={{ display: "grid", gap: 12 }}>
         <p style={{ margin: 0, fontSize: 13, color: TOKENS.textMuted, lineHeight: 1.55 }}>
-          Pick a starter template. We&apos;ll pre-fill it with a believable job so you can
-          see the lifecycle end-to-end. You can change templates any time.
+          {industry
+            ? `We've highlighted the templates we see most often in ${profile.label.toLowerCase()} operations. Pick one to start — you can change it any time.`
+            : "Pick a starter template. We'll pre-fill it with a believable job so you can see the lifecycle end-to-end."}
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-          {TEMPLATES.map((tpl) => {
+          {ordered.map((tpl) => {
             const active = selectedTemplate === tpl.key;
+            const isRecommended = recommendedKeys.has(tpl.key);
             return (
               <button
                 key={tpl.key}
@@ -520,8 +740,27 @@ export default function OnboardingClient() {
                   color: TOKENS.text,
                   transition: "background 120ms ease, border 120ms ease, transform 120ms ease",
                   transform: active ? "translateY(-1px)" : "none",
+                  position: "relative",
                 }}
               >
+                {isRecommended && industry ? (
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: 10,
+                      right: 10,
+                      fontSize: 9, fontWeight: 700, letterSpacing: "0.10em",
+                      padding: "3px 7px",
+                      borderRadius: 999,
+                      border: `1px solid ${TOKENS.borderActive}`,
+                      background: "rgba(200,168,78,0.10)",
+                      color: TOKENS.gold,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Recommended
+                  </span>
+                ) : null}
                 <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", color: active ? TOKENS.gold : TOKENS.textFaint, textTransform: "uppercase" }}>
                   {active ? "✓ Selected" : "Template"}
                 </div>
@@ -545,40 +784,6 @@ export default function OnboardingClient() {
               </button>
             );
           })}
-        </div>
-      </div>
-    );
-  }
-
-  function renderFirstJob() {
-    const tpl = TEMPLATES.find((t) => t.key === selectedTemplate) || TEMPLATES[0];
-    const orgLabel = orgName.trim() || "your organization";
-    const inviteCount = invites.length;
-    return (
-      <div style={{ display: "grid", gap: 18 }}>
-        <p style={{ margin: 0, fontSize: 14, color: TOKENS.textMuted, lineHeight: 1.6 }}>
-          Here&apos;s what we&apos;ll set up the moment you launch:
-        </p>
-        <div
-          style={{
-            borderRadius: 12,
-            border: `1px solid ${TOKENS.border}`,
-            background: TOKENS.cardElevated,
-            padding: "16px 18px",
-            display: "grid", gap: 10,
-          }}
-        >
-          <Summary label="Organization" value={orgLabel} />
-          <Summary label="Workflow"     value={tpl.label} />
-          <Summary label="First job"    value={tpl.sample} />
-          <Summary label="Invites"      value={inviteCount === 0 ? "None — you can invite later" : `${inviteCount} ${inviteCount === 1 ? "person" : "people"}`} />
-          <Summary label="Time zone"    value={timezone || "—"} />
-        </div>
-        <div style={{ fontSize: 12, color: TOKENS.textFaint, lineHeight: 1.55 }}>
-          Once provisioning runs, this job lands on the Jobs board as <span style={{ color: TOKENS.gold }}>Open</span>.
-          The field crew captures photos, the supervisor reviews and closes, and the audit-ready
-          report appears the moment the job closes. Today&apos;s preview shows the destination — no
-          record is written yet.
         </div>
       </div>
     );
@@ -645,6 +850,16 @@ export default function OnboardingClient() {
   // motion on a Firestore write — if a write fails we log in dev
   // and keep walking. The honest preview copy on each step covers
   // us if persistence silently lags.
+  //
+  // PEAKOPS_ONBOARDING_V1_1 (2026-05-08) — step rewrites:
+  //   - "org" now persists name + contact + address. Industry has
+  //     its own step.
+  //   - "industry" persists the industry choice and patches the org
+  //     doc so other surfaces flip terminology immediately.
+  //   - "ops_focus" persists the checklist + notes.
+  //   - "workflow" persists the template AND saves the first-job
+  //     draft as a side-effect (the standalone first_job step is
+  //     gone in 1.1).
   async function persistStep(stepKey: OnboardingStepKey) {
     const completedSet = new Set<OnboardingStepKey>();
     for (const s of STEPS) {
@@ -655,28 +870,41 @@ export default function OnboardingClient() {
     const nextIdx = Math.min(STEPS.length - 1, stepIdx + 1);
     const nextStepKey: OnboardingStepKey = STEPS[nextIdx].key as OnboardingStepKey;
     try {
-      // 1) Patch org doc with the name/industry/timezone the moment
-      //    the buyer leaves the Org step, so other surfaces can
-      //    swap terminology + timer labels per industry without
-      //    waiting for the full flow to complete.
-      if (stepKey === "org" && orgName.trim() && industry) {
+      // 1) Org Identity — persists name + contact + address. We
+      //    bootstrap the org doc here even before industry is
+      //    picked so a fresh-create org has its kind/orgType/status
+      //    fields landed early.
+      if (stepKey === "org" && orgName.trim()) {
         await patchOrgFromOnboarding(orgId, {
           orgName: orgName.trim(),
+          timezone,
+          contactEmail,
+          contactPhone,
+          address,
+          ownerUserId: authUser?.uid || "",
+        });
+        setPersisted((p) => ({ ...p, org: true }));
+      }
+      // 2) Industry — patches the org doc so terminology flips
+      //    everywhere. Pre-selects a recommended workflow if none
+      //    is set yet (handled by pickIndustry on click).
+      if (stepKey === "industry" && industry) {
+        await patchOrgFromOnboarding(orgId, {
           industry,
           timezone,
           ownerUserId: authUser?.uid || "",
         });
-        setPersisted((p) => ({ ...p, org: true, industry: true }));
+        setPersisted((p) => ({ ...p, industry: true }));
       }
-      // 2) Workflow selection persists on its step.
+      // 3) Ops Focus — selections + notes are persisted via the
+      //    state doc below (see saveOnboardingState payload). No
+      //    org-doc patch — these are personalization hints.
+      // 4) Workflow — also takes the first-job DRAFT side-effect
+      //    that used to live on the standalone first_job step.
+      //    v1 never creates a real incident; the draft is honest
+      //    "preview / draft" copy on the Ready screen.
       if (stepKey === "workflow" && selectedTemplate) {
         setPersisted((p) => ({ ...p, workflow: true }));
-      }
-      // 3) First-job DRAFT persists on its step. v1 never creates a
-      //    real incident — UI copy says "preview / draft" so this
-      //    is honest. A future pass promotes the draft to a real
-      //    `incidents/{id}` via createIncidentV1.
-      if (stepKey === "first_job" && selectedTemplate) {
         const profile = getIndustryProfile(industry || "other");
         const tpl = TEMPLATES.find((t) => t.key === selectedTemplate);
         const title = (tpl?.sample || profile.starterJob.title || "First operational job").trim();
@@ -690,10 +918,14 @@ export default function OnboardingClient() {
         });
         if (id) setPersisted((p) => ({ ...p, firstJobDraft: true }));
       }
-      // 4) Persist the flow state (currentStep, completed set, all
+      // 5) Persist the flow state (currentStep, completed set, all
       //    form values, completedAt when we hit Ready). Single
       //    round-trip per step.
       const isReady = stepKey === "ready";
+      const opsFocus: OpsFocusState | null =
+        opsFocusSelected.length > 0 || opsFocusNotes.trim().length > 0
+          ? { selected: opsFocusSelected, notes: opsFocusNotes }
+          : null;
       await saveOnboardingState(orgId, {
         currentStep: nextStepKey,
         completedSteps: Array.from(completedSet),
@@ -701,6 +933,12 @@ export default function OnboardingClient() {
         industry,
         timezone,
         selectedTemplate,
+        contactEmail,
+        contactPhone,
+        address: (address.street1 || address.city || address.region || address.postalCode)
+          ? address
+          : null,
+        opsFocus,
         firstJobDraft: selectedTemplate ? {
           workflowKey: selectedTemplate,
           title: (TEMPLATES.find((t) => t.key === selectedTemplate)?.sample || "").trim(),
@@ -722,9 +960,10 @@ export default function OnboardingClient() {
     switch (step) {
       case "welcome":
       case "org":
-      case "team":
+      case "industry":
+      case "ops_focus":
       case "workflow":
-      case "first_job":
+      case "team":
         void persistStep(step as OnboardingStepKey);
         goNext();
         return;
@@ -746,19 +985,21 @@ export default function OnboardingClient() {
     switch (step.key) {
       case "welcome":   return "Get operational →";
       case "org":       return "Continue";
-      case "team":      return invites.length > 0 ? "Continue" : "Skip for now";
+      case "industry":  return "Continue";
+      case "ops_focus": return opsFocusSelected.length > 0 || opsFocusNotes.trim().length > 0 ? "Continue" : "Skip for now";
       case "workflow":  return "Continue";
-      case "first_job": return "See it on the board →";
+      case "team":      return invites.length > 0 ? "Continue" : "Skip for now";
       case "ready":     return "Open Jobs →";
     }
   })();
   const stepBody = (() => {
     switch (step.key) {
       case "welcome":   return renderWelcome();
-      case "org":       return renderOrgSetup();
-      case "team":      return renderTeamSetup();
+      case "org":       return renderOrgIdentity();
+      case "industry":  return renderIndustryPicker();
+      case "ops_focus": return renderOpsFocus();
       case "workflow":  return renderWorkflowSelection();
-      case "first_job": return renderFirstJob();
+      case "team":      return renderTeamSetup();
       case "ready":     return renderReady();
     }
   })();
@@ -1006,6 +1247,133 @@ function Summary({ label, value }: { label: string; value: string }) {
         {label}
       </span>
       <span style={{ fontSize: 13, color: TOKENS.text, lineHeight: 1.45 }}>{value}</span>
+    </div>
+  );
+}
+
+// PEAKOPS_ONBOARDING_WORKSPACE_PREVIEW_V1 (2026-05-08)
+// Lightweight preview shown on the Org Identity step. Updates live
+// as the buyer types their org name + (eventually) picks an
+// industry. Logo slot is a NON-FUNCTIONAL placeholder — Storage
+// upload + image rendering ship in a later slice. The placeholder
+// shows the org's first letter on a gold gradient so it reads as
+// intentional, not broken.
+function WorkspacePreview({
+  orgName,
+  industry,
+}: {
+  orgName: string;
+  industry: IndustryKey | "";
+}) {
+  const display = (orgName || "").trim();
+  const headline = display || "Your organization";
+  const initial = display ? display.charAt(0).toUpperCase() : "•";
+  const profile = industry ? getIndustryProfile(industry) : null;
+  const industryLabel = profile ? profile.label : "Industry — pick on the next step";
+  const reportLine = `${headline} · ${profile ? profile.label : "Operations"} field record`;
+  return (
+    <div
+      aria-label="Workspace preview"
+      style={{
+        marginTop: 4,
+        padding: "16px 18px",
+        borderRadius: 12,
+        border: `1px solid ${TOKENS.border}`,
+        background: TOKENS.cardElevated,
+        display: "grid",
+        gap: 12,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: "0.16em",
+          color: TOKENS.textFaint,
+          textTransform: "uppercase",
+        }}
+      >
+        Workspace preview
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+        <div
+          aria-hidden
+          style={{
+            width: 48, height: 48,
+            borderRadius: 10,
+            background: goldGradient,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            color: "#050505",
+            fontSize: 20, fontWeight: 800, letterSpacing: "0.02em",
+            boxShadow: "0 4px 16px rgba(200,168,78,0.20)",
+            flexShrink: 0,
+          }}
+          title="Logo placeholder — upload coming soon"
+        >
+          {initial}
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{
+              fontSize: 15,
+              fontWeight: 700,
+              color: TOKENS.text,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {headline}
+          </div>
+          <div style={{ fontSize: 11, color: TOKENS.textFaint, marginTop: 2 }}>
+            {industryLabel}
+          </div>
+        </div>
+        <span
+          style={{
+            fontSize: 9, fontWeight: 600, letterSpacing: "0.10em",
+            padding: "3px 7px",
+            borderRadius: 999,
+            border: `1px dashed ${TOKENS.border}`,
+            color: TOKENS.textFaint,
+            textTransform: "uppercase",
+            whiteSpace: "nowrap",
+          }}
+          title="Logo upload available in a future release"
+        >
+          Add logo · soon
+        </span>
+      </div>
+      <div
+        style={{
+          padding: "10px 12px",
+          borderRadius: 8,
+          border: `1px dashed ${TOKENS.border}`,
+          background: TOKENS.bg,
+          fontSize: 11,
+          color: TOKENS.textFaint,
+          lineHeight: 1.5,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: "0.14em",
+            color: TOKENS.textFaint,
+            textTransform: "uppercase",
+            marginBottom: 4,
+          }}
+        >
+          Sample report header
+        </div>
+        <div style={{ color: TOKENS.text, fontSize: 12, fontWeight: 600 }}>
+          {reportLine}
+        </div>
+        <div style={{ marginTop: 2 }}>
+          Audit-ready · timestamps · supervisor sign-off
+        </div>
+      </div>
     </div>
   );
 }

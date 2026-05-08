@@ -6,12 +6,15 @@
 // deep-linking into a specific step) without aborting the static
 // prerender.
 import { Suspense } from "react";
+import RequireAuth from "@/components/RequireAuth";
 import OnboardingClient from "./OnboardingClient";
 
 export default function OnboardingPage() {
   return (
     <Suspense fallback={null}>
-      <OnboardingClient />
+      <RequireAuth>
+        <OnboardingClient />
+      </RequireAuth>
     </Suspense>
   );
 }
