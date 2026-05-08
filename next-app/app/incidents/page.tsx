@@ -10,6 +10,15 @@ import { authedFetch } from "@/lib/apiClient";
 import { resolveJobDisplayState, jobDisplayStateKey, type JobDisplayState } from "@/lib/incidents/resolveJobDisplayState";
 import NotificationsBell from "@/components/NotificationsBell";
 import RequireAuth from "@/components/RequireAuth";
+// PEAKOPS_ONBOARDING_DOWNSTREAM_VIEW_V1 (2026-05-08)
+// Slice Onboarding 1.2 — wire onboarding selections into Mission
+// Control so the empty state + Start Job panel reflect the
+// industry/workflow the buyer picked during /onboarding.
+import {
+  DEFAULT_ORG_ONBOARDING_VIEW,
+  loadOrgOnboardingView,
+  type OrgOnboardingView,
+} from "@/lib/onboarding/orgOnboardingView";
 import { loadActiveVendorsForOrg } from "@/lib/jobVendor";
 import {
   buildVendorSlugMap,
@@ -801,6 +810,30 @@ function IncidentsIndexBody() {
     };
   }, [orgId, authLoading, user, loadIncidents]);
 
+  // PEAKOPS_ONBOARDING_DOWNSTREAM_VIEW_V1 (2026-05-08)
+  // Best-effort load of the org's onboarding view (industry,
+  // selectedTemplate, copy hints). Failure mode is silent — the
+  // view stays at DEFAULT and Mission Control falls back to its
+  // hard-coded generic copy. Loaded once per orgId; same auth gate
+  // pattern as loadIncidents.
+  const [onboardingView, setOnboardingView] =
+    useState<OrgOnboardingView>(DEFAULT_ORG_ONBOARDING_VIEW);
+  useEffect(() => {
+    if (!orgId) return;
+    if (authLoading) return;
+    if (!user) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const v = await loadOrgOnboardingView(orgId);
+        if (!cancelled) setOnboardingView(v);
+      } catch {
+        /* swallow — fallback default already in state */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId, authLoading, user]);
+
   const role = String((claims as any)?.role || "").toLowerCase();
   const isSupervisor = SUPERVISOR_ROLES.has(role);
   const isAdmin = role === "admin";
@@ -1116,8 +1149,19 @@ function IncidentsIndexBody() {
         const k = String(r.id || r.incidentId || "");
         if (!k) continue;
         if (!allIds.has(k)) {
+          // PEAKOPS_SHORTCUT_DEBUG_DOWNGRADE_V1 (2026-05-08)
+          // Downgraded from console.error to console.debug. The
+          // shortcut shelves (Continue Work / Needs Supervisor
+          // Review / Recently Closed) are intentionally drawn from
+          // the unfiltered incident set and can legitimately
+          // contain ids that are not in the user's currently
+          // filtered All Jobs view. Treating that as an error
+          // produced false-positive red console output during
+          // normal filter changes. console.debug keeps the signal
+          // available behind DevTools' Verbose level so engineers
+          // chasing a real integrity drift can still see it.
           // eslint-disable-next-line no-console
-          console.error("[PEAKOPS_SHORTCUT_NOT_IN_ALL_JOBS]", label, k);
+          console.debug("[PEAKOPS_SHORTCUT_NOT_IN_ALL_JOBS]", label, k);
         }
       }
     }
@@ -1888,8 +1932,18 @@ function IncidentsIndexBody() {
               <div style={{ marginTop: 4, fontSize: 13, color: "#b3b3b3", lineHeight: 1.5 }}>
                 {isViewer
                   ? "You can review jobs but cannot start new work."
-                  : "Open a new job and start capturing photos."}
+                  : onboardingView.startJobSubhead}
               </div>
+              {/* PEAKOPS_ONBOARDING_DOWNSTREAM_VIEW_V1 (2026-05-08)
+                  Filing-aware hint, telecom + municipality only. The
+                  copy in orgOnboardingView always carries the
+                  "final filings remain your responsibility" qualifier
+                  so the affordance never implies auto-submission. */}
+              {!isViewer && onboardingView.filingHint ? (
+                <div style={{ marginTop: 6, fontSize: 11, color: "#9a9a9a", lineHeight: 1.5 }}>
+                  {onboardingView.filingHint}
+                </div>
+              ) : null}
             </div>
             {/* PEAKOPS_SLICE12_2_VIEWER_GATE_V1 (2026-05-07)
                 Viewer role: hide the Start Job CTA. Section copy
@@ -1941,7 +1995,7 @@ function IncidentsIndexBody() {
                   id="create-title"
                   value={createTitle}
                   onChange={(e) => setCreateTitle(e.target.value)}
-                  placeholder="e.g. Replace broken pole-top pin"
+                  placeholder={onboardingView.startJobTitlePlaceholder}
                   autoFocus
                   required
                   spellCheck
@@ -2801,7 +2855,7 @@ function IncidentsIndexBody() {
                 <div style={{ marginTop: 12, fontSize: 13, color: "#6f6f6f", lineHeight: 1.55 }}>
                   {isViewer
                     ? "No jobs to review yet."
-                    : (<>Start your first job — tap <span style={{ color: "#C8A84E", fontWeight: 600 }}>Start Job</span> above to get started.</>)}
+                    : (<>{onboardingView.emptyStatePrompt} — tap <span style={{ color: "#C8A84E", fontWeight: 600 }}>Start Job</span> above to get started.</>)}
                 </div>
               ) : (
                 <div style={{ marginTop: 12, fontSize: 13, color: "#6f6f6f", lineHeight: 1.55 }}>
