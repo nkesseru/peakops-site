@@ -23,6 +23,14 @@ import { incidentPath } from "@/lib/navigation/incidentRoutes";
 import { authedFetch } from "@/lib/apiClient";
 import { useAuth } from "@/hooks/useAuth";
 import { displayIncidentTitle } from "@/lib/incidents/displayIncidentTitle";
+// PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) — Slice Start Job 1.0.
+// Industry-aware report eyebrow + filing-aware intro line. Read-only
+// best-effort; falls back to "Job Report" when industry isn't set.
+import {
+  DEFAULT_ORG_ONBOARDING_VIEW,
+  loadOrgOnboardingView,
+  type OrgOnboardingView,
+} from "@/lib/onboarding/orgOnboardingView";
 
 type IncidentDoc = {
   id: string;
@@ -250,6 +258,25 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   // the vendor has since been archived. Empty set is the safe
   // default when load fails — readers fall back to "no suffix".
   const [archivedVendorIds, setArchivedVendorIds] = useState<Set<string>>(() => new Set<string>());
+  // PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) — Slice Start Job 1.0.
+  // Industry-aware report eyebrow + filing-aware intro line. Loaded
+  // once per orgId, best-effort — read failure stays silent and the
+  // header falls back to its original "Job Report" copy.
+  const [onboardingView, setOnboardingView] =
+    useState<OrgOnboardingView>(DEFAULT_ORG_ONBOARDING_VIEW);
+  useEffect(() => {
+    if (!orgId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const v = await loadOrgOnboardingView(orgId);
+        if (!cancelled) setOnboardingView(v);
+      } catch {
+        /* swallow — fallback default already in state */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId]);
   const [thumbUrl, setThumbUrl] = useState<Record<string, string>>({});
   const [thumbRetryById, setThumbRetryById] = useState<Record<string, number>>({});
   const [thumbErrById, setThumbErrById] = useState<Record<string, string>>({});
@@ -1592,7 +1619,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                     textTransform: "uppercase" as const,
                   }}
                 >
-                  Job Report
+                  {/* PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) —
+                      industry-aware eyebrow. Falls back to
+                      "Job Report" when industry isn't set, which
+                      preserves the prior look for orgs that haven't
+                      completed onboarding. */}
+                  {onboardingView.reportEyebrow}
                 </div>
                 <h1
                   style={{
@@ -1644,6 +1676,27 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                     {reportUiState.displayState === "Awaiting Supervisor Review" ? "Awaiting Review" : reportUiState.displayState}
                   </span>
                 </div>
+                {/* PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) —
+                    Slice Start Job 1.0. Industry-aware intro
+                    paragraph rendered below the meta line. Telecom +
+                    municipality carry the filing-aware qualifier
+                    "final filings remain your responsibility" so the
+                    surface never implies auto-submission. Other
+                    industries render nothing here. */}
+                {onboardingView.reportIntroLine ? (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontSize: 12,
+                      lineHeight: 1.55,
+                      color: "#9a9a9a",
+                      fontStyle: "italic",
+                      maxWidth: 680,
+                    }}
+                  >
+                    {onboardingView.reportIntroLine}
+                  </div>
+                ) : null}
                 {devMode && orgId ? (
                   <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 6 }}>
                     Org: <span style={{ color: "#b3b3b3", fontFamily: "ui-monospace, monospace" }}>{orgId}</span>

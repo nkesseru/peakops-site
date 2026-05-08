@@ -54,6 +54,22 @@ export type OrgOnboardingView = {
    * `null` for industries without filing-style outputs in their profile.
    */
   filingHint: string | null;
+  // PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) — Slice Start Job 1.0.
+  /**
+   * Letter-spaced uppercase eyebrow rendered above the report title
+   * on the Summary page. Industry-flavored when an industry is set;
+   * "Job Report" by default so the existing surface looks unchanged
+   * for orgs that haven't completed onboarding.
+   */
+  reportEyebrow: string;
+  /**
+   * Optional italic intro paragraph rendered below the report meta
+   * line. Telecom + municipality carry the filing-aware qualifier
+   * (NORS/DIRS or FEMA/grants) with the explicit
+   * "final filings remain your responsibility" disclaimer.
+   * `null` for industries without filing-style outputs.
+   */
+  reportIntroLine: string | null;
 };
 
 export const DEFAULT_ORG_ONBOARDING_VIEW: OrgOnboardingView = {
@@ -65,6 +81,8 @@ export const DEFAULT_ORG_ONBOARDING_VIEW: OrgOnboardingView = {
   startJobSubhead: "Open a new job and start capturing photos.",
   emptyStatePrompt: "Start your first job",
   filingHint: null,
+  reportEyebrow: "Job Report",
+  reportIntroLine: null,
 };
 
 // PEAKOPS_ONBOARDING_DOWNSTREAM_COPY_V1 (2026-05-08)
@@ -75,6 +93,16 @@ type IndustryCopy = {
   startJobSubhead: string;
   emptyStatePrompt: string;
   filingHint: string | null;
+  // PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) — Slice Start Job 1.0.
+  // Eyebrow rendered above the report title on the Summary page.
+  // Kept short: industry-flavored, no org name (the page chrome
+  // already names the org elsewhere). The "Job Report" default lives
+  // on DEFAULT_ORG_ONBOARDING_VIEW; per-industry strings override.
+  reportEyebrow: string;
+  // Italic intro paragraph below the meta line. Filing-aware when
+  // the industry has a filing pathway (telecom, municipality);
+  // otherwise null (no extra paragraph rendered).
+  reportIntroLine: string | null;
 };
 
 const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
@@ -83,6 +111,8 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
     startJobSubhead: "Open a utilities job — pole, feeder, substation, or right-of-way work.",
     emptyStatePrompt: "Start your first utilities job",
     filingHint: null,
+    reportEyebrow: "Utilities Field Record",
+    reportIntroLine: null,
   },
   telecom: {
     startJobTitlePlaceholder: "e.g. Fiber splice verification — North Line Segment B",
@@ -92,6 +122,10 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
     filingHint:
       "Outage and restoration records are structured for NORS/DIRS-style documentation. " +
       "Final filings remain your responsibility.",
+    reportEyebrow: "Telecom Field Record",
+    reportIntroLine:
+      "Audit-ready record of telecom field activity. " +
+      "Structured for NORS/DIRS-style documentation — final filings remain your responsibility.",
   },
   municipality: {
     startJobTitlePlaceholder: "e.g. Storm damage inspection — Utility Corridor 7",
@@ -100,18 +134,26 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
     filingHint:
       "Damage and incident records are structured for FEMA/grant-style documentation. " +
       "Final filings remain your responsibility.",
+    reportEyebrow: "Public Works Field Record",
+    reportIntroLine:
+      "Audit-ready record of public-works activity. " +
+      "Structured for FEMA/grant-style documentation — final filings remain your responsibility.",
   },
   contractor: {
     startJobTitlePlaceholder: "e.g. Utility trench inspection — Riverside Sub-feeder",
     startJobSubhead: "Open a job for any of your customers — capture proof of work as you go.",
     emptyStatePrompt: "Start your first job",
     filingHint: null,
+    reportEyebrow: "Field Record",
+    reportIntroLine: null,
   },
   other: {
     startJobTitlePlaceholder: "e.g. Replace broken pole-top pin",
     startJobSubhead: "Open a new job and start capturing photos.",
     emptyStatePrompt: "Start your first job",
     filingHint: null,
+    reportEyebrow: "Job Report",
+    reportIntroLine: null,
   },
 };
 
@@ -205,5 +247,7 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
     startJobSubhead: copy.startJobSubhead,
     emptyStatePrompt: copy.emptyStatePrompt,
     filingHint: copy.filingHint,
+    reportEyebrow: copy.reportEyebrow,
+    reportIntroLine: copy.reportIntroLine,
   };
 }
