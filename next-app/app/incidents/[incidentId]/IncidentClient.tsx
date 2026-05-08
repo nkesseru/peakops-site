@@ -3713,7 +3713,20 @@ useEffect(() => {
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f" }}>Active Task</div>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#f5f5f5", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {jobTitle ? jobTitle : (activeJobId ? `Task ${String(activeJobId).slice(-6)}` : "No active task yet")}
+                {/* PEAKOPS_INCIDENT_HYDRATION_V1 (2026-05-08) — Slice
+                    Start Job 1.3.1. While the initial refresh is in
+                    flight, prefer a neutral "Loading…" state over
+                    the Task-<last-6> fallback. The fallback only
+                    surfaces after the load completes and we still
+                    have an activeJobId without a matching job
+                    title — true rare edge case rather than the
+                    common post-redirect hydration race buyers were
+                    seeing. */}
+                {jobTitle
+                  ? jobTitle
+                  : (loading
+                      ? <span style={{ color: "#6f6f6f", fontWeight: 500 }}>Loading…</span>
+                      : (activeJobId ? `Task ${String(activeJobId).slice(-6)}` : "No active task yet"))}
               </div>
               <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 2 }}>
                 {activeJobId ? (
@@ -3987,16 +4000,30 @@ useEffect(() => {
         <div style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "10px 14px" }}>
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" as const, color: "#6f6f6f", marginBottom: 8 }}>Field Timing</div>
           <div style={{ display: "grid", gap: 0 }}>
+            {/* PEAKOPS_INCIDENT_HYDRATION_V1 (2026-05-08) — Slice
+                Start Job 1.3.1. While the initial refresh is in
+                flight, render the empty-text rows as a faint
+                "Loading…" instead of the assertive amber "No
+                photos" / "No notes" copy. The post-redirect
+                hydration race was producing a false-empty flash
+                that read like the operator's submitted work had
+                been lost. The amber empty-text only surfaces after
+                the load completes and the field is actually empty. */}
             {[
               { label: "Arrival", value: _arrivalAgo, empty: _arrivalAgo === "—", emptyText: "Not started" },
               { label: "Photos", value: _evidenceAgo, empty: _evidenceAgo === "—", emptyText: "No photos" },
               { label: "Notes", value: _notesAgo, empty: _notesAgo === "—", emptyText: "No notes" },
-            ].map((t, i) => (
-              <div key={t.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "7px 0", borderBottom: i < 2 ? "1px solid #1c1c1c" : "none" }}>
-                <span style={{ fontSize: 12, fontWeight: 500, color: "#b3b3b3" }}>{t.label}</span>
-                <span style={{ fontSize: 16, fontWeight: 800, color: t.empty ? "#C8A84E" : "#f5f5f5" }}>{t.empty ? t.emptyText : t.value}</span>
-              </div>
-            ))}
+            ].map((t, i) => {
+              const showLoading = t.empty && loading;
+              return (
+                <div key={t.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "7px 0", borderBottom: i < 2 ? "1px solid #1c1c1c" : "none" }}>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: "#b3b3b3" }}>{t.label}</span>
+                  <span style={{ fontSize: showLoading ? 13 : 16, fontWeight: showLoading ? 500 : 800, color: showLoading ? "#6f6f6f" : (t.empty ? "#C8A84E" : "#f5f5f5") }}>
+                    {showLoading ? "Loading…" : (t.empty ? t.emptyText : t.value)}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

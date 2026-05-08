@@ -268,22 +268,21 @@ exports.listIncidentsV1 = onRequest({ cors: true, invoker: "public" }, async (re
   const merged = []; // entries: { out, raw }
   const sources = { topLevel: 0, orgScoped: 0 };
 
-  try {
-    const topSnap = await db
-      .collection("incidents")
-      .where("orgId", "==", orgId)
-      .limit(Math.min(200, limit * 2))
-      .get();
-    sources.topLevel = topSnap.size;
-    for (const d of topSnap.docs) {
-      if (seen.has(d.id)) continue;
-      seen.add(d.id);
-      merged.push({ out: mapDoc(d, orgId), raw: d.data() || {} });
-    }
-  } catch (e) {
-    console.warn("[listIncidentsV1] top-level read failed", String(e?.message || e));
-  }
-
+  // PEAKOPS_LIST_INCIDENTS_ORG_SCOPED_PRIORITY_V1 (2026-05-08)
+  // Slice Start Job 1.3.1: read org-scoped FIRST, then top-level
+  // (legacy fallback only). Lifecycle-mutating callables
+  // (markArrivedV1, submitFieldSessionV1, closeIncidentV1, ...) all
+  // route writes through resolveIncidentRef which preferentially
+  // targets orgs/{orgId}/incidents/{incidentId}. Reading the
+  // top-level copy first meant a stale `status: "in_progress"` on
+  // top-level was winning the seen-Set dedup over the canonical
+  // org-scoped `status: "submitted"`, so the Jobs index showed
+  // In Progress while Detail/Summary (which use getIncidentV1's
+  // org-scoped-first read) correctly showed Awaiting Supervisor
+  // Review. Flipping the read order aligns the index with the
+  // canonical lifecycle resolver. Top-level remains a fallback
+  // for any pre-Slice-1 record that exists ONLY at the top-level
+  // path.
   try {
     const orgSnap = await db
       .collection(`orgs/${orgId}/incidents`)
@@ -298,6 +297,22 @@ exports.listIncidentsV1 = onRequest({ cors: true, invoker: "public" }, async (re
     }
   } catch (e) {
     console.warn("[listIncidentsV1] org-scoped read failed", String(e?.message || e));
+  }
+
+  try {
+    const topSnap = await db
+      .collection("incidents")
+      .where("orgId", "==", orgId)
+      .limit(Math.min(200, limit * 2))
+      .get();
+    sources.topLevel = topSnap.size;
+    for (const d of topSnap.docs) {
+      if (seen.has(d.id)) continue;
+      seen.add(d.id);
+      merged.push({ out: mapDoc(d, orgId), raw: d.data() || {} });
+    }
+  } catch (e) {
+    console.warn("[listIncidentsV1] top-level read failed", String(e?.message || e));
   }
 
   merged.sort((a, b) => toMillis(b.out.updatedAt) - toMillis(a.out.updatedAt));
