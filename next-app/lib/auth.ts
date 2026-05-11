@@ -105,6 +105,18 @@ export async function completeSignIn(): Promise<UserCredential | null> {
 export type GetCurrentUserTokenOptions = {
   /** Max time to wait for onAuthStateChanged before giving up. */
   timeoutMs?: number;
+  /**
+   * PEAKOPS_CLAIM_ACCESS_HARDENING_V1 (2026-05-11)
+   * When true, force the Firebase SDK to mint a fresh ID token
+   * server-side instead of returning the locally cached JWT. Used
+   * by authedFetch's 403-retry path so a stale token (issued
+   * before a server-side setCustomUserClaims update) doesn't keep
+   * blocking access to an org the user can in fact reach.
+   *
+   * Defaults to false so cold-path navigation stays cheap — every
+   * /api/fn/* call would otherwise pay a token-mint round-trip.
+   */
+  forceRefresh?: boolean;
 };
 
 /**
@@ -141,7 +153,13 @@ export async function getCurrentUserToken(
   }
   if (!user) return null;
   try {
-    return await user.getIdToken();
+    // PEAKOPS_CLAIM_ACCESS_HARDENING_V1 (2026-05-11)
+    // Pass `forceRefresh` through to the SDK's getIdToken. The
+    // default (false) returns the cached JWT — which is what 99% of
+    // calls want. authedFetch only sets it to true on a 403 retry
+    // so claim-update propagation isn't gated on the user signing
+    // out and back in.
+    return await user.getIdToken(opts.forceRefresh === true);
   } catch {
     // Token refresh can fail (network, revoked, etc.) — surface as
     // "no token" rather than a thrown rejection so authedFetch can

@@ -48,6 +48,11 @@ export async function authedFetch(
   // If the caller pre-set Authorization, trust them and skip the
   // token-resolve path. This keeps the wrapper composable with any
   // future server-to-server flow that mints its own bearer.
+  // PEAKOPS_AUTHED_FETCH_HARDENING_V1 (2026-05-06)
+  // Track whether we minted the Authorization header ourselves. Only
+  // in that case can we safely retry with a fresh token on 403 —
+  // caller-provided tokens are theirs to manage.
+  let mintedAuthHeader = false;
   if (!headers.has("Authorization") && !headers.has("authorization")) {
     const token = await getCurrentUserToken({ timeoutMs: authTimeoutMs ?? 3000 });
     if (!token) {
@@ -78,7 +83,43 @@ export async function authedFetch(
       throw new Error("authedFetch: not signed in");
     }
     headers.set("Authorization", `Bearer ${token}`);
+    mintedAuthHeader = true;
   }
 
-  return fetch(input, { ...rest, headers });
+  const firstResponse = await fetch(input, { ...rest, headers });
+
+  // PEAKOPS_CLAIM_ACCESS_HARDENING_V1 (2026-05-11)
+  // If the server returned 403 and we minted the Authorization
+  // header from the cached token, retry ONCE with a force-refreshed
+  // token. Covers the common case where custom claims (notably
+  // `orgIds`) were updated server-side but the browser still holds
+  // a pre-update cached JWT — Firebase only embeds custom claims in
+  // tokens minted AFTER setCustomUserClaims, and the SDK's default
+  // getIdToken() returns the cached token until it naturally
+  // expires (~1 hour).
+  //
+  // Scope:
+  //   - 403 only (401 = bad/missing token; not a claim-staleness
+  //     signal — let the caller handle).
+  //   - mintedAuthHeader === true (caller-supplied tokens are theirs).
+  //   - One retry maximum; if the fresh token still 403s, the
+  //     denial is real and propagates to the caller untouched.
+  //
+  // Side effect: a single extra Firebase Auth token-mint network
+  // call on the unhappy 403 path. Cheap, and pays for itself by
+  // removing the "sign out and back in" workaround for buyers
+  // whose org access has just been provisioned.
+  if (firstResponse.status === 403 && mintedAuthHeader) {
+    const freshToken = await getCurrentUserToken({
+      timeoutMs: authTimeoutMs ?? 3000,
+      forceRefresh: true,
+    });
+    if (freshToken) {
+      const retryHeaders = new Headers(rest.headers || {});
+      retryHeaders.set("Authorization", `Bearer ${freshToken}`);
+      return fetch(input, { ...rest, headers: retryHeaders });
+    }
+  }
+
+  return firstResponse;
 }

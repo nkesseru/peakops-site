@@ -747,9 +747,6 @@ function IncidentsIndexBody() {
       try { out = txt ? JSON.parse(txt) : {}; } catch {}
       if (!res.ok || !out?.ok) {
         // PEAKOPS_MISSION_CONTROL_DEV_DIAG_V1 (2026-04-29)
-        // Dev-only: expose the upstream status + error so a 401/403
-        // mismatch with peer endpoints is debuggable without devtools.
-        // Customer copy stays clean below.
         if (process.env.NODE_ENV !== "production") {
           // eslint-disable-next-line no-console
           console.warn("[mission-control] listIncidentsV1 non-ok", {
@@ -758,12 +755,19 @@ function IncidentsIndexBody() {
             body: txt.slice(0, 240),
           });
         }
-        throw new Error(out?.error || `listIncidentsV1 failed: ${res.status}`);
+        // PEAKOPS_CLAIM_ACCESS_HARDENING_V1 (2026-05-11)
+        // Attach the http status on the thrown error so the catch
+        // block below can distinguish a real access denial (403,
+        // post-retry — meaning authedFetch already attempted a
+        // force-refreshed token and still got rejected) from a
+        // generic transient failure. Customer copy below maps
+        // them to two distinct, calm messages.
+        const err: any = new Error(out?.error || `listIncidentsV1 failed: ${res.status}`);
+        err.httpStatus = res.status;
+        throw err;
       }
       const list = Array.isArray(out.incidents) ? (out.incidents as IncidentRow[]) : [];
       // PEAKOPS_MISSION_CONTROL_DEV_DIAG_V2 (2026-04-29)
-      // Dev-only: surface the dual-read sources so QA can confirm
-      // both paths are returning rows after the listIncidentsV1 fix.
       if (process.env.NODE_ENV !== "production") {
         // eslint-disable-next-line no-console
         console.debug("[mission-control] listIncidentsV1 ok", {
@@ -780,7 +784,28 @@ function IncidentsIndexBody() {
         // eslint-disable-next-line no-console
         console.warn("[mission-control] load failed", e);
       }
-      setIncidentsErr("We couldn't load jobs. Try again.");
+      // PEAKOPS_CLAIM_ACCESS_HARDENING_V1 (2026-05-11)
+      // Distinguish access-denied from transient failure:
+      //   - 401 → caller is signed out; authedFetch already routed
+      //     them to /login, no extra copy needed (we still flip the
+      //     err state so the row area shows something).
+      //   - 403 (post-retry) → real access denial. The user has a
+      //     valid signed-in session, but no access to this org.
+      //     This is also the "claim just provisioned but token took
+      //     longer than expected to propagate" terminal state, in
+      //     which case the explicit "Refresh in a moment if access
+      //     was just granted" hint is the right nudge.
+      //   - anything else → generic transient retry copy.
+      const status = Number(e?.httpStatus || 0);
+      if (status === 403) {
+        setIncidentsErr(
+          "You don't have access to this workspace, or access is still finalizing. If access was just granted, refresh in a moment.",
+        );
+      } else if (status === 401) {
+        setIncidentsErr("Your session expired. Sign in again to continue.");
+      } else {
+        setIncidentsErr("We couldn't load jobs. Try again.");
+      }
     } finally {
       setIncidentsLoading(false);
     }
