@@ -1753,6 +1753,81 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       </main>
     );
   }
+  // PEAKOPS_REVIEW_HYDRATION_GATE_V1 (2026-05-11)
+  // Plug the cold-nav window between auth-resolved and refresh()-
+  // completed. After the Continue-as login path (or any other cold
+  // navigation into /review) authClaims.role resolves quickly while
+  // the data fetch is still in flight. Without this gate the
+  // supervisor branch below renders against incidentDoc=null /
+  // jobs=[] / evidence=[] / timeline=[], producing a flash of
+  // "Untitled incident / Open / 0 photos / 0 events / Add Photos" —
+  // a false placeholder view-model that misrepresents the real
+  // (often Closed) incident.
+  //
+  // First-load is considered complete once any of: incidentDoc is
+  // populated, the not-found card is showing (handled by the gate
+  // above), or a raw error is set. Until then we render a calm
+  // "Loading review…" panel that mirrors the auth-loading panel's
+  // chrome and never calls displayIncidentTitle (which would fall
+  // through to "Untitled incident" against an empty doc).
+  //
+  // Background refreshes (60s interval, focus-refresh, and the
+  // post-mutation refresh loop) never trip this gate because
+  // incidentDoc is already non-null by the time they fire.
+  const _hasFirstHydrated =
+    incidentDoc !== null || incidentNotFound || !!err;
+  if (!_hasFirstHydrated) {
+    return (
+      <main className="min-h-screen bg-black text-white">
+        <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
+              <div
+                className="text-[11px] text-gray-500 truncate"
+                style={{ fontFamily: "ui-monospace, monospace" }}
+                title={incidentId}
+              >
+                {incidentId}
+              </div>
+              <div className="mt-2">
+                <QaAuthDebugChip />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="p-4">
+          <section
+            style={{
+              borderRadius: 12,
+              border: "1px solid #1c1c1c",
+              background: "#0b0b0b",
+              padding: "24px 22px",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                color: "#6f6f6f",
+                textTransform: "uppercase" as const,
+              }}
+            >
+              Loading
+            </div>
+            <div style={{ marginTop: 6, fontSize: 16, fontWeight: 700, color: "#f5f5f5" }}>
+              Loading review…
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#b3b3b3", lineHeight: 1.5 }}>
+              Fetching incident, jobs, photos, and timeline.
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
   // PEAKOPS_REVIEW_UNKNOWN_ROLE_V1 (2026-04-28)
   // If the user is signed in but no role claim exists after a fresh
   // token refresh, they don't belong on /review. Render an explicit
