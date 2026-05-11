@@ -22,11 +22,16 @@ export type IndustryKey =
   | "contractor"
   | "other";
 
-// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
-// Added municipal workflow keys: road_damage, stormwater_inspection,
-// traffic_signal, row_inspection, contractor_verification. These are
-// additive — telecom/utility/contractor/other paths still rely on the
-// pre-existing keys and are not affected.
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0
+// added municipal workflow keys.
+// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0 adds
+// utility-specific keys: utility_outage, transformer_maintenance,
+// vegetation_management, safety_verification. The existing pole_top
+// and storm_assess keys keep their labels and are reused for the
+// utility "Pole inspection" and "Damage assessment" recommended
+// cards respectively — same template, surfaced where it matters.
+// All additions are additive; telecom/municipality/contractor/other
+// paths are unaffected.
 export type WorkflowTemplateKey =
   | "pole_top"
   | "fiber_splice"
@@ -37,6 +42,10 @@ export type WorkflowTemplateKey =
   | "traffic_signal"
   | "row_inspection"
   | "contractor_verification"
+  | "utility_outage"
+  | "transformer_maintenance"
+  | "vegetation_management"
+  | "safety_verification"
   | "blank";
 
 export type IndustryProfile = {
@@ -90,18 +99,30 @@ export type IndustryProfile = {
 };
 
 const PROFILES: Record<IndustryKey, IndustryProfile> = {
+  // PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0.
+  // Re-tuned for utility operations buyers per the Utility Mode 1.0
+  // spec: outage response / inspection / restoration / vegetation
+  // language. Subhead, recommended workflows, opsFocus options, and
+  // outputs now reflect a utility operations team's day-to-day.
   utilities: {
     key: "utilities",
-    label: "Utilities",
-    short: "Electric · gas · water",
-    defaultWorkflow: "pole_top",
-    recommendedWorkflows: ["pole_top", "storm_assess", "trench_inspection"],
+    label: "Utility Operations",
+    short: "Outage response, infrastructure inspection, vegetation management, and utility field operations",
+    defaultWorkflow: "utility_outage",
+    recommendedWorkflows: [
+      "utility_outage",
+      "pole_top",
+      "transformer_maintenance",
+      "storm_assess",
+      "vegetation_management",
+      "safety_verification",
+    ],
     starterJob: {
-      title: "Replace broken pole-top pin — Pole 14A-22",
-      location: "Pole 14A-22 · Riser conduit, north face",
-      jobType: "repair",
+      title: "Utility outage response — North feeder line",
+      location: "North feeder line · Section 14A",
+      jobType: "damage",
     },
-    terminology: ["pole", "feeder", "substation", "utility corridor"],
+    terminology: ["pole", "feeder", "substation", "transformer", "right-of-way", "outage"],
     timerLabels: {
       response: "Response time",
       fieldArrival: "Field arrival",
@@ -109,14 +130,17 @@ const PROFILES: Record<IndustryKey, IndustryProfile> = {
     },
     outputs: [
       { label: "Audit-ready field record", status: "live" },
-      { label: "Inspection report", status: "live" },
+      { label: "Operational review packet", status: "live" },
+      { label: "Infrastructure inspection report", status: "live" },
     ],
     opsFocusOptions: [
-      { key: "storm_response",      label: "Storm response & restoration",       note: "Document outages, crews, and restoration timelines as they happen." },
-      { key: "pole_inspection",     label: "Pole / transformer inspection routes", note: "Recurring inspection cycles with photo evidence." },
-      { key: "substation_safety",   label: "Substation safety logs" },
-      { key: "outage_documentation",label: "Outage event documentation" },
-      { key: "damage_assessment",   label: "Damage assessments" },
+      { key: "outage_restoration",  label: "Outage restoration",       note: "Document outages, crews, and restoration timelines as they happen." },
+      { key: "pole_inspection",     label: "Pole inspection",          note: "Recurring inspection cycles with photo evidence." },
+      { key: "transformer_inspection", label: "Transformer inspection", note: "Substation and field-mounted transformer condition checks." },
+      { key: "vegetation_management", label: "Vegetation management",  note: "Right-of-way trimming, hazard trees, and clearance work." },
+      { key: "safety_inspection",   label: "Safety inspection",        note: "Routine safety walkarounds and substation safety logs." },
+      { key: "damage_assessment",   label: "Damage assessment",        note: "Storm or incident damage assessments with photo evidence." },
+      { key: "emergency_response",  label: "Utility emergency response", note: "Storm and critical event response with rapid documentation." },
     ],
   },
 

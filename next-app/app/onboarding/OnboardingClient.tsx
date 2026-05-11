@@ -96,22 +96,26 @@ const STEPS: ReadonlyArray<StepDef> = [
 // Refined municipality label/sub copy to match the Municipality
 // Mode 1.0 spec: "Roads, stormwater, inspections, traffic signals,
 // and contractor field verification."
+// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0 refined
+// the utility card label/sub copy: "Utility Operations" reads as
+// the buyer's own internal vocabulary (consistent with the report
+// eyebrow "Utility Operations Record").
 const INDUSTRIES: ReadonlyArray<{ key: IndustryKey; label: string; sub: string }> = [
-  { key: "utilities",    label: "Utilities",                sub: "Electric / gas / water field operations" },
-  { key: "telecom",      label: "Telecom",                  sub: "Fiber, OSP, splice and outage work" },
-  { key: "municipality", label: "Municipality / Public Works", sub: "Roads, stormwater, inspections, traffic signals, and contractor field verification" },
-  { key: "contractor",   label: "Infrastructure contractor", sub: "Multi-customer field crews" },
-  { key: "other",        label: "Other",                    sub: "Custom — we'll tailor templates after setup" },
+  { key: "utilities",    label: "Utility Operations",            sub: "Outage response, infrastructure inspection, vegetation management, and utility field operations" },
+  { key: "telecom",      label: "Telecom",                       sub: "Fiber, OSP, splice and outage work" },
+  { key: "municipality", label: "Municipality / Public Works",   sub: "Roads, stormwater, inspections, traffic signals, and contractor field verification" },
+  { key: "contractor",   label: "Infrastructure contractor",     sub: "Multi-customer field crews" },
+  { key: "other",        label: "Other",                         sub: "Custom — we'll tailor templates after setup" },
 ];
 
-// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
-// Added 5 municipal workflow cards (road damage, stormwater
-// inspection, traffic signal repair, sidewalk/right-of-way
-// inspection, contractor work verification). Pre-existing
-// utility/telecom/contractor cards are untouched. Card order is
-// industry-agnostic here; the industry profile's
-// recommendedWorkflows array drives which appear as recommended
-// for the buyer's industry on the picker.
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — added municipal cards.
+// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0 adds the
+// utility-specific cards (Utility outage response, Transformer
+// maintenance, Vegetation management, Safety verification). The
+// existing pole_top + storm_assess cards are reused for the utility
+// "Pole inspection" and "Damage assessment" recommended slots; their
+// labels and placeholders stay industry-agnostic so re-use across
+// telecom/municipality/contractor isn't disturbed.
 const TEMPLATES: ReadonlyArray<{ key: WorkflowTemplateKey; label: string; sub: string; sample: string }> = [
   { key: "pole_top",                label: "Pole-top inspection",            sub: "Recurring inspection routes",                  sample: "Replace broken pole-top pin — Pole 14A-22" },
   { key: "fiber_splice",            label: "Fiber splice verification",      sub: "OTDR + bond, with photo evidence",             sample: "Fiber splice verification — North Line Segment B" },
@@ -122,6 +126,10 @@ const TEMPLATES: ReadonlyArray<{ key: WorkflowTemplateKey; label: string; sub: s
   { key: "traffic_signal",          label: "Traffic signal repair",          sub: "Signal cabinet, lighting, intersection work",  sample: "Traffic signal repair — Pines & Mission" },
   { key: "row_inspection",          label: "Sidewalk / right-of-way inspection", sub: "Curb, sidewalk, and ROW condition checks", sample: "Sidewalk / right-of-way inspection — Sullivan Rd corridor" },
   { key: "contractor_verification", label: "Contractor work verification",   sub: "Verify contractor sign-off + proof of work",   sample: "Contractor work verification — Sullivan sidewalk repair" },
+  { key: "utility_outage",          label: "Utility outage response",        sub: "Restoration timeline + crew documentation",    sample: "Utility outage response — North feeder line" },
+  { key: "transformer_maintenance", label: "Transformer maintenance",        sub: "Substation + field transformer service work",  sample: "Transformer maintenance — Cedar Substation" },
+  { key: "vegetation_management",   label: "Vegetation management",          sub: "Right-of-way clearance and hazard trees",      sample: "Vegetation management — Cedar feeder right-of-way" },
+  { key: "safety_verification",     label: "Safety verification",            sub: "Substation safety logs + crew safety checks",  sample: "Safety verification — Cedar Substation" },
   { key: "blank",                   label: "Start blank",                    sub: "Define your own workflow — we’ll guide it",    sample: "Custom job — name it when you start" },
 ];
 
@@ -229,13 +237,15 @@ export default function OnboardingClient() {
   // Industry → starter-template bias. When the buyer picks an
   // industry on Step 2, pre-select the most-likely workflow so
   // Step 4 already has the obvious card chosen.
-  // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
-  // Pre-select stormwater inspection for municipality buyers (matches
-  // industryProfiles.municipality.defaultWorkflow). Picking
-  // Municipality now lands them on a public-works template by default
-  // instead of the utility-flavored storm_assess.
+  // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — municipality default.
+  // PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0 makes
+  // Utility outage response the default for utilities buyers
+  // (matches industryProfiles.utilities.defaultWorkflow). Outage
+  // response is the most operationally important entry point for
+  // utility ops teams; the rest of the recommended cards still
+  // appear in the picker.
   const INDUSTRY_TO_TEMPLATE: Record<IndustryKey, WorkflowTemplateKey> = {
-    utilities: "pole_top",
+    utilities: "utility_outage",
     telecom: "fiber_splice",
     municipality: "stormwater_inspection",
     contractor: "trench_inspection",

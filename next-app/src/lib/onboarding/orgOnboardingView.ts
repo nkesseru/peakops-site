@@ -120,17 +120,22 @@ type IndustryCopy = {
 };
 
 const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
+  // PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0.
+  // Utility operations flavored copy. Downstream surfaces (Jobs page
+  // subhead/filingHint, Start Job placeholder, Summary eyebrow/intro,
+  // Mission Control empty state) all read off this view; only the
+  // strings change here.
   utilities: {
-    startJobTitlePlaceholder: "e.g. Replace broken pole-top pin — Pole 14A-22",
-    startJobSubhead: "Open a utilities job — pole, feeder, substation, or right-of-way work.",
-    emptyStatePrompt: "Start your first utilities job",
-    filingHint: null,
-    // PEAKOPS_REPORT_EYEBROW_PHRASING_V2 (2026-05-11)
-    // Report Presentation 1.0 — "Operations Record" reads more
-    // enterprise-grade than "Field Record" for utilities buyers,
-    // matching how utilities describe their own operational logs.
+    startJobTitlePlaceholder: "e.g. Utility outage response — North feeder line",
+    startJobSubhead:
+      "Open a utility operations job — outage response, inspections, restoration, or infrastructure work.",
+    emptyStatePrompt: "Start your first utility operations job",
+    filingHint:
+      "Field records are structured for operational review, infrastructure tracking, and audit-ready documentation.",
     reportEyebrow: "Utility Operations Record",
-    reportIntroLine: null,
+    reportIntroLine:
+      "Audit-ready record of utility field activity. " +
+      "Structured for infrastructure tracking, operational review, and restoration documentation.",
   },
   telecom: {
     startJobTitlePlaceholder: "e.g. Fiber splice verification — North Line Segment B",
@@ -203,10 +208,10 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
 // industry=telecom + blank → telecom industry placeholder
 // industry=utilities + blank → utilities placeholder
 // (any future workflow-specific template still overrides as expected)
-// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
-// Added municipal workflow placeholders (road_damage, traffic_signal,
-// stormwater_inspection, row_inspection, contractor_verification). The
-// pre-existing utility/telecom/contractor placeholders are untouched.
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — added municipal keys.
+// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0 adds the
+// four new utility-specific placeholders. Existing utility/telecom/
+// municipality/contractor placeholders are untouched.
 const TEMPLATE_TITLE_PLACEHOLDER: Partial<Record<WorkflowTemplateKey, string>> = {
   pole_top:                "e.g. Replace broken pole-top pin — Pole 14A-22",
   fiber_splice:            "e.g. Fiber splice verification — North Line Segment B",
@@ -217,6 +222,10 @@ const TEMPLATE_TITLE_PLACEHOLDER: Partial<Record<WorkflowTemplateKey, string>> =
   stormwater_inspection:   "e.g. Stormwater inspection — 3rd Ave catch basin",
   row_inspection:          "e.g. Sidewalk / right-of-way inspection — Sullivan Rd corridor",
   contractor_verification: "e.g. Contractor work verification — Sullivan sidewalk repair",
+  utility_outage:          "e.g. Utility outage response — North feeder line",
+  transformer_maintenance: "e.g. Transformer maintenance — Cedar Substation",
+  vegetation_management:   "e.g. Vegetation management — Cedar feeder right-of-way",
+  safety_verification:     "e.g. Safety verification — Cedar Substation",
 };
 
 /**
@@ -249,10 +258,9 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
   const industry: IndustryKey | "" =
     (validKeys as string[]).includes(rawIndustry) ? (rawIndustry as IndustryKey) : "";
 
-  // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0
-  // adds 5 municipal workflow keys. Validation list grows here so
-  // selectedTemplate persisted by the wizard's pickIndustry +
-  // template-picker survives the round-trip.
+  // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — added 5 municipal keys.
+  // PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — adds 4 utility keys.
+  // Validation list grows in parallel with WorkflowTemplateKey.
   const validTemplates: WorkflowTemplateKey[] = [
     "pole_top",
     "fiber_splice",
@@ -263,6 +271,10 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
     "traffic_signal",
     "row_inspection",
     "contractor_verification",
+    "utility_outage",
+    "transformer_maintenance",
+    "vegetation_management",
+    "safety_verification",
     "blank",
   ];
   const rawTemplate = String(stateData.selectedTemplate || "").trim().toLowerCase();
