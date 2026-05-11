@@ -1706,6 +1706,31 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   // UI during the cold-nav window.
   const _reviewerRole = String(authClaims?.role || "").toLowerCase();
   const _authStillLoading = authLoading || (!!authUser && !_reviewerRole && !tokenForceRefreshed);
+
+  // PEAKOPS_REVIEW_TITLE_SLOT_V1 (2026-05-11)
+  // Hydration-Hardening 1.1.1: the auth-loading / unknown-role / field-
+  // role render branches share a header that previously called
+  // displayIncidentTitle(...) directly. Against an empty incidentDoc +
+  // empty jobs list (the cold-nav state these branches render in), that
+  // helper falls through to its final fallback string "Untitled
+  // incident", which then briefly painted in the title slot while the
+  // body was correctly showing "Checking review access…". The body copy
+  // was right; the title slot was leaking the fallback.
+  //
+  // _safeTitleSlot resolves "is the title actually known yet?":
+  //   - while data is in-flight (incidentDoc still null, no not-found,
+  //     no error) → render "Loading review…"
+  //   - once data resolves → render the real title via
+  //     displayIncidentTitle, which still uses "Untitled incident" only
+  //     as the documented final fallback for genuinely title-less
+  //     incidents (correct behavior).
+  // Background refreshes don't trip this because incidentDoc is already
+  // non-null by the time they fire.
+  const _titleSlotHydrating =
+    incidentDoc === null && !incidentNotFound && !err;
+  const _safeTitleSlot = _titleSlotHydrating
+    ? "Loading review…"
+    : displayIncidentTitle(incidentId, incidentDoc as any, jobs as any);
   if (_authStillLoading) {
     return (
       <main className="min-h-screen bg-black text-white">
@@ -1714,7 +1739,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
               <div className="text-lg font-semibold truncate" title={incidentId}>
-                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+                {_safeTitleSlot}
               </div>
               <div className="mt-2">
                 <QaAuthDebugChip />
@@ -1842,7 +1867,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
               <div className="text-lg font-semibold truncate" title={incidentId}>
-                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+                {_safeTitleSlot}
               </div>
               <div className="mt-2">
                 <QaAuthDebugChip />
@@ -1895,7 +1920,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
               <div className="text-lg font-semibold truncate" title={incidentId}>
-                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+                {_safeTitleSlot}
               </div>
               <div className="mt-2">
                 <QaAuthDebugChip />
@@ -1990,7 +2015,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div className="min-w-0">
               <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
               <div className="text-lg font-semibold truncate" title={incidentId}>
-                {displayIncidentTitle(incidentId, incidentDoc as any, jobs as any)}
+                {_safeTitleSlot}
               </div>
               <div className="mt-1 flex items-center gap-2 flex-wrap text-[11px] text-gray-400">
                 {(() => {
