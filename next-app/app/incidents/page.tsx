@@ -143,12 +143,21 @@ const JOB_TYPE_CHIPS_BY_INDUSTRY: Readonly<Record<string, ReadonlyArray<Industry
     { slug: "inspection",  label: "Inspection", normalized: "inspection" },
     { slug: "other",       label: "Other",      normalized: "other" },
   ],
+  // PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 (2026-05-11) — Slice
+  // Industry Recap Copy Parity 1.0 added the Damage chip. The
+  // outage chip already covers storm-related outages (normalized
+  // to "damage"), but utility ops teams also document plain
+  // damage assessments (downed pole, vehicle hit, etc.) that
+  // aren't strictly outage-driven. Both chips share the same
+  // normalized backend type but the slug stays distinct so the
+  // UI keeps them visually independent.
   utilities: [
     { slug: "outage",      label: "Outage",      normalized: "damage" },
     { slug: "pole",        label: "Pole",        normalized: "repair" },
     { slug: "transformer", label: "Transformer", normalized: "repair" },
     { slug: "vegetation",  label: "Vegetation",  normalized: "inspection" },
     { slug: "safety",      label: "Safety",      normalized: "inspection" },
+    { slug: "damage",      label: "Damage",      normalized: "damage" },
     { slug: "other",       label: "Other",       normalized: "other" },
   ],
 };

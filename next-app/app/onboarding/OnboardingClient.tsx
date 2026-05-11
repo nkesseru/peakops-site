@@ -96,6 +96,23 @@ const STEPS: ReadonlyArray<StepDef> = [
 // Refined municipality label/sub copy to match the Municipality
 // Mode 1.0 spec: "Roads, stormwater, inspections, traffic signals,
 // and contractor field verification."
+// PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 (2026-05-11) — Slice
+// Industry Recap Copy Parity 1.0. The workflow-step subhead used
+// to read "in ${profile.label.toLowerCase()} operations", which
+// produced "in utility operations operations" because the
+// utilities label already ends in " Operations" (post Utility
+// Mode 1.0). This helper returns the right noun phrase per
+// industry without the duplicate-suffix concatenation.
+function industryWorkflowNoun(industry: IndustryKey | ""): string {
+  switch (industry) {
+    case "utilities":     return "utility operations";
+    case "telecom":       return "telecom operations";
+    case "municipality":  return "public works operations";
+    case "contractor":    return "contractor field work";
+    default:              return "operations";
+  }
+}
+
 // PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0 refined
 // the utility card label/sub copy: "Utility Operations" reads as
 // the buyer's own internal vocabulary (consistent with the report
@@ -805,7 +822,7 @@ export default function OnboardingClient() {
       <div style={{ display: "grid", gap: 12 }}>
         <p style={{ margin: 0, fontSize: 13, color: TOKENS.textMuted, lineHeight: 1.55 }}>
           {industry
-            ? `We've highlighted the templates we see most often in ${profile.label.toLowerCase()} operations. Pick one to start — you can change it any time.`
+            ? `We've highlighted the templates we see most often in ${industryWorkflowNoun(industry)}. Pick one to start — you can change it any time.`
             : "Pick a starter template. We'll pre-fill it with a believable job so you can see the lifecycle end-to-end."}
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
@@ -877,23 +894,27 @@ export default function OnboardingClient() {
   }
 
   function renderReady() {
-    // PEAKOPS_ONBOARDING_READY_HONESTY_V1 (2026-05-06)
-    // Headline depends on what actually persisted to Firestore.
-    //
     // PEAKOPS_ONBOARDING_READY_RECAP_V1 (2026-05-11) — Slice
     // Onboarding Recap 1.0. Premium copy + an industry-aware
     // recap card surfacing the actual selections (org name,
     // industry, starter workflow, sample first job, operational
-    // focus list). Lets the buyer see PeakOps reflecting their
-    // plan back, rather than the prior generic "deployment plan"
-    // copy.
-    const allPersisted = persisted.org && persisted.industry && persisted.workflow && persisted.firstJobDraft;
-    const headline = allPersisted
-      ? "Your operational workspace is ready."
-      : "Your deployment plan is ready.";
-    const subline = allPersisted
-      ? "PeakOps will tailor job setup, reports, and operational cues around this plan."
-      : "We saved what we could. Open Jobs to keep going — the rest persists as you work.";
+    // focus list).
+    //
+    // PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 (2026-05-11) — Slice
+    // Industry Recap Copy Parity 1.0 unified the hero copy across
+    // all industries. The previous gating on `allPersisted` was a
+    // mid-wizard honesty hedge ("Plan saved" vs "You're live") that
+    // showed up as cross-industry inconsistency in production: the
+    // telecom alpha org had a queued first-job draft (so it read
+    // "You're live"), while the bootstrapped muni + utility QA orgs
+    // had no draft (so they fell to "Plan saved / Your deployment
+    // plan is ready"). The Ready step is reachable only after the
+    // wizard's step-by-step gating, so by definition the org +
+    // industry + workflow slices have been persisted. The first-
+    // job draft is now treated as optional polish, not a gate on
+    // hero copy.
+    const headline = "Your operational workspace is ready.";
+    const subline = "PeakOps will tailor job setup, reports, and operational cues around this plan.";
 
     // Recap inputs — resolved live from current state. The recap
     // only renders the rows whose source data is actually present;
@@ -929,7 +950,7 @@ export default function OnboardingClient() {
           </svg>
         </div>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.18em", color: TOKENS.greenLight, textTransform: "uppercase" }}>
-          {allPersisted ? "You're live" : "Plan saved"}
+          You&apos;re live
         </div>
         <h2 style={{ margin: "8px 0 6px", fontSize: 26, fontWeight: 800, color: TOKENS.text, letterSpacing: "-0.01em" }}>
           {headline}
@@ -978,27 +999,61 @@ export default function OnboardingClient() {
               <RecapRow label="First job example" value={recapTemplate.sample} />
             ) : null}
             {recapFocusLabels.length > 0 ? (
+              // PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 (2026-05-11) —
+              // focus list was previously a single joined string
+              // with `wordBreak: break-word`, which could mid-word
+              // break long focus labels on narrow viewports. Now
+              // renders each label as a small wrapping pill so the
+              // row scales cleanly for orgs with 6+ selections and
+              // never breaks mid-word.
               <RecapRow
                 label="Operational focus"
-                value={recapFocusLabels.join(" · ")}
+                value={
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 6px" }}>
+                    {recapFocusLabels.map((label) => (
+                      <span
+                        key={label}
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 500,
+                          padding: "3px 8px",
+                          borderRadius: 999,
+                          border: `1px solid ${TOKENS.border}`,
+                          background: TOKENS.cardElevated,
+                          color: TOKENS.text,
+                          whiteSpace: "nowrap",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                }
               />
             ) : null}
           </div>
         ) : null}
 
+        {/* PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 (2026-05-11) — the
+            previous gating on persisted.{org,industry,workflow,
+            firstJobDraft} produced cross-industry inconsistency
+            because bootstrapped QA orgs (muni, utility) have no
+            firstJobDraft persisted and so dropped that row, while
+            the telecom alpha org showed it. The checklist is now
+            uniform across industries: the Ready step is only
+            reachable after the wizard's step gating, so the
+            org/industry/workflow rows are always true at this
+            point. The previous "First-job draft queued (no record
+            created yet)" copy was technical phrasing that confused
+            buyers; reworded to "Starter workflow ready to deploy"
+            which is true regardless of whether a Firestore draft
+            doc was created. */}
         <div style={{ marginTop: 22, display: "grid", gap: 8, maxWidth: 360, marginInline: "auto", textAlign: "left" }}>
-          {persisted.org ? (
-            <ReadyRow text="Organization profile saved" />
-          ) : null}
-          {persisted.industry ? (
-            <ReadyRow text="Industry operating mode applied" />
-          ) : null}
-          {persisted.workflow ? (
-            <ReadyRow text="Starter workflow saved" />
-          ) : null}
-          {persisted.firstJobDraft ? (
-            <ReadyRow text="First-job draft queued (no record created yet)" />
-          ) : null}
+          <ReadyRow text="Organization profile saved" />
+          <ReadyRow text="Industry operating mode applied" />
+          <ReadyRow text="Starter workflow saved" />
+          <ReadyRow text="Starter workflow ready to deploy" />
           <ReadyRow text="Jobs page opens on the next click" />
           <ReadyRow text="Settings → Team is where invitations are managed" />
         </div>
@@ -1569,16 +1624,31 @@ function ReadyRow({ text }: { text: string }) {
 
 // PEAKOPS_ONBOARDING_READY_RECAP_V1 (2026-05-11) — recap row.
 // Label-on-left, value-on-right pair, used by the Ready step's
-// industry-aware recap card. Wraps cleanly on narrow screens.
-function RecapRow({ label, value }: { label: string; value: string }) {
+// industry-aware recap card.
+//
+// PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 (2026-05-11) — value
+// widened from `string` to `React.ReactNode` so the Operational
+// focus row can render wrapping pills instead of a single
+// concatenated string. The default text value path is preserved;
+// existing callers that pass a string continue to work as-is.
+// Container uses `flex-start` (not `baseline`) so a pill row
+// aligns to the label's top instead of the pill's first
+// baseline.
+function RecapRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
   return (
     <div
       style={{
         display: "flex",
         flexWrap: "wrap",
-        alignItems: "baseline",
+        alignItems: "flex-start",
         gap: "4px 12px",
-        padding: "6px 0",
+        padding: "8px 0",
         borderTop: `1px solid ${TOKENS.border}`,
       }}
     >
@@ -1591,6 +1661,7 @@ function RecapRow({ label, value }: { label: string; value: string }) {
           textTransform: "uppercase" as const,
           flex: "0 0 130px",
           minWidth: 130,
+          paddingTop: 2,
         }}
       >
         {label}
@@ -1602,7 +1673,14 @@ function RecapRow({ label, value }: { label: string; value: string }) {
           lineHeight: 1.5,
           flex: "1 1 220px",
           minWidth: 0,
-          wordBreak: "break-word",
+          // PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 — switched from
+          // `wordBreak: break-word` (which can split mid-word on
+          // narrow widths) to `overflowWrap: break-word` +
+          // `wordBreak: normal`, so wrapping only happens at
+          // whitespace by default. Long single-token values
+          // still break if they would otherwise overflow.
+          overflowWrap: "break-word",
+          wordBreak: "normal",
         }}
       >
         {value}
