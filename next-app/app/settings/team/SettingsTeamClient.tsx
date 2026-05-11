@@ -76,6 +76,10 @@ export default function SettingsTeamClient() {
   const backHref = orgId ? `/incidents?orgId=${encodeURIComponent(orgId)}` : "/incidents";
   const profileHref = orgId ? `/settings?orgId=${encodeURIComponent(orgId)}` : "/settings";
   const vendorsHref = orgId ? `/settings/vendors?orgId=${encodeURIComponent(orgId)}` : "/settings/vendors";
+  // PEAKOPS_ORG_SETTINGS_V1 (2026-05-11) — Slice Branding 1.0.
+  const organizationHref = orgId
+    ? `/settings/organization?orgId=${encodeURIComponent(orgId)}`
+    : "/settings/organization";
 
   const [members, setMembers] = useState<OrgMember[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -335,7 +339,7 @@ export default function SettingsTeamClient() {
   if (authLoading || !loaded) {
     return (
       <div style={pageStyle}>
-        <Header backHref={backHref} profileHref={profileHref} vendorsHref={vendorsHref} active="team" />
+        <Header backHref={backHref} profileHref={profileHref} organizationHref={organizationHref} vendorsHref={vendorsHref} active="team" />
         <div style={cardStyle}><div style={{ fontSize: 12, color: "#6f6f6f" }}>Loading…</div></div>
       </div>
     );
@@ -344,7 +348,7 @@ export default function SettingsTeamClient() {
   if (!user) {
     return (
       <div style={pageStyle}>
-        <Header backHref={backHref} profileHref={profileHref} vendorsHref={vendorsHref} active="team" />
+        <Header backHref={backHref} profileHref={profileHref} organizationHref={organizationHref} vendorsHref={vendorsHref} active="team" />
         <div style={cardStyle}>
           <p style={{ margin: 0, fontSize: 13, color: "#b3b3b3" }}>
             You need to be signed in to view your team.
@@ -360,7 +364,7 @@ export default function SettingsTeamClient() {
   if (!orgId) {
     return (
       <div style={pageStyle}>
-        <Header backHref={backHref} profileHref={profileHref} vendorsHref={vendorsHref} active="team" />
+        <Header backHref={backHref} profileHref={profileHref} organizationHref={organizationHref} vendorsHref={vendorsHref} active="team" />
         <div style={cardStyle}>
           <p style={{ margin: 0, fontSize: 13, color: "#b3b3b3" }}>
             No organization selected. Open Mission Control once to set your active org, then come back.
@@ -378,7 +382,7 @@ export default function SettingsTeamClient() {
   if (!isMemberOfOrg) {
     return (
       <div style={pageStyle}>
-        <Header backHref={backHref} profileHref={profileHref} vendorsHref={vendorsHref} active="team" />
+        <Header backHref={backHref} profileHref={profileHref} organizationHref={organizationHref} vendorsHref={vendorsHref} active="team" />
         <div style={cardStyle}>
           <p style={{ margin: 0, fontSize: 13, color: "#b3b3b3" }}>
             You don't have access to this organization's team.
@@ -396,7 +400,7 @@ export default function SettingsTeamClient() {
 
   return (
     <div style={pageStyle}>
-      <Header backHref={backHref} profileHref={profileHref} vendorsHref={vendorsHref} active="team" />
+      <Header backHref={backHref} profileHref={profileHref} organizationHref={organizationHref} vendorsHref={vendorsHref} active="team" />
 
       <section style={cardStyle}>
         <div style={{
@@ -545,12 +549,13 @@ export default function SettingsTeamClient() {
 // ---- Header (tab nav) ------------------------------------------------------
 
 function Header({
-  backHref, profileHref, vendorsHref, active,
+  backHref, profileHref, organizationHref, vendorsHref, active,
 }: {
   backHref: string;
   profileHref: string;
+  organizationHref: string;
   vendorsHref: string;
-  active: "profile" | "team" | "vendors";
+  active: "profile" | "organization" | "team" | "vendors";
 }) {
   return (
     <>
@@ -563,9 +568,16 @@ function Header({
           ← Back to Jobs
         </Link>
       </div>
-      <nav style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+      <nav style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
         <Link href={active === "profile" ? "#" : profileHref} style={tabStyle(active === "profile")}>
           Profile
+        </Link>
+        {/* PEAKOPS_ORG_SETTINGS_V1 (2026-05-11) — Slice Branding 1.0. */}
+        <Link
+          href={active === "organization" ? "#" : organizationHref}
+          style={tabStyle(active === "organization")}
+        >
+          Organization
         </Link>
         <Link
           href={active === "team" ? "#" : "/settings/team"}

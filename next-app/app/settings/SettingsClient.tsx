@@ -185,8 +185,10 @@ export default function SettingsClient() {
   const role = prettyRole(claims.role);
 
   // PEAKOPS_TEAM_SETTINGS_V1 (2026-05-04)
-  // Tab nav between Profile (this page), Team, and Vendors. orgId
-  // carried through links for context preservation.
+  // Tab nav between Profile (this page), Organization, Team, and
+  // Vendors. orgId carried through links for context preservation.
+  // PEAKOPS_ORG_SETTINGS_V1 (2026-05-11) — Slice Branding 1.0 added
+  // the Organization tab for branding (logo upload).
   const tabHrefs = (() => {
     const fromQuery = String(sp?.get("orgId") || "").trim();
     let fromStorage = "";
@@ -197,8 +199,9 @@ export default function SettingsClient() {
     const oid = fromQuery || fromStorage || fromClaims;
     const q = oid ? `?orgId=${encodeURIComponent(oid)}` : "";
     return {
-      team:    `/settings/team${q}`,
-      vendors: `/settings/vendors${q}`,
+      organization: `/settings/organization${q}`,
+      team:         `/settings/team${q}`,
+      vendors:      `/settings/vendors${q}`,
     };
   })();
 
@@ -211,8 +214,9 @@ export default function SettingsClient() {
         </Link>
       </div>
 
-      <nav style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+      <nav style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
         <Link href="#" aria-current="page" style={tabStyle(true)}>Profile</Link>
+        <Link href={tabHrefs.organization} style={tabStyle(false)}>Organization</Link>
         <Link href={tabHrefs.team} style={tabStyle(false)}>Team</Link>
         <Link href={tabHrefs.vendors} style={tabStyle(false)}>Vendors</Link>
       </nav>

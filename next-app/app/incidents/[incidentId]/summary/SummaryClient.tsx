@@ -1661,9 +1661,19 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 borderBottom: "1px solid #1c1c1c",
               }}
             >
+              {/* PEAKOPS_BRANDING_LOGO_RENDER_V1 (2026-05-11) — Slice
+                  Branding 1.0. The slot itself is permanent (same
+                  28x28 box from Report Presentation 1.0) so layout
+                  never shifts whether or not a logo is on file.
+                  When `onboardingView.logoUrl` is set, render the
+                  image with object-fit:contain — transparent PNGs
+                  blend cleanly into the dark header background, JPGs
+                  letterbox without distortion. Empty slot keeps the
+                  subtle border so an unbranded org still looks
+                  intentional rather than broken. */}
               <div
                 data-slot="peakops-report-logo"
-                aria-hidden
+                aria-hidden={!onboardingView.logoUrl}
                 style={{
                   width: 28,
                   height: 28,
@@ -1671,8 +1681,37 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                   border: "1px solid #1c1c1c",
                   background: "rgba(255,255,255,0.02)",
                   flexShrink: 0,
+                  overflow: "hidden",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
-              />
+              >
+                {onboardingView.logoUrl ? (
+                  <img
+                    src={onboardingView.logoUrl}
+                    alt={
+                      onboardingView.displayName
+                        ? `${onboardingView.displayName} logo`
+                        : "Organization logo"
+                    }
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: "100%",
+                      objectFit: "contain",
+                      display: "block",
+                    }}
+                    // PEAKOPS_BRANDING_LOGO_RENDER_V1 — if a stored
+                    // URL turns out to be unreachable (e.g. the org
+                    // moved their CDN), swallow the broken-image
+                    // icon by hiding the <img>. The bordered empty
+                    // slot remains, preserving layout.
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.display = "none";
+                    }}
+                  />
+                ) : null}
+              </div>
               <div
                 style={{
                   minWidth: 0,

@@ -70,6 +70,19 @@ export type OrgOnboardingView = {
    * `null` for industries without filing-style outputs.
    */
   reportIntroLine: string | null;
+  // PEAKOPS_BRANDING_LOGO_VIEW_V1 (2026-05-11) — Slice Branding 1.0.
+  /**
+   * Organization logo URL for the Summary report header (and any
+   * other surface that adopts the logo slot pattern). Sourced from
+   * `orgs/{orgId}.branding.logoUrl`. In v1 this is a data URL
+   * (admin-uploaded image, base64-encoded, written client-side via
+   * the Organization settings tab). A future slice can migrate to a
+   * Firebase Storage URL without changing the consumer contract.
+   *
+   * "" when the org hasn't uploaded a logo yet — the Summary header
+   * keeps its permanent empty logo slot so layout never shifts.
+   */
+  logoUrl: string;
 };
 
 export const DEFAULT_ORG_ONBOARDING_VIEW: OrgOnboardingView = {
@@ -83,6 +96,7 @@ export const DEFAULT_ORG_ONBOARDING_VIEW: OrgOnboardingView = {
   filingHint: null,
   reportEyebrow: "Job Report",
   reportIntroLine: null,
+  logoUrl: "",
 };
 
 // PEAKOPS_ONBOARDING_DOWNSTREAM_COPY_V1 (2026-05-08)
@@ -230,6 +244,21 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
 
   const displayName = String(orgData.name || stateData.orgName || "").trim();
 
+  // PEAKOPS_BRANDING_LOGO_VIEW_V1 (2026-05-11) — Slice Branding 1.0.
+  // Resolve the org logo from `orgs/{orgId}.branding.logoUrl`. The
+  // field can be absent (no logo uploaded yet) or carry either a
+  // data: URL (v1 client-side upload) or an https: URL (future
+  // Storage-backed slice). Defensive type check so a malformed
+  // value (number, object, etc.) never paints in an <img src>.
+  const branding = (orgData as any)?.branding;
+  const rawLogoUrl =
+    branding && typeof branding === "object" ? branding.logoUrl : undefined;
+  const logoUrl =
+    typeof rawLogoUrl === "string" &&
+    (rawLogoUrl.startsWith("data:") || rawLogoUrl.startsWith("https://"))
+      ? rawLogoUrl
+      : "";
+
   if (!industry) {
     // Industry not set — return default copy but include the (possibly
     // empty) displayName + selectedTemplate so consumers can still
@@ -242,6 +271,7 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
       displayName,
       selectedTemplate,
       startJobTitlePlaceholder: placeholder,
+      logoUrl,
     };
   }
 
@@ -262,5 +292,6 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
     filingHint: copy.filingHint,
     reportEyebrow: copy.reportEyebrow,
     reportIntroLine: copy.reportIntroLine,
+    logoUrl,
   };
 }
