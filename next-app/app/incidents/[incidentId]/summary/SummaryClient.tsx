@@ -1656,28 +1656,31 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 marginTop: 12,
                 display: "flex",
                 alignItems: "center",
-                gap: 10,
-                paddingBottom: 12,
+                gap: 14,
+                paddingBottom: 14,
                 borderBottom: "1px solid #1c1c1c",
               }}
             >
-              {/* PEAKOPS_BRANDING_LOGO_RENDER_V1 (2026-05-11) — Slice
-                  Branding 1.0. The slot itself is permanent (same
-                  28x28 box from Report Presentation 1.0) so layout
-                  never shifts whether or not a logo is on file.
-                  When `onboardingView.logoUrl` is set, render the
-                  image with object-fit:contain — transparent PNGs
-                  blend cleanly into the dark header background, JPGs
-                  letterbox without distortion. Empty slot keeps the
-                  subtle border so an unbranded org still looks
-                  intentional rather than broken. */}
+              {/* PEAKOPS_BRANDING_LOGO_RENDER_V2 (2026-05-11) — Slice
+                  Branding 1.0 QA pass.
+                  The v1 slot was a 28x28 favicon-sized box, which
+                  rendered uploaded logos as a barely-readable thumbnail
+                  in production QA. v2 promotes the slot to a real
+                  letterhead size (48x48) so a uploaded brand actually
+                  reads as branding, while keeping the permanent slot
+                  pattern: empty orgs still see the bordered placeholder
+                  at the same size — no layout shift either direction
+                  when a logo is later uploaded.
+                  object-fit:contain still letterboxes wide or tall
+                  source images cleanly; transparent PNGs blend on the
+                  dark header. */}
               <div
                 data-slot="peakops-report-logo"
                 aria-hidden={!onboardingView.logoUrl}
                 style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
+                  width: 48,
+                  height: 48,
+                  borderRadius: 8,
                   border: "1px solid #1c1c1c",
                   background: "rgba(255,255,255,0.02)",
                   flexShrink: 0,
@@ -1685,6 +1688,10 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
+                  // Slight inner padding so a tight logo (no internal
+                  // margin) doesn't kiss the border on every side.
+                  padding: 4,
+                  boxSizing: "border-box",
                 }}
               >
                 {onboardingView.logoUrl ? (
@@ -1702,10 +1709,9 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                       display: "block",
                     }}
                     // PEAKOPS_BRANDING_LOGO_RENDER_V1 — if a stored
-                    // URL turns out to be unreachable (e.g. the org
-                    // moved their CDN), swallow the broken-image
-                    // icon by hiding the <img>. The bordered empty
-                    // slot remains, preserving layout.
+                    // URL turns out to be unreachable, swallow the
+                    // broken-image icon. The bordered empty slot
+                    // remains, preserving layout.
                     onError={(e) => {
                       (e.currentTarget as HTMLImageElement).style.display = "none";
                     }}
@@ -1715,10 +1721,10 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               <div
                 style={{
                   minWidth: 0,
-                  fontSize: 12,
+                  fontSize: 14,
                   fontWeight: 600,
-                  color: onboardingView.displayName ? "#d1d5db" : "#6f6f6f",
-                  letterSpacing: "0.02em",
+                  color: onboardingView.displayName ? "#e5e7eb" : "#6f6f6f",
+                  letterSpacing: "0.01em",
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
