@@ -22,11 +22,21 @@ export type IndustryKey =
   | "contractor"
   | "other";
 
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
+// Added municipal workflow keys: road_damage, stormwater_inspection,
+// traffic_signal, row_inspection, contractor_verification. These are
+// additive — telecom/utility/contractor/other paths still rely on the
+// pre-existing keys and are not affected.
 export type WorkflowTemplateKey =
   | "pole_top"
   | "fiber_splice"
   | "storm_assess"
   | "trench_inspection"
+  | "road_damage"
+  | "stormwater_inspection"
+  | "traffic_signal"
+  | "row_inspection"
+  | "contractor_verification"
   | "blank";
 
 export type IndustryProfile = {
@@ -151,18 +161,29 @@ const PROFILES: Record<IndustryKey, IndustryProfile> = {
     ],
   },
 
+  // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
+  // Re-tuned for public-works buyers per the Municipality Mode 1.0
+  // spec: ops focus presets, recommended templates, terminology, and
+  // outputs now reflect roads / stormwater / signals / contractor
+  // verification rather than utility-corridor language.
   municipality: {
     key: "municipality",
-    label: "Municipality",
-    short: "Streets · signals · public infrastructure",
-    defaultWorkflow: "storm_assess",
-    recommendedWorkflows: ["storm_assess", "trench_inspection", "pole_top"],
+    label: "Municipality / Public Works",
+    short: "Roads, stormwater, signals, and contractor field verification",
+    defaultWorkflow: "stormwater_inspection",
+    recommendedWorkflows: [
+      "stormwater_inspection",
+      "road_damage",
+      "traffic_signal",
+      "row_inspection",
+      "contractor_verification",
+    ],
     starterJob: {
-      title: "Storm damage inspection — Utility Corridor 7",
-      location: "Utility Corridor 7 · MP 12.4",
-      jobType: "damage",
+      title: "Stormwater inspection — 3rd Ave catch basin",
+      location: "3rd Ave · Catch basin CB-12",
+      jobType: "inspection",
     },
-    terminology: ["public works", "corridor", "signal cabinet", "right-of-way"],
+    terminology: ["public works", "right-of-way", "signal cabinet", "catch basin", "corridor"],
     timerLabels: {
       response: "Response time",
       fieldArrival: "Inspection window",
@@ -170,16 +191,18 @@ const PROFILES: Record<IndustryKey, IndustryProfile> = {
     },
     outputs: [
       { label: "Audit-ready field record", status: "live" },
-      { label: "Council-ready summary", status: "live" },
+      { label: "Contractor oversight packet", status: "live" },
+      { label: "Public records / council-ready summary", status: "live" },
       { label: "FEMA / grant-ready field record (future reporting support)", status: "future" },
     ],
     opsFocusOptions: [
-      { key: "road_damage",        label: "Road damage / pothole tracking" },
-      { key: "traffic_signals",    label: "Traffic signals & lighting maintenance" },
-      { key: "stormwater",         label: "Stormwater & drainage events" },
-      { key: "row_oversight",      label: "Right-of-way contractor oversight" },
-      { key: "public_safety",      label: "Public-works safety walkarounds" },
-      { key: "filing_ready_records", label: "FEMA / grant-ready field records", note: "PeakOps helps structure operational records for FEMA/grant-style documentation. Not legal/compliance advice — final filings remain your team's responsibility." },
+      { key: "road_damage",          label: "Road damage response",                note: "Document potholes, damage, and emergency road repairs as they happen." },
+      { key: "stormwater",           label: "Stormwater inspection",               note: "Catch basins, drainage, and stormwater events." },
+      { key: "traffic_signals",      label: "Traffic signal repair",               note: "Signal cabinets, lighting, and intersection maintenance." },
+      { key: "row_oversight",        label: "Sidewalk / right-of-way inspection",  note: "Curbs, sidewalks, and right-of-way condition." },
+      { key: "contractor_oversight", label: "Contractor oversight",                note: "Verify contractor work — punch items, sign-off, and proof-of-work." },
+      { key: "emergency_response",   label: "Public works emergency response",     note: "Storm and incident response with rapid documentation." },
+      { key: "filing_ready_records", label: "FEMA / grant-ready field records",    note: "PeakOps helps structure operational records for FEMA/grant-style documentation. Not legal/compliance advice — final filings remain your team's responsibility." },
     ],
   },
 

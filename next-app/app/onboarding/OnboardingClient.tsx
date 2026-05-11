@@ -92,20 +92,37 @@ const STEPS: ReadonlyArray<StepDef> = [
 // Industry + workflow keys come from the shared profile lib so the
 // org doc, the onboarding state doc, and the field/review/summary
 // surfaces all key off the same string union.
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
+// Refined municipality label/sub copy to match the Municipality
+// Mode 1.0 spec: "Roads, stormwater, inspections, traffic signals,
+// and contractor field verification."
 const INDUSTRIES: ReadonlyArray<{ key: IndustryKey; label: string; sub: string }> = [
   { key: "utilities",    label: "Utilities",                sub: "Electric / gas / water field operations" },
   { key: "telecom",      label: "Telecom",                  sub: "Fiber, OSP, splice and outage work" },
-  { key: "municipality", label: "Municipality",             sub: "Streets, signals, public infrastructure" },
+  { key: "municipality", label: "Municipality / Public Works", sub: "Roads, stormwater, inspections, traffic signals, and contractor field verification" },
   { key: "contractor",   label: "Infrastructure contractor", sub: "Multi-customer field crews" },
   { key: "other",        label: "Other",                    sub: "Custom — we'll tailor templates after setup" },
 ];
 
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
+// Added 5 municipal workflow cards (road damage, stormwater
+// inspection, traffic signal repair, sidewalk/right-of-way
+// inspection, contractor work verification). Pre-existing
+// utility/telecom/contractor cards are untouched. Card order is
+// industry-agnostic here; the industry profile's
+// recommendedWorkflows array drives which appear as recommended
+// for the buyer's industry on the picker.
 const TEMPLATES: ReadonlyArray<{ key: WorkflowTemplateKey; label: string; sub: string; sample: string }> = [
-  { key: "pole_top",          label: "Pole-top inspection",       sub: "Recurring inspection routes",                sample: "Replace broken pole-top pin — Pole 14A-22" },
-  { key: "fiber_splice",      label: "Fiber splice verification", sub: "OTDR + bond, with photo evidence",            sample: "Fiber splice verification — North Line Segment B" },
-  { key: "storm_assess",      label: "Storm damage assessment",   sub: "Rapid documentation + supervisor sign-off",   sample: "Storm damage inspection — Utility Corridor 7" },
-  { key: "trench_inspection", label: "Trench inspection",         sub: "Pre-backfill open-trench documentation",      sample: "Utility trench inspection — Riverside Sub-feeder" },
-  { key: "blank",             label: "Start blank",               sub: "Define your own workflow — we’ll guide it",   sample: "Custom job — name it when you start" },
+  { key: "pole_top",                label: "Pole-top inspection",            sub: "Recurring inspection routes",                  sample: "Replace broken pole-top pin — Pole 14A-22" },
+  { key: "fiber_splice",            label: "Fiber splice verification",      sub: "OTDR + bond, with photo evidence",             sample: "Fiber splice verification — North Line Segment B" },
+  { key: "storm_assess",            label: "Storm damage assessment",        sub: "Rapid documentation + supervisor sign-off",    sample: "Storm damage inspection — Utility Corridor 7" },
+  { key: "trench_inspection",       label: "Trench inspection",              sub: "Pre-backfill open-trench documentation",       sample: "Utility trench inspection — Riverside Sub-feeder" },
+  { key: "road_damage",             label: "Road damage assessment",         sub: "Pothole, surface damage, and emergency repair", sample: "Road damage assessment — Sprague Ave" },
+  { key: "stormwater_inspection",   label: "Stormwater inspection",          sub: "Catch basins, drainage, and storm events",     sample: "Stormwater inspection — 3rd Ave catch basin" },
+  { key: "traffic_signal",          label: "Traffic signal repair",          sub: "Signal cabinet, lighting, intersection work",  sample: "Traffic signal repair — Pines & Mission" },
+  { key: "row_inspection",          label: "Sidewalk / right-of-way inspection", sub: "Curb, sidewalk, and ROW condition checks", sample: "Sidewalk / right-of-way inspection — Sullivan Rd corridor" },
+  { key: "contractor_verification", label: "Contractor work verification",   sub: "Verify contractor sign-off + proof of work",   sample: "Contractor work verification — Sullivan sidewalk repair" },
+  { key: "blank",                   label: "Start blank",                    sub: "Define your own workflow — we’ll guide it",    sample: "Custom job — name it when you start" },
 ];
 
 // Two-letter avatar from an email or display name. No external
@@ -212,10 +229,15 @@ export default function OnboardingClient() {
   // Industry → starter-template bias. When the buyer picks an
   // industry on Step 2, pre-select the most-likely workflow so
   // Step 4 already has the obvious card chosen.
+  // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
+  // Pre-select stormwater inspection for municipality buyers (matches
+  // industryProfiles.municipality.defaultWorkflow). Picking
+  // Municipality now lands them on a public-works template by default
+  // instead of the utility-flavored storm_assess.
   const INDUSTRY_TO_TEMPLATE: Record<IndustryKey, WorkflowTemplateKey> = {
     utilities: "pole_top",
     telecom: "fiber_splice",
-    municipality: "storm_assess",
+    municipality: "stormwater_inspection",
     contractor: "trench_inspection",
     other: "blank",
   };

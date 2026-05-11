@@ -155,8 +155,21 @@ const VALID_STEPS: OnboardingStepKey[] = [
 const VALID_INDUSTRIES: IndustryKey[] = [
   "utilities", "telecom", "municipality", "contractor", "other",
 ];
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0
+// added the municipal workflow keys. Persistence validation list
+// grows to match so a wizard write of "stormwater_inspection" (etc.)
+// round-trips cleanly through Firestore.
 const VALID_TEMPLATES: WorkflowTemplateKey[] = [
-  "pole_top", "fiber_splice", "storm_assess", "trench_inspection", "blank",
+  "pole_top",
+  "fiber_splice",
+  "storm_assess",
+  "trench_inspection",
+  "road_damage",
+  "stormwater_inspection",
+  "traffic_signal",
+  "row_inspection",
+  "contractor_verification",
+  "blank",
 ];
 
 function stateRef(orgId: string): DocumentReference {

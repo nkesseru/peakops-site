@@ -145,22 +145,27 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
       "Audit-ready record of telecom field activity. " +
       "Structured for NORS/DIRS-style documentation — final filings remain your responsibility.",
   },
+  // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
+  // Public-works flavored copy. The downstream surfaces (Jobs page
+  // subhead/filingHint, Start Job placeholder, Summary eyebrow/intro,
+  // Mission Control empty state) already read off this view — only
+  // the strings change here.
   municipality: {
-    startJobTitlePlaceholder: "e.g. Storm damage inspection — Utility Corridor 7",
-    startJobSubhead: "Open a public-works job — streets, signals, or stormwater.",
-    emptyStatePrompt: "Start your first public-works job",
+    startJobTitlePlaceholder: "e.g. Stormwater inspection — 3rd Ave catch basin",
+    startJobSubhead:
+      "Open a public works job — roads, stormwater, signals, or contractor verification.",
+    emptyStatePrompt: "Start your first public works job",
+    // PEAKOPS_MUNICIPALITY_MODE_V1 — neutralized the prior FEMA/grant
+    // emphasis. Public records, contractor oversight, and audit-ready
+    // documentation are the buyer's actual day-to-day framing; FEMA
+    // / grants remain available as a future-reporting output but
+    // don't need to dominate the Jobs page hint.
     filingHint:
-      "Damage and incident records are structured for FEMA/grant-style documentation. " +
-      "Final filings remain your responsibility.",
-    // PEAKOPS_REPORT_EYEBROW_PHRASING_V2 (2026-05-11)
-    // Report Presentation 1.0 — municipality buyers describe their
-    // own work as "operations" (e.g. street operations, signal
-    // operations); "Operations Record" reads as their own internal
-    // language.
+      "Field records are structured for public records, contractor oversight, and audit-ready documentation.",
     reportEyebrow: "Public Works Operations Record",
     reportIntroLine:
-      "Audit-ready record of public-works activity. " +
-      "Structured for FEMA/grant-style documentation — final filings remain your responsibility.",
+      "Audit-ready record of public works field activity. " +
+      "Structured for contractor oversight, public records, and operational review.",
   },
   contractor: {
     startJobTitlePlaceholder: "e.g. Utility trench inspection — Riverside Sub-feeder",
@@ -198,11 +203,20 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
 // industry=telecom + blank → telecom industry placeholder
 // industry=utilities + blank → utilities placeholder
 // (any future workflow-specific template still overrides as expected)
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0.
+// Added municipal workflow placeholders (road_damage, traffic_signal,
+// stormwater_inspection, row_inspection, contractor_verification). The
+// pre-existing utility/telecom/contractor placeholders are untouched.
 const TEMPLATE_TITLE_PLACEHOLDER: Partial<Record<WorkflowTemplateKey, string>> = {
-  pole_top:          "e.g. Replace broken pole-top pin — Pole 14A-22",
-  fiber_splice:      "e.g. Fiber splice verification — North Line Segment B",
-  storm_assess:      "e.g. Storm damage inspection — Utility Corridor 7",
-  trench_inspection: "e.g. Utility trench inspection — Riverside Sub-feeder",
+  pole_top:                "e.g. Replace broken pole-top pin — Pole 14A-22",
+  fiber_splice:            "e.g. Fiber splice verification — North Line Segment B",
+  storm_assess:            "e.g. Storm damage inspection — Utility Corridor 7",
+  trench_inspection:       "e.g. Utility trench inspection — Riverside Sub-feeder",
+  road_damage:             "e.g. Road damage assessment — Sprague Ave",
+  traffic_signal:          "e.g. Traffic signal repair — Pines & Mission",
+  stormwater_inspection:   "e.g. Stormwater inspection — 3rd Ave catch basin",
+  row_inspection:          "e.g. Sidewalk / right-of-way inspection — Sullivan Rd corridor",
+  contractor_verification: "e.g. Contractor work verification — Sullivan sidewalk repair",
 };
 
 /**
@@ -235,8 +249,21 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
   const industry: IndustryKey | "" =
     (validKeys as string[]).includes(rawIndustry) ? (rawIndustry as IndustryKey) : "";
 
+  // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0
+  // adds 5 municipal workflow keys. Validation list grows here so
+  // selectedTemplate persisted by the wizard's pickIndustry +
+  // template-picker survives the round-trip.
   const validTemplates: WorkflowTemplateKey[] = [
-    "pole_top", "fiber_splice", "storm_assess", "trench_inspection", "blank",
+    "pole_top",
+    "fiber_splice",
+    "storm_assess",
+    "trench_inspection",
+    "road_damage",
+    "stormwater_inspection",
+    "traffic_signal",
+    "row_inspection",
+    "contractor_verification",
+    "blank",
   ];
   const rawTemplate = String(stateData.selectedTemplate || "").trim().toLowerCase();
   const selectedTemplate: WorkflowTemplateKey | "" =
