@@ -111,7 +111,11 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
     startJobSubhead: "Open a utilities job — pole, feeder, substation, or right-of-way work.",
     emptyStatePrompt: "Start your first utilities job",
     filingHint: null,
-    reportEyebrow: "Utilities Field Record",
+    // PEAKOPS_REPORT_EYEBROW_PHRASING_V2 (2026-05-11)
+    // Report Presentation 1.0 — "Operations Record" reads more
+    // enterprise-grade than "Field Record" for utilities buyers,
+    // matching how utilities describe their own operational logs.
+    reportEyebrow: "Utility Operations Record",
     reportIntroLine: null,
   },
   telecom: {
@@ -134,7 +138,12 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
     filingHint:
       "Damage and incident records are structured for FEMA/grant-style documentation. " +
       "Final filings remain your responsibility.",
-    reportEyebrow: "Public Works Field Record",
+    // PEAKOPS_REPORT_EYEBROW_PHRASING_V2 (2026-05-11)
+    // Report Presentation 1.0 — municipality buyers describe their
+    // own work as "operations" (e.g. street operations, signal
+    // operations); "Operations Record" reads as their own internal
+    // language.
+    reportEyebrow: "Public Works Operations Record",
     reportIntroLine:
       "Audit-ready record of public-works activity. " +
       "Structured for FEMA/grant-style documentation — final filings remain your responsibility.",
@@ -144,7 +153,11 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
     startJobSubhead: "Open a job for any of your customers — capture proof of work as you go.",
     emptyStatePrompt: "Start your first job",
     filingHint: null,
-    reportEyebrow: "Field Record",
+    // PEAKOPS_REPORT_EYEBROW_PHRASING_V2 (2026-05-11)
+    // Report Presentation 1.0 — "Contractor Field Record" makes
+    // the per-client closeout context clear at a glance for a
+    // multi-customer contractor.
+    reportEyebrow: "Contractor Field Record",
     reportIntroLine: null,
   },
   other: {

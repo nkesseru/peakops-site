@@ -1630,14 +1630,72 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             >
               ← Jobs
             </button>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
+            {/* PEAKOPS_REPORT_ORG_IDENTITY_V1 (2026-05-11)
+                Report Presentation 1.0 — organization identity row.
+                Reserves the logo slot for the future Branding 1.0
+                slice (no upload UX in v1) and renders the buyer's
+                organization name above the report eyebrow. The 28x28
+                logo container always renders so enabling a logo
+                later won't shift any other layout in this header.
+
+                White-label hooks:
+                  - data-slot="peakops-report-logo" — future code
+                    can target this element to inject an <img>.
+                  - data-org-id on the section — enables per-org
+                    CSS overrides in future white-label work.
+
+                Org name fallback ladder:
+                  1. onboardingView.displayName (canonical)
+                  2. nothing rendered (the eyebrow + title still
+                     carry the report's identity)
+                Empty-state logo box always renders so the slot
+                position is permanent. */}
+            <div
+              data-org-id={orgId || undefined}
+              style={{
+                marginTop: 12,
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                paddingBottom: 12,
+                borderBottom: "1px solid #1c1c1c",
+              }}
+            >
+              <div
+                data-slot="peakops-report-logo"
+                aria-hidden
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 6,
+                  border: "1px solid #1c1c1c",
+                  background: "rgba(255,255,255,0.02)",
+                  flexShrink: 0,
+                }}
+              />
+              <div
+                style={{
+                  minWidth: 0,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: onboardingView.displayName ? "#d1d5db" : "#6f6f6f",
+                  letterSpacing: "0.02em",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {onboardingView.displayName || "Operational record"}
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginTop: 14 }}>
               <div style={{ minWidth: 0, flex: "1 1 220px" }}>
                 <div
                   style={{
                     fontSize: 10,
                     fontWeight: 700,
-                    letterSpacing: "0.14em",
-                    color: "#6f6f6f",
+                    letterSpacing: "0.16em",
+                    color: "#8a8a8a",
                     textTransform: "uppercase" as const,
                   }}
                 >
@@ -1645,17 +1703,26 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                       industry-aware eyebrow. Falls back to
                       "Job Report" when industry isn't set, which
                       preserves the prior look for orgs that haven't
-                      completed onboarding. */}
+                      completed onboarding.
+
+                      PEAKOPS_REPORT_EYEBROW_SYSTEM_V2 (2026-05-11)
+                      Eyebrow phrasing per Report Presentation 1.0:
+                        - Telecom Field Record
+                        - Utility Operations Record
+                        - Public Works Operations Record
+                        - Contractor Field Record
+                        - Job Report (no-industry default) */}
                   {onboardingView.reportEyebrow}
                 </div>
                 <h1
                   style={{
                     margin: 0,
-                    marginTop: 4,
-                    fontSize: 22,
+                    marginTop: 6,
+                    fontSize: 24,
                     fontWeight: 700,
                     color: "#f5f5f5",
-                    lineHeight: 1.25,
+                    lineHeight: 1.2,
+                    letterSpacing: "-0.005em",
                   }}
                   title={incidentId}
                 >
@@ -1663,37 +1730,60 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 </h1>
                 <div
                   style={{
-                    marginTop: 8,
+                    marginTop: 10,
                     display: "flex",
                     flexWrap: "wrap",
-                    rowGap: 4,
-                    columnGap: 14,
+                    rowGap: 6,
+                    columnGap: 0,
                     fontSize: 12,
                     color: "#b3b3b3",
                     alignItems: "center",
                   }}
                 >
                   {(() => {
+                    // PEAKOPS_REPORT_META_DOTS_V1 (2026-05-11)
+                    // Render meta items with a · separator between
+                    // each populated item, so the line reads as one
+                    // consistent metadata row rather than four loose
+                    // spans. Skips empty values cleanly.
                     const loc = String((incident as any)?.location || "").trim();
-                    return loc ? <span>{loc}</span> : null;
-                  })()}
-                  {(() => {
                     const openedSec =
                       Number((incident as any)?.createdAt?._seconds || 0) ||
                       Number((incident as any)?.openedAt?._seconds || 0);
-                    return openedSec ? <span>Opened {fmtFullDate(openedSec)}</span> : null;
-                  })()}
-                  {(() => {
                     const closedSec = Number((incident as any)?.closedAt?._seconds || 0);
-                    return closedSec ? <span>Closed {fmtFullDate(closedSec)}</span> : null;
+                    const items: React.ReactNode[] = [];
+                    if (loc) items.push(<span key="loc">{loc}</span>);
+                    if (openedSec) items.push(<span key="opened">Opened {fmtFullDate(openedSec)}</span>);
+                    if (closedSec) items.push(<span key="closed">Closed {fmtFullDate(closedSec)}</span>);
+                    const out: React.ReactNode[] = [];
+                    items.forEach((node, i) => {
+                      if (i > 0) {
+                        out.push(
+                          <span
+                            key={`sep-${i}`}
+                            aria-hidden
+                            style={{ margin: "0 10px", color: "#3a3a3a" }}
+                          >
+                            ·
+                          </span>
+                        );
+                      }
+                      out.push(node);
+                    });
+                    return out;
                   })()}
                   {/* PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
                       Header pill reads off reportUiState so it can
                       never disagree with the Generate Report enable
-                      gate or the summary-strip stat tones below. */}
+                      gate or the summary-strip stat tones below.
+
+                      PEAKOPS_REPORT_PILL_PROMOTE_V1 (2026-05-11)
+                      Status pill bumped up a size class (text-[11px],
+                      tighter padding) so it reads as a real status
+                      indicator instead of a tag in the meta row. */}
                   <span
-                    className={"text-[10px] px-2 py-0.5 rounded-full border " + incidentStatusPill(reportUiState.displayState)}
-                    style={{ fontWeight: 700, letterSpacing: "0.04em" }}
+                    className={"text-[11px] px-2.5 py-0.5 rounded-full border " + incidentStatusPill(reportUiState.displayState)}
+                    style={{ fontWeight: 700, letterSpacing: "0.04em", marginLeft: 12 }}
                   >
                     {reportUiState.displayState === "Awaiting Supervisor Review" ? "Awaiting Review" : reportUiState.displayState}
                   </span>
@@ -1708,12 +1798,14 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 {onboardingView.reportIntroLine ? (
                   <div
                     style={{
-                      marginTop: 8,
+                      marginTop: 12,
                       fontSize: 12,
-                      lineHeight: 1.55,
+                      lineHeight: 1.6,
                       color: "#9a9a9a",
                       fontStyle: "italic",
                       maxWidth: 680,
+                      paddingLeft: 10,
+                      borderLeft: "2px solid #1c1c1c",
                     }}
                   >
                     {onboardingView.reportIntroLine}
@@ -1803,6 +1895,23 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                     {artifactBusy ? "Regenerating…" : "Regenerate"}
                   </button>
                 )}
+                {/* PEAKOPS_REPORT_CTA_CAPTION_V1 (2026-05-11)
+                    Report Presentation 1.0 — single-line audit-trust
+                    caption under the primary CTA. Confirms what's in
+                    the ZIP without inflating the button itself. */}
+                <div
+                  className="peakops-no-print"
+                  style={{
+                    flexBasis: "100%",
+                    fontSize: 10,
+                    color: "#6f6f6f",
+                    textAlign: "right",
+                    letterSpacing: "0.02em",
+                    marginTop: -2,
+                  }}
+                >
+                  Audit-ready packet · report, photos, timeline, approvals.
+                </div>
               </div>
             </div>
           </section>
@@ -2193,49 +2302,54 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               </div>
             );
             return (
-              <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
-                <Stat label="Photos" value={String(photosTotal)} />
-                <Stat label="Notes" value={hasNote ? "Recorded" : "—"} />
-                <Stat
-                  label="Tasks Completed"
-                  value={tasksTotal > 0 ? `${tasksCompleted} / ${tasksTotal}` : "—"}
-                  // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05) /
-                  // PEAKOPS_REPORT_TASKS_COMPLETED_V2 (2026-05-05)
-                  // Counter shows complete-or-approved tasks so it
-                  // can never disagree with the per-task panel
-                  // below (which renders "Complete" when status is
-                  // complete). Tone snaps to green when the
-                  // canonical state is Closed/Approved.
-                  tone={
-                    reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
-                      ? "green"
-                      : tasksCompleted > 0 ? "amber" : "neutral"
-                  }
-                />
-                <Stat
-                  label="Supervisor Approval"
-                  // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
-                  // Sourced from reportUiState — guarantees the
-                  // Approved-or-better banner above never coexists
-                  // with a "Pending" stat tile here. When the
-                  // canonical state is Closed/Approved, this stat
-                  // reads "Approved" with green tone; lower states
-                  // fall through to the local task-count math.
-                  value={
-                    reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
-                      ? "Approved"
-                      : tasksApproved > 0
-                        ? "Partial"
-                        : "Pending"
-                  }
-                  tone={
-                    reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
-                      ? "green"
-                      : tasksApproved > 0
-                        ? "amber"
-                        : "neutral"
-                  }
-                />
+              // PEAKOPS_REPORT_METRICS_SECTION_V1 (2026-05-11)
+              // Report Presentation 1.0 — wrap the metrics grid in a
+              // section with eyebrow + subhead so it reads as a
+              // documented section ("Record Summary") consistent with
+              // Audit Trail / Field Evidence below, instead of as
+              // four loose cards.
+              <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                    Record Summary
+                  </h2>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                    Read-at-a-glance counts across this record.
+                  </div>
+                </div>
+                <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+                  <Stat label="Photos" value={String(photosTotal)} />
+                  <Stat label="Notes" value={hasNote ? "Recorded" : "—"} />
+                  <Stat
+                    label="Tasks Completed"
+                    value={tasksTotal > 0 ? `${tasksCompleted} / ${tasksTotal}` : "—"}
+                    // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05) /
+                    // PEAKOPS_REPORT_TASKS_COMPLETED_V2 (2026-05-05)
+                    tone={
+                      reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
+                        ? "green"
+                        : tasksCompleted > 0 ? "amber" : "neutral"
+                    }
+                  />
+                  <Stat
+                    label="Supervisor Approval"
+                    // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
+                    value={
+                      reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
+                        ? "Approved"
+                        : tasksApproved > 0
+                          ? "Partial"
+                          : "Pending"
+                    }
+                    tone={
+                      reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
+                        ? "green"
+                        : tasksApproved > 0
+                          ? "amber"
+                          : "neutral"
+                    }
+                  />
+                </div>
               </section>
             );
           })()}
@@ -2260,12 +2374,21 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               return ax - bx;
             });
             return (
-              <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "16px 18px" }}>
-                <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.10em", color: "#6f6f6f", textTransform: "uppercase" as const }}>
-                  Timeline
-                </h2>
+              <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+                {/* PEAKOPS_REPORT_TIMELINE_HEADER_V1 (2026-05-11)
+                    Report Presentation 1.0 — eyebrow + subhead pair
+                    so the timeline reads as a true audit trail
+                    rather than a casual event list. */}
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                    Audit Trail
+                  </h2>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                    Chronological record of field activity, captures, and approvals.
+                  </div>
+                </div>
                 {sorted.length === 0 ? (
-                  <div style={{ marginTop: 12, fontSize: 13, color: "#6f6f6f" }}>
+                  <div style={{ marginTop: 14, fontSize: 13, color: "#6f6f6f" }}>
                     No events recorded for this job yet.
                   </div>
                 ) : (
@@ -2349,26 +2472,35 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               accordion that used to live here — per-task photos are
               still surfaced inside the Tasks section below for
               proof-of-work association. */}
-          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "16px 18px" }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-              <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.10em", color: "#6f6f6f", textTransform: "uppercase" as const }}>
-                Photos
-              </h2>
-              <span style={{ fontSize: 11, color: "#6f6f6f" }}>
+          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+            {/* PEAKOPS_REPORT_PHOTOS_HEADER_V1 (2026-05-11)
+                Report Presentation 1.0 — eyebrow + subhead so the
+                evidence grid reads as documented attachments, not a
+                casual photo dump. */}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                  Field Evidence
+                </h2>
+                <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                  Photos captured at the site. Click any image to view full size.
+                </div>
+              </div>
+              <span style={{ fontSize: 11, color: "#6f6f6f", whiteSpace: "nowrap", marginTop: 2 }}>
                 {evidence.length} {evidence.length === 1 ? "photo" : "photos"}
               </span>
             </div>
             {evidence.length === 0 ? (
-              <div style={{ marginTop: 12, fontSize: 13, color: "#6f6f6f" }}>
+              <div style={{ marginTop: 14, fontSize: 13, color: "#6f6f6f" }}>
                 Add photos to show what happened on site.
               </div>
             ) : (
               <div
                 style={{
-                  marginTop: 12,
+                  marginTop: 14,
                   display: "grid",
                   gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
-                  gap: 8,
+                  gap: 10,
                 }}
               >
                 {evidence.map((ev) => {
@@ -2460,12 +2592,22 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             const hasNoteText = !!incidentNotesText || !!siteNotesText;
             const bypassed = !hasNoteText && (status === "bypassed" || !!bypassReason || notesBypassedLocal);
             return (
-              <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "16px 18px" }}>
-                <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.10em", color: "#6f6f6f", textTransform: "uppercase" as const }}>
-                  Notes
-                </h2>
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#b3b3b3" }}>Field Notes</div>
+              <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+                {/* PEAKOPS_REPORT_NOTES_HEADER_V1 (2026-05-11)
+                    Report Presentation 1.0 — eyebrow + subhead. */}
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                    Field Notes
+                  </h2>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                    Narrative recorded by the field team.
+                  </div>
+                </div>
+                <div style={{ marginTop: 14 }}>
+                  {/* PEAKOPS_REPORT_NOTES_INNER_LABEL_REMOVED_V1 (2026-05-11)
+                      The inner "Field Notes" sub-label was redundant
+                      with the section eyebrow above (also "Field
+                      Notes"); the section header carries the label now. */}
                   {bypassed ? (
                     <div style={{ marginTop: 6, fontSize: 13, color: "#b3b3b3", lineHeight: 1.55 }}>
                       No additional note provided. Photos were submitted as sufficient documentation.
@@ -2500,13 +2642,22 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               attached to that task. This is the proof-of-work
               section: it answers "what did you do, and where are
               the pictures." */}
-          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "16px 18px" }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-              <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.10em", color: "#6f6f6f", textTransform: "uppercase" as const }}>
-                Tasks
-              </h2>
+          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+            {/* PEAKOPS_REPORT_TASKS_HEADER_V1 (2026-05-11)
+                Report Presentation 1.0 — eyebrow + subhead pair so
+                tasks read as documented proof-of-work units rather
+                than a generic list. */}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                  Tasks &amp; Proof of Work
+                </h2>
+                <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                  Per-task status, vendor, and attached photos.
+                </div>
+              </div>
               {jobs.length > 0 ? (
-                <span style={{ fontSize: 11, color: "#6f6f6f" }}>
+                <span style={{ fontSize: 11, color: "#6f6f6f", whiteSpace: "nowrap", marginTop: 2 }}>
                   {jobs.length} {jobs.length === 1 ? "task" : "tasks"}
                 </span>
               ) : null}
