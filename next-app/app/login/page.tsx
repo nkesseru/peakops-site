@@ -2,91 +2,213 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { isSignInWithEmailLink } from "firebase/auth";
+import { auth } from "../../lib/firebaseClient";
 import { completeSignIn, sendMagicLink, signOutUser } from "../../lib/auth";
+import { useAuth } from "../../hooks/useAuth";
+
+// PEAKOPS_LOGIN_FRIENDLY_AUTH_ERRORS_V1 (2026-05-11)
+// Map raw Firebase Auth error codes to calm, operational copy that
+// reads as product instead of stack trace. Falls through to a
+// sanitized default so unknown codes never surface as
+// "Firebase: Error (auth/internal-error)" in the UI.
+function friendlyAuthError(err: unknown): string {
+  const code = String((err as any)?.code || "").toLowerCase();
+  const msg = String((err as any)?.message || err || "");
+  const blob = `${code} ${msg}`.toLowerCase();
+  if (blob.includes("expired-action-code") || blob.includes("expired")) {
+    return "This sign-in link has expired. Send yourself a new one below.";
+  }
+  if (blob.includes("invalid-action-code")) {
+    return "This sign-in link is no longer valid — it may have already been used. Send yourself a new one below.";
+  }
+  if (blob.includes("invalid-email")) {
+    return "That email address doesn't look right. Double-check and try again.";
+  }
+  if (blob.includes("quota-exceeded") || blob.includes("too-many-requests")) {
+    return "Too many sign-in attempts in a short window. Wait a minute and try again.";
+  }
+  if (blob.includes("user-disabled")) {
+    return "This account has been disabled. Contact your PeakOps administrator.";
+  }
+  if (blob.includes("network-request-failed") || blob.includes("network error")) {
+    return "Network unavailable. Check your connection and try again.";
+  }
+  if (blob.includes("missing-email")) {
+    return "Please confirm the email associated with this link.";
+  }
+  if (blob.includes("unauthorized-continue-uri") || blob.includes("invalid-continue-uri")) {
+    return "Sign-in isn't configured for this domain yet. Contact your PeakOps administrator.";
+  }
+  return "Sign-in didn't complete. Request a new login link below.";
+}
+
+function readReturnTo(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const v = window.sessionStorage.getItem("peakops_return_to") || "";
+    if (v && v.startsWith("/") && !v.startsWith("//") && !v.startsWith("/login")) {
+      return v;
+    }
+  } catch {
+    /* sessionStorage unavailable */
+  }
+  return "";
+}
+
+function clearReturnTo() {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem("peakops_return_to");
+  } catch {
+    /* sessionStorage unavailable */
+  }
+}
 
 export default function LoginPage() {
   const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
+
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
   // PEAKOPS_LOGIN_NO_ORG_V1 (2026-04-27)
-  // Set when the magic-link sign-in succeeds but the user has no
-  // `orgIds` custom claim, so we cannot route them to an org-scoped
-  // /incidents URL. Renders an explicit blocker instead of a redirect.
   const [signedInNoOrg, setSignedInNoOrg] = useState(false);
   // PEAKOPS_LOGIN_RETURN_TO_V1 (2026-04-28)
-  // Set when authedFetch captured the originally-requested URL before
-  // bouncing the user here. Surfaces "Sign in to continue…" copy and
-  // routes the user back to the deep link on successful sign-in
-  // instead of the default org redirect.
   const [pendingReturnTo, setPendingReturnTo] = useState<string>("");
+
+  // PEAKOPS_LOGIN_CONTINUE_AS_V1 (2026-05-11)
+  // Synchronously detect on mount whether the URL is a magic-link
+  // completion. We render different UI for a fresh sign-in
+  // attempt (URL contains the link) versus an already-authenticated
+  // session landing on /login (Continue-as panel).
+  // `null` = not yet evaluated (SSR / first render), so we render a
+  // calm loading panel rather than flashing either branch.
+  const [hasIncomingLink, setHasIncomingLink] = useState<boolean | null>(null);
+  const [completing, setCompleting] = useState(false);
+  // Re-route in flight for the "Continue as" CTA so we can disable
+  // the button and show a calm in-progress label.
+  const [continuing, setContinuing] = useState(false);
+
   useEffect(() => {
-    try {
-      const v = window.sessionStorage.getItem("peakops_return_to") || "";
-      if (v && v.startsWith("/") && !v.startsWith("//") && !v.startsWith("/login")) {
-        setPendingReturnTo(v);
+    setPendingReturnTo(readReturnTo());
+    if (typeof window !== "undefined") {
+      try {
+        setHasIncomingLink(isSignInWithEmailLink(auth, window.location.href));
+      } catch {
+        setHasIncomingLink(false);
       }
-    } catch {
-      /* sessionStorage unavailable */
+    } else {
+      setHasIncomingLink(false);
     }
   }, []);
 
+  // Route the user post-sign-in. Prefers the captured return-to URL
+  // (set by RequireAuth / authedFetch when bouncing through /login),
+  // falls back to /incidents?orgId=<first> from the verified token
+  // claims, and finally surfaces the no-org blocker.
+  function routeAfterSignIn(firstOrgId: string) {
+    const returnTo = readReturnTo();
+    clearReturnTo();
+    if (returnTo) {
+      router.push(returnTo);
+      return;
+    }
+    if (firstOrgId) {
+      router.push(`/incidents?orgId=${encodeURIComponent(firstOrgId)}`);
+      return;
+    }
+    setSignedInNoOrg(true);
+  }
+
+  // Magic-link completion. Only runs when the URL actually contains
+  // an incoming link; otherwise we let the continue-as / form UI
+  // take over.
   useEffect(() => {
+    if (hasIncomingLink !== true) return;
     let cancelled = false;
+    setCompleting(true);
     (async () => {
       try {
         const cred = await completeSignIn();
-        if (!cancelled && cred) {
-          window.history.replaceState({}, "", "/login");
-          // PEAKOPS_LOGIN_ROUTE_TO_ORG_V1 (2026-04-27)
-          // Pull orgIds from the verified ID token claims and route to
-          // /incidents?orgId=<first>. /incidents itself now requires
-          // orgId in the URL — without this, every user lands on an
-          // "Org context required" blocker.
+        if (cancelled) return;
+        if (cred) {
+          // Strip the now-consumed magic-link query off the URL so a
+          // refresh doesn't try to redeem the same code again.
+          try {
+            window.history.replaceState({}, "", "/login");
+          } catch {
+            /* history API blocked */
+          }
           let firstOrgId = "";
           try {
             const tokenResult = await cred.user.getIdTokenResult();
-            const claimsOrgIds = (tokenResult.claims as any)?.orgIds;
-            if (Array.isArray(claimsOrgIds) && claimsOrgIds.length > 0) {
-              firstOrgId = String(claimsOrgIds[0] || "").trim();
+            const orgIds = (tokenResult.claims as any)?.orgIds;
+            if (Array.isArray(orgIds) && orgIds.length > 0) {
+              firstOrgId = String(orgIds[0] || "").trim();
             }
           } catch {
-            // fall through to no-org branch
+            /* fall through to no-org branch */
           }
           if (cancelled) return;
-          // PEAKOPS_LOGIN_RETURN_TO_V1 (2026-04-28)
-          // Prefer the captured return-to URL when authedFetch
-          // bounced the user here from a protected deep link.
-          // Validate same-origin shape defensively before redirecting.
-          let returnTo = "";
-          try {
-            const v = window.sessionStorage.getItem("peakops_return_to") || "";
-            if (v && v.startsWith("/") && !v.startsWith("//") && !v.startsWith("/login")) {
-              returnTo = v;
-            }
-            window.sessionStorage.removeItem("peakops_return_to");
-          } catch {
-            /* sessionStorage unavailable; fall back to org redirect */
-          }
-          if (returnTo) {
-            router.push(returnTo);
-          } else if (firstOrgId) {
-            router.push(`/incidents?orgId=${encodeURIComponent(firstOrgId)}`);
-          } else {
-            setSignedInNoOrg(true);
-          }
+          routeAfterSignIn(firstOrgId);
         }
-      } catch (e: any) {
+      } catch (e) {
         if (!cancelled) {
-          setError(String(e?.message || e || "Sign-in failed"));
+          setError(friendlyAuthError(e));
+          // Strip the link params so the user can request a fresh
+          // link without the failed code re-triggering on refresh.
+          try {
+            window.history.replaceState({}, "", "/login");
+          } catch {
+            /* history API blocked */
+          }
+          setHasIncomingLink(false);
         }
+      } finally {
+        if (!cancelled) setCompleting(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasIncomingLink]);
+
+  async function handleContinueAs() {
+    if (!user || continuing) return;
+    setError("");
+    setContinuing(true);
+    try {
+      // Pull fresh claims from the token rather than relying on the
+      // useAuth claims cache — useAuth resolves them asynchronously
+      // after the user object lands, and we want to be authoritative
+      // about orgIds at the moment of the click.
+      const tokenResult = await user.getIdTokenResult();
+      const orgIds = (tokenResult.claims as any)?.orgIds;
+      let firstOrgId = "";
+      if (Array.isArray(orgIds) && orgIds.length > 0) {
+        firstOrgId = String(orgIds[0] || "").trim();
+      }
+      routeAfterSignIn(firstOrgId);
+    } catch (e) {
+      setError(friendlyAuthError(e));
+    } finally {
+      setContinuing(false);
+    }
+  }
+
+  async function handleSwitchAccount() {
+    setError("");
+    try {
+      await signOutUser();
+    } catch {
+      /* surface via auth state change */
+    }
+    setEmail("");
+    setSent(false);
+  }
 
   async function handleNoOrgSignOut() {
     try {
@@ -111,12 +233,52 @@ export default function LoginPage() {
     try {
       await sendMagicLink(trimmed);
       setSent(true);
-    } catch (e: any) {
-      setError(String(e?.message || e || "Could not send login link."));
+    } catch (e) {
+      setError(friendlyAuthError(e));
     } finally {
       setSubmitting(false);
     }
   }
+
+  // PEAKOPS_LOGIN_VIEW_PHASE_V1 (2026-05-11)
+  // Single derived view phase keeps the JSX below readable. Order
+  // matters: completing wins over continue-as so a click on a fresh
+  // magic link never flashes the previous session's "Continue as".
+  type Phase = "boot" | "completing" | "no-org" | "sent" | "continue" | "form";
+  const phase: Phase = (() => {
+    if (hasIncomingLink === null) return "boot";
+    if (completing) return "completing";
+    if (signedInNoOrg) return "no-org";
+    if (sent) return "sent";
+    if (!authLoading && user && hasIncomingLink === false) return "continue";
+    if (authLoading && !error) return "boot";
+    return "form";
+  })();
+
+  const heading =
+    phase === "no-org"
+      ? "Account signed in"
+      : phase === "continue"
+      ? "Welcome back"
+      : phase === "completing"
+      ? "Signing you in"
+      : phase === "boot"
+      ? "PeakOps"
+      : "Sign in";
+
+  const subhead = (() => {
+    if (phase === "no-org") return "We couldn't route you to a workspace.";
+    if (phase === "continue") {
+      return pendingReturnTo
+        ? "You're already signed in. Continue to the page you requested, or use a different account."
+        : "You're already signed in. Continue to PeakOps, or use a different account.";
+    }
+    if (phase === "completing") return "Verifying your sign-in link…";
+    if (phase === "boot") return "Checking session…";
+    if (phase === "sent") return "Check your inbox for a login link.";
+    if (pendingReturnTo) return "Sign in to continue to the page you requested.";
+    return "We'll email you a one-time link to sign in.";
+  })();
 
   return (
     <main
@@ -142,12 +304,11 @@ export default function LoginPage() {
           background: "rgba(255,255,255,0.03)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
-          boxShadow: "0 1px 0 rgba(255,255,255,0.04) inset, 0 24px 60px rgba(0,0,0,0.5)",
+          boxShadow:
+            "0 1px 0 rgba(255,255,255,0.04) inset, 0 24px 60px rgba(0,0,0,0.5)",
         }}
       >
-        <h1 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>
-          {signedInNoOrg ? "Account signed in" : "Sign in"}
-        </h1>
+        <h1 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>{heading}</h1>
         <p
           style={{
             fontSize: 13,
@@ -156,40 +317,29 @@ export default function LoginPage() {
             lineHeight: 1.5,
           }}
         >
-          {signedInNoOrg
-            ? "We couldn't route you to a workspace."
-            : sent
-            ? "Check your inbox for a login link."
-            : pendingReturnTo
-            ? "Sign in to continue to the page you requested."
-            : "We'll email you a one-time link to sign in."}
+          {subhead}
         </p>
-        {/* PEAKOPS_LOGIN_SESSION_CHIP_V2 (2026-05-06)
-            Buyer-facing session hint. Replaces an earlier dev-only
-            chip that leaked the raw return-to path (e.g.
-            "returning to /incidents/inc_..."), which read as
-            internal product jargon to buyers. The chip now shows
-            friendly copy in any environment. The actual return-to
-            path is preserved as a separate, clearly-labeled "Dev
-            diagnostics" line in non-production builds so QA still
-            sees it.
 
-            The main paragraph copy above (sent / pendingReturnTo /
-            default branches) covers the primary status. This chip
-            is the secondary reassurance line. */}
-        <div
-          style={{
-            marginTop: 8,
-            fontSize: 11,
-            color: "rgba(255,255,255,0.55)",
-            lineHeight: 1.45,
-          }}
-        >
-          {pendingReturnTo
-            ? "After sign-in, we'll take you back to your requested page."
-            : "Sign in to continue to PeakOps."}
-        </div>
-        {process.env.NODE_ENV !== "production" && pendingReturnTo ? (
+        {/* Secondary reassurance / session hint */}
+        {phase === "form" || phase === "sent" ? (
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 11,
+              color: "rgba(255,255,255,0.55)",
+              lineHeight: 1.45,
+            }}
+          >
+            {pendingReturnTo
+              ? "After sign-in, we'll take you back to your requested page."
+              : "Sign in to continue to PeakOps."}
+          </div>
+        ) : null}
+
+        {/* Dev-only return-to diagnostics — never shown to buyers */}
+        {process.env.NODE_ENV !== "production" &&
+        pendingReturnTo &&
+        (phase === "form" || phase === "sent" || phase === "continue") ? (
           <div
             aria-hidden
             style={{
@@ -205,7 +355,30 @@ export default function LoginPage() {
           </div>
         ) : null}
 
-        {signedInNoOrg ? (
+        {phase === "boot" || phase === "completing" ? (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              marginTop: 22,
+              padding: "14px 14px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.08)",
+              background: "rgba(255,255,255,0.02)",
+              color: "rgba(255,255,255,0.7)",
+              fontSize: 13,
+              lineHeight: 1.5,
+              textAlign: "center",
+              letterSpacing: "0.01em",
+            }}
+          >
+            {phase === "completing"
+              ? "One moment — finishing sign-in."
+              : "Restoring your session…"}
+          </div>
+        ) : null}
+
+        {phase === "no-org" ? (
           <div style={{ marginTop: 18 }}>
             <div
               role="alert"
@@ -242,7 +415,105 @@ export default function LoginPage() {
               Sign out and try a different email
             </button>
           </div>
-        ) : !sent ? (
+        ) : null}
+
+        {phase === "continue" && user ? (
+          <div style={{ marginTop: 20 }}>
+            <div
+              style={{
+                padding: "12px 14px",
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.02)",
+                fontSize: 13,
+                lineHeight: 1.5,
+                color: "rgba(255,255,255,0.85)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  color: "rgba(255,255,255,0.45)",
+                  marginBottom: 4,
+                }}
+              >
+                Signed in as
+              </div>
+              <div
+                style={{
+                  color: "#fff",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  wordBreak: "break-all",
+                }}
+              >
+                {user.email || "this account"}
+              </div>
+            </div>
+
+            {error ? (
+              <div
+                role="alert"
+                style={{
+                  marginTop: 10,
+                  fontSize: 12,
+                  color: "#fca5a5",
+                  lineHeight: 1.4,
+                }}
+              >
+                {error}
+              </div>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={handleContinueAs}
+              disabled={continuing}
+              style={{
+                marginTop: 16,
+                width: "100%",
+                padding: "11px 0",
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: continuing ? "rgba(255,255,255,0.05)" : "#fff",
+                color: continuing ? "rgba(255,255,255,0.5)" : "#000",
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: continuing ? "not-allowed" : "pointer",
+                transition: "background 120ms ease, color 120ms ease",
+              }}
+            >
+              {continuing
+                ? "Continuing…"
+                : pendingReturnTo
+                ? `Continue as ${user.email || "this account"}`
+                : `Continue as ${user.email || "this account"}`}
+            </button>
+            <button
+              type="button"
+              onClick={handleSwitchAccount}
+              style={{
+                marginTop: 10,
+                width: "100%",
+                padding: "11px 0",
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "transparent",
+                color: "rgba(255,255,255,0.75)",
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              Use a different email
+            </button>
+          </div>
+        ) : null}
+
+        {phase === "form" ? (
           <form onSubmit={handleSubmit} style={{ marginTop: 20 }}>
             <label
               htmlFor="login-email"
@@ -316,24 +587,60 @@ export default function LoginPage() {
             >
               {submitting ? "Sending…" : "Send Login Link"}
             </button>
+            <div
+              style={{
+                marginTop: 12,
+                fontSize: 11,
+                color: "rgba(255,255,255,0.42)",
+                lineHeight: 1.5,
+                textAlign: "center",
+              }}
+            >
+              You&apos;ll stay signed in on this device until you sign out.
+            </div>
           </form>
-        ) : (
-          <div
-            style={{
-              marginTop: 18,
-              padding: "12px 14px",
-              borderRadius: 8,
-              border: "1px solid rgba(34,197,94,0.25)",
-              background: "rgba(34,197,94,0.08)",
-              color: "#86efac",
-              fontSize: 13,
-              lineHeight: 1.5,
-            }}
-          >
-            Login link sent to <strong style={{ color: "#fff" }}>{email}</strong>.
-            Open it on this device to finish signing in.
+        ) : null}
+
+        {phase === "sent" ? (
+          <div style={{ marginTop: 18 }}>
+            <div
+              style={{
+                padding: "12px 14px",
+                borderRadius: 8,
+                border: "1px solid rgba(34,197,94,0.25)",
+                background: "rgba(34,197,94,0.08)",
+                color: "#86efac",
+                fontSize: 13,
+                lineHeight: 1.5,
+              }}
+            >
+              Login link sent to{" "}
+              <strong style={{ color: "#fff" }}>{email}</strong>. Open it on
+              this device to finish signing in. The link is good for one use.
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSent(false);
+                setError("");
+              }}
+              style={{
+                marginTop: 12,
+                width: "100%",
+                padding: "10px 0",
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "transparent",
+                color: "rgba(255,255,255,0.7)",
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              Use a different email
+            </button>
           </div>
-        )}
+        ) : null}
       </div>
     </main>
   );
