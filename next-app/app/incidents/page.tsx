@@ -96,6 +96,68 @@ function fmtRelative(iso?: string | null): string {
 
 const SUPERVISOR_ROLES = new Set(["supervisor", "admin"]);
 
+// PEAKOPS_INDUSTRY_AWARE_CHIPS_V1 (2026-05-11) — Slice Onboarding
+// Recap + Industry-Aware Start Job 1.0.
+//
+// Industry-keyed chip presets for the Start Job job-type picker. Each
+// chip declares:
+//   - slug: identity for the chip; persisted as the active-chip
+//     state so two chips that normalize to the same backend type
+//     (e.g. muni "Stormwater" + "Sidewalk / ROW" both → inspection)
+//     remain distinguishable in the UI.
+//   - label: visible chip text. Also sent as `displayType` on the
+//     create-incident payload so the picked phrase is preserved
+//     server-side without changing the legacy `jobType` field.
+//   - normalized: backend-stable jobType value. createIncidentV1
+//     receives this in `jobType` unchanged. Downstream consumers
+//     (reports, dashboards, lifecycle helpers) keep working as-is.
+//
+// Industries fall back to the default set when their key isn't in
+// the map (covers "contractor", "other", or any unknown industry).
+type IndustryChip = {
+  slug: string;
+  label: string;
+  normalized: "repair" | "damage" | "inspection" | "other";
+};
+
+const JOB_TYPE_CHIPS_DEFAULT: ReadonlyArray<IndustryChip> = [
+  { slug: "repair",     label: "Repair",     normalized: "repair" },
+  { slug: "damage",     label: "Damage",     normalized: "damage" },
+  { slug: "inspection", label: "Inspection", normalized: "inspection" },
+  { slug: "other",      label: "Other",      normalized: "other" },
+];
+
+const JOB_TYPE_CHIPS_BY_INDUSTRY: Readonly<Record<string, ReadonlyArray<IndustryChip>>> = {
+  municipality: [
+    { slug: "stormwater",  label: "Stormwater",      normalized: "inspection" },
+    { slug: "road_damage", label: "Road damage",     normalized: "damage" },
+    { slug: "signal",      label: "Signal",          normalized: "repair" },
+    { slug: "row",         label: "Sidewalk / ROW",  normalized: "inspection" },
+    { slug: "contractor",  label: "Contractor",      normalized: "inspection" },
+    { slug: "other",       label: "Other",           normalized: "other" },
+  ],
+  telecom: [
+    { slug: "splice",      label: "Splice",     normalized: "inspection" },
+    { slug: "osp",         label: "OSP",        normalized: "inspection" },
+    { slug: "outage",      label: "Outage",     normalized: "damage" },
+    { slug: "inspection",  label: "Inspection", normalized: "inspection" },
+    { slug: "other",       label: "Other",      normalized: "other" },
+  ],
+  utilities: [
+    { slug: "outage",      label: "Outage",      normalized: "damage" },
+    { slug: "pole",        label: "Pole",        normalized: "repair" },
+    { slug: "transformer", label: "Transformer", normalized: "repair" },
+    { slug: "vegetation",  label: "Vegetation",  normalized: "inspection" },
+    { slug: "safety",      label: "Safety",      normalized: "inspection" },
+    { slug: "other",       label: "Other",       normalized: "other" },
+  ],
+};
+
+function getJobTypeChips(industry: string | null | undefined): ReadonlyArray<IndustryChip> {
+  const key = String(industry || "").trim().toLowerCase();
+  return JOB_TYPE_CHIPS_BY_INDUSTRY[key] || JOB_TYPE_CHIPS_DEFAULT;
+}
+
 // PEAKOPS_MISSION_CONTROL_V3 (2026-04-30)
 // Single status normalizer. Every chip count, every section filter,
 // and every search match runs through this function — guarantees
@@ -1562,13 +1624,26 @@ function IncidentsIndexBody() {
   const [createLocation, setCreateLocation] = useState("");
   const [createPriority, setCreatePriority] = useState<"low" | "normal" | "urgent">("normal");
   const [createNotes, setCreateNotes] = useState("");
-  // PEAKOPS_START_JOB_TYPE_V1 (2026-04-30)
-  // Job type is intentionally null on first open (no default) so the
-  // operator picks deliberately. Repair/Damage/Inspection/Other are
-  // very different downstream — defaulting to Repair would silently
-  // mis-categorize damage and inspection jobs.
-  type CreateJobType = "repair" | "damage" | "inspection" | "other";
-  const [createJobType, setCreateJobType] = useState<CreateJobType | null>(null);
+  // PEAKOPS_START_JOB_TYPE_V1 (2026-04-30) /
+  // PEAKOPS_INDUSTRY_AWARE_CHIPS_V1 (2026-05-11) — Slice Onboarding
+  // Recap + Industry-Aware Start Job 1.0. The chip is intentionally
+  // null on first open so the operator picks deliberately. A chip
+  // carries:
+  //   - slug: which chip was clicked (industry-specific identifier)
+  //   - label: visible chip text (e.g. "Stormwater")
+  //   - normalized: one of the four backend-stable jobType values
+  //     (repair / damage / inspection / other). createIncidentV1
+  //     keeps receiving `jobType` from this field unchanged, so
+  //     nothing downstream that filters on the old union breaks.
+  // On submit we also send the visible label as `displayType`, an
+  // additive field. createIncidentV1 either stores it or strips it;
+  // either way nothing breaks.
+  type JobTypeChip = {
+    slug: string;
+    label: string;
+    normalized: "repair" | "damage" | "inspection" | "other";
+  };
+  const [createJobChip, setCreateJobChip] = useState<JobTypeChip | null>(null);
 
   // PEAKOPS_OPEN_BY_ID_V2 (2026-04-29)
   // Single nav helper used by both the form's onSubmit and the
@@ -1607,7 +1682,7 @@ function IncidentsIndexBody() {
   async function onCreateSubmit(e: FormEvent) {
     e.preventDefault();
     const title = createTitle.trim();
-    if (!orgId || !title || !createJobType || createBusy) return;
+    if (!orgId || !title || !createJobChip || createBusy) return;
     setCreateBusy(true);
     setCreateErr("");
     const newIncidentId = generateIncidentId();
@@ -1622,7 +1697,15 @@ function IncidentsIndexBody() {
           status: "open",
           location: createLocation.trim() || undefined,
           priority: createPriority,
-          jobType: createJobType,
+          // PEAKOPS_INDUSTRY_AWARE_CHIPS_V1 (2026-05-11)
+          // `jobType` stays the backend-stable normalized union so
+          // createIncidentV1 and every downstream consumer keep
+          // working unchanged. `displayType` is the new additive
+          // field that carries the industry-flavored label (e.g.
+          // "Stormwater") — the function may persist or strip it,
+          // either is fine.
+          jobType: createJobChip.normalized,
+          displayType: createJobChip.label,
           notes: createNotes.trim() || undefined,
         }),
       });
@@ -1650,7 +1733,7 @@ function IncidentsIndexBody() {
     setCreateLocation("");
     setCreatePriority("normal");
     setCreateNotes("");
-    setCreateJobType(null);
+    setCreateJobChip(null);
   }
 
   async function handleSignOut() {
@@ -2092,20 +2175,24 @@ function IncidentsIndexBody() {
                   Job type <span style={{ color: "#C8A84E" }}>*</span>
                 </label>
                 <div role="radiogroup" aria-label="Job type" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {([
-                    { value: "repair", label: "Repair" },
-                    { value: "damage", label: "Damage" },
-                    { value: "inspection", label: "Inspection" },
-                    { value: "other", label: "Other" },
-                  ] as const).map((opt) => {
-                    const active = createJobType === opt.value;
+                  {/* PEAKOPS_INDUSTRY_AWARE_CHIPS_V1 (2026-05-11) —
+                      chips adapt to the org's industry via the
+                      onboardingView. Telecom orgs see splice / OSP /
+                      outage / inspection; municipality sees
+                      stormwater / road damage / signal / sidewalk-
+                      ROW / contractor; utilities sees outage / pole
+                      / transformer / vegetation / safety. Unknown
+                      industries fall back to the legacy repair /
+                      damage / inspection / other set. */}
+                  {getJobTypeChips(onboardingView.industry).map((opt) => {
+                    const active = createJobChip?.slug === opt.slug;
                     return (
                       <button
-                        key={opt.value}
+                        key={opt.slug}
                         type="button"
                         role="radio"
                         aria-checked={active}
-                        onClick={() => setCreateJobType(opt.value)}
+                        onClick={() => setCreateJobChip({ ...opt })}
                         style={{
                           padding: "8px 14px",
                           borderRadius: 999,
@@ -2239,10 +2326,10 @@ function IncidentsIndexBody() {
                   Cancel
                 </button>
                 {(() => {
-                  const submitDisabled = !createTitle.trim() || !createJobType || createBusy || orgIdMissing;
+                  const submitDisabled = !createTitle.trim() || !createJobChip || createBusy || orgIdMissing;
                   const submitTitle = !createTitle.trim()
                     ? "Add a job title to continue"
-                    : !createJobType
+                    : !createJobChip
                       ? "Pick a job type to continue"
                       : orgIdMissing
                         ? "Missing orgId in URL"

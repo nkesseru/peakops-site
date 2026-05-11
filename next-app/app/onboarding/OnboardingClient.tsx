@@ -869,16 +869,40 @@ export default function OnboardingClient() {
   function renderReady() {
     // PEAKOPS_ONBOARDING_READY_HONESTY_V1 (2026-05-06)
     // Headline depends on what actually persisted to Firestore.
-    // Full persistence (org + industry + workflow + first-job
-    // draft) → "PeakOps is ready." Anything missing falls back to
-    // "Your deployment plan is ready." Each row also gates on its
-    // matching persisted flag — a row never claims "saved" for a
-    // slice that didn't make it to Firestore.
+    //
+    // PEAKOPS_ONBOARDING_READY_RECAP_V1 (2026-05-11) — Slice
+    // Onboarding Recap 1.0. Premium copy + an industry-aware
+    // recap card surfacing the actual selections (org name,
+    // industry, starter workflow, sample first job, operational
+    // focus list). Lets the buyer see PeakOps reflecting their
+    // plan back, rather than the prior generic "deployment plan"
+    // copy.
     const allPersisted = persisted.org && persisted.industry && persisted.workflow && persisted.firstJobDraft;
-    const headline = allPersisted ? "PeakOps is ready." : "Your deployment plan is ready.";
+    const headline = allPersisted
+      ? "Your operational workspace is ready."
+      : "Your deployment plan is ready.";
     const subline = allPersisted
-      ? "Your starter workflow is saved and the first job is queued as a draft. Open Jobs to take it live."
+      ? "PeakOps will tailor job setup, reports, and operational cues around this plan."
       : "We saved what we could. Open Jobs to keep going — the rest persists as you work.";
+
+    // Recap inputs — resolved live from current state. The recap
+    // only renders the rows whose source data is actually present;
+    // a mid-flight onboarding session won't show a workflow row if
+    // selectedTemplate is "".
+    const recapProfile = industry ? getIndustryProfile(industry) : null;
+    const recapTemplate = selectedTemplate
+      ? TEMPLATES.find((t) => t.key === selectedTemplate) || null
+      : null;
+    const recapDisplayName = orgName.trim();
+    const recapFocusLabels = (() => {
+      if (!recapProfile || !Array.isArray(opsFocusSelected) || opsFocusSelected.length === 0) return [];
+      const set = new Set(opsFocusSelected.map((s) => String(s)));
+      return recapProfile.opsFocusOptions
+        .filter((o) => set.has(o.key))
+        .map((o) => o.label);
+    })();
+    const showRecap = !!recapProfile || !!recapTemplate || !!recapDisplayName;
+
     return (
       <div style={{ textAlign: "center", padding: "24px 8px 8px" }}>
         <div
@@ -903,6 +927,55 @@ export default function OnboardingClient() {
         <p style={{ margin: 0, fontSize: 14, color: TOKENS.textMuted, lineHeight: 1.55, maxWidth: 480, marginInline: "auto" }}>
           {subline}
         </p>
+
+        {/* PEAKOPS_ONBOARDING_READY_RECAP_V1 (2026-05-11) — recap card */}
+        {showRecap ? (
+          <div
+            style={{
+              marginTop: 22,
+              padding: "16px 18px",
+              border: `1px solid ${TOKENS.border}`,
+              background: TOKENS.card,
+              borderRadius: 10,
+              maxWidth: 480,
+              marginInline: "auto",
+              textAlign: "left",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                color: TOKENS.textMuted,
+                textTransform: "uppercase" as const,
+                marginBottom: 10,
+              }}
+            >
+              Your operational plan
+            </div>
+
+            {recapDisplayName ? (
+              <RecapRow label="Organization" value={recapDisplayName} />
+            ) : null}
+            {recapProfile ? (
+              <RecapRow label="Industry" value={recapProfile.label} />
+            ) : null}
+            {recapTemplate ? (
+              <RecapRow label="Starter workflow" value={recapTemplate.label} />
+            ) : null}
+            {recapTemplate ? (
+              <RecapRow label="First job example" value={recapTemplate.sample} />
+            ) : null}
+            {recapFocusLabels.length > 0 ? (
+              <RecapRow
+                label="Operational focus"
+                value={recapFocusLabels.join(" · ")}
+              />
+            ) : null}
+          </div>
+        ) : null}
+
         <div style={{ marginTop: 22, display: "grid", gap: 8, maxWidth: 360, marginInline: "auto", textAlign: "left" }}>
           {persisted.org ? (
             <ReadyRow text="Organization profile saved" />
@@ -1480,6 +1553,50 @@ function ReadyRow({ text }: { text: string }) {
         ✓
       </span>
       <span style={{ fontSize: 13, color: TOKENS.text }}>{text}</span>
+    </div>
+  );
+}
+
+// PEAKOPS_ONBOARDING_READY_RECAP_V1 (2026-05-11) — recap row.
+// Label-on-left, value-on-right pair, used by the Ready step's
+// industry-aware recap card. Wraps cleanly on narrow screens.
+function RecapRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "baseline",
+        gap: "4px 12px",
+        padding: "6px 0",
+        borderTop: `1px solid ${TOKENS.border}`,
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: "0.06em",
+          color: TOKENS.textMuted,
+          textTransform: "uppercase" as const,
+          flex: "0 0 130px",
+          minWidth: 130,
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontSize: 13,
+          color: TOKENS.text,
+          lineHeight: 1.5,
+          flex: "1 1 220px",
+          minWidth: 0,
+          wordBreak: "break-word",
+        }}
+      >
+        {value}
+      </span>
     </div>
   );
 }
