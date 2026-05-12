@@ -87,6 +87,12 @@ if (!["muni", "utility"].includes(KIND)) {
 }
 
 // Industry-believable offsets in minutes from incident.createdAt.
+// PEAKOPS_AUDIT_TRAIL_REALISM_V1_0_1 (2026-05-12) — utility offsets
+// re-tuned to align with the Field Notes narrative: outage reported
+// 06:42 AM, restoration 09:18 AM, supervisor approval 11:45 AM,
+// close 12:00 PM. Pair with --anchorAt=2026-05-11T13:42:00Z (06:42
+// PDT in UTC) so the absolute times read correctly in the Los_Angeles
+// org-timezone display.
 const CADENCES = {
   muni: {
     org: "peakops-internal-muni",
@@ -104,17 +110,31 @@ const CADENCES = {
     org: "peakops-internal-utility",
     id: "inc_20260511_205446_c6bf95",
     offsets: {
-      FIELD_ARRIVED:   12,
-      EVIDENCE_ADDED:  88,
-      job_completed:   150,
-      FIELD_SUBMITTED: 156,
-      job_approved:    170,
-      incident_closed: 175,
+      // Aligned to the Field Notes narrative (06:42 → 12:00).
+      FIELD_ARRIVED:   16,    // 06:58 — arrived at switch-house
+      EVIDENCE_ADDED:  90,    // 08:12 — photo of restored span
+      job_completed:   156,   // 09:18 — restoration verified
+      FIELD_SUBMITTED: 168,   // 09:30 — submitted to supervisor
+      job_approved:    303,   // 11:45 — supervisor approval
+      incident_closed: 318,   // 12:00 — job closed
     },
   },
 };
 
 const target = CADENCES[KIND];
+
+// PEAKOPS_AUDIT_TRAIL_REALISM_V1_0_1 (2026-05-12) — optional override
+// for incident.createdAt. When passed, the script re-anchors the
+// incident's creation timestamp to this ISO string before applying
+// the cadence offsets. Used to align utility's audit trail with the
+// "outage reported at 06:42 AM" framing in the Field Notes. Without
+// this flag, the existing createdAt is preserved (default behavior).
+const ANCHOR_AT_ISO = String(getArg("anchorAt") || "").trim();
+const ANCHOR_OVERRIDE = ANCHOR_AT_ISO ? new Date(ANCHOR_AT_ISO) : null;
+if (ANCHOR_AT_ISO && (!ANCHOR_OVERRIDE || isNaN(ANCHOR_OVERRIDE.getTime()))) {
+  console.error(`[polish-timeline] FATAL — --anchorAt=${ANCHOR_AT_ISO} is not a valid ISO timestamp`);
+  process.exit(2);
+}
 
 const PROTECTED_ORGS = new Set([
   "peakops-internal-alpha",
@@ -173,12 +193,19 @@ function asDate(v) {
     process.exit(3);
   }
   const inc = orgIncSnap.data() || {};
-  const createdAt = asDate(inc.createdAt);
-  if (!createdAt) {
+  const existingCreatedAt = asDate(inc.createdAt);
+  if (!existingCreatedAt) {
     console.error(`[polish-timeline] FAIL — incident.createdAt missing or unreadable`);
     process.exit(3);
   }
-  console.log(`[polish-timeline] anchor createdAt: ${createdAt.toISOString()}`);
+  // PEAKOPS_AUDIT_TRAIL_REALISM_V1_0_1 — re-anchor when --anchorAt
+  // is provided. Falls through to the existing createdAt otherwise.
+  const createdAt = ANCHOR_OVERRIDE || existingCreatedAt;
+  if (ANCHOR_OVERRIDE) {
+    console.log(`[polish-timeline] anchor RE-WRITTEN from ${existingCreatedAt.toISOString()} → ${createdAt.toISOString()}`);
+  } else {
+    console.log(`[polish-timeline] anchor createdAt: ${createdAt.toISOString()}`);
+  }
 
   // Resolve the single job + single evidence doc.
   const jobsSnap = await db.collection(`incidents/${target.id}/jobs`).get();
@@ -248,21 +275,35 @@ function asDate(v) {
   batch.update(byType.incident_closed, { occurredAt: tsIncidentClosed });
 
   // 2) Incident timestamps (both paths — dual-write convention).
+  // PEAKOPS_AUDIT_TRAIL_REALISM_V1_0_1 — when --anchorAt is set,
+  // re-write createdAt too so the audit trail anchors visually to
+  // the same moment as the field notes describe.
   const incPatch = {
     inProgressAt: tsFieldArrived,
     submittedAt:  tsFieldSubmitted,
     closedAt:     tsIncidentClosed,
     updatedAt:    now,
   };
+  if (ANCHOR_OVERRIDE) {
+    incPatch.createdAt = admin.firestore.Timestamp.fromDate(createdAt);
+  }
   batch.set(orgIncRef, incPatch, { merge: true });
   batch.set(topIncRef, incPatch, { merge: true });
 
   // 3) Job timestamps.
-  batch.set(jobRef, {
+  // PEAKOPS_AUDIT_TRAIL_REALISM_V1_0_1 — when --anchorAt is set, the
+  // job.createdAt would otherwise predate the incident.createdAt
+  // (weird data state). Re-anchor it to the same new incident
+  // createdAt for coherence.
+  const jobPatch = {
     completedAt: tsJobCompleted,
     approvedAt:  tsJobApproved,
     updatedAt:   now,
-  }, { merge: true });
+  };
+  if (ANCHOR_OVERRIDE) {
+    jobPatch.createdAt = admin.firestore.Timestamp.fromDate(createdAt);
+  }
+  batch.set(jobRef, jobPatch, { merge: true });
 
   // 4) Evidence timestamps + file.conversionUpdatedAt.
   batch.update(evRef, {

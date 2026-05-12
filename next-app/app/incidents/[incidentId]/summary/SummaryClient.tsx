@@ -1871,62 +1871,89 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 >
                   {displayIncidentTitle(incidentId, incident as any, jobs as any)}
                 </h1>
+                {/* PEAKOPS_CLOSED_PILL_WRAP_POLISH_V1 (2026-05-12) —
+                    Slice Closed Pill Wrap Polish 1.0.1.
+                    Previous layout put meta-text spans + the status
+                    pill as siblings in a single flex-wrap container.
+                    On muni / utility where the location string is
+                    longer ("3rd Ave · Catch basin CB-12", "North feeder
+                    line · Section 14A"), the pill was the last flex
+                    child to wrap and dropped to its own line — and
+                    with its marginLeft: 12 it landed slightly indented,
+                    reading as misaligned status indicator.
+                    New layout: two flex siblings —
+                      [meta-group: wraps internally]
+                      [pill: flex-shrink:0, whiteSpace:nowrap]
+                    Pill always stays atomic and right-aligned. On
+                    narrow viewports the meta-group wraps first; pill
+                    only drops if there's truly no room. Alpha layout
+                    preserved (shorter location → still fits on one
+                    line). Print styles preserved (the pill rule
+                    targets .rounded-full which still applies). */}
                 <div
                   style={{
                     marginTop: 10,
                     display: "flex",
                     flexWrap: "wrap",
-                    rowGap: 6,
-                    columnGap: 0,
+                    alignItems: "center",
+                    gap: "6px 12px",
                     fontSize: 12,
                     color: "#b3b3b3",
-                    alignItems: "center",
                   }}
                 >
-                  {(() => {
-                    // PEAKOPS_REPORT_META_DOTS_V1 (2026-05-11)
-                    // Render meta items with a · separator between
-                    // each populated item, so the line reads as one
-                    // consistent metadata row rather than four loose
-                    // spans. Skips empty values cleanly.
-                    const loc = String((incident as any)?.location || "").trim();
-                    const openedSec =
-                      Number((incident as any)?.createdAt?._seconds || 0) ||
-                      Number((incident as any)?.openedAt?._seconds || 0);
-                    const closedSec = Number((incident as any)?.closedAt?._seconds || 0);
-                    const items: React.ReactNode[] = [];
-                    if (loc) items.push(<span key="loc">{loc}</span>);
-                    if (openedSec) items.push(<span key="opened">Opened {fmtFullDate(openedSec)}</span>);
-                    if (closedSec) items.push(<span key="closed">Closed {fmtFullDate(closedSec)}</span>);
-                    const out: React.ReactNode[] = [];
-                    items.forEach((node, i) => {
-                      if (i > 0) {
-                        out.push(
-                          <span
-                            key={`sep-${i}`}
-                            aria-hidden
-                            style={{ margin: "0 10px", color: "#3a3a3a" }}
-                          >
-                            ·
-                          </span>
-                        );
-                      }
-                      out.push(node);
-                    });
-                    return out;
-                  })()}
-                  {/* PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
-                      Header pill reads off reportUiState so it can
-                      never disagree with the Generate Report enable
-                      gate or the summary-strip stat tones below.
-
-                      PEAKOPS_REPORT_PILL_PROMOTE_V1 (2026-05-11)
-                      Status pill bumped up a size class (text-[11px],
-                      tighter padding) so it reads as a real status
-                      indicator instead of a tag in the meta row. */}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                      flex: "1 1 auto",
+                      minWidth: 0,
+                    }}
+                  >
+                    {(() => {
+                      // PEAKOPS_REPORT_META_DOTS_V1 (2026-05-11)
+                      // Render meta items with a · separator between
+                      // each populated item, so the line reads as one
+                      // consistent metadata row rather than four loose
+                      // spans. Skips empty values cleanly.
+                      const loc = String((incident as any)?.location || "").trim();
+                      const openedSec =
+                        Number((incident as any)?.createdAt?._seconds || 0) ||
+                        Number((incident as any)?.openedAt?._seconds || 0);
+                      const closedSec = Number((incident as any)?.closedAt?._seconds || 0);
+                      const items: React.ReactNode[] = [];
+                      if (loc) items.push(<span key="loc">{loc}</span>);
+                      if (openedSec) items.push(<span key="opened">Opened {fmtFullDate(openedSec)}</span>);
+                      if (closedSec) items.push(<span key="closed">Closed {fmtFullDate(closedSec)}</span>);
+                      const out: React.ReactNode[] = [];
+                      items.forEach((node, i) => {
+                        if (i > 0) {
+                          out.push(
+                            <span
+                              key={`sep-${i}`}
+                              aria-hidden
+                              style={{ margin: "0 10px", color: "#3a3a3a" }}
+                            >
+                              ·
+                            </span>
+                          );
+                        }
+                        out.push(node);
+                      });
+                      return out;
+                    })()}
+                  </div>
+                  {/* PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05) /
+                      PEAKOPS_REPORT_PILL_PROMOTE_V1 (2026-05-11) /
+                      PEAKOPS_CLOSED_PILL_WRAP_POLISH_V1 (2026-05-12) */}
                   <span
                     className={"text-[11px] px-2.5 py-0.5 rounded-full border " + incidentStatusPill(reportUiState.displayState)}
-                    style={{ fontWeight: 700, letterSpacing: "0.04em", marginLeft: 12 }}
+                    style={{
+                      fontWeight: 700,
+                      letterSpacing: "0.04em",
+                      whiteSpace: "nowrap",
+                      flexShrink: 0,
+                    }}
                   >
                     {reportUiState.displayState === "Awaiting Supervisor Review" ? "Awaiting Review" : reportUiState.displayState}
                   </span>
