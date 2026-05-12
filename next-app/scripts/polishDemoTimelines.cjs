@@ -81,8 +81,8 @@ function getArg(name) {
 const KIND = String(getArg("kind") || "").trim().toLowerCase();
 const APPLY = process.argv.includes("--apply");
 
-if (!["muni", "utility"].includes(KIND)) {
-  console.error("Usage: node scripts/polishDemoTimelines.cjs --kind=muni|utility [--apply]");
+if (!["muni", "utility", "contractor"].includes(KIND)) {
+  console.error("Usage: node scripts/polishDemoTimelines.cjs --kind=muni|utility|contractor [--apply]");
   process.exit(2);
 }
 
@@ -119,6 +119,23 @@ const CADENCES = {
       incident_closed: 318,   // 12:00 — job closed
     },
   },
+  // PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — contractor cadence
+  // (project-closeout walkthrough). When paired with
+  // --anchorAt=2026-05-12T15:00:00Z the times read as a believable
+  // 08:00 → 12:30 PDT half-day. id=null resolved at runtime via
+  // source=demo-artifact-seed lookup.
+  contractor: {
+    org: "peakops-internal-contractor",
+    id: null,
+    offsets: {
+      FIELD_ARRIVED:   20,    // 08:20 — crew on site
+      EVIDENCE_ADDED:  95,    // 09:35 — walkthrough photos
+      job_completed:   125,   // 10:05 — closeout verified
+      FIELD_SUBMITTED: 135,   // 10:15 — submitted to supervisor
+      job_approved:    255,   // 12:15 — client/lead approval
+      incident_closed: 270,   // 12:30 — handoff packaged
+    },
+  },
 };
 
 const target = CADENCES[KIND];
@@ -136,9 +153,12 @@ if (ANCHOR_AT_ISO && (!ANCHOR_OVERRIDE || isNaN(ANCHOR_OVERRIDE.getTime()))) {
   process.exit(2);
 }
 
+// PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — peakops-internal-
+// contractor is no longer protected here (the contractor closed-loop
+// demo now exists and benefits from re-cadence + anchorAt support).
+// Alpha + demo-org remain protected.
 const PROTECTED_ORGS = new Set([
   "peakops-internal-alpha",
-  "peakops-internal-contractor",
   "demo-org",
 ]);
 if (PROTECTED_ORGS.has(target.org)) {
@@ -181,9 +201,25 @@ function asDate(v) {
     admin.initializeApp({ credential: admin.credential.cert(sa), projectId: sa.project_id });
   }
   console.log(`[polish-timeline] project=${sa.project_id} mode=${APPLY ? "APPLY" : "dry-run"}`);
-  console.log(`[polish-timeline] kind=${KIND} org=${target.org} incident=${target.id}`);
 
   const db = admin.firestore();
+
+  // PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — resolve id at
+  // runtime when null (contractor case).
+  if (!target.id) {
+    const qs = await db
+      .collection(`orgs/${target.org}/incidents`)
+      .where("source", "==", "demo-artifact-seed")
+      .limit(1)
+      .get();
+    if (qs.empty) {
+      console.error(`[polish-timeline] FAIL — no demo-artifact-seed incident found in orgs/${target.org}/incidents.`);
+      process.exit(3);
+    }
+    target.id = qs.docs[0].id;
+  }
+  console.log(`[polish-timeline] kind=${KIND} org=${target.org} incident=${target.id}`);
+
   const orgIncRef = db.doc(`orgs/${target.org}/incidents/${target.id}`);
   const topIncRef = db.doc(`incidents/${target.id}`);
 

@@ -53,11 +53,16 @@ function getArg(name) {
 const KIND = String(getArg("kind") || "").trim().toLowerCase();
 const APPLY = process.argv.includes("--apply");
 
-if (!["muni", "utility"].includes(KIND)) {
-  console.error("Usage: node scripts/seedDemoTimelineEvents.cjs --kind=muni|utility [--apply]");
+if (!["muni", "utility", "contractor"].includes(KIND)) {
+  console.error("Usage: node scripts/seedDemoTimelineEvents.cjs --kind=muni|utility|contractor [--apply]");
   process.exit(2);
 }
 
+// PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — contractor target.
+// Incident id is resolved at runtime via the demo-artifact-seed
+// query (since contractor's incident id is generated fresh by the
+// seed script when it runs). For muni + utility the id is hard-
+// coded because they were seeded before the dynamic-lookup pattern.
 const TARGETS = {
   muni: {
     org: "peakops-internal-muni",
@@ -66,6 +71,10 @@ const TARGETS = {
   utility: {
     org: "peakops-internal-utility",
     id: "inc_20260511_205446_c6bf95",
+  },
+  contractor: {
+    org: "peakops-internal-contractor",
+    id: null, // resolved at runtime via source=demo-artifact-seed query
   },
 };
 
@@ -106,9 +115,27 @@ function loadServiceAccount() {
     });
   }
   console.log(`[seed-tle] project=${sa.project_id} mode=${APPLY ? "APPLY" : "dry-run"}`);
-  console.log(`[seed-tle] kind=${KIND} org=${target.org} incident=${target.id}`);
 
   const db = admin.firestore();
+
+  // PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — resolve target.id
+  // dynamically when null (contractor). The seed script writes
+  // source="demo-artifact-seed" on the incident doc; we look it up.
+  if (!target.id) {
+    const qs = await db
+      .collection(`orgs/${target.org}/incidents`)
+      .where("source", "==", "demo-artifact-seed")
+      .limit(1)
+      .get();
+    if (qs.empty) {
+      console.error(`[seed-tle] FAIL — no demo-artifact-seed incident found in orgs/${target.org}/incidents.`);
+      console.error(`           Run seedDemoIncident.cjs --org=${target.org} --industry=... --apply first.`);
+      process.exit(3);
+    }
+    target.id = qs.docs[0].id;
+  }
+  console.log(`[seed-tle] kind=${KIND} org=${target.org} incident=${target.id}`);
+
   const orgIncRef = db.doc(`orgs/${target.org}/incidents/${target.id}`);
   const orgIncSnap = await orgIncRef.get();
   if (!orgIncSnap.exists) {

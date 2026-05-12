@@ -63,8 +63,8 @@ if (!ORG || !INDUSTRY) {
   );
   process.exit(2);
 }
-if (!["municipality", "utilities"].includes(INDUSTRY)) {
-  console.error(`--industry must be "municipality" or "utilities" (got ${JSON.stringify(INDUSTRY)})`);
+if (!["municipality", "utilities", "contractor"].includes(INDUSTRY)) {
+  console.error(`--industry must be "municipality" | "utilities" | "contractor" (got ${JSON.stringify(INDUSTRY)})`);
   process.exit(2);
 }
 
@@ -120,6 +120,40 @@ const PAYLOADS = {
     photoCaption: "DEMO UTILITY OUTAGE",
     photoSourceFile: "12.png",
     evidenceLabels: ["DAMAGE"],
+    phase: "INSPECTION",
+  },
+  // PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — Slice Contractor
+  // Demo Seed 1.0. Job closeout walkthrough on a project corridor.
+  // Lifecycle is "morning closeout, lunchtime client handoff" so
+  // the audit trail reads as a contractor wrapping up a project,
+  // not a utility outage or municipal inspection.
+  contractor: {
+    title: "Job closeout verification — East service corridor",
+    location: "East service corridor · Sta. 04+50 to 08+00",
+    priority: "normal",
+    jobType: "inspection",
+    displayType: "Closeout",
+    jobTitle: "East corridor closeout verification",
+    incidentNotes:
+      "Closeout walkthrough on the East service corridor between " +
+      "Sta. 04+50 and Sta. 08+00. Crew arrived for the scheduled " +
+      "handoff window. Walked the corridor end-to-end with the " +
+      "project lead — prior punch-list items cleared, no new " +
+      "defects observed. Site restoration verified: temporary " +
+      "barriers removed, staging area returned to original " +
+      "condition, vegetation along the right-of-way restored. " +
+      "Change order #3 (additional drainage tie-in at Sta. 06+25) " +
+      "field-verified and foreman-signed. Safety walkaround " +
+      "complete; PPE log closed out. Client handoff packet " +
+      "packaged with photos, punch-list closeout, and the " +
+      "change-order field record.",
+    siteNotes:
+      "Access route clear, gate left as found. No remaining debris " +
+      "along the corridor. Staging area soil compacted and graded. " +
+      "Contractor walkthrough complete and signed.",
+    photoCaption: "DEMO CONTRACTOR CLOSEOUT",
+    photoSourceFile: "14.png",
+    evidenceLabels: ["CLOSEOUT"],
     phase: "INSPECTION",
   },
 };
@@ -284,7 +318,16 @@ function utcStamp(date) {
   console.log(`[seed-demo] adminUid=${adminUid}`);
 
   const bucket = `${projectId}.firebasestorage.app`;
-  const photoOriginal = `${INDUSTRY === "municipality" ? "stormwater" : "outage"}-demo.png`;
+  // PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — generalized the
+  // photoOriginal ternary to match the new industry list. Previously
+  // contractor / utilities both fell through to "outage-demo.png"
+  // which read wrong on the contractor demo's evidence + ZIP audit
+  // HTML.
+  const photoOriginal =
+    INDUSTRY === "municipality" ? "stormwater-demo.png"
+    : INDUSTRY === "utilities"    ? "outage-demo.png"
+    : INDUSTRY === "contractor"   ? "closeout-demo.png"
+    : "demo.png";
   const photoStoragePath =
     `orgs/${ORG}/incidents/${incidentId}/uploads/${sessionId}/` +
     `${utcStamp(evidenceStoredAt)}__${photoOriginal}`;

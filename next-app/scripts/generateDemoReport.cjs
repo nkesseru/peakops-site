@@ -54,11 +54,13 @@ function getArg(name) {
 const KIND = String(getArg("kind") || "").trim().toLowerCase();
 const APPLY = process.argv.includes("--apply");
 
-if (!["muni", "utility"].includes(KIND)) {
-  console.error("Usage: node scripts/generateDemoReport.cjs --kind=muni|utility [--apply]");
+if (!["muni", "utility", "contractor"].includes(KIND)) {
+  console.error("Usage: node scripts/generateDemoReport.cjs --kind=muni|utility|contractor [--apply]");
   process.exit(2);
 }
 
+// PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — contractor target.
+// id=null is resolved at runtime via source=demo-artifact-seed query.
 const TARGETS = {
   muni: {
     org: "peakops-internal-muni",
@@ -67,6 +69,10 @@ const TARGETS = {
   utility: {
     org: "peakops-internal-utility",
     id: "inc_20260511_205446_c6bf95",
+  },
+  contractor: {
+    org: "peakops-internal-contractor",
+    id: null,
   },
 };
 
@@ -146,9 +152,24 @@ async function exchangeCustomTokenForIdToken(customToken, apiKey) {
   }
 
   console.log(`[gen-report] project=${sa.project_id} mode=${APPLY ? "APPLY" : "dry-run"}`);
-  console.log(`[gen-report] kind=${KIND} org=${target.org} incident=${target.id}`);
 
   const db = admin.firestore();
+
+  // PEAKOPS_CONTRACTOR_DEMO_SEED_V1 (2026-05-12) — resolve target.id
+  // dynamically when null (contractor case).
+  if (!target.id) {
+    const qs = await db
+      .collection(`orgs/${target.org}/incidents`)
+      .where("source", "==", "demo-artifact-seed")
+      .limit(1)
+      .get();
+    if (qs.empty) {
+      console.error(`[gen-report] FAIL — no demo-artifact-seed incident found in orgs/${target.org}/incidents.`);
+      process.exit(3);
+    }
+    target.id = qs.docs[0].id;
+  }
+  console.log(`[gen-report] kind=${KIND} org=${target.org} incident=${target.id}`);
 
   // Pre-flight: confirm incident is in the right shape for export
   // (status=closed, ≥1 approved job, ≥1 evidence, members doc OK).
