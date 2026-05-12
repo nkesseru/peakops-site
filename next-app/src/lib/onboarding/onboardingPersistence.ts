@@ -156,10 +156,11 @@ const VALID_INDUSTRIES: IndustryKey[] = [
   "utilities", "telecom", "municipality", "contractor", "other",
 ];
 // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — added municipal keys.
-// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — adds utility keys
-// (utility_outage, transformer_maintenance, vegetation_management,
-// safety_verification). Persistence validation list grows in
-// lockstep with the WorkflowTemplateKey union.
+// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — added utility keys.
+// PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — adds contractor keys
+// (job_closeout, site_condition, change_order, client_handoff).
+// Persistence validation list grows in lockstep with the
+// WorkflowTemplateKey union.
 const VALID_TEMPLATES: WorkflowTemplateKey[] = [
   "pole_top",
   "fiber_splice",
@@ -174,6 +175,10 @@ const VALID_TEMPLATES: WorkflowTemplateKey[] = [
   "transformer_maintenance",
   "vegetation_management",
   "safety_verification",
+  "job_closeout",
+  "site_condition",
+  "change_order",
+  "client_handoff",
   "blank",
 ];
 

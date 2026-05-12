@@ -22,16 +22,16 @@ export type IndustryKey =
   | "contractor"
   | "other";
 
-// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — Slice Municipality 1.0
-// added municipal workflow keys.
-// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0 adds
-// utility-specific keys: utility_outage, transformer_maintenance,
-// vegetation_management, safety_verification. The existing pole_top
-// and storm_assess keys keep their labels and are reused for the
-// utility "Pole inspection" and "Damage assessment" recommended
-// cards respectively — same template, surfaced where it matters.
-// All additions are additive; telecom/municipality/contractor/other
-// paths are unaffected.
+// PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — added municipal keys.
+// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — added utility keys.
+// PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — Slice Infrastructure
+// Contractor 1.0 adds contractor-specific keys: job_closeout,
+// site_condition, change_order, client_handoff. The existing
+// safety_verification and contractor_verification keys (added in
+// utility + municipality slices) are reused for the contractor
+// "Safety verification" and "Contractor work verification"
+// recommended cards. All additions are additive; telecom /
+// municipality / utility paths are unaffected.
 export type WorkflowTemplateKey =
   | "pole_top"
   | "fiber_splice"
@@ -46,6 +46,10 @@ export type WorkflowTemplateKey =
   | "transformer_maintenance"
   | "vegetation_management"
   | "safety_verification"
+  | "job_closeout"
+  | "site_condition"
+  | "change_order"
+  | "client_handoff"
   | "blank";
 
 export type IndustryProfile = {
@@ -230,18 +234,32 @@ const PROFILES: Record<IndustryKey, IndustryProfile> = {
     ],
   },
 
+  // PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — Slice Infrastructure
+  // Contractor 1.0. Re-tuned the contractor profile for field
+  // contractors and infrastructure service providers: proof of
+  // work, job closeouts, change-order support, client handoff
+  // packets. Replaces the prior placeholder that defaulted to
+  // utility-flavored templates (trench_inspection / pole_top /
+  // storm_assess).
   contractor: {
     key: "contractor",
     label: "Infrastructure Contractor",
-    short: "Multi-customer field crews",
-    defaultWorkflow: "trench_inspection",
-    recommendedWorkflows: ["trench_inspection", "pole_top", "storm_assess"],
+    short: "Crew documentation, proof of work, job closeouts, and client-ready field records",
+    defaultWorkflow: "job_closeout",
+    recommendedWorkflows: [
+      "job_closeout",
+      "site_condition",
+      "change_order",
+      "safety_verification",
+      "contractor_verification",
+      "client_handoff",
+    ],
     starterJob: {
-      title: "Utility trench inspection — Riverside Sub-feeder",
-      location: "Riverside Sub-feeder · Stations 18+50 to 22+00",
+      title: "Job closeout verification — East service corridor",
+      location: "East service corridor · Sta. 04+50 to 08+00",
       jobType: "inspection",
     },
-    terminology: ["crew", "subcontractor", "site", "scope", "punch item"],
+    terminology: ["crew", "subcontractor", "scope", "punch item", "closeout", "handoff"],
     timerLabels: {
       response: "Dispatch time",
       fieldArrival: "Crew arrival",
@@ -250,13 +268,16 @@ const PROFILES: Record<IndustryKey, IndustryProfile> = {
     outputs: [
       { label: "Client-ready proof of work", status: "live" },
       { label: "Closeout packet", status: "live" },
+      { label: "Change-order field record", status: "live" },
     ],
     opsFocusOptions: [
-      { key: "job_verification",  label: "Job verification & photo documentation" },
-      { key: "closeout_packets",  label: "Per-client closeout packets" },
-      { key: "punch_tracking",    label: "Punch-item tracking" },
-      { key: "safety_walkaround", label: "Safety walkaround documentation" },
-      { key: "daily_reports",     label: "Customer-facing daily reports" },
+      { key: "proof_of_work",                label: "Proof of work",                     note: "Photo + narrative record of completed work for client review." },
+      { key: "job_closeout_documentation",   label: "Job closeout documentation",        note: "Per-job closeout packets with photos, notes, and sign-off." },
+      { key: "contractor_oversight",         label: "Contractor oversight",              note: "Track subcontractor activity, punch items, and verification." },
+      { key: "safety_verification",          label: "Safety verification",               note: "Crew safety walkarounds, PPE checks, and incident documentation." },
+      { key: "change_order_support",         label: "Change-order support",              note: "Field-record the conditions that drive a change order." },
+      { key: "site_condition_documentation", label: "Site condition documentation",      note: "Pre / post site condition records with photo evidence." },
+      { key: "client_handoff_records",       label: "Client handoff records",            note: "Packaged records ready to hand to the client at project close." },
     ],
   },
 

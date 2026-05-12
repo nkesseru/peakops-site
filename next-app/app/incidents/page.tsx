@@ -143,14 +143,7 @@ const JOB_TYPE_CHIPS_BY_INDUSTRY: Readonly<Record<string, ReadonlyArray<Industry
     { slug: "inspection",  label: "Inspection", normalized: "inspection" },
     { slug: "other",       label: "Other",      normalized: "other" },
   ],
-  // PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 (2026-05-11) — Slice
-  // Industry Recap Copy Parity 1.0 added the Damage chip. The
-  // outage chip already covers storm-related outages (normalized
-  // to "damage"), but utility ops teams also document plain
-  // damage assessments (downed pole, vehicle hit, etc.) that
-  // aren't strictly outage-driven. Both chips share the same
-  // normalized backend type but the slug stays distinct so the
-  // UI keeps them visually independent.
+  // PEAKOPS_INDUSTRY_RECAP_COPY_PARITY_V1 (2026-05-11) added Damage.
   utilities: [
     { slug: "outage",      label: "Outage",      normalized: "damage" },
     { slug: "pole",        label: "Pole",        normalized: "repair" },
@@ -159,6 +152,20 @@ const JOB_TYPE_CHIPS_BY_INDUSTRY: Readonly<Record<string, ReadonlyArray<Industry
     { slug: "safety",      label: "Safety",      normalized: "inspection" },
     { slug: "damage",      label: "Damage",      normalized: "damage" },
     { slug: "other",       label: "Other",       normalized: "other" },
+  ],
+  // PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — Slice Infrastructure
+  // Contractor 1.0 chip set. Proof / Closeout / Safety /
+  // Change order / Site condition / Client handoff each carry a
+  // unique slug so they remain visually independent even though
+  // several normalize to the same backend jobType.
+  contractor: [
+    { slug: "proof",          label: "Proof",          normalized: "inspection" },
+    { slug: "closeout",       label: "Closeout",       normalized: "inspection" },
+    { slug: "safety",         label: "Safety",         normalized: "inspection" },
+    { slug: "change_order",   label: "Change order",   normalized: "other" },
+    { slug: "site_condition", label: "Site condition", normalized: "inspection" },
+    { slug: "client_handoff", label: "Client handoff", normalized: "other" },
+    { slug: "other",          label: "Other",          normalized: "other" },
   ],
 };
 

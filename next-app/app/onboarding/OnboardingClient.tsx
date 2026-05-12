@@ -108,6 +108,9 @@ function industryWorkflowNoun(industry: IndustryKey | ""): string {
     case "utilities":     return "utility operations";
     case "telecom":       return "telecom operations";
     case "municipality":  return "public works operations";
+    // PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — kept "contractor
+    // field work" (no change). Slice Industry Recap Copy Parity
+    // 1.0 already picked the right phrasing for contractor.
     case "contractor":    return "contractor field work";
     default:              return "operations";
   }
@@ -121,7 +124,11 @@ const INDUSTRIES: ReadonlyArray<{ key: IndustryKey; label: string; sub: string }
   { key: "utilities",    label: "Utility Operations",            sub: "Outage response, infrastructure inspection, vegetation management, and utility field operations" },
   { key: "telecom",      label: "Telecom",                       sub: "Fiber, OSP, splice and outage work" },
   { key: "municipality", label: "Municipality / Public Works",   sub: "Roads, stormwater, inspections, traffic signals, and contractor field verification" },
-  { key: "contractor",   label: "Infrastructure contractor",     sub: "Multi-customer field crews" },
+  // PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — Slice Infrastructure
+  // Contractor 1.0 refreshed the card label/sub copy to match the
+  // spec's framing ("Crew documentation, proof of work, job
+  // closeouts, and client-ready field records").
+  { key: "contractor",   label: "Infrastructure Contractor",     sub: "Crew documentation, proof of work, job closeouts, and client-ready field records" },
   { key: "other",        label: "Other",                         sub: "Custom — we'll tailor templates after setup" },
 ];
 
@@ -147,6 +154,11 @@ const TEMPLATES: ReadonlyArray<{ key: WorkflowTemplateKey; label: string; sub: s
   { key: "transformer_maintenance", label: "Transformer maintenance",        sub: "Substation + field transformer service work",  sample: "Transformer maintenance — Cedar Substation" },
   { key: "vegetation_management",   label: "Vegetation management",          sub: "Right-of-way clearance and hazard trees",      sample: "Vegetation management — Cedar feeder right-of-way" },
   { key: "safety_verification",     label: "Safety verification",            sub: "Substation safety logs + crew safety checks",  sample: "Safety verification — Cedar Substation" },
+  // PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — contractor cards.
+  { key: "job_closeout",            label: "Job closeout verification",      sub: "Photo + sign-off packet for client review",    sample: "Job closeout verification — East service corridor" },
+  { key: "site_condition",          label: "Site condition documentation",   sub: "Pre / post site conditions with photo evidence", sample: "Site condition documentation — South staging yard" },
+  { key: "change_order",            label: "Change-order field record",      sub: "Document the conditions that drive a change",  sample: "Change-order field record — East corridor Sta. 04+50" },
+  { key: "client_handoff",          label: "Client handoff packet",          sub: "Packaged record for project close-out",        sample: "Client handoff packet — East corridor project close" },
   { key: "blank",                   label: "Start blank",                    sub: "Define your own workflow — we’ll guide it",    sample: "Custom job — name it when you start" },
 ];
 
@@ -261,11 +273,15 @@ export default function OnboardingClient() {
   // response is the most operationally important entry point for
   // utility ops teams; the rest of the recommended cards still
   // appear in the picker.
+  // PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — contractor default
+  // shifts from the utility-flavored trench_inspection to the new
+  // job_closeout template (matches industryProfiles.contractor.
+  // defaultWorkflow).
   const INDUSTRY_TO_TEMPLATE: Record<IndustryKey, WorkflowTemplateKey> = {
     utilities: "utility_outage",
     telecom: "fiber_splice",
     municipality: "stormwater_inspection",
-    contractor: "trench_inspection",
+    contractor: "job_closeout",
     other: "blank",
   };
   function pickIndustry(next: IndustryKey) {

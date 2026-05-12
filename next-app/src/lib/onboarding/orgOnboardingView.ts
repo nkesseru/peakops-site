@@ -172,17 +172,24 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
       "Audit-ready record of public works field activity. " +
       "Structured for contractor oversight, public records, and operational review.",
   },
+  // PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — Slice Infrastructure
+  // Contractor 1.0. Contractor-flavored downstream copy. The
+  // pre-existing Contractor Field Record eyebrow is preserved;
+  // subhead, filingHint, empty state, intro paragraph, and the
+  // starter-job placeholder are all freshly authored to match
+  // the proof-of-work / closeout / handoff framing buyers
+  // recognize.
   contractor: {
-    startJobTitlePlaceholder: "e.g. Utility trench inspection — Riverside Sub-feeder",
-    startJobSubhead: "Open a job for any of your customers — capture proof of work as you go.",
-    emptyStatePrompt: "Start your first job",
-    filingHint: null,
-    // PEAKOPS_REPORT_EYEBROW_PHRASING_V2 (2026-05-11)
-    // Report Presentation 1.0 — "Contractor Field Record" makes
-    // the per-client closeout context clear at a glance for a
-    // multi-customer contractor.
+    startJobTitlePlaceholder: "e.g. Job closeout verification — East service corridor",
+    startJobSubhead:
+      "Open a contractor field job — proof of work, closeouts, safety, or client handoff records.",
+    emptyStatePrompt: "Start your first contractor field job",
+    filingHint:
+      "Field records are structured for proof of work, client review, change-order support, and audit-ready documentation.",
     reportEyebrow: "Contractor Field Record",
-    reportIntroLine: null,
+    reportIntroLine:
+      "Audit-ready record of contractor field activity. " +
+      "Structured for proof of work, client review, and project closeout documentation.",
   },
   other: {
     startJobTitlePlaceholder: "e.g. Replace broken pole-top pin",
@@ -209,9 +216,11 @@ const INDUSTRY_COPY: Record<IndustryKey, IndustryCopy> = {
 // industry=utilities + blank → utilities placeholder
 // (any future workflow-specific template still overrides as expected)
 // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — added municipal keys.
-// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — Slice Utility 1.0 adds the
-// four new utility-specific placeholders. Existing utility/telecom/
-// municipality/contractor placeholders are untouched.
+// PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — added utility keys.
+// PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — Slice Infrastructure
+// Contractor 1.0 adds the four new contractor-specific
+// placeholders: job_closeout, site_condition, change_order,
+// client_handoff. Existing placeholders are untouched.
 const TEMPLATE_TITLE_PLACEHOLDER: Partial<Record<WorkflowTemplateKey, string>> = {
   pole_top:                "e.g. Replace broken pole-top pin — Pole 14A-22",
   fiber_splice:            "e.g. Fiber splice verification — North Line Segment B",
@@ -226,6 +235,10 @@ const TEMPLATE_TITLE_PLACEHOLDER: Partial<Record<WorkflowTemplateKey, string>> =
   transformer_maintenance: "e.g. Transformer maintenance — Cedar Substation",
   vegetation_management:   "e.g. Vegetation management — Cedar feeder right-of-way",
   safety_verification:     "e.g. Safety verification — Cedar Substation",
+  job_closeout:            "e.g. Job closeout verification — East service corridor",
+  site_condition:          "e.g. Site condition documentation — South staging yard",
+  change_order:            "e.g. Change-order field record — East corridor Sta. 04+50",
+  client_handoff:          "e.g. Client handoff packet — East corridor project close",
 };
 
 /**
@@ -259,7 +272,8 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
     (validKeys as string[]).includes(rawIndustry) ? (rawIndustry as IndustryKey) : "";
 
   // PEAKOPS_MUNICIPALITY_MODE_V1 (2026-05-11) — added 5 municipal keys.
-  // PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — adds 4 utility keys.
+  // PEAKOPS_UTILITY_MODE_V1 (2026-05-11) — added 4 utility keys.
+  // PEAKOPS_CONTRACTOR_MODE_V1 (2026-05-12) — adds 4 contractor keys.
   // Validation list grows in parallel with WorkflowTemplateKey.
   const validTemplates: WorkflowTemplateKey[] = [
     "pole_top",
@@ -275,6 +289,10 @@ export async function loadOrgOnboardingView(orgId: string): Promise<OrgOnboardin
     "transformer_maintenance",
     "vegetation_management",
     "safety_verification",
+    "job_closeout",
+    "site_condition",
+    "change_order",
+    "client_handoff",
     "blank",
   ];
   const rawTemplate = String(stateData.selectedTemplate || "").trim().toLowerCase();
