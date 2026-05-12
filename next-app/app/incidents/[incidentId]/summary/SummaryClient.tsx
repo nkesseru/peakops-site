@@ -1563,31 +1563,129 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         }}
       >
-        {/* PEAKOPS_REPORT_PRINT_V1 (2026-05-05)
-            Print/share readiness. .peakops-no-print elements (back
-            link, action cluster, internal-status disclosure, dev
-            tools) drop out of the printed page. The dark theme
-            inverts to white-bg / dark-text so screenshots and PDFs
-            look like a real document. Cards keep their borders but
-            shed background tint for paper. */}
+        {/* PEAKOPS_REPORT_PRINT_V2 (2026-05-11) — Slice Print / PDF
+            Presentation 1.0.
+            Comprehensive print stylesheet: white background, dark
+            text, hidden interactive controls, section page-break
+            rules, header-with-content lock, photo-tile preservation,
+            paper-friendly typography. The in-app dark mode is
+            untouched — @media print is the only viewport this CSS
+            applies to. peakops-no-print elements (action cluster,
+            back link, banners, regenerate confirm, dev tools, toast)
+            drop out of the printed page entirely. */}
         <style jsx global>{`
           @media print {
-            .peakops-no-print { display: none !important; }
+            /* Page margins matched to letter / A4 printing defaults. */
+            @page {
+              margin: 18mm 14mm;
+              size: auto;
+            }
+
+            /* Drop the in-app screen-height padding so the report
+               starts at the top of the page. */
+            .peakops-report-root {
+              min-height: 0 !important;
+              padding: 0 !important;
+              margin: 0 !important;
+            }
+
+            /* Force light theme across the whole report tree.
+               Backgrounds become white, text becomes near-black.
+               Existing colored accents (status pill tints, banner
+               palettes, stat-card tones) become white so the page
+               reads as a clean operational record on paper. */
             .peakops-report-root,
             .peakops-report-root * {
               background: #ffffff !important;
+              background-image: none !important;
               color: #050505 !important;
               box-shadow: none !important;
+              text-shadow: none !important;
             }
-            .peakops-report-root section,
-            .peakops-report-root footer {
-              border-color: #d4d4d8 !important;
-              break-inside: avoid;
+
+            /* peakops-no-print is the canonical hide-on-print marker
+               (back link, action cluster, banners, dev tools, etc.). */
+            .peakops-no-print { display: none !important; }
+
+            /* Section borders soften to print-gray. Each report
+               section avoids splitting across page breaks so the
+               narrative stays whole. */
+            .peakops-report-root section {
+              border: 1px solid #d4d4d8 !important;
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+              margin-bottom: 6mm !important;
             }
+
+            /* Keep section eyebrow / heading with the first line of
+               its content — no orphaned headings at page bottoms. */
+            .peakops-report-root h1,
+            .peakops-report-root h2,
+            .peakops-report-root h3 {
+              page-break-after: avoid !important;
+              break-after: avoid !important;
+            }
+
+            /* Body type tuned for paper. Lists allow at least 3
+               lines of widow / orphan protection so paragraphs
+               don't strand a single line at a page boundary. */
+            .peakops-report-root {
+              font-size: 11pt !important;
+              line-height: 1.45 !important;
+            }
+            .peakops-report-root h1 {
+              font-size: 17pt !important;
+            }
+            .peakops-report-root p,
+            .peakops-report-root li,
+            .peakops-report-root div {
+              orphans: 3;
+              widows: 3;
+            }
+
+            /* Photos: keep aspect, soft border, never split mid-tile. */
             .peakops-report-root img {
-              max-width: 100%;
-              height: auto;
+              max-width: 100% !important;
+              height: auto !important;
               border-color: #d4d4d8 !important;
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+            }
+
+            /* Logo slot retains its faint border for visual presence
+               but loses the dark fill. The uploaded logo image
+               inside renders normally via the img rule above. */
+            .peakops-report-root [data-slot="peakops-report-logo"] {
+              border: 1px solid #d4d4d8 !important;
+              background: #ffffff !important;
+            }
+
+            /* Status pill: print as a neutral outline so the dark
+               filled pill from screen doesn't fight the page.
+               Targeting the pill by Tailwind's rounded-full class
+               + border class avoids accidentally restyling other
+               rounded elements. */
+            .peakops-report-root .rounded-full {
+              background: #ffffff !important;
+              border: 1px solid #6b7280 !important;
+              color: #111827 !important;
+              padding: 1px 8px !important;
+            }
+
+            /* Tile-button photo grid lives inside <button> elements.
+               Keep tiles visually intact in print. */
+            .peakops-report-root button {
+              border-color: #d4d4d8 !important;
+              cursor: default !important;
+            }
+
+            /* Force underlying browser to print the report's
+               background colors and borders consistently across
+               Chrome / Safari / Firefox. exact = print as shown. */
+            .peakops-report-root,
+            .peakops-report-root * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
             }
           }
         `}</style>
@@ -1940,6 +2038,35 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                     {artifactBusy ? "Regenerating…" : "Regenerate"}
                   </button>
                 )}
+                {/* PEAKOPS_REPORT_PRINT_V2 (2026-05-11) — Slice Print /
+                    PDF Presentation 1.0. Secondary CTA that triggers
+                    the browser's native print dialog. The @media print
+                    stylesheet above (white background, hidden interactive
+                    controls, paper-friendly section breaks) takes over;
+                    Chrome / Safari / Firefox's print preview lets the
+                    user save as PDF without any new dependency.
+                    Lives in the .peakops-no-print cluster so it never
+                    appears in the printed output itself. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof window !== "undefined") window.print();
+                  }}
+                  title="Print this record or save it as a PDF"
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    border: "1px solid #1c1c1c",
+                    background: "transparent",
+                    color: "#b3b3b3",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Print / Save PDF
+                </button>
                 {/* PEAKOPS_REPORT_CTA_CAPTION_V1 (2026-05-11)
                     Report Presentation 1.0 — single-line audit-trust
                     caption under the primary CTA. Confirms what's in
@@ -1968,6 +2095,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               gate. */}
           {regenerateConfirmOpen && (
             <section
+              className="peakops-no-print"
               style={{
                 borderRadius: 10,
                 padding: "14px 16px",
@@ -2073,6 +2201,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               for debugging. */}
           {bannerKind ? (
             <section
+              className="peakops-no-print"
               style={{
                 borderRadius: 10,
                 padding: "14px 16px",
@@ -2181,6 +2310,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               backend wording. */}
           {unassignedEvidenceCount > 0 ? (
             <section
+              className="peakops-no-print"
               style={{
                 borderRadius: 10,
                 padding: "12px 16px",
@@ -2243,9 +2373,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             </section>
           ) : null}
 
-          {/* Transient banners */}
+          {/* Transient banners — hidden in print so the PDF doesn't
+              show a stale "Report ready" toast or dev auth bypass
+              chip. */}
           {!err && demoAuthBypassMsg ? (
             <div
+              className="peakops-no-print"
               style={{
                 fontSize: 12,
                 padding: "8px 12px",
@@ -2260,6 +2393,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           ) : null}
           {!err && artifactToast ? (
             <div
+              className="peakops-no-print"
               style={{
                 fontSize: 12,
                 padding: "8px 12px",
