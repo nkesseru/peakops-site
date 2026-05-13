@@ -21,7 +21,7 @@ import { getAdminDb } from "@/lib/firebaseAdmin";
 export const runtime = "nodejs";
 
 const STATUSES = new Set(["active", "suspended", "cancelled"]);
-const FEATURE_KEYS = ["riskDefenseModule", "api", "sso", "whiteLabel"] as const;
+const FEATURE_KEYS = ["riskDefenseModule", "api", "sso", "whiteLabel", "advancedRetention"] as const;
 const LIMIT_KEYS = [
   "capacityIncluded",
   "capacityPurchased",
