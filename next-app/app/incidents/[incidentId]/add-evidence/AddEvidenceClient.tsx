@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getFunctionsBase } from "@/lib/functionsBase";
+import { authedFetch } from "@/lib/apiClient";
+import { logAnalyticsEvent } from "@/lib/analytics";
 type Item = { id: string; file: File; url: string };
 type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string; status?: string };
 
@@ -42,7 +44,12 @@ useEffect(() => {
   const [selectedJobId, setSelectedJobId] = useState("");
   const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
 
-// Prefer orgId from query (?orgId=...), else localStorage, else riverbend-electric (your demo org)
+  // PEAKOPS_ADD_EVIDENCE_ORGID_URL_V1
+  // orgId priority: URL query param first, then the most recent localStorage
+  // hint from a prior page in the same session. No hardcoded default — if
+  // neither source has a value, orgId is empty and every downstream call
+  // (startFieldSessionV1, addEvidenceV1, createEvidenceUploadUrlV1) surfaces
+  // a clear "orgId required" error instead of silently targeting the wrong org.
   const orgId = useMemo(() => {
     const q = String(sp?.get("orgId") || "").trim();
     if (q) return q;
@@ -50,7 +57,7 @@ useEffect(() => {
       const v = String(localStorage.getItem("peakops_orgId") || "").trim();
       if (v) return v;
     } catch {}
-    return "riverbend-electric";
+    return "";
   }, [sp]);
 
   useEffect(() => {
@@ -65,7 +72,15 @@ useEffect(() => {
           localJobId = String(localStorage.getItem(`peakops_current_job_${String(incidentId || "").trim()}`) || "").trim();
         } catch {}
 
-        const res = await fetch(
+        // PEAKOPS_AUTH_RACE_FIX_V1 (2026-05-01)
+        // listJobsV1 + startFieldSessionV1 used to fire with a bare
+        // fetch() before Firebase had hydrated the auth state, so the
+        // first attempt 401'd ("Missing Authorization header") and a
+        // retry was needed. authedFetch awaits getIdToken() — which
+        // itself waits for onAuthStateChanged when currentUser is
+        // briefly null after navigation — guaranteeing every call
+        // carries a valid Bearer token.
+        const res = await authedFetch(
           `/api/fn/listJobsV1?orgId=${encodeURIComponent(String(orgId || "").trim())}&incidentId=${encodeURIComponent(String(incidentId || "").trim())}&limit=50&actorUid=dev-admin&actorRole=admin`,
           { cache: "no-store" }
         );
@@ -145,7 +160,13 @@ useEffect(() => {
         setStatus("Starting session…");
       }
       try {
-        const res = await fetch(`${fnProxyBase}/startFieldSessionV1`, {
+        // PEAKOPS_AUTH_RACE_FIX_V1 (2026-05-01)
+        // authedFetch ensures the Firebase ID token is loaded
+        // (waiting for onAuthStateChanged if currentUser is briefly
+        // null after navigation) before this request fires. Stops the
+        // first-photo "Missing Authorization header 401" race that
+        // forced a retry on the second click.
+        const res = await authedFetch(`${fnProxyBase}/startFieldSessionV1`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -225,7 +246,14 @@ useEffect(() => {
         };
       }
     } catch (e: any) {
-      console.error(e);
+      // PEAKOPS_CAMERA_LOG_DOWNGRADE_V1 (2026-04-28)
+      // Camera unavailable / permission-denied is an expected user
+      // path (in-app browser, no permission, no hardware). The UI
+      // surfaces the message via `setCameraError`; downgrade the
+      // engineer log so the Next.js dev overlay doesn't show a red
+      // "1 Issue" badge during normal flows.
+      // eslint-disable-next-line no-console
+      console.warn("[camera] unavailable", e);
       setCameraError(e?.message || String(e));
       setCameraOpen(false);
     }
@@ -288,8 +316,10 @@ useEffect(() => {
   }
 
   async function uploadOne(it: Item) {
-    if (!selectedJobId) throw new Error("No job selected. Return to incident page and pick My job first.");
     if (!sessionId) throw new Error("Session not ready yet. Please wait for 'Starting session…' to finish.");
+    // PEAKOPS_CAPTURE_WITHOUT_JOB_V1
+    // jobId is optional. When empty, addEvidenceV1 saves the doc at the
+    // incident level and it can be assigned to a job later from Evidence Mapping.
     await uploadEvidence({
       functionsBase: fnProxyBase,
       techUserId,
@@ -297,7 +327,7 @@ useEffect(() => {
       incidentId,
       phase: "inspection",
       labels: ["damage"],
-      jobId: selectedJobId,
+      jobId: selectedJobId || "",
       sessionId,
       file: it.file,
       onStatus: setStatus,
@@ -306,26 +336,45 @@ useEffect(() => {
 
   async function uploadAll() {
     if (!items.length) return;
+    const totalToUpload = items.length;
     setBusy(true);
     setErrMsg("");
     setStatus("Preparing…");
     try {
-      // Sequential upload = fewer edge cases; fastest path to “enterprise reliable”
+      // Sequential upload = fewer edge cases; fastest path to "enterprise reliable"
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
-        setStatus(`Uploading ${items.length - i}/${items.length}…`);
+        setStatus(`Saving ${items.length - i}/${items.length}…`);
         await uploadOne(it);
       }
-      setStatus("Secured ✔️");
+      // PEAKOPS_UPLOAD_REASSURANCE_V1 (2026-04-28)
+      // Confirmation copy with a count so the user has explicit
+      // proof their work was saved before the route transition.
+      const savedLabel = totalToUpload === 1 ? "Photo saved" : `${totalToUpload} photos saved`;
+      setStatus(`✓ ${savedLabel}`);
+      void logAnalyticsEvent("EVIDENCE_UPLOADED", {
+        incidentId,
+        orgId,
+        count: totalToUpload,
+        attachedToJob: Boolean(selectedJobId),
+      });
       // Clear queue
       setItems((prev) => {
         try { prev.forEach((x) => URL.revokeObjectURL(x.url)); } catch {}
         return [];
       });
-      // Back to incident
-      setTimeout(() => router.push(`/incidents/${incidentId}`), 350);
+      // Back to incident — preserve orgId so the incident page's refresh can run.
+      setTimeout(
+        () => router.push(`/incidents/${incidentId}?orgId=${encodeURIComponent(String(orgId || "").trim())}#evidence`),
+        700
+      );
     } catch (e: any) {
-      console.error("UPLOAD FAIL", e);
+      // PEAKOPS_UPLOAD_LOG_DOWNGRADE_V1 (2026-04-28)
+      // Upload failures are surfaced to the user via setErrMsg + alert;
+      // demote the engineer log so it doesn't pop the dev "1 Issue"
+      // overlay during expected/handled paths.
+      // eslint-disable-next-line no-console
+      console.warn("[upload] failed", e);
       const m = (e && (e.message || e.toString())) || String(e);
       setErrMsg(m);
       setStatus("");
@@ -335,24 +384,34 @@ useEffect(() => {
     }
   }
 
+  // PEAKOPS_ADD_EVIDENCE_HEADER_V1 (2026-04-29)
+  // Resolve a human label for the active task. Falls back to "this
+  // incident" so the customer never sees a raw task id slice or a
+  // bare incident id.
+  const activeJobTitle = (() => {
+    if (!mounted || !selectedJobId) return "";
+    const j = jobs.find((jd) => String(jd?.id || jd?.jobId || "") === String(selectedJobId));
+    return String(j?.title || "").trim();
+  })();
+
   return (
     <main className="min-h-screen bg-black text-white p-4">
       <div className="mb-4">
         <div className="text-[11px] uppercase tracking-wider text-gray-400">Add Evidence</div>
         <div className="text-lg font-semibold">
-          Incident {incidentId.slice(-6)}
+          Capture photos
         </div>
         <div className="text-xs text-cyan-200/90 mt-1">
-          My job: {mounted ? (selectedJobId || "(auto-selecting…)") : "…"}
-        </div>
-        <div className="text-xs text-cyan-200/90 mt-1">
-          Session: {sessionId ? `ready (${sessionId.slice(0, 8)}…)` : (sessionBusy ? "Starting session…" : "not ready")}
+          {mounted && selectedJobId
+            ? activeJobTitle
+              ? `Active task: ${activeJobTitle}`
+              : "Active task selected"
+            : "No active task — photos save to this incident"}
         </div>
         {!selectedJobId ? (
-          <div className="text-xs text-amber-200 mt-1">No job bound yet. Attempting auto-select from incident jobs…</div>
+          <div className="text-xs text-amber-200 mt-1">No active task yet — photos will be saved to this incident and can be attached later.</div>
         ) : null}
         <div className="text-xs text-gray-500 mt-1">Audit-safe capture • Auto-tagged • Time-locked</div>
-        <div className="text-xs text-gray-500 mt-1">Jobs detected: {Array.isArray(jobs) ? jobs.length : 0}</div>
       </div>
 
       {/* CAMERA MODE */}
@@ -395,8 +454,30 @@ useEffect(() => {
           >
             Open Camera
           </button>
+          {/* PEAKOPS_CAMERA_FALLBACK_V1 (2026-04-28)
+              When the camera fails to open (no permission, no
+              hardware, in-app browser), show a calm fallback that
+              tells the user the upload-from-device path still works. */}
+          {cameraError ? (
+            <div
+              style={{
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid #1c1c1c",
+                background: "#0b0b0b",
+                color: "#b3b3b3",
+                fontSize: 12,
+                lineHeight: 1.5,
+              }}
+            >
+              <div style={{ fontWeight: 600, color: "#f5f5f5" }}>Camera unavailable</div>
+              <div style={{ marginTop: 2 }}>
+                You can upload photos from this device instead — pick files below.
+              </div>
+            </div>
+          ) : null}
 
-          <input
+                  <input
             id="pick"
             ref={fileInputRef}
             type="file"
@@ -408,32 +489,29 @@ useEffect(() => {
               }
               addPickedFiles(e.target.files);
             }}
-            className="hidden"
+            className="sr-only"
             disabled={busy || sessionBusy || !sessionId}
           />
-          <button
-            type="button"
-            className="w-full py-5 flex items-center justify-center border-2 border-dashed border-white/20 rounded-xl text-gray-200 active:border-white/40"
-            disabled={busy || sessionBusy || !sessionId}
+          <label
+            htmlFor="pick"
+            className={
+              "w-full py-5 flex items-center justify-center border-2 border-dashed border-white/20 rounded-xl text-gray-200 active:border-white/40 " +
+              ((busy || sessionBusy || !sessionId) ? "opacity-50 pointer-events-none" : "cursor-pointer")
+            }
             onClick={() => {
               if (process.env.NODE_ENV !== "production") {
                 console.warn("[add-evidence]", {
-                  step: "click",
+                  step: "label_click",
                   disabled: busy || sessionBusy || !sessionId,
                   hasInput: !!fileInputRef.current,
                   isUserGesture: true,
                   ts: Date.now(),
                 });
               }
-              if (busy || sessionBusy || !sessionId) return;
-              fileInputRef.current?.click();
-              if (process.env.NODE_ENV !== "production") {
-                console.warn("[add-evidence]", { step: "input_click", ts: Date.now() });
-              }
             }}
           >
             Pick multiple photos/videos
-          </button>
+          </label>         
 
           {items.length ? (
             <div className="rounded-xl border border-white/10 bg-white/5 p-3">
@@ -475,10 +553,10 @@ useEffect(() => {
               <button
                 className="mt-3 w-full py-4 rounded-xl bg-green-600/90 border border-green-300/20 text-white font-semibold hover:bg-green-600 active:translate-y-[1px] transition"
                 onClick={uploadAll}
-                disabled={busy || sessionBusy || !sessionId || !items.length || !selectedJobId}
-                title={!selectedJobId ? "Return and select My job first" : (items.length ? "Upload all queued evidence" : "Add photos first")}
+                disabled={busy || sessionBusy || !sessionId || !items.length}
+                title={!items.length ? "Add photos first" : (!sessionId ? "Waiting for session…" : (selectedJobId ? "Upload all queued evidence" : "Upload — evidence will save to this incident"))}
               >
-                {busy ? (status || "Working…") : "Upload & Secure Evidence"}
+                {busy ? (status || "Working…") : "Save Photos"}
               </button>
 
               {status ? <div className="mt-2 text-sm text-gray-300">{status}</div> : null}

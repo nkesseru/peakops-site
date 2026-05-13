@@ -17,13 +17,32 @@ safeExport("healthzV1", "./healthzV1");
 
 // --- Incident core ---
 safeExport("getIncidentV1", "./getIncidentV1");
+safeExport("listIncidentsV1", "./listIncidentsV1");
+safeExport("backfillIncidentTitleV1", "./backfillIncidentTitleV1");
+safeExport("createIncidentV1", "./createIncidentV1");
 safeExport("getTimelineEventsV1", "./getTimelineEventsV1");
+safeExport("getWorkflowV1", "./getWorkflowV1");
+safeExport("generateTimelineV1", "./generateTimelineV1");
+safeExport("generateFilingsV1", "./generateFilingsV1");
+safeExport("getIncidentBundleV1", "./getIncidentBundleV1");
 safeExport("listEvidenceLocker", "./listEvidenceLocker");
 safeExport("closeIncidentV1", "./closeIncidentV1");
 
 // --- Sessions ---
+safeExport("markArrivedV1", "./markArrivedV1", "markArrivedV1");
 safeExport("startFieldSessionV1", "./startFieldSessionV1");
 safeExport("submitFieldSessionV1", "./submitFieldSessionV1");
+// PEAKOPS_SLICE71_RESTORE_EXPORTS_V1 (2026-05-06)
+// approveFieldSessionV1 is the supervisor's terminal sign-off
+// counterpart to submitFieldSessionV1. addMaterialV1 is the
+// field-side material-capture write that runs alongside
+// addEvidenceV1 during a session. Both have role gates wired
+// through _authz.js (Slices 4 / 5) but were never registered with
+// the Functions runtime; smoke runs in earlier slices flagged them
+// as unverifiable. Wiring them in unblocks Slice 8 rules alignment
+// and gives both gates real deployment paths.
+safeExport("approveFieldSessionV1", "./approveFieldSessionV1");
+safeExport("addMaterialV1", "./addMaterialV1");
 
 // --- Evidence ---
 safeExport("addEvidenceV1", "./addEvidenceV1");
@@ -42,6 +61,11 @@ safeExport("getIncidentNotesV1", "./getIncidentNotesV1");
 safeExport("saveIncidentNotesV1", "./saveIncidentNotesV1");
 safeExport("assignEvidenceToJobV1", "./assignEvidenceToJobV1");
 safeExport("backfillEvidenceJobIdV1", "./backfillEvidenceJobIdV1");
+// PEAKOPS_SLICE9_VENDOR_ASSIGN_CALLABLE_V1 (2026-05-06)
+// Replaces the direct-client setDoc that lib/jobVendor.ts used to
+// run against incidents/{id}/jobs/{jobId}. Slice 8's narrow rules
+// allowance for that path goes away alongside this export.
+safeExport("assignVendorToJobV1", "./assignVendorToJobV1");
 
 // --- HEIC / conversions ---
 safeExport("convertEvidenceHeicNowV1", "./convertEvidenceHeicNowV1");
@@ -49,6 +73,11 @@ safeExport("convertHeicOnFinalize", "./convertHeicOnFinalize");
 
 // --- Debug / org tools ---
 safeExport("listOrgsV1", "./listOrgsV1");
+// PEAKOPS_SLICE14_BOOTSTRAP_PILOT_V1 (2026-05-06)
+// Internal-staff-only callable that creates a customer org plus its
+// owner member doc atomically. Production blocker §5.1 from the
+// Production Readiness Plan.
+safeExport("bootstrapPilotOrgV1", "./bootstrapPilotOrgV1");
 safeExport("debugEvidenceV1", "./debugEvidenceV1");
 safeExport("debugOrgsV1", "./debugOrgsV1");
 
@@ -62,6 +91,7 @@ safeExport("rejectJobV1", "./rejectJobV1");
 
 // Exports
 safeExport("exportIncidentPacketV1", "./exportIncidentPacketV1");
+safeExport("getIncidentPacketMetaV1", "./getIncidentPacketMetaV1");
 
 // Supervisor Requests
 safeExport("createSupervisorRequestV1", "./createSupervisorRequestV1");

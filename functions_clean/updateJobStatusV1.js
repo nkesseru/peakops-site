@@ -2,6 +2,12 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_APPROVE,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -52,6 +58,44 @@ exports.updateJobStatusV1 = onRequest({ cors: true }, async (req, res) => {
 const status = mustStr(body.status, "status").toLowerCase();
     if (!ALLOWED.has(status)) return j(res, 400, { ok: false, error: "invalid_status" });
     const notes = String(body.notes || "").trim().slice(0, 1200);
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7: authoritative job-status transitions are
+    // supervisor-or-admin. The state machine encoded in TRANSITIONS
+    // includes review/approved/rejected — the supervisor's lifecycle
+    // domain. Field crews progress jobs through markJobCompleteV1
+    // and the field-session flow, not this endpoint.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_APPROVE);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[updateJobStatusV1] authz_denied", {
+        fn: "updateJobStatusV1",
+        orgId,
+        incidentId,
+        jobId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_APPROVE,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[updateJobStatusV1] authz_ok", {
+      fn: "updateJobStatusV1",
+      orgId,
+      incidentId,
+      jobId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_APPROVE,
+    });
 
     const db = getFirestore();
     // PEAKOPS_LOCK_ENFORCE_V1 (fixed placement)

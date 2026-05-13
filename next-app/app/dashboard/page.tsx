@@ -1,5 +1,7 @@
 "use client";
 
+import { authedFetch } from "@/../lib/apiClient";
+
 function bucketTone(bucket: string) {
   switch (String(bucket || "")) {
     case "needs_review":
@@ -170,7 +172,10 @@ function StatCard({
 }
 
 async function doExport(i: Incident) {
-  const r = await fetch("/api/fn/exportIncidentPacketV1", {
+  // PEAKOPS_SLICE12_AUTHED_FETCH_MIGRATE_V1 (2026-05-06)
+  // Slice 12 migrated this off raw fetch so the bearer token from
+  // the signed-in dashboard user reaches the proxy at /api/fn/[name].
+  const r = await authedFetch("/api/fn/exportIncidentPacketV1", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ incidentId: i.incidentId, orgId: i.orgId }),
@@ -463,12 +468,20 @@ export default function Dashboard() {
               ))}
             </select>
 
-            <button
-              className="px-3 py-2 rounded-xl bg-white/[0.05] border border-white/[0.1]"
-              onClick={() => { window.location.href = "/incidents/inc_demo?orgId=riverbend-electric"; }}
-            >
-              Open Demo Incident
-            </button>
+            {/* PEAKOPS_DASHBOARD_DEMO_BUTTON_GATE_V1 (2026-04-24)
+                The "Open Demo Incident" affordance is hard-wired to
+                inc_demo / riverbend-electric (local seed). Hide it in
+                production builds so customers don't see a button that
+                would route them to data that doesn't exist for them. */}
+            {(process.env.NEXT_PUBLIC_ENV === "local" ||
+              process.env.NODE_ENV !== "production") ? (
+              <button
+                className="px-3 py-2 rounded-xl bg-white/[0.05] border border-white/[0.1]"
+                onClick={() => { window.location.href = "/incidents/inc_demo?orgId=riverbend-electric"; }}
+              >
+                Open Demo Incident
+              </button>
+            ) : null}
           </div>
         </div>
 

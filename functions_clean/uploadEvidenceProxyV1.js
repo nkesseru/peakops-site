@@ -2,6 +2,12 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getStorage } = require("firebase-admin/storage");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -49,10 +55,25 @@ async function resolveUploadBucketForRuntime(explicit) {
     if (adminBucket) return adminBucket;
   } catch (_) {}
 
-  // fallback by pid
+  // PEAKOPS_SLICE15_BUCKET_FAMILY_ALIGN_V1 (2026-05-06)
+  // Project-id fallback. Previously this returned
+  // `${pid}.firebasestorage.app` in the emulator and
+  // `${pid}.appspot.com` in production — the only place in the
+  // codebase that flipped families based on runtime. Every other
+  // layer (evidenceBucket.js canonical resolver, env example,
+  // production deploy contract) treats `firebasestorage.app` as
+  // canonical, so production uploads were landing in a bucket the
+  // resolver-canonical contract didn't agree with. The read path
+  // (createEvidenceReadUrlV1.js) walks both families as fallback
+  // candidates, which masked the misalignment in practice but left
+  // a real "uploads here, reads from there" contract gap.
+  //
+  // Aligned: both runtimes now produce `firebasestorage.app`. The
+  // `isEmulatorRuntime` helper above is no longer consulted by this
+  // function but remains because it's used elsewhere in the file.
   const pid = toStr(projectId());
   if (!pid) return "";
-  return isEmulatorRuntime() ? `${pid}.firebasestorage.app` : `${pid}.appspot.com`;
+  return `${pid}.firebasestorage.app`;
 }
 
 function inferContentTypeFromName(name) {
@@ -187,6 +208,42 @@ exports.uploadEvidenceProxyV1 = onRequest({ cors: true }, async (req, res) => {
     }
 
     const orgId = toStr(query.orgId || body.orgId);
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7: this endpoint is dev_only_endpoint in
+    // production (gated above), but in the emulator it accepts
+    // multipart uploads. Anyone hitting it could otherwise write
+    // arbitrary content to Storage. Add the FIELD_WORK role gate so
+    // viewers/non-members can't proxy uploads even in dev.
+    if (orgId) {
+      let _actorUid = "";
+      let _actorRole = null;
+      try {
+        ({ uid: _actorUid } = await extractActorUid(req, { ...query, ...body }));
+        const gate = await assertActorRole(orgId, _actorUid, ROLES_FIELD_WORK);
+        _actorRole = (gate.membership && gate.membership.role) || null;
+      } catch (e) {
+        console.warn("[uploadEvidenceProxyV1] authz_denied", {
+          fn: "uploadEvidenceProxyV1",
+          orgId,
+          uid: _actorUid,
+          role: (e && e.details && e.details.role) || null,
+          requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+          code: e && e.code,
+        });
+        return j(res, httpStatusFromAuthzError(e), {
+          ok: false,
+          error: (e && e.code) || "permission-denied",
+        });
+      }
+      console.log("[uploadEvidenceProxyV1] authz_ok", {
+        fn: "uploadEvidenceProxyV1",
+        orgId,
+        uid: _actorUid,
+        role: _actorRole,
+        requiredRoles: ROLES_FIELD_WORK,
+      });
+    }
     const incidentId = toStr(query.incidentId || body.incidentId);
     const sessionId = toStr(query.sessionId || body.sessionId);
     const storagePath = toStr(query.storagePath || body.storagePath);

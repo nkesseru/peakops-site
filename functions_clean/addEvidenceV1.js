@@ -4,6 +4,12 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
 const { resolveEvidenceBucket } = require("./evidenceBucket");
 const { normalizeContentType, isHeicEvidence } = require("./evidenceHeic");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -88,6 +94,44 @@ const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const sessionId = mustStr(body.sessionId, "sessionId");
 
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 5: evidence upload is field-or-above. Field
+    // crews routinely upload photos as part of capture; viewers are
+    // denied. Upgraded from the Slice 2 membership-only gate. Runs
+    // before the emulator object-existence probe / any Firestore
+    // write so a denied caller never even hits Storage.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[addEvidenceV1] authz_denied", {
+        fn: "addEvidenceV1",
+        orgId,
+        incidentId,
+        sessionId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[addEvidenceV1] authz_ok", {
+      fn: "addEvidenceV1",
+      orgId,
+      incidentId,
+      sessionId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
     const phase = cleanLabel(body.phase || "UNSPEC");
     const labelsRaw = Array.isArray(body.labels) ? body.labels : [];
     const labels = labelsRaw.map(cleanLabel).filter(Boolean).slice(0, 8);
@@ -100,13 +144,24 @@ const orgId = mustStr(body.orgId, "orgId");
     const storagePath = String(body.storagePath || "").trim(); // optional for now
 
   // PEAKOPS_NO_GHOST_EVIDENCE_V1
-  // In emulator, ensure the object exists in Storage before writing Firestore evidence doc.
-  // Add a short retry loop to avoid race conditions right after upload.
+  // In the emulator only, poll the local Storage emulator to ensure the
+  // uploaded object exists before writing the Firestore evidence doc (avoids
+  // "ghost evidence" when the emulator's object-metadata write is slightly
+  // delayed relative to the upload response).
+  //
+  // PEAKOPS_ADDEVIDENCE_EMU_GATE_V2 (2026-04-24)
+  // Tightened the emulator signal: we previously also treated
+  // FIREBASE_STORAGE_EMULATOR_HOST being set as "we're in the emulator".
+  // That was load-bearing on _emu_bootstrap.js's checked-in env.runtime and
+  // fired the emulator probe in production — which then tried to fetch
+  // http://127.0.0.1:9199/... from a deployed Cloud Function and failed with
+  // undici's generic "fetch failed", surfaced to clients as 400. Rely only
+  // on the canonical emulator flags FUNCTIONS_EMULATOR / FIREBASE_EMULATOR_HUB
+  // that the Firebase emulator suite sets and the deployed runtime never sets.
   const _emuHost = process.env.FIREBASE_STORAGE_EMULATOR_HOST;
   const _isEmu =
     String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
-    !!process.env.FIREBASE_EMULATOR_HUB ||
-    !!_emuHost;
+    !!process.env.FIREBASE_EMULATOR_HUB;
 
   if (_isEmu) {
     const host = _emuHost || "127.0.0.1:9199";
@@ -171,18 +226,20 @@ const orgId = mustStr(body.orgId, "orgId");
     }
     const { getEvidenceCollectionRef } = await import("./evidenceRefs.mjs");
 
-    // Ensure session exists (org-scoped)
-    const sesRef = db.collection("orgs").doc(orgId)
-      .collection("incidents").doc(incidentId)
-      .collection("fieldSessions").doc(sessionId);
+    // Ensure session exists (top-level canonical incident path)
+    const sesRef = db.collection("incidents")
+      .doc(incidentId)
+      .collection("fieldSessions")
+      .doc(sessionId);
     let sesSnap = await sesRef.get();
-// --- DEV/EMULATOR SAFETY: auto-create missing field session (correct path) ---
+
+    // --- DEV/EMULATOR SAFETY: auto-create missing field session at canonical path ---
     const isEmu =
       String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
       String(process.env.FIREBASE_EMULATOR_HUB || "").length > 0;
 
     // IMPORTANT: startFieldSessionV1 writes sessions under:
-    //   orgs/{orgId}/incidents/{incidentId}/fieldSessions/{sessionId}
+    //   incidents/{incidentId}/fieldSessions/{sessionId}
     // so the dev auto-create MUST write to the same location.
     if (isEmu && sessionId && !sesSnap.exists) {
       try {
@@ -191,9 +248,10 @@ const orgId = mustStr(body.orgId, "orgId");
             orgId,
             incidentId,
             sessionId,
+            techUserId: String(body.techUserId || "dev_autocreate"),
             status: "IN_PROGRESS",
             startedAt: FieldValue.serverTimestamp ? FieldValue.serverTimestamp() : admin.firestore.FieldValue.serverTimestamp(),
-            requestedBy: "dev_autocreate_session_correct_path",
+            requestedBy: "dev_autocreate_session_top_level",
             version: 1,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),

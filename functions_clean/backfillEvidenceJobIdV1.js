@@ -1,6 +1,12 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_ADMIN_ONLY,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -23,6 +29,43 @@ exports.backfillEvidenceJobIdV1 = onRequest({ cors: true }, async (req, res) => 
     const incidentId = s(body.incidentId);
     const dryRun = String(body.dryRun || "").toLowerCase() === "true";
     if (!orgId || !incidentId) return j(res, 400, { ok: false, error: "orgId and incidentId required" });
+
+    // PEAKOPS_AUTHZ_ADMIN_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7.1: backfill tools are admin-only. They scan
+    // and rewrite evidence-locker docs in bulk; only org owners /
+    // admins should run them. The existing `not_available_in_production`
+    // 404 above stays as belt-and-braces; this gate adds role
+    // enforcement for the dev/staging path where the function does
+    // run.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_ADMIN_ONLY);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[backfillEvidenceJobIdV1] authz_denied", {
+        fn: "backfillEvidenceJobIdV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_ADMIN_ONLY,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[backfillEvidenceJobIdV1] authz_ok", {
+      fn: "backfillEvidenceJobIdV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_ADMIN_ONLY,
+    });
 
     const db = getFirestore();
     const incRef = db.collection("incidents").doc(incidentId);

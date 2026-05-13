@@ -2,6 +2,12 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_CREATE_JOB,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -22,7 +28,44 @@ exports.createJobV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const title = mustStr(body.title || body.jobTitle || body.name, "title");
-    const actorUid = String(body.actorUid || body.actorId || body.techUserId || body.createdBy || "dev").trim();
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 4: createJob is admin-or-supervisor only by spec
+    // default. Field-created jobs are not currently a documented flow;
+    // if/when product confirms field users create jobs through this
+    // path, swap ROLES_CREATE_JOB → ROLES_FIELD_WORK and rerun smoke.
+    // The gate also replaces the previous `actorUid || "dev"` body
+    // fallback — bare "dev" smoke calls without a seeded membership
+    // now fail closed.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_CREATE_JOB);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[createJobV1] authz_denied", {
+        fn: "createJobV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_CREATE_JOB,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[createJobV1] authz_ok", {
+      fn: "createJobV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_CREATE_JOB,
+    });
 
     const db = getFirestore();
 

@@ -1,3 +1,4 @@
+import RequireAuth from "@/components/RequireAuth";
 import IncidentClient from "./IncidentClient";
 
 export default async function IncidentPage({
@@ -6,5 +7,9 @@ export default async function IncidentPage({
   params: Promise<{ incidentId: string }>;
 }) {
   const { incidentId } = await params;
-  return <IncidentClient incidentId={incidentId} />;
+  return (
+    <RequireAuth>
+      <IncidentClient incidentId={incidentId} />
+    </RequireAuth>
+  );
 }

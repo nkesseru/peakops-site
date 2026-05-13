@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import {
   clearRememberedFunctionsBase,
@@ -14,9 +14,25 @@ import {
   rememberFunctionsBase,
   warnFunctionsBaseIfSuspicious,
 } from "@/lib/functionsBase";
+import { loadVendors } from "@/lib/orgVendors";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
+import { buildJobUiState } from "@/lib/incidents/resolveJobDisplayState";
+import { incidentPath } from "@/lib/navigation/incidentRoutes";
+import { authedFetch } from "@/lib/apiClient";
+import { logAnalyticsEvent } from "@/lib/analytics";
+import UpgradePrompt from "@/components/UpgradePrompt";
+import { useAuth } from "@/hooks/useAuth";
+import { displayIncidentTitle } from "@/lib/incidents/displayIncidentTitle";
+// PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) — Slice Start Job 1.0.
+// Industry-aware report eyebrow + filing-aware intro line. Read-only
+// best-effort; falls back to "Job Report" when industry isn't set.
+import {
+  DEFAULT_ORG_ONBOARDING_VIEW,
+  loadOrgOnboardingView,
+  type OrgOnboardingView,
+} from "@/lib/onboarding/orgOnboardingView";
 
 type IncidentDoc = {
   id: string;
@@ -36,6 +52,9 @@ type JobDoc = {
   jobId?: string;
   title?: string;
   status?: string;
+  // PEAKOPS_VENDOR_ASSIGNMENT_V1_1 (2026-05-04)
+  vendorId?: string | null;
+  vendorName?: string | null;
 };
 
 type EvidenceDoc = {
@@ -80,13 +99,141 @@ function fmtAgo(sec?: number) {
   return `${Math.floor(d / 86400)}d`;
 }
 
+// PEAKOPS_REPORT_FULL_DATE_V1 (2026-05-05)
+// Customer-facing absolute date (e.g. "May 5, 2026"). Used in the
+// header subtitle + footer "Generated" line.
+function fmtFullDate(sec?: number): string {
+  if (!sec) return "";
+  try {
+    return new Date(sec * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+function fmtFullDateTime(sec?: number): string {
+  if (!sec) return "";
+  try {
+    return new Date(sec * 1000).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+// PEAKOPS_SUMMARY_TIMELINE_HUMANIZE_V1 (2026-04-29)
+// Customer-facing labels for raw event types. Mirrors the mapping in
+// src/components/incident/TimelinePanel.tsx and ReviewClient's
+// prettyTimelineType so we never render an event token like
+// "FIELD_SUBMITTED" or "JOB_REJECTED" to a customer.
+function prettyTimelineType(t: string): string {
+  const key = String(t || "").toLowerCase();
+  const m: Record<string, string> = {
+    notes_saved: "Notes saved",
+    evidence_added: "Photos saved",
+    field_arrived: "Field arrived",
+    field_submitted: "Sent to supervisor",
+    field_approved: "Supervisor approved",
+    material_added: "Material logged",
+    incident_opened: "Job opened",
+    incident_closed: "Job closed",
+    session_started: "Session started",
+    job_created: "Job created",
+    job_completed: "Job completed",
+    job_approved: "Job approved",
+    job_rejected: "Job sent back",
+    job_locked: "Job locked",
+    supervisor_request_update: "Update requested",
+  };
+  if (m[key]) return m[key];
+  return key
+    .replace(/_/g, " ")
+    .replace(/^./, (x) => x.toUpperCase()) || "Event";
+}
+
+// PEAKOPS_REPORT_LABELS_V1 (2026-05-01)
+// REPORT_SUMMARY.html resolves UIDs to displayName/email server-side
+// at export time. The Summary page doesn't have that lookup
+// client-side, so anything that looks like a Firebase UID gets
+// replaced with the contextual role label ("Supervisor" — only
+// supervisors approve in this app). Emails pass through verbatim.
+// The acceptance bar is "no 20+ char UID visible" — this guarantees
+// it without an extra API roundtrip.
+function actorLabel(raw: unknown): string {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  if (v.includes("@")) return v;
+  // Firebase UIDs are 28 chars, alphanumeric. Anything that long
+  // with no spaces is either a UID or already-opaque — either way,
+  // not for human consumption. Render the role label instead.
+  if (v.length >= 20 && /^[A-Za-z0-9]+$/.test(v)) return "Supervisor";
+  return v;
+}
+
+// PEAKOPS_REPORT_ACTOR_FORMAT_V1 (2026-05-05)
+// Customer-facing actor mapping for timeline / approval rows. Old
+// auto-emit code wrote raw role/source slugs ("ui", "field",
+// "field_ui", "supervisor", "system") into the actor field, which
+// leaked into the report as "by ui" / "by field_ui". formatActor
+// resolves those slugs to the human label and falls through to
+// actorLabel for real uids/emails. Returns "" for system-authored
+// events so the caller can hide the "by …" line entirely when the
+// actor isn't meaningful to a customer.
+function formatActor(actor?: unknown): string {
+  const raw = String(actor || "").trim();
+  if (!raw) return "";
+  const slug = raw.toLowerCase();
+  switch (slug) {
+    case "ui":
+    case "field":
+    case "field_ui":
+      return "Field crew";
+    case "supervisor":
+      return "Supervisor";
+    case "admin":
+      return "Admin";
+    case "system":
+    case "auto":
+    case "server":
+      return ""; // Hide system-authored attribution from customer copy.
+    default:
+      return actorLabel(raw);
+  }
+}
+
 export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const router = useRouter();
   const functionsBase = getFunctionsBase();
   useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
   }, [functionsBase]);
-  const orgId = "riverbend-electric";
+
+  useEffect(() => {
+    if (!incidentId) return;
+    void logAnalyticsEvent("SUMMARY_VIEWED", { incidentId });
+  }, [incidentId]);
+  // PEAKOPS_SUMMARY_ORGID_URL_V1
+  // orgId is URL-sourced, matching IncidentClient/ReviewClient/NotesClient and
+  // the single-source-of-truth rule for this app. No hardcoded fallback — if
+  // the URL has no ?orgId=, every downstream fetch targets an empty orgId and
+  // the backend surfaces a clear 400/409 instead of the old silent cross-org
+  // mis-fetch against "riverbend-electric".
+  const _summarySp = useSearchParams();
+  const orgId = String(_summarySp?.get?.("orgId") || "").trim();
+  // PEAKOPS_SUMMARY_DEV_MODE_V2 (2026-04-29)
+  // Gate developer-only chrome (mismatch reasons, "Technical details"
+  // disclosure, "Dev tools" / Refresh thumbnails / Force remint URLs /
+  // Show thumb debug) STRICTLY on ?dev=1. Previous V1 also opened the
+  // gate when NODE_ENV !== "production", which made local QA look
+  // dev-leaky even when the tester didn't pass ?dev=1. Customer-
+  // clean view is now the default in every environment; engineers
+  // explicitly opt in by appending ?dev=1.
+  const devMode = useMemo(() => {
+    try {
+      const v = String(_summarySp?.get?.("dev") || "").trim();
+      return v === "1" || v.toLowerCase() === "true";
+    } catch {
+      return false;
+    }
+  }, [_summarySp]);
   const functionsBaseIsLocal = useMemo(() => {
     try {
       const host = String(new URL(String(functionsBase || "")).hostname || "").toLowerCase();
@@ -96,15 +243,47 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     }
   }, [functionsBase]);
 
+  // PEAKOPS_SUMMARY_NBA_V1 (2026-04-27)
+  // Same Firebase Auth claims hook the field page uses, so the Next
+  // Best Action card on Summary derives from the same identity source.
+  const { claims: authClaims } = useAuth();
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [errUrl, setErrUrl] = useState("");
   const [errStatus, setErrStatus] = useState<number | null>(null);
   const [errBody, setErrBody] = useState("");
+  // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+  const [incidentNotFound, setIncidentNotFound] = useState(false);
   const [incident, setIncident] = useState<IncidentDoc | null>(null);
   const [jobs, setJobs] = useState<JobDoc[]>([]);
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
+  // PEAKOPS_VENDOR_ASSIGNMENT_V1_1 (2026-05-04)
+  // Set of currently-archived vendor IDs for the active org. Used
+  // to render the "(archived)" suffix next to a task's vendor when
+  // the vendor has since been archived. Empty set is the safe
+  // default when load fails — readers fall back to "no suffix".
+  const [archivedVendorIds, setArchivedVendorIds] = useState<Set<string>>(() => new Set<string>());
+  // PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) — Slice Start Job 1.0.
+  // Industry-aware report eyebrow + filing-aware intro line. Loaded
+  // once per orgId, best-effort — read failure stays silent and the
+  // header falls back to its original "Job Report" copy.
+  const [onboardingView, setOnboardingView] =
+    useState<OrgOnboardingView>(DEFAULT_ORG_ONBOARDING_VIEW);
+  useEffect(() => {
+    if (!orgId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const v = await loadOrgOnboardingView(orgId);
+        if (!cancelled) setOnboardingView(v);
+      } catch {
+        /* swallow — fallback default already in state */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId]);
   const [thumbUrl, setThumbUrl] = useState<Record<string, string>>({});
   const [thumbRetryById, setThumbRetryById] = useState<Record<string, number>>({});
   const [thumbErrById, setThumbErrById] = useState<Record<string, string>>({});
@@ -118,16 +297,125 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
   const thumbRefreshDebounceRef = useRef<any>(null);
   const [artifactBusy, setArtifactBusy] = useState(false);
+  const [upgrade, setUpgrade] = useState<{
+    open: boolean;
+    reason: string;
+    featureKey: string;
+  }>({ open: false, reason: "", featureKey: "" });
+  // PEAKOPS_REPORT_AUTHED_DOWNLOAD_V1 (2026-05-01)
+  // Distinct loading state for the actual ZIP download (separate from
+  // `artifactBusy` which covers report *generation*). Lets the
+  // Download Report button read "Downloading…" while the authed fetch
+  // is in flight.
+  const [downloadBusy, setDownloadBusy] = useState(false);
   const [fixUnassignedBusy, setFixUnassignedBusy] = useState(false);
-  const [artifactHint, setArtifactHint] = useState("Artifact not generated yet.");
+  const [artifactHint, setArtifactHint] = useState("Report not generated yet.");
   const [artifactToast, setArtifactToast] = useState("");
   const [lastArtifactFilename, setLastArtifactFilename] = useState("");
   const [lastArtifactAt, setLastArtifactAt] = useState("");
-  const [, setArtifactUrl] = useState("");
-  const [, setArtifactReady] = useState(false);
+  // PEAKOPS_SUMMARY_ARTIFACT_REUSE_V1 (2026-04-24)
+  // Read states surface the "ready + URL" signal to handleArtifactDownload,
+  // so the button can short-circuit to a direct download instead of
+  // re-invoking exportIncidentPacketV1 when the packet already exists.
+  const [artifactUrl, setArtifactUrl] = useState("");
+  const [artifactReady, setArtifactReady] = useState(false);
+  // PEAKOPS_REPORT_AUTOGEN_V1 (2026-05-01)
+  // One-shot guard for the freshly-closed-on-Summary auto-export.
+  // Prevents the user from being stuck in a "two-click" flow:
+  // they Close on Review, get routed to Summary, and the report
+  // generates automatically without a second click. Re-mounts (tab
+  // nav, refresh) all check the same `artifactDownloadable` signal
+  // before firing, so once a report exists the auto-trigger no-ops.
+  const autoGenTriggeredRef = useRef(false);
+  // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
+  // Inline confirm for the Regenerate flow. Single boolean — the
+  // confirm panel is always for the same action so we don't need a
+  // typed pendingConfirmAction shape (yet).
+  const [regenerateConfirmOpen, setRegenerateConfirmOpen] = useState(false);
+  // PEAKOPS_REPORT_LINEAGE_V1 (2026-05-04)
+  // Reason textarea content for the regenerate confirm panel.
+  // Trimmed before going into the export payload; empty string =>
+  // not sent (the function won't add it to the history entry).
+  const [regenerateReason, setRegenerateReason] = useState("");
+
+  // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+  // Notes block for the Summary/report. Fetched lazily so the
+  // existing refresh path stays unchanged. notesStatus="bypassed"
+  // means the field tech explicitly tapped "No note needed" instead
+  // of typing a note — surface that on the report so the supervisor
+  // sees an intentional choice, not a missing input.
+  // PEAKOPS_REPORT_PREVIEW_V1 (2026-05-01)
+  // Inline preview of REPORT_SUMMARY.html derived from already-loaded
+  // page state — no ZIP read needed. Lets QA / customers verify the
+  // report content before downloading.
+  const [previewOpen, setPreviewOpen] = useState<boolean>(false);
+  const [notesDoc, setNotesDoc] = useState<{
+    incidentNotes?: string;
+    siteNotes?: string;
+    notesStatus?: string;
+    notesBypassReason?: string;
+  } | null>(null);
+  // PEAKOPS_NOTES_CHECKPOINT_V2 (2026-04-29)
+  // Sticky local mirror of the bypass flag (set by the field page when
+  // the user taps "No note needed"). Used as a fallback so the
+  // Summary's Field Note section still surfaces the bypass copy when
+  // the backend Cloud Function hasn't been redeployed with the new
+  // notesStatus field — the source-of-truth path is still Firestore,
+  // but a same-device summary view can render correctly off the
+  // local hint while the deploy catches up.
+  const [notesBypassedLocal, setNotesBypassedLocal] = useState<boolean>(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sync = () => {
+      try {
+        const k = "peakops_notes_bypassed_" + String(incidentId);
+        setNotesBypassedLocal(!!window.localStorage.getItem(k));
+      } catch {
+        setNotesBypassedLocal(false);
+      }
+    };
+    sync();
+    window.addEventListener("focus", sync);
+    return () => window.removeEventListener("focus", sync);
+  }, [incidentId]);
   const isDemoMode = isDemoIncident(incidentId);
   const [demoAuthBypassMsg, setDemoAuthBypassMsg] = useState("");
   const [activeOrgId, setActiveOrgId] = useState(orgId);
+
+  // PEAKOPS_VENDOR_ASSIGNMENT_V1_1 (2026-05-04)
+  // Load org vendors once per orgId. We only need the archived IDs
+  // for rendering the "(archived)" suffix in the Tasks and Evidence
+  // by Task sections — vendor names come from each task's
+  // assignment-time snapshot. Failures are silent: if the load
+  // errors, archived suffixes simply don't render — strictly an
+  // additive UI signal, not load-bearing for correctness.
+  useEffect(() => {
+    let cancelled = false;
+    const oid = String(activeOrgId || orgId || "").trim();
+    if (!oid) return;
+    (async () => {
+      try {
+        const vendors = await loadVendors(oid);
+        if (cancelled) return;
+        const ids = new Set<string>();
+        for (const v of vendors) {
+          if (v.status === "archived") ids.add(v.id);
+        }
+        setArchivedVendorIds(ids);
+      } catch (e: any) {
+        if (process.env.NODE_ENV !== "production") {
+          // eslint-disable-next-line no-console
+          console.warn("[summary-vendors-load]", {
+            orgId: oid,
+            code: e?.code || null,
+            message: String(e?.message || e),
+          });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeOrgId, orgId]);
+
   const demoHeaders = useMemo(() => {
     try {
       const demoMode = String(localStorage.getItem("peakops_demo_mode") || "") === "1";
@@ -140,6 +428,101 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const incidentStatus = normalizeIncidentStatusShared(incident?.status);
   const packetEvidenceCount = evidence.length;
   const packetJobCount = jobs.length;
+
+  // PEAKOPS_UI_STATE_ORCHESTRATION_V2 (2026-05-05)
+  // Page-level UI state for the Job Report. The header pill, the
+  // summary strip stat tones, the Generate Report CTA enable gate,
+  // and the certification banner all read off this object.
+  //
+  // Critical rule (per spec): if the canonical resolver lifts the
+  // state to Approved or Closed but the timeline lacks the matching
+  // event (job_approved / incident_closed / field_approved), we
+  // DOWNGRADE the displayState to whatever the timeline actually
+  // supports. This prevents the cosmetic "Approved" pill from
+  // showing on a record that hasn't actually been signed off — a
+  // buyer-trust failure mode where the report claims approval the
+  // audit trail can't substantiate.
+  const reportUiState = useMemo(() => {
+    // PEAKOPS_VIEW_MODEL_DEFENSIVE_V1 (2026-05-05)
+    // Defensive Array.isArray guards on every input — view-model
+    // builders must never throw during a cold-start render where a
+    // backend fetch hasn't returned yet (or returned a 500). Falling
+    // through with safe defaults gives the page a chance to render
+    // its loading skeleton instead of crashing the route.
+    const safeJobs = Array.isArray(jobs) ? jobs : [];
+    const safeTimeline = Array.isArray(timeline) ? timeline : [];
+    const safeEvidence = Array.isArray(evidence) ? evidence : [];
+    const tasksApproved = safeJobs.filter((j: any) => {
+      const rs = String(j?.reviewStatus || "").trim().toLowerCase();
+      const st = String(j?.status || "").trim().toLowerCase();
+      return rs === "approved" || st === "approved";
+    }).length;
+    const anyRejected = safeJobs.some((j: any) => {
+      const rs = String(j?.reviewStatus || "").trim().toLowerCase();
+      const st = String(j?.status || "").trim().toLowerCase();
+      return rs === "rejected" || rs === "revision_requested" || st === "rejected";
+    });
+    const tlTypes = new Set(
+      safeTimeline.map((t: any) => String(t?.type || "").toLowerCase()),
+    );
+    const hasSubmitted = tlTypes.has("field_submitted");
+    const hasApprovedEvent = tlTypes.has("job_approved") || tlTypes.has("field_approved") || tlTypes.has("task_approved");
+    const hasClosedEvent = tlTypes.has("incident_closed") || tlTypes.has("job_closed");
+    // PEAKOPS_REPORT_PILL_PARITY_V1 (2026-05-08) — Slice Start Job 1.2.
+    // The Summary pill was getting stuck on "Open" after Arrival
+    // because the resolver inputs here didn't include hasArrival /
+    // hasNotes — the same two signals IncidentClient passes to its
+    // buildJobUiState call (next-app/app/incidents/[incidentId]/
+    // IncidentClient.tsx:2992-3007). Without them, the resolver
+    // can't flip from Open -> In Progress on a doc whose `status`
+    // is still "open" even though the timeline records arrival.
+    // Read both from the timeline event types written by the
+    // canonical callables: markArrivedV1 emits FIELD_ARRIVED;
+    // saveIncidentNotesV1 emits NOTES_SAVED.
+    const hasArrival = tlTypes.has("field_arrived");
+    const hasNotes =
+      tlTypes.has("notes_saved") ||
+      tlTypes.has("notes_added") ||
+      tlTypes.has("field_notes_added");
+
+    const raw = buildJobUiState({
+      status: incidentStatus,
+      allTasksApproved: safeJobs.length > 0 && tasksApproved === safeJobs.length,
+      anyRejected,
+      hasSubmitted,
+      evidenceCount: safeEvidence.length,
+      hasArrival,
+      hasNotes,
+    });
+
+    // Downgrade path. The resolver itself is correct — it derives
+    // from raw lifecycle truth — but the report needs a higher bar:
+    // an Approved/Closed claim is only valid if the audit trail
+    // can prove it.
+    if (raw.displayState === "Closed" && !hasClosedEvent) {
+      return buildJobUiState({
+        status: hasApprovedEvent ? "approved" : (hasSubmitted ? "submitted" : "in_progress"),
+        allTasksApproved: safeJobs.length > 0 && tasksApproved === safeJobs.length,
+        anyRejected,
+        hasSubmitted,
+        evidenceCount: safeEvidence.length,
+        hasArrival,
+        hasNotes,
+      });
+    }
+    if (raw.displayState === "Approved" && !hasApprovedEvent) {
+      return buildJobUiState({
+        status: hasSubmitted ? "submitted" : "in_progress",
+        allTasksApproved: false,
+        anyRejected,
+        hasSubmitted,
+        evidenceCount: safeEvidence.length,
+        hasArrival,
+        hasNotes,
+      });
+    }
+    return raw;
+  }, [incidentStatus, jobs, timeline, evidence]);
 
 
   const statusCounts = useMemo(() => {
@@ -193,6 +576,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     setErrUrl("");
     setErrStatus(null);
     setErrBody("");
+    setIncidentNotFound(false);
     setDemoAuthBypassMsg("");
     try {
       let requestOrgId = String(activeOrgId || orgId || "").trim() || orgId;
@@ -208,7 +592,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       };
       const incUrl = `/api/fn/getIncidentV1?orgId=${encodeURIComponent(requestOrgId)}&incidentId=${encodeURIComponent(incidentId)}`;
       setErrUrl(incUrl);
-      const incRes = await fetch(incUrl, { headers: demoHeaders });
+      const incRes = await authedFetch(incUrl, { headers: demoHeaders });
       const incTxt = await incRes.text();
       if (!incRes.ok) {
         throwHttp("getIncidentV1", incUrl, incRes.status, incTxt);
@@ -229,7 +613,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         `&actorUid=${encodeURIComponent(getActorUid())}` +
         `&actorRole=${encodeURIComponent(getActorRole())}`;
       setErrUrl(jobsUrl);
-      const jobsRes = await fetch(jobsUrl, { headers: demoHeaders });
+      const jobsRes = await authedFetch(jobsUrl, { headers: demoHeaders });
       const jobsTxt = await jobsRes.text();
       if (!jobsRes.ok) {
         if ((isDemoMode || functionsBaseIsLocal) && jobsRes.status === 403 && jobsTxt.includes("auth_required")) {
@@ -242,7 +626,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
       const evUrl = `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(requestOrgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`;
       setErrUrl(evUrl);
-      const evRes = await fetch(evUrl, { headers: demoHeaders });
+      const evRes = await authedFetch(evUrl, { headers: demoHeaders });
       const evTxt = await evRes.text();
       if (!evRes.ok) {
         throwHttp("listEvidenceLocker", evUrl, evRes.status, evTxt);
@@ -252,7 +636,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
       const tlUrl = `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(requestOrgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`;
       setErrUrl(tlUrl);
-      const tlRes = await fetch(tlUrl, { headers: demoHeaders });
+      const tlRes = await authedFetch(tlUrl, { headers: demoHeaders });
       const tlTxt = await tlRes.text();
       if (!tlRes.ok) {
         throwHttp("getTimelineEventsV1", tlUrl, tlRes.status, tlTxt);
@@ -269,30 +653,31 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       const packetStoragePath = String(packetMeta?.storagePath || packetMeta?.packetStoragePath || "").trim();
       const packetDownloadUrl = String(packetMeta?.downloadUrl || "").trim();
 
-      let maybeArtifact = "";
-      if (packetDownloadUrl) {
-        maybeArtifact = packetDownloadUrl;
-      } else if (packetBucket && packetStoragePath) {
-        maybeArtifact =
-          `/api/media?bucket=${encodeURIComponent(packetBucket)}` +
-          `&path=${encodeURIComponent(packetStoragePath)}&download=1`;
-      } else {
-        maybeArtifact =
-          `/api/fn/downloadIncidentPacketZip?orgId=${encodeURIComponent(requestOrgId)}` +
-          `&incidentId=${encodeURIComponent(incidentId)}`;
-      }
+      // PEAKOPS_REPORT_DOWNLOAD_OPAQUE_V1 (2026-05-01)
+      // Build the customer-safe opaque download URL whenever the
+      // incident has any signal of a generated report. Bucket and
+      // storagePath are still on packetMeta server-side, but the
+      // frontend never builds /api/media URLs for reports — that
+      // proxy is gone outside the emulator and leaks internals.
+      const reportReady =
+        packetStatus === "ready" ||
+        !!packetDownloadUrl ||
+        (!!packetBucket && !!packetStoragePath);
+      const maybeArtifact = reportReady
+        ? `/api/reports/${encodeURIComponent(incidentId)}/download?orgId=${encodeURIComponent(requestOrgId)}`
+        : "";
 
       if (packetStatus === "ready" && maybeArtifact) {
         setArtifactUrl(maybeArtifact);
-        setArtifactHint("Artifact ready to download.");
+        setArtifactHint("Report ready to download.");
         setArtifactReady(true);
       } else if (packetStatus === "building") {
         setArtifactUrl("");
-        setArtifactHint("Artifact is building. Try again shortly.");
+        setArtifactHint("Report is building. Try again shortly.");
         setArtifactReady(false);
       } else {
         setArtifactUrl("");
-        setArtifactHint("No artifact yet. Click Artifact to generate it.");
+        setArtifactHint("No report yet. Click Generate Report.");
         setArtifactReady(false);
       }
       setErrUrl("");
@@ -333,21 +718,205 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       setErrUrl(endpoint || base);
       setErrStatus(status);
       setErrBody(body || `functionsBase=${base}${fallbackUsed ? " fallback=applied" : ""}`);
+      // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+      if (
+        Number(status) === 404 ||
+        /incident_not_found/i.test(String(body || "")) ||
+        /incident not found/i.test(msg)
+      ) {
+        setIncidentNotFound(true);
+      }
     } finally {
       setLoading(false);
     }
   }
+  // PEAKOPS_REPORT_FILENAME_V1 (2026-04-28)
+  // Friendly download filename: "<title-or-task>_<MMMdd>.zip" instead of
+  // "20260428T153016Z__packet.zip". Falls back through incident title →
+  // first task title → "incident-<short-id>". Used by every download
+  // path on this page.
+  function humanizeReportFilename(): string {
+    const ext = "zip";
+    const incTitle = String((incident as any)?.title || "").trim();
+    const firstTaskTitle = String((jobs?.[0] as any)?.title || "").trim();
+    const baseRaw = incTitle || firstTaskTitle || `incident-${String(incidentId || "").slice(-6)}`;
+    const safeBase = baseRaw
+      .replace(/[\\/:*?"<>|]+/g, "")
+      .replace(/\s+/g, "_")
+      .replace(/_+/g, "_")
+      .slice(0, 60);
+    const d = new Date();
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const stamp = `${months[d.getMonth()]}${String(d.getDate()).padStart(2, "0")}`;
+    return `${safeBase}_${stamp}.${ext}`;
+  }
 
-  
+  // PEAKOPS_SUMMARY_ARTIFACT_REUSE_V2 (2026-04-24)
+  // Single source of truth for "is there an existing packet" — read from
+  // incident.packetMeta directly, not from the derived artifactReady /
+  // artifactUrl state. The derived flags only get populated when
+  // refresh() sees a literal `status === "ready"`, but a packet can also
+  // be implied by the presence of bucket+storagePath, downloadUrl, or
+  // packetHash (older shapes). This helper is what decides whether to
+  // download or to POST exportIncidentPacketV1 — no other place should
+  // hand-roll that test.
+  function buildExistingPacketHref(): { href: string; filename: string } | null {
+    // PEAKOPS_REPORT_DOWNLOAD_OPAQUE_V1 (2026-05-01)
+    // Determine "is a report ready" from the same signals as before
+    // (status=="ready", a download URL or storage marker on
+    // packetMeta, the in-flight ready flag) — but the URL we hand
+    // back is now the opaque /api/reports/<id>/download route. The
+    // bucket / storagePath from packetMeta are server-side only.
+    const pm: any = (incident as any)?.packetMeta || {};
+    const pmStatus = String(pm?.status || "").toLowerCase();
+    const pmDownloadUrl = String(pm?.downloadUrl || "").trim();
+    const pmBucket = String(pm?.bucket || pm?.packetBucket || "").trim();
+    const pmStoragePath = String(pm?.storagePath || pm?.packetStoragePath || "").trim();
+    const pmHash = String(pm?.packetHash || pm?.zipSha256 || "").trim();
 
-  async function handleArtifactDownload() {
-    if (!activeOrgId || !incidentId) return;
+    const hasPacket =
+      pmStatus === "ready" ||
+      !!pmDownloadUrl ||
+      (!!pmBucket && !!pmStoragePath) ||
+      !!pmHash ||
+      (artifactReady && !!artifactUrl);
+    if (!hasPacket) return null;
+
+    const oid = String(activeOrgId || orgId || "").trim();
+    const href = `/api/reports/${encodeURIComponent(incidentId)}/download${oid ? `?orgId=${encodeURIComponent(oid)}` : ""}`;
+
+    // Always prefer the friendly humanized name; fall back to a stored
+    // friendly name only if it doesn't look like the legacy ISO-stamped
+    // packet name.
+    const stored = String(lastArtifactFilename || "").trim();
+    const looksLegacy = /__packet\.zip$|^[0-9TZ_]+packet\.zip$/i.test(stored);
+    const filename = !stored || looksLegacy ? humanizeReportFilename() : stored;
+    return { href, filename };
+  }
+
+  // PEAKOPS_REPORT_AUTHED_DOWNLOAD_V1 (2026-05-01)
+  // Authenticated ZIP download. The opaque /api/reports/<id>/download
+  // route requires a Firebase ID token, which a plain anchor `href`
+  // navigation does NOT include — Chrome surfaces that as
+  // "Try to sign in to the site." This helper:
+  //   1. Fetches the route via authedFetch (Bearer token attached)
+  //   2. Follows a 302 redirect transparently (production signed-URL
+  //      path) or reads the streamed bytes (emulator path)
+  //   3. Saves the response as a Blob, triggers a `<a download>`
+  //      against an object URL, then revokes the URL.
+  //   4. Surfaces a customer-clean error if anything fails — no auth /
+  //      internal messages.
+  // Filename precedence: caller-provided > Content-Disposition >
+  // humanizeReportFilename() fallback.
+  async function downloadAuthedZip(href: string, preferredFilename: string): Promise<boolean> {
+    setDownloadBusy(true);
+    try {
+      const res = await authedFetch(href, { cache: "no-store" });
+      if (!res.ok) {
+        if (process.env.NODE_ENV !== "production") {
+          // eslint-disable-next-line no-console
+          console.warn("[summary-download] non-OK", res.status, await res.text().catch(() => ""));
+        }
+        setArtifactToast("We couldn't download the report. Refresh and try again.");
+        window.setTimeout(() => setArtifactToast(""), 3200);
+        return false;
+      }
+      const blob = await res.blob();
+      // Filename: caller-provided wins; fall back to Content-Disposition
+      // if the route exposes it; otherwise the humanized name.
+      let name = String(preferredFilename || "").trim();
+      if (!name) {
+        const cd = res.headers.get("content-disposition") || "";
+        const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+        if (m && m[1]) {
+          try { name = decodeURIComponent(m[1]); } catch { name = m[1]; }
+        }
+      }
+      if (!name) name = humanizeReportFilename();
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = objectUrl;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        // Revoke after a short delay so the browser has time to start
+        // the save dialog before we tear down the URL.
+        window.setTimeout(() => {
+          try { URL.revokeObjectURL(objectUrl); } catch {}
+        }, 1500);
+      }
+      return true;
+    } catch (e: any) {
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[summary-download] failed", e);
+      }
+      setArtifactToast("We couldn't download the report. Refresh and try again.");
+      window.setTimeout(() => setArtifactToast(""), 3200);
+      return false;
+    } finally {
+      setDownloadBusy(false);
+    }
+  }
+
+  // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
+  // Role-gated regenerate. Field users get the cached download path
+  // by default and can never trigger a fresh export — prevents an
+  // off-policy operator from rebuilding an audit artifact mid-flight
+  // and from racking up Cloud Run cost. Admin/supervisor only.
+  const _myRoleForRegen = String(authClaims?.role || "").toLowerCase();
+  const canRegenerateReport =
+    _myRoleForRegen === "admin" || _myRoleForRegen === "supervisor";
+
+  async function handleArtifactDownload(opts: { forceRegenerate?: boolean; reason?: string } = {}) {
+    if (!activeOrgId || !incidentId) {
+      setErr("Cannot generate report: missing org or incident context.");
+      return;
+    }
+    // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
+    // Defense in depth: even if the Regenerate UI somehow leaks to
+    // a field user (forged attribute, console call, future bug),
+    // the handler refuses to fire the export. The cache-fast-path
+    // download stays available for everyone.
+    if (opts.forceRegenerate && !canRegenerateReport) {
+      setArtifactToast("Only admins or supervisors can regenerate reports.");
+      window.setTimeout(() => setArtifactToast(""), 3500);
+      return;
+    }
+
+    // PEAKOPS_VENDOR_ASSIGNMENT_V1_2 (2026-05-04)
+    // forceRegenerate=true skips the existing-packet fast path and
+    // always POSTs to exportIncidentPacketV1. This is what the
+    // Regenerate report button calls — it forces a fresh capture of
+    // the world (vendor archived state, approver labels, photos)
+    // when something the operator cares about has changed since the
+    // last export. Default behavior (no flag) still short-circuits
+    // to the cached ZIP for the common "I just want to download
+    // again" case.
+    if (!opts.forceRegenerate) {
+      const existing = buildExistingPacketHref();
+      if (existing) {
+        const ok = await downloadAuthedZip(existing.href, existing.filename);
+        if (!ok) return;
+        setArtifactUrl(existing.href);
+        setArtifactReady(true);
+        setLastArtifactFilename(existing.filename);
+        setArtifactHint("Report ready to download.");
+        setArtifactToast(`Report ready — downloaded ${existing.filename}.`);
+        window.setTimeout(() => setArtifactToast(""), 2500);
+        return;
+      }
+    }
+
     setArtifactBusy(true);
     setArtifactToast("");
     setErr("");
 
     try {
-      const exportRes = await fetch("/api/fn/exportIncidentPacketV1", {
+      const exportRes = await authedFetch("/api/fn/exportIncidentPacketV1", {
         method: "POST",
         headers: { "content-type": "application/json", ...demoHeaders },
         body: JSON.stringify({
@@ -356,74 +925,112 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           requestedBy: getActorUid?.() || "summary_ui",
           actorUid: getActorUid?.() || "summary_ui",
           actorRole: getActorRole?.() || "admin",
+          // PEAKOPS_REPORT_LINEAGE_V1 (2026-05-04)
+          // Optional reason for this regenerate. Goes into the
+          // history entry server-side. Empty string is fine — the
+          // helper there drops the field rather than persisting "".
+          ...(opts.reason ? { reason: String(opts.reason).trim() } : {}),
         }),
       });
 
       const exportTxt = await exportRes.text();
       const out = exportTxt ? JSON.parse(exportTxt) : {};
 
+      // PEAKOPS_SUMMARY_ARTIFACT_409_V2 (2026-04-24)
+      // 409 fallback only — should rarely fire now that the pre-POST
+      // gate above catches existing packets. But if a packet was
+      // created between page load and click (race) we still want to
+      // surface a benign success and download what's there. After a
+      // refresh, buildExistingPacketHref() will pick up the URL.
+      if (exportRes.status === 409) {
+        setTimeout(() => {
+          void refresh().then(async () => {
+            const existing2 = buildExistingPacketHref();
+            if (existing2) {
+              const ok = await downloadAuthedZip(existing2.href, existing2.filename);
+              if (ok) {
+                setArtifactToast(`Report already generated — downloaded ${existing2.filename}.`);
+                window.setTimeout(() => setArtifactToast(""), 2500);
+              }
+            } else {
+              setArtifactToast("Report already generated.");
+              window.setTimeout(() => setArtifactToast(""), 2500);
+            }
+          }).catch(() => {});
+        }, 300);
+        return;
+      }
+
+      // PEAKOPS_ENTITLEMENT_GATE_V1 (2026-05-13)
+      // Sprint 1: surface UpgradePrompt for 402 (entitlement-denied)
+      // responses from exportIncidentPacketV1. Distinct from generic
+      // failure because the customer needs a "contact us to upgrade"
+      // path, not "please try again." Return early so the outer
+      // catch's generic toast does not fire alongside.
+      if (exportRes.status === 402) {
+        setUpgrade({
+          open: true,
+          reason: String(out?.error || ""),
+          featureKey: String(out?.featureKey || "riskDefenseModule"),
+        });
+        return;
+      }
+
       if (!exportRes.ok || !out?.ok) {
         throw new Error(out?.error || `exportIncidentPacketV1 failed (${exportRes.status})`);
       }
 
-      const bucket = String(
-        out?.bucket ||
-        out?.packetBucket ||
-        out?.packetMeta?.bucket ||
-        out?.packetMeta?.packetBucket ||
-        ""
-      ).trim();
+      // PEAKOPS_REPORT_DOWNLOAD_OPAQUE_V1 (2026-05-01)
+      // The export response now returns only the opaque downloadUrl
+      // (relative `/api/reports/<id>/download?orgId=<org>`) plus
+      // filename. No bucket/storagePath leak through. If a stale
+      // server still emits the older shape, fall back to constructing
+      // the same opaque path from incidentId + orgId.
+      const responseUrl = String(out?.downloadUrl || "").trim();
+      const oid = String(activeOrgId || orgId || "").trim();
+      const href = responseUrl ||
+        `/api/reports/${encodeURIComponent(incidentId)}/download${oid ? `?orgId=${encodeURIComponent(oid)}` : ""}`;
 
-      const storagePath = String(
-        out?.storagePath ||
-        out?.packetStoragePath ||
-        out?.packetMeta?.storagePath ||
-        out?.packetMeta?.packetStoragePath ||
-        ""
-      ).trim();
+      // Use the friendly filename instead of the upstream ISO-timestamped
+      // packet.zip name.
+      const filename = String(out?.filename || "").trim() || humanizeReportFilename();
 
-      const directUrl = String(
-        out?.downloadUrl ||
-        out?.packetMeta?.downloadUrl ||
-        ""
-      ).trim();
+      const ok = await downloadAuthedZip(href, filename);
+      if (!ok) return;
 
-      const filename =
-        String(out?.filename || "").trim() ||
-        (storagePath ? String(storagePath).split("/").pop() || "" : "") ||
-        `incident_${incidentId}_packet.zip`;
-
-      let href = directUrl;
-      if (!href && bucket && storagePath) {
-        href =
-          `/api/media?bucket=${encodeURIComponent(bucket)}` +
-          `&path=${encodeURIComponent(storagePath)}&download=1`;
-      }
-      if (!href) {
-        href =
-          `/api/fn/downloadIncidentPacketZip?orgId=${encodeURIComponent(activeOrgId)}` +
-          `&incidentId=${encodeURIComponent(incidentId)}`;
-      }
-
-      const a = document.createElement("a");
-      a.href = href;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      void logAnalyticsEvent("EXPORT_GENERATED", {
+        incidentId,
+        orgId: activeOrgId,
+        source: opts.forceRegenerate ? "summary_regenerate" : "summary_export",
+      });
 
       setArtifactUrl(href);
       setArtifactReady(true);
       setLastArtifactFilename(filename);
       setLastArtifactAt(new Date().toLocaleString());
-      setArtifactHint("Artifact ready to download.");
-      setArtifactToast(`Artifact downloaded: ${filename}`);
+      setArtifactHint("Report ready to download.");
+      setArtifactToast(`Report downloaded: ${filename}`);
 
       setTimeout(() => {
         void refresh().catch(() => {});
       }, 600);
     } catch (e: any) {
-      setErr(String(e?.message || e || "artifact download failed"));
+      // PEAKOPS_REPORT_FRIENDLY_FAIL_V1 (2026-05-05)
+      // Show the spec'd customer-facing copy on the artifact toast
+      // instead of the raw exception string. Engineering still sees
+      // the underlying message via the dev toast + server logs.
+      if (process.env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.warn("[summary] artifact download failed", String(e?.message || e));
+      }
+      void logAnalyticsEvent("EXPORT_FAILED", {
+        incidentId,
+        orgId: activeOrgId,
+        source: opts.forceRegenerate ? "summary_regenerate" : "summary_export",
+        reason: String(e?.message || e || "").slice(0, 120),
+      });
+      setArtifactToast("We couldn't generate the report. Please try again.");
+      window.setTimeout(() => setArtifactToast(""), 3500);
     } finally {
       setArtifactBusy(false);
     }
@@ -434,14 +1041,14 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     if (!requestOrgId || !incidentId || err) return;
     try {
       setArtifactBusy(true);
-      const res = await fetch("/api/fn/exportIncidentArtifactV1", {
+      const res = await authedFetch("/api/fn/exportIncidentArtifactV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: requestOrgId, incidentId }),
       });
       const out: any = await res.json().catch(() => ({}));
       if (!res.ok || !out?.ok) throw new Error(out?.error || `exportIncidentArtifactV1 failed (${res.status})`);
-      const filename = String(out?.filename || `incident_${incidentId}.zip`);
+      const filename = humanizeReportFilename();
       const base64Zip = String(out?.base64Zip || "");
       if (!base64Zip) throw new Error("base64_zip_missing");
       const bin = atob(base64Zip);
@@ -458,7 +1065,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       URL.revokeObjectURL(url);
       setLastArtifactFilename(filename);
       setLastArtifactAt(new Date().toISOString());
-      setArtifactToast(`Artifact downloaded: ${filename}`);
+      setArtifactToast(`Report downloaded: ${filename}`);
       window.setTimeout(() => setArtifactToast(""), 2500);
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -483,7 +1090,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         if (!evidenceId) continue;
         const nested = String((ev as any)?.evidence?.jobId || (ev as any)?.["evidence.jobId"] || "").trim();
         const targetJobId = nested || "job_demo_002";
-        const res = await fetch("/api/fn/assignEvidenceToJobV1", {
+        const res = await authedFetch("/api/fn/assignEvidenceToJobV1", {
           method: "POST",
           headers: { "content-type": "application/json", ...demoHeaders },
           body: JSON.stringify({
@@ -641,6 +1248,42 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incidentId, functionsBase]);
 
+  // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+  // Lazy notes fetch. Best-effort — a 4xx/5xx leaves notesDoc null,
+  // which renders as "no notes" copy. Repeats on every refresh tick
+  // (60s) so a supervisor-side change to notes shows up without a
+  // manual reload.
+  useEffect(() => {
+    let cancelled = false;
+    const oid = String(orgId || "").trim();
+    const iid = String(incidentId || "").trim();
+    if (!oid || !iid) return;
+    async function loadNotes() {
+      try {
+        const res = await authedFetch(
+          `/api/fn/getIncidentNotesV1?orgId=${encodeURIComponent(oid)}&incidentId=${encodeURIComponent(iid)}`,
+          { cache: "no-store" },
+        );
+        const txt = await res.text().catch(() => "");
+        let out: any = {};
+        try { out = txt ? JSON.parse(txt) : {}; } catch {}
+        if (cancelled) return;
+        if (out?.ok && out.notes && typeof out.notes === "object") {
+          setNotesDoc(out.notes);
+        }
+      } catch (e) {
+        if (process.env.NODE_ENV !== "production") {
+          // eslint-disable-next-line no-console
+          console.warn("[summary-notes] load failed", e);
+        }
+      }
+    }
+    void loadNotes();
+    const t = setInterval(loadNotes, 60000);
+    return () => { cancelled = true; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, incidentId]);
+
   useEffect(() => {
     (evidence || []).slice(0, 40).forEach((ev) => { prefetchThumb(ev); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -720,249 +1363,1810 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     if ((timelineCounts["incident_closed"] || 0) < 1) {
       reasons.push("missing incident_closed event");
     }
-    if ((timelineCounts["job_approved"] || 0) < 2) {
-      reasons.push("expected at least 2 job_approved events");
+
+    const expectedApprovedCount = Array.isArray(jobs) ? jobs.length : 0;
+
+    if ((timelineCounts["job_approved"] || 0) < expectedApprovedCount) {
+      reasons.push(`expected at least ${expectedApprovedCount} job_approved events`);
     }
 
     return reasons;
   }, [incident, jobs, evidence, timeline]);
 
+  const hasFieldIssues = truthMismatchReasons.some(r =>
+    r.includes("field_submitted") || r.includes("incident_closed")
+  );
+
+  const hasOnlyPacketIssues =
+    truthMismatchReasons.length > 0 &&
+    !hasFieldIssues;
+
   const truthError = truthMismatchReasons.length > 0
     ? truthMismatchReasons.join(" • ")
     : "";
+  const incidentClosed = String(incidentStatus || "").trim().toLowerCase() === "closed";
+  const artifactDownloadable = String(artifactHint || "").toLowerCase().includes("ready") || !!lastArtifactFilename;
+
+  // PEAKOPS_REPORT_AUTOGEN_V1 (2026-05-01)
+  // One-click Generate Report on Close-then-Summary. When the user
+  // closes the incident on Review and lands here, the report is the
+  // only thing left to do — auto-fire handleArtifactDownload once
+  // when (a) the incident is closed, (b) no report exists yet, and
+  // (c) we have orgId / incidentId / no in-flight export. The ref
+  // guard prevents re-firing on tab nav or React StrictMode double
+  // effects. Skip when there are field-issues that would cause a
+  // 409 truth-mismatch on export — better to surface those to the
+  // user than to fire-and-fail silently.
+  useEffect(() => {
+    if (autoGenTriggeredRef.current) return;
+    if (loading) return; // wait for incident/jobs/timeline fetch
+    if (!incidentClosed) return;
+    if (artifactDownloadable) return;
+    if (artifactBusy || downloadBusy) return;
+    if (!orgId || !incidentId) return;
+    // Don't auto-fire when there are real field issues — they'd
+    // cause a 409 truth_mismatch and the user should see them
+    // before clicking anything.
+    if (Array.isArray(truthMismatchReasons) && truthMismatchReasons.length > 0) return;
+    autoGenTriggeredRef.current = true;
+    void handleArtifactDownload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, incidentClosed, artifactDownloadable, artifactBusy, downloadBusy, orgId, incidentId, truthMismatchReasons]);
+
+  // PEAKOPS_SLICE12_2_APPROVAL_GATE_V1 (2026-05-07)
+  // Slice 12.1 QA caught the closed-but-no-report fixture
+  // (inc_20260429_071222_n3ss11) showing "Awaiting supervisor
+  // approval" with a disabled Generate Report button — even though
+  // the lifecycle was Approved/Closed and the supervisor sign-off
+  // was already on the audit trail. Root cause: the prior bannerKind
+  // computed `hasFieldIssues` first (timeline fixtures can be
+  // missing one of field_submitted / incident_closed events), which
+  // routed Approved/Closed jobs into the "error" branch and the
+  // accompanying supervisorOnlyMissing logic claimed approval was
+  // pending. Fix: detect "supervisor approved" from displayState
+  // (which is already downgraded by the resolver if the audit event
+  // is missing — see the Approved/Closed downgrade at line ~441), and
+  // when supervisor approval is complete but the report hasn't been
+  // generated yet, take the "info" branch ahead of hasFieldIssues.
+  // Approval state and report-generation state are separate concerns
+  // per the Slice 12.2 spec.
+  const supervisorApproved = useMemo(() => {
+    const ds = reportUiState.displayState;
+    return ds === "Approved" || ds === "Closed";
+  }, [reportUiState.displayState]);
+
+  const bannerKind =
+    supervisorApproved && !artifactDownloadable
+      ? "info"
+      : hasFieldIssues
+      ? "error"
+      : incidentClosed && !artifactDownloadable
+      ? "info"
+      : artifactDownloadable
+      ? "success"
+      : "";
+  // PEAKOPS_SUMMARY_HUMAN_COPY_V1 (2026-04-24)
+  // Translate raw backend/internal mismatch reasons into short, operational
+  // copy a city/utility ops user can act on. The raw strings stay available
+  // in the "Technical details" collapsible so we don't lose debug fidelity.
+  const humanizedReasons = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of truthMismatchReasons) {
+      const x = String(r || "").toLowerCase();
+      let s = "";
+      if (x.includes("unassigned")) s = "Some evidence is not attached to a task";
+      else if (x.includes("field_submitted")) s = "Field report has not been submitted";
+      else if (x.includes("incident_closed")) s = "Incident has not been closed";
+      else if (x.includes("job_approved")) s = "Some tasks are still waiting for approval";
+      else if (x.includes("evidencecount")) s = "Report evidence count is out of date — regenerate to refresh";
+      else if (x.includes("jobcount")) s = "Report task count is out of date — regenerate to refresh";
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.push(s);
+      }
+    }
+    return out;
+  }, [truthMismatchReasons]);
+  // PEAKOPS_SUMMARY_BANNER_V3 (2026-05-05)
+  // Distinct banner for "field documentation complete, supervisor
+  // approval pending". Detected from real lifecycle state, not from
+  // truthMismatchReasons: when the canonical reportUiState says
+  // Awaiting Supervisor Review (or downgraded to that from Approved
+  // because the timeline lacks the audit event), the visible
+  // checklist below is already complete and the missing step is
+  // genuinely the supervisor's. Tells the buyer exactly what's
+  // blocking the report instead of pointing them at "items below"
+  // that are already green.
+  // PEAKOPS_SLICE12_2_APPROVAL_GATE_V1 (2026-05-07)
+  // After Slice 12.2: "supervisorOnlyMissing" now ONLY captures the
+  // genuinely-pending approval states. Approved/Closed are handled
+  // by the supervisorApproved branch above.
+  const supervisorOnlyMissing = useMemo(() => {
+    const ds = reportUiState.displayState;
+    return ds === "Awaiting Supervisor Review" || ds === "Sent Back";
+  }, [reportUiState.displayState]);
+  const bannerIcon = bannerKind === "success" ? "✓" : bannerKind === "error" ? (supervisorOnlyMissing ? "ℹ" : "⚠") : bannerKind === "info" ? "ℹ" : "";
+  const bannerTitle =
+    bannerKind === "error"
+      ? (supervisorOnlyMissing ? "Awaiting supervisor approval" : "A few steps left before export")
+      : bannerKind === "info"
+      ? (supervisorApproved
+          ? "Ready to generate report"
+          : "Ready to finalize the report")
+      : "Job complete";
+  const bannerBody =
+    bannerKind === "error"
+      ? (supervisorOnlyMissing
+          ? "Field documentation is complete. The report can be generated after supervisor approval."
+          : "Finish the items below, then return here to generate the report.")
+      : bannerKind === "info"
+      ? (supervisorApproved
+          ? "Supervisor approval is complete. Generate the report to create the audit-ready record."
+          : "All field steps are complete. Generate the report to finalize this job.")
+      : lastArtifactFilename
+      ? `Report ready: ${lastArtifactFilename}.`
+      : "Your job report is ready. Use Download Report to save or share it.";
+
+  // PEAKOPS_SUMMARY_POLISH_V1 (2026-04-24)
+  // Purely visual pass: aligns Summary with the field/review dark+gold tokens,
+  // tightens card spacing, promotes Generate Artifact to the same
+  // gold-gradient primary used by NextBestAction/Mark arrived, hides dev
+  // tools behind a <details> so prod UI is clean, and preserves orgId on
+  // the Back button. No data, backend calls, or state logic touched.
+  const bannerPalette =
+    bannerKind === "error"
+      ? { border: "1px solid rgba(220,60,60,0.35)", background: "rgba(220,60,60,0.08)", color: "#fca5a5" }
+      : bannerKind === "info"
+      ? { border: "1px solid rgba(200,168,78,0.3)", background: "rgba(200,168,78,0.08)", color: "#C8A84E" }
+      : { border: "1px solid rgba(34,197,94,0.3)", background: "rgba(34,197,94,0.08)", color: "#86efac" };
+  // PEAKOPS_REPORT_AUTHED_DOWNLOAD_V1 (2026-05-01)
+  // Disable the button while either the export is in flight
+  // (`artifactBusy`) or the authed ZIP fetch is streaming
+  // (`downloadBusy`). Distinct labels: "Downloading…" beats
+  // "Preparing report…" when both flags are momentarily true.
+  const artifactDisabled = artifactBusy || downloadBusy || !orgId || !incidentId;
+  const artifactLabel = downloadBusy
+    ? "Downloading…"
+    : artifactBusy
+    ? "Preparing report…"
+    : artifactHint.toLowerCase().includes("ready")
+    ? "Download Report"
+    : artifactHint.toLowerCase().includes("building")
+    ? "Report building…"
+    : "Generate Report";
+
+  // PEAKOPS_INCIDENT_NOT_FOUND_V1 (2026-04-28)
+  // Clean customer-facing empty state when getIncidentV1 returns 404.
+  if (incidentNotFound) {
+    return (
+      <main
+        className="min-h-screen p-4"
+        style={{
+          background: "#050505",
+          color: "#f5f5f5",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        }}
+      >
+        <div style={{ maxWidth: 440, width: "100%", border: "1px solid #1c1c1c", background: "#0b0b0b", borderRadius: 12, padding: 24, textAlign: "center" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#6f6f6f", textTransform: "uppercase" as const }}>Not found</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#f5f5f5", marginTop: 6 }}>Job not found</div>
+          <div style={{ fontSize: 13, color: "#b3b3b3", marginTop: 6, lineHeight: 1.5 }}>
+            This job may have been deleted, moved, or you may not have access.
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+            style={{
+              marginTop: 16,
+              padding: "10px 18px",
+              borderRadius: 8,
+              border: "1px solid #1c1c1c",
+              background: "transparent",
+              color: "#b3b3b3",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Back to jobs
+          </button>
+          {/* PEAKOPS_NOT_FOUND_DEV_GATE_V1 (2026-04-30) */}
+          {devMode ? (
+            <details style={{ marginTop: 18, fontSize: 10, color: "#6f6f6f", textAlign: "left" }}>
+              <summary style={{ cursor: "pointer" }}>Technical details (dev only)</summary>
+              <div style={{ marginTop: 6, fontFamily: "ui-monospace, monospace", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                <div>incidentId: {incidentId}</div>
+                <div>orgId: {orgId || "(none)"}</div>
+                {errUrl ? <div>endpoint: {errUrl}</div> : null}
+                {errStatus ? <div>status: {errStatus}</div> : null}
+                {errBody ? <div>body: {String(errBody).slice(0, 240)}</div> : null}
+              </div>
+            </details>
+          ) : null}
+        </div>
+      </main>
+    );
+  }
 
   return (
     <>
-      {truthError ? (
-        <div className="mb-4 rounded-xl border border-red-500/40 bg-red-950/40 p-4 text-red-100">
-          <div className="text-sm font-semibold">⚠ System inconsistency detected</div>
-          <div className="mt-2 text-sm">{truthError}</div>
-          <div className="mt-2 text-xs opacity-80">
-            Export should be treated as blocked until this mismatch is resolved.
-          </div>
-        </div>
-      ) : null}
-    <main className="min-h-screen bg-black text-white p-4">
-      <div className="max-w-6xl mx-auto space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-wider text-gray-400">Incident Summary</div>
-            <div className="text-xl font-semibold">{incidentId}</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm hover:bg-white/10" onClick={() => router.push(`/incidents/${incidentId}`)}>
-              Back
-            </button>
-          </div>
-        </div>
+      <UpgradePrompt
+        open={upgrade.open}
+        featureKey={upgrade.featureKey}
+        reason={upgrade.reason}
+        orgId={orgId}
+        onClose={() => setUpgrade((s) => ({ ...s, open: false }))}
+      />
+      <main
+        className="min-h-screen p-4 peakops-report-root"
+        style={{
+          background: "#050505",
+          color: "#f5f5f5",
+          fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        }}
+      >
+        {/* PEAKOPS_REPORT_PRINT_V2 (2026-05-11) — Slice Print / PDF
+            Presentation 1.0.
+            Comprehensive print stylesheet: white background, dark
+            text, hidden interactive controls, section page-break
+            rules, header-with-content lock, photo-tile preservation,
+            paper-friendly typography. The in-app dark mode is
+            untouched — @media print is the only viewport this CSS
+            applies to. peakops-no-print elements (action cluster,
+            back link, banners, regenerate confirm, dev tools, toast)
+            drop out of the printed page entirely. */}
+        <style jsx global>{`
+          @media print {
+            /* Page margins matched to letter / A4 printing defaults. */
+            @page {
+              margin: 18mm 14mm;
+              size: auto;
+            }
 
-        {err ? (
-          <div className="rounded-xl border border-red-400/30 bg-red-500/10 text-red-100 text-sm px-3 py-2">
-            <div>{err}</div>
-            {errUrl ? <div className="mt-1 text-xs text-red-200/90 break-all">Request: {errUrl}</div> : null}
-            {errStatus ? <div className="mt-1 text-xs text-red-200/90">Status: {errStatus}</div> : null}
-            {errBody ? <pre className="mt-1 text-xs text-red-200/90 whitespace-pre-wrap break-words">{String(errBody).slice(0, 500)}</pre> : null}
-            {process.env.NODE_ENV !== "production" ? (
-              <div className="mt-1 text-xs text-red-200/90 break-all">
-                baseDebug: {(() => {
-                  const d = getFunctionsBaseDebugInfo();
-                  return `env=${d.envBase || "(unset)"} override=${d.overrideBase || "(unset)"} active=${d.activeBase || "(unset)"}`;
-                })()}
-              </div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" && getEnvFunctionsBase() ? (
-              <div className="mt-1 text-xs text-red-200/90">envBase present, fallback disabled</div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
-              <button
-                type="button"
-                className="mt-2 px-2 py-1 rounded border border-red-300/30 bg-black/30 hover:bg-black/50 text-[11px]"
-                onClick={() => {
-                  clearRememberedFunctionsBase();
-                  location.reload();
-                }}
-              >
-                Reset connection
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-        {!err && demoAuthBypassMsg ? (
-          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 text-amber-100 text-sm px-3 py-2">
-            {demoAuthBypassMsg}
-          </div>
-        ) : null}
-        {!err && artifactToast ? (
-          <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 text-emerald-100 text-sm px-3 py-2">
-            {artifactToast}
-          </div>
-        ) : null}
+            /* Drop the in-app screen-height padding so the report
+               starts at the top of the page. */
+            .peakops-report-root {
+              min-height: 0 !important;
+              padding: 0 !important;
+              margin: 0 !important;
+            }
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Incident Status</div>
-            <span className={"text-[11px] px-2 py-0.5 rounded-full border " + incidentStatusPill(incidentStatus)}>{incidentStatusLabel(incidentStatus)}</span>
-          </div>
-          <div className="mt-3">
+            /* Force light theme across the whole report tree.
+               Backgrounds become white, text becomes near-black.
+               Existing colored accents (status pill tints, banner
+               palettes, stat-card tones) become white so the page
+               reads as a clean operational record on paper. */
+            .peakops-report-root,
+            .peakops-report-root * {
+              background: #ffffff !important;
+              background-image: none !important;
+              color: #050505 !important;
+              box-shadow: none !important;
+              text-shadow: none !important;
+            }
+
+            /* peakops-no-print is the canonical hide-on-print marker
+               (back link, action cluster, banners, dev tools, etc.). */
+            .peakops-no-print { display: none !important; }
+
+            /* Section borders soften to print-gray. Each report
+               section avoids splitting across page breaks so the
+               narrative stays whole. */
+            .peakops-report-root section {
+              border: 1px solid #d4d4d8 !important;
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+              margin-bottom: 6mm !important;
+            }
+
+            /* Keep section eyebrow / heading with the first line of
+               its content — no orphaned headings at page bottoms. */
+            .peakops-report-root h1,
+            .peakops-report-root h2,
+            .peakops-report-root h3 {
+              page-break-after: avoid !important;
+              break-after: avoid !important;
+            }
+
+            /* Body type tuned for paper. Lists allow at least 3
+               lines of widow / orphan protection so paragraphs
+               don't strand a single line at a page boundary. */
+            .peakops-report-root {
+              font-size: 11pt !important;
+              line-height: 1.45 !important;
+            }
+            .peakops-report-root h1 {
+              font-size: 17pt !important;
+            }
+            .peakops-report-root p,
+            .peakops-report-root li,
+            .peakops-report-root div {
+              orphans: 3;
+              widows: 3;
+            }
+
+            /* Photos: keep aspect, soft border, never split mid-tile. */
+            .peakops-report-root img {
+              max-width: 100% !important;
+              height: auto !important;
+              border-color: #d4d4d8 !important;
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+            }
+
+            /* Logo slot retains its faint border for visual presence
+               but loses the dark fill. The uploaded logo image
+               inside renders normally via the img rule above. */
+            .peakops-report-root [data-slot="peakops-report-logo"] {
+              border: 1px solid #d4d4d8 !important;
+              background: #ffffff !important;
+            }
+
+            /* Status pill: print as a neutral outline so the dark
+               filled pill from screen doesn't fight the page.
+               Targeting the pill by Tailwind's rounded-full class
+               + border class avoids accidentally restyling other
+               rounded elements. */
+            .peakops-report-root .rounded-full {
+              background: #ffffff !important;
+              border: 1px solid #6b7280 !important;
+              color: #111827 !important;
+              padding: 1px 8px !important;
+            }
+
+            /* Tile-button photo grid lives inside <button> elements.
+               Keep tiles visually intact in print. */
+            .peakops-report-root button {
+              border-color: #d4d4d8 !important;
+              cursor: default !important;
+            }
+
+            /* Force underlying browser to print the report's
+               background colors and borders consistently across
+               Chrome / Safari / Firefox. exact = print as shown. */
+            .peakops-report-root,
+            .peakops-report-root * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+          }
+        `}</style>
+        <div className="max-w-6xl mx-auto space-y-3">
+          {/* PEAKOPS_REPORT_HEADER_V2 (2026-05-05)
+              Customer-facing report header. Replaces the older
+              "Incident Summary" stack. Pulls site/location and the
+              opened/closed dates straight off the incident doc; the
+              status pill is sourced from the same shared
+              incidentStatus helper used by Mission Control + the
+              field page so all surfaces agree. The Download Report
+              button is the canonical primary CTA — it routes through
+              handleArtifactDownload(), which serves the cached ZIP
+              when present and triggers generation otherwise. The
+              Email Report button is a placeholder gated on a
+              "Coming soon" tooltip; it never fires today. */}
+          <section
+            style={{
+              borderRadius: 12,
+              border: "1px solid #1c1c1c",
+              background: "#0b0b0b",
+              padding: "20px 22px",
+            }}
+          >
             <button
               type="button"
-              className={"px-3 py-2 rounded-xl text-sm border " + (!err && orgId && incidentId ? "bg-emerald-600/20 border-emerald-300/30 text-emerald-100 hover:bg-emerald-600/30" : "bg-white/5 border-white/10 text-gray-400")}
-              disabled={artifactBusy || !orgId || !incidentId || !!err}
-              onClick={() => { void handleArtifactDownload(); }}
-              title={artifactHint}
+              className="peakops-no-print"
+              onClick={() => router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+              title="Back to Jobs"
+              style={{
+                padding: "5px 10px",
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+                border: "1px solid #1c1c1c",
+                background: "#0b0b0b",
+                color: "#b3b3b3",
+              }}
             >
-              {artifactBusy ? "Preparing Artifact..." : (artifactHint.toLowerCase().includes("ready") ? "Download Artifact" : artifactHint.toLowerCase().includes("building") ? "Artifact Building..." : "Generate Artifact")}
+              ← Jobs
             </button>
-            <div className="mt-2 text-xs text-gray-500">{artifactHint}</div>
-            {lastArtifactFilename ? (
-              <div className="mt-1 text-xs text-gray-500">
-                Last artifact: {lastArtifactFilename} {lastArtifactAt ? `• ${lastArtifactAt}` : ""}
-              </div>
-            ) : null}
-            <div className="mt-1 text-xs text-gray-500">
-              Packet counts: evidence {incident?.packetMeta?.evidenceCount ?? packetEvidenceCount} • jobs {incident?.packetMeta?.jobCount ?? packetJobCount}
-            </div>
-          </div>
-        </section>
+            {/* PEAKOPS_REPORT_ORG_IDENTITY_V1 (2026-05-11)
+                Report Presentation 1.0 — organization identity row.
+                Reserves the logo slot for the future Branding 1.0
+                slice (no upload UX in v1) and renders the buyer's
+                organization name above the report eyebrow. The 28x28
+                logo container always renders so enabling a logo
+                later won't shift any other layout in this header.
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="text-xs uppercase tracking-wide text-gray-400">Jobs Breakdown</div>
-          <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
-            {Object.entries(statusCounts).map(([k, v]) => (
-              <div key={k} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2">
-                <div className="text-[10px] uppercase text-gray-400">{k}</div>
-                <div className="text-lg font-semibold">{v}</div>
-              </div>
-            ))}
-          </div>
-        </section>
+                White-label hooks:
+                  - data-slot="peakops-report-logo" — future code
+                    can target this element to inject an <img>.
+                  - data-org-id on the section — enables per-org
+                    CSS overrides in future white-label work.
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Evidence by Job</div>
-            {unassignedEvidenceCount > 0 ? (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] px-2 py-1 rounded-full border border-amber-300/30 bg-amber-500/15 text-amber-100">
-                  {unassignedEvidenceCount} unassigned evidence
-                </span>
-                {(isDemoMode || process.env.NODE_ENV !== "production") ? (
-                  <button
-                    type="button"
-                    className="text-[11px] px-2 py-1 rounded border border-amber-300/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
-                    onClick={() => { void fixUnassignedEvidence(); }}
-                    disabled={fixUnassignedBusy}
-                  >
-                    {fixUnassignedBusy ? "Fixing…" : "Fix unassigned"}
-                  </button>
+                Org name fallback ladder:
+                  1. onboardingView.displayName (canonical)
+                  2. nothing rendered (the eyebrow + title still
+                     carry the report's identity)
+                Empty-state logo box always renders so the slot
+                position is permanent. */}
+            <div
+              data-org-id={orgId || undefined}
+              style={{
+                marginTop: 12,
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                paddingBottom: 14,
+                borderBottom: "1px solid #1c1c1c",
+              }}
+            >
+              {/* PEAKOPS_BRANDING_LOGO_RENDER_V2 (2026-05-11) — Slice
+                  Branding 1.0 QA pass.
+                  The v1 slot was a 28x28 favicon-sized box, which
+                  rendered uploaded logos as a barely-readable thumbnail
+                  in production QA. v2 promotes the slot to a real
+                  letterhead size (48x48) so a uploaded brand actually
+                  reads as branding, while keeping the permanent slot
+                  pattern: empty orgs still see the bordered placeholder
+                  at the same size — no layout shift either direction
+                  when a logo is later uploaded.
+                  object-fit:contain still letterboxes wide or tall
+                  source images cleanly; transparent PNGs blend on the
+                  dark header. */}
+              <div
+                data-slot="peakops-report-logo"
+                aria-hidden={!onboardingView.logoUrl}
+                style={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: 8,
+                  border: "1px solid #1c1c1c",
+                  background: "rgba(255,255,255,0.02)",
+                  flexShrink: 0,
+                  overflow: "hidden",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  // Slight inner padding so a tight logo (no internal
+                  // margin) doesn't kiss the border on every side.
+                  padding: 4,
+                  boxSizing: "border-box",
+                }}
+              >
+                {onboardingView.logoUrl ? (
+                  <img
+                    src={onboardingView.logoUrl}
+                    alt={
+                      onboardingView.displayName
+                        ? `${onboardingView.displayName} logo`
+                        : "Organization logo"
+                    }
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: "100%",
+                      objectFit: "contain",
+                      display: "block",
+                    }}
+                    // PEAKOPS_BRANDING_LOGO_RENDER_V1 — if a stored
+                    // URL turns out to be unreachable, swallow the
+                    // broken-image icon. The bordered empty slot
+                    // remains, preserving layout.
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.display = "none";
+                    }}
+                  />
                 ) : null}
               </div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" ? (
-              <div className="flex items-center gap-2">
+              <div
+                style={{
+                  minWidth: 0,
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: onboardingView.displayName ? "#e5e7eb" : "#6f6f6f",
+                  letterSpacing: "0.01em",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {onboardingView.displayName || "Operational record"}
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginTop: 14 }}>
+              <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: "0.16em",
+                    color: "#8a8a8a",
+                    textTransform: "uppercase" as const,
+                  }}
+                >
+                  {/* PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) —
+                      industry-aware eyebrow. Falls back to
+                      "Job Report" when industry isn't set, which
+                      preserves the prior look for orgs that haven't
+                      completed onboarding.
+
+                      PEAKOPS_REPORT_EYEBROW_SYSTEM_V2 (2026-05-11)
+                      Eyebrow phrasing per Report Presentation 1.0:
+                        - Telecom Field Record
+                        - Utility Operations Record
+                        - Public Works Operations Record
+                        - Contractor Field Record
+                        - Job Report (no-industry default) */}
+                  {onboardingView.reportEyebrow}
+                </div>
+                <h1
+                  style={{
+                    margin: 0,
+                    marginTop: 6,
+                    fontSize: 24,
+                    fontWeight: 700,
+                    color: "#f5f5f5",
+                    lineHeight: 1.2,
+                    letterSpacing: "-0.005em",
+                  }}
+                  title={incidentId}
+                >
+                  {displayIncidentTitle(incidentId, incident as any, jobs as any)}
+                </h1>
+                {/* PEAKOPS_CLOSED_PILL_WRAP_POLISH_V1 (2026-05-12) —
+                    Slice Closed Pill Wrap Polish 1.0.1.
+                    Previous layout put meta-text spans + the status
+                    pill as siblings in a single flex-wrap container.
+                    On muni / utility where the location string is
+                    longer ("3rd Ave · Catch basin CB-12", "North feeder
+                    line · Section 14A"), the pill was the last flex
+                    child to wrap and dropped to its own line — and
+                    with its marginLeft: 12 it landed slightly indented,
+                    reading as misaligned status indicator.
+                    New layout: two flex siblings —
+                      [meta-group: wraps internally]
+                      [pill: flex-shrink:0, whiteSpace:nowrap]
+                    Pill always stays atomic and right-aligned. On
+                    narrow viewports the meta-group wraps first; pill
+                    only drops if there's truly no room. Alpha layout
+                    preserved (shorter location → still fits on one
+                    line). Print styles preserved (the pill rule
+                    targets .rounded-full which still applies). */}
+                <div
+                  style={{
+                    marginTop: 10,
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: "6px 12px",
+                    fontSize: 12,
+                    color: "#b3b3b3",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      alignItems: "center",
+                      flex: "1 1 auto",
+                      minWidth: 0,
+                    }}
+                  >
+                    {(() => {
+                      // PEAKOPS_REPORT_META_DOTS_V1 (2026-05-11)
+                      // Render meta items with a · separator between
+                      // each populated item, so the line reads as one
+                      // consistent metadata row rather than four loose
+                      // spans. Skips empty values cleanly.
+                      const loc = String((incident as any)?.location || "").trim();
+                      const openedSec =
+                        Number((incident as any)?.createdAt?._seconds || 0) ||
+                        Number((incident as any)?.openedAt?._seconds || 0);
+                      const closedSec = Number((incident as any)?.closedAt?._seconds || 0);
+                      const items: React.ReactNode[] = [];
+                      if (loc) items.push(<span key="loc">{loc}</span>);
+                      if (openedSec) items.push(<span key="opened">Opened {fmtFullDate(openedSec)}</span>);
+                      if (closedSec) items.push(<span key="closed">Closed {fmtFullDate(closedSec)}</span>);
+                      const out: React.ReactNode[] = [];
+                      items.forEach((node, i) => {
+                        if (i > 0) {
+                          out.push(
+                            <span
+                              key={`sep-${i}`}
+                              aria-hidden
+                              style={{ margin: "0 10px", color: "#3a3a3a" }}
+                            >
+                              ·
+                            </span>
+                          );
+                        }
+                        out.push(node);
+                      });
+                      return out;
+                    })()}
+                  </div>
+                  {/* PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05) /
+                      PEAKOPS_REPORT_PILL_PROMOTE_V1 (2026-05-11) /
+                      PEAKOPS_CLOSED_PILL_WRAP_POLISH_V1 (2026-05-12) */}
+                  <span
+                    className={"text-[11px] px-2.5 py-0.5 rounded-full border " + incidentStatusPill(reportUiState.displayState)}
+                    style={{
+                      fontWeight: 700,
+                      letterSpacing: "0.04em",
+                      whiteSpace: "nowrap",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {reportUiState.displayState === "Awaiting Supervisor Review" ? "Awaiting Review" : reportUiState.displayState}
+                  </span>
+                </div>
+                {/* PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) —
+                    Slice Start Job 1.0. Industry-aware intro
+                    paragraph rendered below the meta line. Telecom +
+                    municipality carry the filing-aware qualifier
+                    "final filings remain your responsibility" so the
+                    surface never implies auto-submission. Other
+                    industries render nothing here. */}
+                {onboardingView.reportIntroLine ? (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                      color: "#9a9a9a",
+                      fontStyle: "italic",
+                      maxWidth: 680,
+                      paddingLeft: 10,
+                      borderLeft: "2px solid #1c1c1c",
+                    }}
+                  >
+                    {onboardingView.reportIntroLine}
+                  </div>
+                ) : null}
+                {devMode && orgId ? (
+                  <div style={{ fontSize: 10, color: "#6f6f6f", marginTop: 6 }}>
+                    Org: <span style={{ color: "#b3b3b3", fontFamily: "ui-monospace, monospace" }}>{orgId}</span>
+                  </div>
+                ) : null}
+              </div>
+              <div className="peakops-no-print" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", minWidth: 0 }}>
+                {(() => {
+                  // PEAKOPS_REPORT_GATE_V2 (2026-05-05)
+                  // Generate Report is disabled when the report is
+                  // not actually ready (truth-mismatch reasons exist
+                  // and the artifact hasn't been generated). The
+                  // earlier gate only checked artifactBusy / downloadBusy
+                  // so a buyer could see "warnings + Generate Report
+                  // enabled" — a trust failure. A finished packet
+                  // (artifactDownloadable) always wins: download
+                  // stays available regardless.
+                  const hasBlockingWarnings = bannerKind === "error" && !artifactDownloadable;
+                  const downloadDisabled = artifactBusy || downloadBusy || hasBlockingWarnings;
+                  const title = hasBlockingWarnings
+                    ? "Resolve the warnings above to generate the report"
+                    : artifactDownloadable
+                      ? "Download report"
+                      : "Generate the report — opens or downloads when ready";
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => { if (!downloadDisabled) void handleArtifactDownload(); }}
+                      disabled={downloadDisabled}
+                      title={title}
+                      style={{
+                        padding: "11px 20px",
+                        borderRadius: 8,
+                        fontSize: 13,
+                        fontWeight: 800,
+                        letterSpacing: "0.02em",
+                        cursor: downloadDisabled ? "not-allowed" : "pointer",
+                        border: downloadDisabled ? "1px solid #1c1c1c" : "none",
+                        background: downloadDisabled
+                          ? "#101010"
+                          : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
+                        color: downloadDisabled ? "#6f6f6f" : "#050505",
+                        boxShadow: downloadDisabled ? "none" : "0 2px 12px rgba(200,168,78,0.20)",
+                      }}
+                    >
+                      {artifactBusy
+                        ? "Preparing…"
+                        : artifactDownloadable
+                          ? "Download Report"
+                          : "Generate Report"}
+                    </button>
+                  );
+                })()}
+                {/* PEAKOPS_EMAIL_REPORT_HIDDEN_V1 (2026-05-05)
+                    The disabled "Email Report — Coming soon" button
+                    used to live here. It looked like a broken
+                    affordance to clients on the report page, so it's
+                    hidden until the send pipeline ships. Re-introduce
+                    once a feature flag (e.g. emailReportEnabled on
+                    the org doc) is wired and the API endpoint is
+                    real. */}
+                {/* PEAKOPS_REGENERATE_GATE_V1 (2026-05-04) — admin/supervisor only */}
+                {artifactDownloadable && canRegenerateReport && (
+                  <button
+                    type="button"
+                    data-admin-only="regenerate-report"
+                    disabled={artifactBusy || downloadBusy || regenerateConfirmOpen}
+                    onClick={() => setRegenerateConfirmOpen(true)}
+                    title="Re-export with the latest vendor and approval state"
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: artifactBusy || downloadBusy || regenerateConfirmOpen ? "not-allowed" : "pointer",
+                      border: "1px solid #1c1c1c",
+                      background: "transparent",
+                      color: artifactBusy || downloadBusy || regenerateConfirmOpen ? "#6f6f6f" : "#b3b3b3",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {artifactBusy ? "Regenerating…" : "Regenerate"}
+                  </button>
+                )}
+                {/* PEAKOPS_REPORT_PRINT_V2 (2026-05-11) — Slice Print /
+                    PDF Presentation 1.0. Secondary CTA that triggers
+                    the browser's native print dialog. The @media print
+                    stylesheet above (white background, hidden interactive
+                    controls, paper-friendly section breaks) takes over;
+                    Chrome / Safari / Firefox's print preview lets the
+                    user save as PDF without any new dependency.
+                    Lives in the .peakops-no-print cluster so it never
+                    appears in the printed output itself. */}
                 <button
                   type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => refreshVisibleThumbsDebounced()}
+                  onClick={() => {
+                    if (typeof window !== "undefined") window.print();
+                  }}
+                  title="Print this record or save it as a PDF"
+                  style={{
+                    padding: "10px 14px",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    border: "1px solid #1c1c1c",
+                    background: "transparent",
+                    color: "#b3b3b3",
+                    whiteSpace: "nowrap",
+                  }}
                 >
-                  Refresh thumbnails
+                  Print / Save PDF
+                </button>
+                {/* PEAKOPS_REPORT_CTA_CAPTION_V1 (2026-05-11)
+                    Report Presentation 1.0 — single-line audit-trust
+                    caption under the primary CTA. Confirms what's in
+                    the ZIP without inflating the button itself. */}
+                <div
+                  className="peakops-no-print"
+                  style={{
+                    flexBasis: "100%",
+                    fontSize: 10,
+                    color: "#6f6f6f",
+                    textAlign: "right",
+                    letterSpacing: "0.02em",
+                    marginTop: -2,
+                  }}
+                >
+                  Audit-ready packet · report, photos, timeline, approvals.
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
+              Regenerate confirm panel — relocated to top-level so it
+              can sit just under the header rather than inside the
+              old NBA card. Same handler, same body copy, same admin
+              gate. */}
+          {regenerateConfirmOpen && (
+            <section
+              className="peakops-no-print"
+              style={{
+                borderRadius: 10,
+                padding: "14px 16px",
+                border: "1px solid #1c1c1c",
+                background: "#0b0b0b",
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#f5f5f5" }}>
+                Regenerate report?
+              </div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "#b3b3b3", lineHeight: 1.5 }}>
+                This rebuilds the report using the latest vendor/status metadata. Previous downloads will not change.
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <label
+                  htmlFor="regenerate-reason"
+                  style={{ display: "block", fontSize: 11, color: "#6f6f6f", letterSpacing: "0.04em", marginBottom: 4 }}
+                >
+                  Reason for regenerating (optional)
+                </label>
+                <textarea
+                  id="regenerate-reason"
+                  value={regenerateReason}
+                  onChange={(e) => setRegenerateReason(e.target.value)}
+                  placeholder="e.g. Vendor archived; updating bundle"
+                  maxLength={280}
+                  rows={2}
+                  disabled={artifactBusy}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    fontSize: 12,
+                    background: "#050505",
+                    color: "#f5f5f5",
+                    border: "1px solid #1c1c1c",
+                    borderRadius: 6,
+                    resize: "vertical",
+                    fontFamily: "inherit",
+                    outline: "none",
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRegenerateConfirmOpen(false);
+                    setRegenerateReason("");
+                  }}
+                  disabled={artifactBusy}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    background: "transparent",
+                    color: "#b3b3b3",
+                    border: "1px solid #1c1c1c",
+                    cursor: artifactBusy ? "not-allowed" : "pointer",
+                  }}
+                >
+                  Cancel
                 </button>
                 <button
                   type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => forceRemintVisibleThumbs()}
+                  data-admin-only="regenerate-report"
+                  disabled={artifactBusy || downloadBusy}
+                  onClick={() => {
+                    const reasonToSend = regenerateReason.trim();
+                    setRegenerateConfirmOpen(false);
+                    setRegenerateReason("");
+                    void handleArtifactDownload({ forceRegenerate: true, reason: reasonToSend });
+                  }}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: artifactBusy || downloadBusy ? "#6f6f6f" : "#050505",
+                    background: artifactBusy || downloadBusy ? "#1c1c1c" : "linear-gradient(180deg, #C8A84E 0%, #A7862E 100%)",
+                    border: 0,
+                    cursor: artifactBusy || downloadBusy ? "not-allowed" : "pointer",
+                    boxShadow: artifactBusy || downloadBusy ? "none" : "0 2px 12px rgba(200,168,78,0.20)",
+                  }}
                 >
-                  Force remint URLs
-                </button>
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => setThumbDebugOverlay((v) => !v)}
-                >
-                  {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
+                  {artifactBusy ? "Regenerating…" : "Regenerate Report"}
                 </button>
               </div>
-            ) : null}
-          </div>
-          <div className="mt-3 space-y-3">
-            {Object.keys(evidenceByJob).length === 0 ? (
-              <div className="text-sm text-gray-400">No evidence found.</div>
-            ) : Object.entries(evidenceByJob).map(([jobId, list]) => {
-              const job = jobs.find((j) => String(j?.id || j?.jobId || "") === jobId);
-              return (
-                <div key={jobId} className="rounded-xl border border-white/10 bg-black/30 p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm text-gray-100 truncate">{job ? String(job.title || jobId) : (jobId === "unassigned" ? "Unassigned" : jobId)}</div>
-                    <span className="text-xs text-gray-400">{list.length} evidence</span>
+            </section>
+          )}
+
+          {/* PEAKOPS_SUMMARY_NBA_REMOVED_V2 (2026-05-05)
+              Old NBA card removed in the audit-ready report rebuild.
+              The header card above owns the primary CTA (Download
+              Report). For non-closed states the user sees the same
+              status pill in the header subtitle; field actions live
+              on the Field Job page itself, not on the report. */}
+
+          {/* PEAKOPS_SUMMARY_BANNER_INSIDE_V1 (2026-04-24)
+              Status banner moved inside <main> so it shares the page's
+              max-width, padding, and rhythm. Uses an icon + bulleted
+              humanized reasons; raw `truthError` stays in a collapsible
+              for debugging. */}
+          {bannerKind ? (
+            <section
+              className="peakops-no-print"
+              style={{
+                borderRadius: 10,
+                padding: "14px 16px",
+                ...bannerPalette,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                {bannerIcon ? (
+                  <div
+                    aria-hidden
+                    style={{
+                      flexShrink: 0,
+                      width: 28,
+                      height: 28,
+                      borderRadius: 999,
+                      background:
+                        bannerKind === "success"
+                          ? "rgba(34,197,94,0.18)"
+                          : bannerKind === "error"
+                          ? "rgba(220,60,60,0.18)"
+                          : "rgba(200,168,78,0.18)",
+                      color:
+                        bannerKind === "success"
+                          ? "#86efac"
+                          : bannerKind === "error"
+                          ? "#fca5a5"
+                          : "#C8A84E",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 14,
+                      fontWeight: 800,
+                      lineHeight: 1,
+                    }}
+                  >
+                    {bannerIcon}
                   </div>
-                  <div className="mt-2 flex gap-2 overflow-x-auto">
-                    {list.slice(0, 8).map((ev) => {
-                      const id = String(ev.id || "");
-                      const u = thumbUrl[id];
+                ) : null}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{bannerTitle}</div>
+                  <div style={{ marginTop: 4, fontSize: 12, lineHeight: 1.5, opacity: 0.9 }}>
+                    {bannerBody}
+                  </div>
+                  {/* PEAKOPS_SUMMARY_HIDE_TECH_MISMATCH_V1 (2026-04-29)
+                      Customer-facing copy is now a single sentence. The
+                      bullet list of humanized mismatch reasons and the
+                      raw "Technical details" disclosure are gated to
+                      ?dev=1 (or NODE_ENV !== "production") so engineers
+                      can still inspect them in QA. */}
+                  {bannerKind === "error" && !devMode ? (
+                    <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5, opacity: 0.9 }}>
+                      Report has not been generated yet.
+                    </div>
+                  ) : null}
+                  {bannerKind === "error" && devMode && humanizedReasons.length > 0 ? (
+                    <ul
+                      style={{
+                        marginTop: 8,
+                        paddingLeft: 16,
+                        fontSize: 12,
+                        lineHeight: 1.6,
+                        listStyle: "disc",
+                      }}
+                    >
+                      {humanizedReasons.map((r) => (
+                        <li key={r}>{r}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {bannerKind === "success" && (lastArtifactFilename || lastArtifactAt) ? (
+                    <div style={{ marginTop: 6, fontSize: 11, opacity: 0.85 }}>
+                      {lastArtifactFilename ? (
+                        <span style={{ fontFamily: "ui-monospace, monospace" }}>
+                          {lastArtifactFilename}
+                        </span>
+                      ) : null}
+                      {lastArtifactFilename && lastArtifactAt ? " • " : ""}
+                      {lastArtifactAt || ""}
+                    </div>
+                  ) : null}
+                  {devMode && truthError ? (
+                    <details style={{ marginTop: 10, fontSize: 10, color: "#6f6f6f" }}>
+                      <summary style={{ cursor: "pointer" }}>Technical details (dev only)</summary>
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontFamily: "ui-monospace, monospace",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {truthError}
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+          ) : null}
+
+          {/* PEAKOPS_SUMMARY_UNASSIGNED_WARNING_V1 (2026-04-24)
+              Customer-facing warning when evidence still needs to be
+              assigned. The dev-only "Fix unassigned" affordance still
+              lives inside the Evidence by Job section. This banner gives
+              an ops user one obvious next action without exposing
+              backend wording. */}
+          {unassignedEvidenceCount > 0 ? (
+            <section
+              className="peakops-no-print"
+              style={{
+                borderRadius: 10,
+                padding: "12px 16px",
+                border: "1px solid rgba(200,168,78,0.35)",
+                background: "rgba(200,168,78,0.08)",
+                color: "#C8A84E",
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <div
+                aria-hidden
+                style={{
+                  flexShrink: 0,
+                  width: 28,
+                  height: 28,
+                  borderRadius: 999,
+                  background: "rgba(200,168,78,0.18)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 14,
+                  fontWeight: 800,
+                  lineHeight: 1,
+                }}
+              >
+                ⚠
+              </div>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>
+                  {unassignedEvidenceCount} evidence item
+                  {unassignedEvidenceCount === 1 ? "" : "s"} need
+                  {unassignedEvidenceCount === 1 ? "s" : ""} to be assigned before export.
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
+                  Open the incident&rsquo;s Evidence tab to attach each item to a job.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  router.push(incidentPath(incidentId, orgId, { hash: "evidence" }))
+                }
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  border: "1px solid rgba(200,168,78,0.4)",
+                  background: "rgba(200,168,78,0.15)",
+                  color: "#C8A84E",
+                  flexShrink: 0,
+                }}
+              >
+                Assign Evidence →
+              </button>
+            </section>
+          ) : null}
+
+          {/* Transient banners — hidden in print so the PDF doesn't
+              show a stale "Report ready" toast or dev auth bypass
+              chip. */}
+          {!err && demoAuthBypassMsg ? (
+            <div
+              className="peakops-no-print"
+              style={{
+                fontSize: 12,
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid rgba(200,168,78,0.3)",
+                background: "rgba(200,168,78,0.08)",
+                color: "#C8A84E",
+              }}
+            >
+              {demoAuthBypassMsg}
+            </div>
+          ) : null}
+          {!err && artifactToast ? (
+            <div
+              className="peakops-no-print"
+              style={{
+                fontSize: 12,
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid rgba(34,197,94,0.3)",
+                background: "rgba(34,197,94,0.08)",
+                color: "#86efac",
+              }}
+            >
+              {artifactToast}
+            </div>
+          ) : null}
+
+          {/* PEAKOPS_REPORT_SUMMARY_STRIP_V1 (2026-05-05)
+              The audit-ready summary strip — replaces the older
+              "Incident Status" detail card AND the collapsible
+              Preview Report panel. Four read-at-a-glance metrics:
+              Photos, Notes, Tasks Approved, Supervisor Approval.
+              Counts are derived live from the same evidence/jobs/
+              notes data the rest of the page reads from. */}
+          {(() => {
+            const tasksTotal = jobs.length;
+            const tasksApproved = jobs.filter((j: any) => {
+              const rs = String(j?.reviewStatus || "").trim().toLowerCase();
+              const st = String(j?.status || "").trim().toLowerCase();
+              return rs === "approved" || st === "approved";
+            }).length;
+            // PEAKOPS_REPORT_TASKS_COMPLETED_V2 (2026-05-05)
+            // "Tasks Completed" counts both approved AND complete
+            // task statuses. The earlier counter only counted
+            // approved, which contradicted the per-task panel below
+            // (which shows "Complete" for status === "complete").
+            // Complete-but-not-yet-approved is still done work — it
+            // belongs in this counter; the Supervisor Approval tile
+            // tracks the stronger approval signal separately.
+            const tasksCompleted = jobs.filter((j: any) => {
+              const rs = String(j?.reviewStatus || "").trim().toLowerCase();
+              const st = String(j?.status || "").trim().toLowerCase();
+              return rs === "approved" || st === "approved" || st === "complete" || st === "review";
+            }).length;
+            const photosTotal = evidence.length;
+            const noteText = String(notesDoc?.incidentNotes || "").trim();
+            const noteSite = String(notesDoc?.siteNotes || "").trim();
+            const hasNote = !!(noteText || noteSite);
+            const allApproved = tasksTotal > 0 && tasksApproved === tasksTotal;
+            const Stat = ({ label, value, tone }: { label: string; value: string; tone?: "green" | "amber" | "neutral" }) => (
+              <div
+                style={{
+                  borderRadius: 8,
+                  border:
+                    tone === "green" ? "1px solid rgba(34,197,94,0.30)"
+                    : tone === "amber" ? "1px solid rgba(200,168,78,0.30)"
+                    : "1px solid #1c1c1c",
+                  background:
+                    tone === "green" ? "rgba(34,197,94,0.06)"
+                    : tone === "amber" ? "rgba(200,168,78,0.06)"
+                    : "#0b0b0b",
+                  padding: "12px 14px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: "0.10em",
+                    color: "#6f6f6f",
+                    textTransform: "uppercase" as const,
+                  }}
+                >
+                  {label}
+                </div>
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 22,
+                    fontWeight: 700,
+                    color:
+                      tone === "green" ? "#86efac"
+                      : tone === "amber" ? "#C8A84E"
+                      : "#f5f5f5",
+                  }}
+                >
+                  {value}
+                </div>
+              </div>
+            );
+            return (
+              // PEAKOPS_REPORT_METRICS_SECTION_V1 (2026-05-11)
+              // Report Presentation 1.0 — wrap the metrics grid in a
+              // section with eyebrow + subhead so it reads as a
+              // documented section ("Record Summary") consistent with
+              // Audit Trail / Field Evidence below, instead of as
+              // four loose cards.
+              <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                    Record Summary
+                  </h2>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                    Read-at-a-glance counts across this record.
+                  </div>
+                </div>
+                <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+                  <Stat label="Photos" value={String(photosTotal)} />
+                  <Stat label="Notes" value={hasNote ? "Recorded" : "—"} />
+                  <Stat
+                    label="Tasks Completed"
+                    value={tasksTotal > 0 ? `${tasksCompleted} / ${tasksTotal}` : "—"}
+                    // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05) /
+                    // PEAKOPS_REPORT_TASKS_COMPLETED_V2 (2026-05-05)
+                    tone={
+                      reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
+                        ? "green"
+                        : tasksCompleted > 0 ? "amber" : "neutral"
+                    }
+                  />
+                  <Stat
+                    label="Supervisor Approval"
+                    // PEAKOPS_UI_STATE_ORCHESTRATION_V1 (2026-05-05)
+                    value={
+                      reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
+                        ? "Approved"
+                        : tasksApproved > 0
+                          ? "Partial"
+                          : "Pending"
+                    }
+                    tone={
+                      reportUiState.displayState === "Closed" || reportUiState.displayState === "Approved"
+                        ? "green"
+                        : tasksApproved > 0
+                          ? "amber"
+                          : "neutral"
+                    }
+                  />
+                </div>
+              </section>
+            );
+          })()}
+
+          {/* PEAKOPS_REPORT_PREVIEW_REMOVED_V2 (2026-05-05)
+              The Preview Report collapsible panel was removed in this
+              rebuild. Everything it showed (status, stat strip, field
+              note, tasks, timeline) now lives directly on the page as
+              its own report sections — no toggle, no double-click to
+              see the proof of work. */}
+          {/* PEAKOPS_REPORT_TIMELINE_V2 (2026-05-05)
+              Vertical timeline. Replaces the older "Timeline
+              Highlights" filtered list — the report shows the full
+              chronology. Events are sorted ascending so the reader
+              can follow the narrative top to bottom. Labels come
+              from prettyTimelineType (single source of truth across
+              IncidentClient/ReviewClient/SummaryClient). */}
+          {(() => {
+            const sorted = (Array.isArray(timeline) ? [...timeline] : []).sort((a: any, b: any) => {
+              const ax = Number(a?.occurredAt?._seconds || 0);
+              const bx = Number(b?.occurredAt?._seconds || 0);
+              return ax - bx;
+            });
+            return (
+              <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+                {/* PEAKOPS_REPORT_TIMELINE_HEADER_V1 (2026-05-11)
+                    Report Presentation 1.0 — eyebrow + subhead pair
+                    so the timeline reads as a true audit trail
+                    rather than a casual event list. */}
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                    Audit Trail
+                  </h2>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                    Chronological record of field activity, captures, and approvals.
+                  </div>
+                </div>
+                {sorted.length === 0 ? (
+                  <div style={{ marginTop: 14, fontSize: 13, color: "#6f6f6f" }}>
+                    No events recorded for this job yet.
+                  </div>
+                ) : (
+                  <ol style={{ listStyle: "none", margin: "12px 0 0", padding: 0, position: "relative" }}>
+                    {sorted.map((t: any, i: number) => {
+                      const ty = String(t.type || "").toLowerCase();
+                      const tone =
+                        ty === "incident_closed" || ty === "job_approved" || ty === "field_approved"
+                          ? "#22c55e"
+                          : ty === "field_submitted" || ty === "job_completed"
+                            ? "#C8A84E"
+                            : ty === "job_rejected"
+                              ? "#fca5a5"
+                              : "#6f6f6f";
+                      const isLast = i === sorted.length - 1;
                       return (
-                        <div key={id} className="relative min-w-[110px] w-[110px] aspect-[4/3] rounded-lg overflow-hidden border border-white/10 bg-black">
-                          {u ? (
-                            <img
-                              src={u}
-                              className="w-full h-full object-cover"
-                              onLoad={() => {
-                                setThumbStatusById((m) => ({ ...m, [id]: 200 }));
-                                setThumbErrById((m) => ({ ...m, [id]: "" }));
+                        <li
+                          key={String(t.id || `${ty}_${i}`)}
+                          style={{
+                            position: "relative",
+                            paddingLeft: 22,
+                            paddingBottom: isLast ? 0 : 14,
+                          }}
+                        >
+                          <span
+                            aria-hidden
+                            style={{
+                              position: "absolute",
+                              left: 4,
+                              top: 5,
+                              width: 8,
+                              height: 8,
+                              borderRadius: 999,
+                              background: tone,
+                              boxShadow: "0 0 0 2px #0b0b0b",
+                            }}
+                          />
+                          {!isLast ? (
+                            <span
+                              aria-hidden
+                              style={{
+                                position: "absolute",
+                                left: 7,
+                                top: 14,
+                                bottom: 0,
+                                width: 1,
+                                background: "#1c1c1c",
                               }}
-                              onError={() => { void renewThumbOnce(ev, u); }}
                             />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-500 text-center px-1">
-                              {thumbErrById[id] ? "Unavailable" : "Loading…"}
-                            </div>
-                          )}
-                          {process.env.NODE_ENV !== "production" && thumbErrById[id] ? (
-                            <div className="absolute left-1 right-1 bottom-1 text-[9px] text-red-200 truncate bg-black/70 px-1 py-0.5 rounded border border-red-400/30">
-                              {thumbErrById[id]}
-                            </div>
                           ) : null}
-                          {process.env.NODE_ENV !== "production" && thumbDebugOverlay ? (
-                            <div className="absolute left-1 right-1 top-1 text-[9px] text-cyan-100 bg-black/65 px-1 py-0.5 rounded border border-cyan-300/30">
-                              <div className="truncate">id={id}</div>
-                              <div className="truncate">bucket={String(thumbBucketById[id] || "")}</div>
-                              <div className="truncate">path={String(thumbPathById[id] || "")}</div>
-                              <div className="truncate">mint_http={String(thumbStatusById[id] || 0)}</div>
-                              <div className="truncate">mint_error={String(thumbMintErrorById[id] || "-")}</div>
-                              <div className="truncate">probe_http={String(thumbProbeStatusById[id] || "-")}</div>
-                              <div className="truncate">probe_error={String(thumbProbeErrorById[id] || "-")}</div>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+                            <div style={{ fontSize: 13, color: "#f5f5f5", fontWeight: 600 }}>
+                              {prettyTimelineType(String(t.type || ""))}
                             </div>
+                            <div style={{ fontSize: 11, color: "#6f6f6f", whiteSpace: "nowrap" }}>
+                              {fmtFullDateTime(t?.occurredAt?._seconds) || fmtAgo(t?.occurredAt?._seconds)}
+                            </div>
+                          </div>
+                          {(() => {
+                            const who = formatActor(t?.actor);
+                            if (!who) return null;
+                            return (
+                              <div style={{ marginTop: 2, fontSize: 11, color: "#6f6f6f" }}>
+                                by {who}
+                              </div>
+                            );
+                          })()}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+              </section>
+            );
+          })()}
+
+          {/* PEAKOPS_REPORT_PHOTOS_V1 (2026-05-05)
+              Photos grid. Single uniform grid of every photo on the
+              job, click-to-enlarge in a new tab using the existing
+              minted thumb URL. Replaces the per-task evidence
+              accordion that used to live here — per-task photos are
+              still surfaced inside the Tasks section below for
+              proof-of-work association. */}
+          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+            {/* PEAKOPS_REPORT_PHOTOS_HEADER_V1 (2026-05-11)
+                Report Presentation 1.0 — eyebrow + subhead so the
+                evidence grid reads as documented attachments, not a
+                casual photo dump. */}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                  Field Evidence
+                </h2>
+                <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                  Photos captured at the site. Click any image to view full size.
+                </div>
+              </div>
+              <span style={{ fontSize: 11, color: "#6f6f6f", whiteSpace: "nowrap", marginTop: 2 }}>
+                {evidence.length} {evidence.length === 1 ? "photo" : "photos"}
+              </span>
+            </div>
+            {evidence.length === 0 ? (
+              <div style={{ marginTop: 14, fontSize: 13, color: "#6f6f6f" }}>
+                Add photos to show what happened on site.
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginTop: 14,
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+                  gap: 10,
+                }}
+              >
+                {evidence.map((ev) => {
+                  const id = String(ev.id || "");
+                  const u = thumbUrl[id];
+                  const fileName = String(ev?.file?.originalName || "").trim();
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => { if (u) window.open(u, "_blank", "noreferrer"); }}
+                      title={fileName || "View photo"}
+                      style={{
+                        position: "relative",
+                        aspectRatio: "4 / 3",
+                        borderRadius: 8,
+                        overflow: "hidden",
+                        border: "1px solid #1a1a1a",
+                        background: "#000",
+                        padding: 0,
+                        cursor: u ? "pointer" : "default",
+                      }}
+                    >
+                      {u ? (
+                        <img
+                          src={u}
+                          alt={fileName || "Photo"}
+                          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                          onLoad={() => {
+                            setThumbStatusById((m) => ({ ...m, [id]: 200 }));
+                            setThumbErrById((m) => ({ ...m, [id]: "" }));
+                          }}
+                          onError={() => { void renewThumbOnce(ev, u); }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 10,
+                            color: "#6f6f6f",
+                            textAlign: "center",
+                            padding: 4,
+                          }}
+                        >
+                          {thumbErrById[id] ? "Unavailable" : "Loading…"}
+                        </div>
+                      )}
+                      {process.env.NODE_ENV !== "production" && thumbDebugOverlay ? (
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: 4, right: 4, top: 4,
+                            background: "rgba(0,0,0,0.65)",
+                            color: "#a5f3fc",
+                            fontSize: 9,
+                            border: "1px solid rgba(103,232,249,0.3)",
+                            borderRadius: 3,
+                            padding: "2px 4px",
+                            textAlign: "left",
+                          }}
+                        >
+                          <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>id={id}</div>
+                          <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>mint={String(thumbStatusById[id] || 0)}</div>
+                        </div>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* PEAKOPS_REPORT_NOTES_V1 (2026-05-05)
+              Notes section. Spec asks for "Field Notes" + an optional
+              "Supervisor Notes" subsection. The supervisor-notes
+              field doesn't exist in the data model yet — we render
+              the Field Notes block today and leave the Supervisor
+              Notes block as a clean empty state so the section
+              reads consistently when the data ships. */}
+          {(() => {
+            const incidentNotesText = String(notesDoc?.incidentNotes || "").trim();
+            const siteNotesText = String(notesDoc?.siteNotes || "").trim();
+            const status = String(notesDoc?.notesStatus || "").trim().toLowerCase();
+            const bypassReason = String(notesDoc?.notesBypassReason || "").trim();
+            const hasNoteText = !!incidentNotesText || !!siteNotesText;
+            const bypassed = !hasNoteText && (status === "bypassed" || !!bypassReason || notesBypassedLocal);
+            return (
+              <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+                {/* PEAKOPS_REPORT_NOTES_HEADER_V1 (2026-05-11)
+                    Report Presentation 1.0 — eyebrow + subhead. */}
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                    Field Notes
+                  </h2>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                    Narrative recorded by the field team.
+                  </div>
+                </div>
+                <div style={{ marginTop: 14 }}>
+                  {/* PEAKOPS_REPORT_NOTES_INNER_LABEL_REMOVED_V1 (2026-05-11)
+                      The inner "Field Notes" sub-label was redundant
+                      with the section eyebrow above (also "Field
+                      Notes"); the section header carries the label now. */}
+                  {bypassed ? (
+                    <div style={{ marginTop: 6, fontSize: 13, color: "#b3b3b3", lineHeight: 1.55 }}>
+                      No additional note provided. Photos were submitted as sufficient documentation.
+                    </div>
+                  ) : hasNoteText ? (
+                    <div style={{ marginTop: 6 }}>
+                      {incidentNotesText ? (
+                        <div style={{ fontSize: 13, color: "#f5f5f5", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                          {incidentNotesText}
+                        </div>
+                      ) : null}
+                      {siteNotesText ? (
+                        <div style={{ marginTop: incidentNotesText ? 10 : 0, fontSize: 12, color: "#b3b3b3", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                          <span style={{ color: "#6f6f6f", fontWeight: 600, marginRight: 6 }}>Site:</span>
+                          {siteNotesText}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 6, fontSize: 13, color: "#6f6f6f" }}>
+                      Add a short note for the supervisor.
+                    </div>
+                  )}
+                </div>
+              </section>
+            );
+          })()}
+
+          {/* PEAKOPS_REPORT_TASKS_V1 (2026-05-05)
+              Tasks section — per-task name, status pill, vendor (if
+              assigned), and a small thumbnail strip of the photos
+              attached to that task. This is the proof-of-work
+              section: it answers "what did you do, and where are
+              the pictures." */}
+          <section style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "18px 20px" }}>
+            {/* PEAKOPS_REPORT_TASKS_HEADER_V1 (2026-05-11)
+                Report Presentation 1.0 — eyebrow + subhead pair so
+                tasks read as documented proof-of-work units rather
+                than a generic list. */}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", color: "#8a8a8a", textTransform: "uppercase" as const }}>
+                  Tasks &amp; Proof of Work
+                </h2>
+                <div style={{ marginTop: 4, fontSize: 11, color: "#6f6f6f", lineHeight: 1.5 }}>
+                  Per-task status, vendor, and attached photos.
+                </div>
+              </div>
+              {jobs.length > 0 ? (
+                <span style={{ fontSize: 11, color: "#6f6f6f", whiteSpace: "nowrap", marginTop: 2 }}>
+                  {jobs.length} {jobs.length === 1 ? "task" : "tasks"}
+                </span>
+              ) : null}
+            </div>
+            {jobs.length === 0 ? (
+              <div style={{ marginTop: 12, fontSize: 13, color: "#6f6f6f" }}>
+                No tasks recorded on this job.
+              </div>
+            ) : (
+              <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                {jobs.map((j: any) => {
+                  const id = String(j?.id || j?.jobId || "");
+                  const decisionRaw = String(j?.reviewStatus || "").toLowerCase() || String(j?.status || "").toLowerCase();
+                  const decision =
+                    decisionRaw === "approved" ? "Approved"
+                      : decisionRaw === "rejected" || decisionRaw === "revision_requested" ? "Sent back"
+                      : decisionRaw === "review" ? "In review"
+                      : decisionRaw === "complete" ? "Complete"
+                      : decisionRaw ? decisionRaw[0].toUpperCase() + decisionRaw.slice(1) : "—";
+                  const photos = (evidenceByJob[id] || []) as EvidenceDoc[];
+                  const _vName = String(j?.vendorName || "").trim();
+                  const _vId = String(j?.vendorId || "").trim();
+                  const _archived = !!_vId && archivedVendorIds.has(_vId);
+                  return (
+                    <div key={id} style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#050505", padding: "12px 14px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ minWidth: 0, fontSize: 14, fontWeight: 600, color: "#f5f5f5" }}>
+                          {String(j?.title || "Untitled task")}
+                        </div>
+                        <span
+                          style={{
+                            fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" as const,
+                            padding: "3px 8px", borderRadius: 999,
+                            border: decision === "Approved" ? "1px solid rgba(34,197,94,0.35)"
+                              : decision === "Sent back" ? "1px solid rgba(220,60,60,0.35)"
+                              : "1px solid #1c1c1c",
+                            background: decision === "Approved" ? "rgba(34,197,94,0.10)"
+                              : decision === "Sent back" ? "rgba(220,60,60,0.08)"
+                              : "#0b0b0b",
+                            color: decision === "Approved" ? "#86efac"
+                              : decision === "Sent back" ? "#fca5a5"
+                              : "#b3b3b3",
+                          }}
+                        >
+                          {decision}
+                        </span>
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 11, color: "#6f6f6f", display: "flex", flexWrap: "wrap", gap: 10 }}>
+                        {(() => {
+                          const who = formatActor(j?.approvedBy);
+                          return who ? <span>Approved by {who}</span> : null;
+                        })()}
+                        {_vName ? (
+                          <span title="Service provider">
+                            Vendor: <span style={{ color: "#b3b3b3" }}>{_vName}{_archived ? " (archived)" : ""}</span>
+                          </span>
+                        ) : null}
+                        <span>{photos.length} {photos.length === 1 ? "photo" : "photos"}</span>
+                      </div>
+                      {photos.length > 0 ? (
+                        <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {photos.slice(0, 8).map((ev) => {
+                            const eid = String(ev.id || "");
+                            const u = thumbUrl[eid];
+                            return (
+                              <button
+                                key={eid}
+                                type="button"
+                                onClick={() => { if (u) window.open(u, "_blank", "noreferrer"); }}
+                                title={String(ev?.file?.originalName || "View photo")}
+                                style={{
+                                  width: 78,
+                                  height: 58,
+                                  borderRadius: 6,
+                                  overflow: "hidden",
+                                  border: "1px solid #1a1a1a",
+                                  background: "#000",
+                                  padding: 0,
+                                  cursor: u ? "pointer" : "default",
+                                }}
+                              >
+                                {u ? (
+                                  <img
+                                    src={u}
+                                    alt={String(ev?.file?.originalName || "Photo")}
+                                    style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                                    onLoad={() => {
+                                      setThumbStatusById((m) => ({ ...m, [eid]: 200 }));
+                                      setThumbErrById((m) => ({ ...m, [eid]: "" }));
+                                    }}
+                                    onError={() => { void renewThumbOnce(ev, u); }}
+                                  />
+                                ) : (
+                                  <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "#6f6f6f" }}>
+                                    {thumbErrById[eid] ? "Unavailable" : "…"}
+                                  </div>
+                                )}
+                              </button>
+                            );
+                          })}
+                          {photos.length > 8 ? (
+                            <span style={{ fontSize: 10, color: "#6f6f6f", alignSelf: "center" }}>
+                              +{photos.length - 8} more
+                            </span>
                           ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* PEAKOPS_SUMMARY_BREAKDOWN_ROLE_GATE_V1 (2026-04-28) /
+              PEAKOPS_INTERNAL_TASK_STATUS_V1 (2026-05-05)
+              Internal-only diagnostic view, gated on supervisor +
+              admin roles and wrapped in `peakops-no-print` so it
+              never appears on a printed/shared report. Counts feed
+              off the same statusCounts the rest of the page reads
+              from. */}
+          {(() => {
+            const role = String(authClaims?.role || "").toLowerCase();
+            const isSupervisor = role === "supervisor" || role === "admin";
+            if (!isSupervisor) return null;
+            return (
+              <section className="peakops-no-print" style={{ borderRadius: 10, border: "1px solid #1c1c1c", background: "#0b0b0b", padding: "12px 16px" }}>
+                <details>
+                  <summary style={{ cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: "0.10em", color: "#6f6f6f", textTransform: "uppercase" as const }}>
+                    Internal task status
+                  </summary>
+                  <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 6 }}>
+                    {Object.entries(statusCounts).map(([k, v]) => {
+                      const label =
+                        k === "open" ? "Open"
+                        : k === "in_progress" ? "In Progress"
+                        : k === "complete" ? "Complete"
+                        : k === "review" ? "Awaiting Review"
+                        : k === "approved" ? "Approved"
+                        : k === "rejected" ? "Sent Back"
+                        : k.charAt(0).toUpperCase() + k.slice(1).replace(/_/g, " ");
+                      return (
+                        <div key={k} style={{ borderRadius: 8, border: "1px solid #1c1c1c", background: "#050505", padding: "8px 10px" }}>
+                          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.04em", color: "#6f6f6f" }}>{label}</div>
+                          <div style={{ fontSize: 18, fontWeight: 700, color: "#f5f5f5", marginTop: 2 }}>{v}</div>
                         </div>
                       );
                     })}
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
+                </details>
+              </section>
+            );
+          })()}
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="text-xs uppercase tracking-wide text-gray-400">Timeline Highlights</div>
-          <div className="mt-3 space-y-2">
-            {timelineHighlights.length === 0 ? (
-              <div className="text-sm text-gray-400">No highlights yet.</div>
-            ) : timelineHighlights.map((t) => (
-              <div key={t.id} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-sm text-gray-100">{String(t.type || "event")}</div>
-                  <div className="text-xs text-gray-500 truncate">
-                    actor: {String(t.actor || "system")} {t.refId ? `• ref: ${String(t.refId)}` : ""}
+          {/* PEAKOPS_REPORT_DEV_TOOLS_V1 (2026-05-05)
+              Dev tools (refresh thumbnails, force remint, debug
+              overlay, fix unassigned) live in their own collapsed
+              disclosure at the bottom of the page, gated on
+              devMode. */}
+          {devMode ? (
+            <section className="peakops-no-print" style={{ borderRadius: 10, border: "1px dashed #1c1c1c", background: "#050505", padding: "10px 14px" }}>
+              <details>
+                <summary style={{ cursor: "pointer", fontSize: 10, color: "#6f6f6f", letterSpacing: "0.06em", textTransform: "uppercase" as const }}>
+                  Dev tools
+                </summary>
+                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  <button
+                    type="button"
+                    style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", cursor: "pointer" }}
+                    onClick={() => refreshVisibleThumbsDebounced()}
+                  >
+                    Refresh thumbnails
+                  </button>
+                  <button
+                    type="button"
+                    style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", cursor: "pointer" }}
+                    onClick={() => forceRemintVisibleThumbs()}
+                  >
+                    Force remint URLs
+                  </button>
+                  <button
+                    type="button"
+                    style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4, border: "1px solid #1c1c1c", background: "#0b0b0b", color: "#b3b3b3", cursor: "pointer" }}
+                    onClick={() => setThumbDebugOverlay((v) => !v)}
+                  >
+                    {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
+                  </button>
+                  {unassignedEvidenceCount > 0 ? (
+                    <button
+                      type="button"
+                      style={{
+                        fontSize: 10,
+                        padding: "3px 8px",
+                        borderRadius: 4,
+                        border: "1px solid rgba(200,168,78,0.3)",
+                        background: "rgba(200,168,78,0.08)",
+                        color: "#C8A84E",
+                        fontWeight: 600,
+                        cursor: fixUnassignedBusy ? "not-allowed" : "pointer",
+                        opacity: fixUnassignedBusy ? 0.5 : 1,
+                      }}
+                      onClick={() => { void fixUnassignedEvidence(); }}
+                      disabled={fixUnassignedBusy}
+                    >
+                      {fixUnassignedBusy ? "Fixing…" : "Fix unassigned (dev)"}
+                    </button>
+                  ) : null}
+                </div>
+                {lastArtifactFilename ? (
+                  <div style={{ marginTop: 8, fontSize: 10, color: "#6f6f6f" }}>
+                    Last report:{" "}
+                    <span style={{ color: "#b3b3b3", fontFamily: "ui-monospace, monospace" }}>{lastArtifactFilename}</span>
+                    {lastArtifactAt ? ` • ${lastArtifactAt}` : ""}
                   </div>
-                </div>
-                <div className="text-xs text-gray-500">{fmtAgo(t.occurredAt?._seconds)}</div>
-              </div>
-            ))}
-          </div>
-        </section>
+                ) : null}
+              </details>
+            </section>
+          ) : null}
 
-        {loading ? <div className="text-xs text-gray-500">Refreshing summary…</div> : null}
-      </div>
-    </main>
+          {/* PEAKOPS_REPORT_FOOTER_V1 (2026-05-05)
+              Footer with the certification line + a "Generated"
+              timestamp. The timestamp prefers the Firestore
+              packetMeta.exportedAt (ISO string from the most recent
+              successful export); falls back to lastArtifactAt
+              (in-memory after a download) or a dash. */}
+          <footer
+            style={{
+              borderRadius: 10,
+              border: "1px solid #1c1c1c",
+              background: "transparent",
+              padding: "16px 18px",
+              marginTop: 4,
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 12, color: "#b3b3b3", lineHeight: 1.6 }}>
+              This report represents the final record of work performed.
+            </div>
+            <div style={{ marginTop: 6, fontSize: 10, color: "#6f6f6f", letterSpacing: "0.06em" }}>
+              {(() => {
+                const exported = String(incident?.packetMeta?.exportedAt || "").trim();
+                if (exported) {
+                  try {
+                    return `Generated ${new Date(exported).toLocaleString()}`;
+                  } catch {
+                    return `Generated ${exported}`;
+                  }
+                }
+                if (lastArtifactAt) return `Generated ${lastArtifactAt}`;
+                return "Report has not been generated yet.";
+              })()}
+            </div>
+          </footer>
+
+          {loading ? <div style={{ fontSize: 11, color: "#6f6f6f", textAlign: "center" }}>Refreshing…</div> : null}
+        </div>
+      </main>
     </>
   );
-}
+  }

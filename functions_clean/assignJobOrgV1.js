@@ -2,6 +2,12 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_APPROVE,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -27,7 +33,43 @@ exports.assignJobOrgV1 = onRequest({ cors: true }, async (req, res) => {
     const incidentId = mustStr(body.incidentId, "incidentId");
     const jobId = mustStr(body.jobId, "jobId");
     const assignedOrgId = mustStr(body.assignedOrgId || body.targetOrgId, "assignedOrgId");
-    const actorUid = String(body.actorUid || body.actorId || "dev").trim() || "dev";
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 5: assigning the org-owner of a job is an
+    // admin-or-supervisor action. Upgraded from the Slice 2
+    // membership-only gate. Field crews execute work but do not
+    // re-assign job ownership — that's a dispatch decision.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_APPROVE);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[assignJobOrgV1] authz_denied", {
+        fn: "assignJobOrgV1",
+        orgId,
+        incidentId,
+        jobId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_APPROVE,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[assignJobOrgV1] authz_ok", {
+      fn: "assignJobOrgV1",
+      orgId,
+      incidentId,
+      jobId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_APPROVE,
+    });
 
     const db = getFirestore();
     const ref = db.collection("incidents").doc(incidentId).collection("jobs").doc(jobId);

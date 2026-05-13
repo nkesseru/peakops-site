@@ -5,7 +5,7 @@ export function fnBase(): string {
   const b =
     process.env.FN_BASE ||
     process.env.NEXT_PUBLIC_FN_BASE ||
-    "http://127.0.0.1:5001/peakops-pilot/us-central1";
+    "http://127.0.0.1:5004/peakops-pilot/us-central1";
   return b.replace(/\/+$/, "");
 }
 

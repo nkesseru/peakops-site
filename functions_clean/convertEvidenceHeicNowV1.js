@@ -14,6 +14,12 @@ const {
   shortErr,
   deriveDerivativePaths,
 } = require("./evidenceDerivatives");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_ADMIN_ONLY,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 const HEIC_PATCH_VERSION = "heic_patch_v2_2026_02_20";
@@ -87,12 +93,51 @@ exports.convertEvidenceHeicNowV1 = onRequest({ cors: true }, async (req, res) =>
     if (req.method !== "POST") return j(res, 405, { ok: false, error: "POST required" });
     const body = (typeof req.body === "object" && req.body) ? req.body : {};
 
-    const orgId = String(body.orgId || "").trim();
+    // PEAKOPS_AUTHZ_ADMIN_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7.1: HEIC re-conversion is admin-only. Tightened
+    // orgId from optional → required (was previously a hint for
+    // filtering; now load-bearing for the membership gate). The
+    // function still resolves the evidence doc by evidenceId or
+    // storagePath; orgId now scopes the lookup AND gates the call.
+    const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const evidenceId = String(body.evidenceId || "").trim();
     const reqStoragePath = String(body.storagePath || "").trim();
     const forceMarkDone = String(body.forceMarkDone || "").toLowerCase() === "true" || body.forceMarkDone === true;
     if (!evidenceId && !reqStoragePath) return j(res, 400, { ok: false, error: "evidenceId or storagePath required" });
+
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_ADMIN_ONLY);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[convertEvidenceHeicNowV1] authz_denied", {
+        fn: "convertEvidenceHeicNowV1",
+        orgId,
+        incidentId,
+        evidenceId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_ADMIN_ONLY,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[convertEvidenceHeicNowV1] authz_ok", {
+      fn: "convertEvidenceHeicNowV1",
+      orgId,
+      incidentId,
+      evidenceId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_ADMIN_ONLY,
+    });
+
     const db = getFirestore();
     const resolved = await resolveEvidenceDoc({
       db,

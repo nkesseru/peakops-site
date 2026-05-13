@@ -6,6 +6,15 @@ import { getFunctionsBase } from "@/lib/functionsBase";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { incidentStatusLabel } from "@/lib/incidents/incidentStatus";
+// PEAKOPS_JOB_DETAIL_AUTH_V1 (2026-05-08) — Slice Start Job 1.3.
+// Production smoke caught markJobCompleteV1 returning 401 Missing
+// Authorization header. Root cause: this file's local postJson +
+// refresh() were using bare fetch() without the Firebase ID token.
+// Route every /api/fn/* call through authedFetch so the
+// enforceOrgAndProxy chain accepts them, matching the pattern
+// IncidentClient established in Slice 17 / 17C.
+import { authedFetch } from "@/../lib/apiClient";
+import { logAnalyticsEvent } from "@/../lib/analytics";
 
 type JobDoc = {
   id: string;
@@ -42,6 +51,24 @@ function fmtStatus(s: any) {
   return String(s || "open").toLowerCase();
 }
 
+// PEAKOPS_TASK_STATUS_HUMANIZE_V1 (2026-04-29)
+// Customer-facing label for raw lifecycle tokens. Never render the
+// underlying string ("complete", "in_progress", "approved", …) directly.
+function humanizeTaskStatus(s: string): string {
+  switch (String(s || "").toLowerCase()) {
+    case "open": return "Open";
+    case "assigned": return "Assigned";
+    case "in_progress":
+    case "in-progress": return "In progress";
+    case "complete": return "Complete";
+    case "review": return "In review";
+    case "approved": return "Approved";
+    case "rejected":
+    case "revision_requested": return "Sent back";
+    default: return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Open";
+  }
+}
+
 function statusChip(status: string) {
   if (status === "complete") return "bg-emerald-500/15 border-emerald-300/30 text-emerald-100";
   if (status === "assigned") return "bg-blue-500/15 border-blue-300/30 text-blue-100";
@@ -75,7 +102,12 @@ function actorEmail() {
 }
 
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  // PEAKOPS_JOB_DETAIL_AUTH_V1 (2026-05-08) — must use authedFetch.
+  // Bare fetch was producing 401 Missing Authorization on
+  // markJobCompleteV1 / updateJobNotesV1 in production. Proxy-side
+  // enforceOrgAndProxy validates the Firebase ID token and only
+  // accepts requests that carry it.
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -96,7 +128,13 @@ export default function JobDetailClient({
 }) {
   const router = useRouter();
   const functionsBase = getFunctionsBase();
-  const [orgId, setOrgId] = useState(String(initialOrgId || "").trim() || "riverbend-electric");
+  // PEAKOPS_JOB_DETAIL_ORGID_V1
+  // orgId comes from the URL via initialOrgId (the parent page reads ?orgId=
+  // and passes it as a prop). No hardcoded fallback — if the URL has no
+  // ?orgId=, downstream API calls target an empty org and surface a clear
+  // "orgId required" error instead of silently cross-fetching from a random
+  // default org.
+  const [orgId, setOrgId] = useState(String(initialOrgId || "").trim());
   const [incidentId, setIncidentId] = useState(String(initialIncidentId || "").trim());
   const [job, setJob] = useState<JobDoc | null>(null);
   const [incident, setIncident] = useState<{ id: string; title?: string; status?: string } | null>(null);
@@ -117,6 +155,7 @@ export default function JobDetailClient({
   const [thumbProbeErrorById, setThumbProbeErrorById] = useState<Record<string, string>>({});
   const [thumbPathById, setThumbPathById] = useState<Record<string, string>>({});
   const [thumbBucketById, setThumbBucketById] = useState<Record<string, string>>({});
+  const [thumbBrokenById, setThumbBrokenById] = useState<Record<string, boolean>>({});
   const [thumbDebugOverlay, setThumbDebugOverlay] = useState(false);
   const [previewOpen, setPreviewOpen] = useState<{ src: string; name: string } | null>(null);
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
@@ -133,21 +172,26 @@ export default function JobDetailClient({
   }, [job]);
 
   async function refresh() {
-    if (!functionsBase) return;
+    // PEAKOPS_JOB_DETAIL_AUTH_V1 (2026-05-08) — route through the
+    // Vercel /api/fn/* proxy via authedFetch, NOT a direct cloud-
+    // function URL. The direct-URL pattern (a) skipped the bearer
+    // token and (b) required a non-empty getFunctionsBase() — both
+    // of which broke this page in production. The relative path
+    // works regardless of env-var config and the proxy injects the
+    // server-derived actor identity from the verified token, so
+    // actorUid / actorRole query params drop here too.
     if (!incidentId) {
-      setErr("Missing incidentId. Open this page from Incident -> Jobs -> Open.");
+      setErr("This page is missing incident context. Open it from a task tile on the incident page.");
       return;
     }
     setLoading(true);
     setErr("");
     try {
       const url =
-        `${functionsBase}/getJobV1?orgId=${encodeURIComponent(orgId)}` +
+        `/api/fn/getJobV1?orgId=${encodeURIComponent(orgId)}` +
         `&incidentId=${encodeURIComponent(incidentId)}` +
-        `&jobId=${encodeURIComponent(jobId)}` +
-        `&actorUid=${encodeURIComponent(actorUid())}` +
-        `&actorRole=${encodeURIComponent(actorRole())}`;
-      const res = await fetch(url);
+        `&jobId=${encodeURIComponent(jobId)}`;
+      const res = await authedFetch(url);
       const txt = await res.text();
       const out = txt ? JSON.parse(txt) : {};
       if (!res.ok || !out?.ok) throw new Error(out?.error || `getJobV1 failed (${res.status})`);
@@ -155,7 +199,6 @@ export default function JobDetailClient({
       setIncident(out.incident || null);
       setEvidence(Array.isArray(out.evidence) ? out.evidence : []);
       setNotes(String(out?.job?.notes || ""));
-      const assignedOrg = String(out?.job?.assignedOrgId || "").trim();
       const incidentOrg = String(out?.incident?.orgId || "").trim();
 
       // Keep API calls pinned to the canonical incident org.
@@ -191,7 +234,7 @@ export default function JobDetailClient({
       for (const ev of evidence) {
         const ref = getBestEvidencePreviewRef(ev);
         const key = String(ev.id || "").trim();
-        if (!ref?.storagePath || !ref?.bucket || thumbUrlByKey[key]) continue;
+        if (!ref?.storagePath || !ref?.bucket || thumbUrlByKey[key] || thumbBrokenById[key]) continue;
         try {
           if (isDev) {
             console.debug("[job-thumb-readurl]", {
@@ -213,6 +256,7 @@ export default function JobDetailClient({
           if (cancelled) return;
           if (out?.ok && out?.url) {
             setThumbUrlByKey((m) => ({ ...m, [key]: String(out.url) }));
+            setThumbBrokenById((m) => ({ ...m, [key]: false }));
             setThumbRetryById((m) => ({ ...m, [key]: 0 }));
             setThumbPathById((m) => ({ ...m, [key]: String(ref.storagePath) }));
             setThumbBucketById((m) => ({ ...m, [key]: String(ref.bucket) }));
@@ -239,7 +283,7 @@ export default function JobDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [evidence, incidentId, orgId, thumbUrlByKey]);
+  }, [evidence, incidentId, orgId, thumbUrlByKey, thumbBrokenById]);
 
   async function renewThumbOnce(ev: EvidenceDoc, currentSrc: string) {
     const id = String(ev?.id || "").trim();
@@ -282,6 +326,7 @@ export default function JobDetailClient({
       const sep = out.url.includes("?") ? "&" : "?";
       const fresh = `${out.url}${sep}v=${Date.now()}`;
       setThumbUrlByKey((m) => ({ ...m, [id]: fresh }));
+      setThumbBrokenById((m) => ({ ...m, [id]: false }));
       setThumbRetryById((m) => ({ ...m, [id]: 0 }));
       setThumbPathById((m) => ({ ...m, [id]: String(ref.storagePath) }));
       setThumbBucketById((m) => ({ ...m, [id]: String(ref.bucket) }));
@@ -383,7 +428,14 @@ export default function JobDetailClient({
         actorRole: actorRole(),
         actorEmail: actorEmail(),
       });
+      void logAnalyticsEvent("JOB_COMPLETED", {
+        incidentId,
+        orgId,
+        jobId,
+      });
       await refresh();
+      if (incidentId) router.push(`/incidents/${encodeURIComponent(incidentId)}`);
+      else router.back();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -425,9 +477,18 @@ export default function JobDetailClient({
       <div className="max-w-5xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-xs uppercase tracking-wide text-gray-400">Job Detail</div>
-            <h1 className="text-xl font-semibold">{job?.title || jobId}</h1>
-            <div className="text-xs text-gray-400">jobId: {jobId}</div>
+            <div className="text-xs uppercase tracking-wide text-gray-400">Task</div>
+            {/* PEAKOPS_JOB_DETAIL_HYDRATION_V1 (2026-05-08) —
+                Slice Start Job 1.3. Show a neutral loading state
+                instead of the "Task" placeholder while the initial
+                refresh is in flight. The placeholder reads as
+                "Task" only when there's no job AND we're not
+                loading (rare — error / not-found cases). */}
+            <h1 className="text-xl font-semibold">
+              {job?.title
+                ? job.title
+                : (loading ? <span className="text-gray-400">Loading…</span> : "Task")}
+            </h1>
           </div>
           <button
             type="button"
@@ -444,14 +505,17 @@ export default function JobDetailClient({
         {err ? <div className="text-sm text-amber-300">{err}</div> : null}
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className={"px-2 py-0.5 rounded-full border text-xs " + statusChip(fmtStatus(job?.status))}>
-              {fmtStatus(job?.status)}
+              {humanizeTaskStatus(fmtStatus(job?.status))}
             </span>
-            <span className="text-xs text-gray-400">incident: {incident?.title || incident?.id || incidentId || "-"}</span>
-            <span className="text-xs text-gray-400">incidentStatus: {incident ? incidentStatusLabel(incident?.status) : "-"}</span>
+            {incident?.title ? (
+              <span className="text-xs text-gray-400">on {incident.title}</span>
+            ) : null}
+            {incident ? (
+              <span className="text-xs text-gray-400">· {incidentStatusLabel(incident?.status)}</span>
+            ) : null}
           </div>
-          <div className="text-xs text-gray-400">org: {orgId} · assignedOrg: {String(job?.assignedOrgId || "-")}</div>
         </section>
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
@@ -497,17 +561,18 @@ export default function JobDetailClient({
             {evidence.map((ev) => {
               const key = String(ev.id || "").trim();
               const src = String(thumbUrlByKey[key] || "").trim();
+              const thumbBroken = !!thumbBrokenById[key];
               return (
                 <div key={ev.id} className="rounded border border-white/10 bg-black/25 p-2">
-                  <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence")}</div>
-                  {src ? (
+                  <div className="text-[11px] truncate text-gray-300">{String(ev?.file?.originalName || "Photo")}</div>
+                  {src && !thumbBroken ? (
                     <button
                       type="button"
                       className="mt-1 block w-full text-left cursor-pointer group"
                       onClick={() =>
                         setPreviewOpen({
                           src,
-                          name: String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence"),
+                          name: String(ev?.file?.originalName || "Photo"),
                         })
                       }
                     >
@@ -518,9 +583,14 @@ export default function JobDetailClient({
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={src}
-                          alt={String(ev?.file?.originalName || ev?.fileName || ev?.label || ev?.id || "Untitled evidence")}
+                          alt={String(ev?.file?.originalName || "Photo")}
                           className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
-                          onError={() => { void renewThumbOnce(ev, src); }}
+                          onError={() => {
+                            setThumbBrokenById((m) => ({ ...m, [key]: true }));
+                            if (!isEmulatorThumbMode && Number(thumbRetryById[key] || 0) < 1) {
+                              void renewThumbOnce(ev, src);
+                            }
+                          }}
                         />
                       </div>
                     </button>
@@ -552,7 +622,18 @@ export default function JobDetailClient({
                 </div>
               );
             })}
-            {evidence.length === 0 ? <div className="text-xs text-gray-400">No evidence linked to this job yet.</div> : null}
+            {/* PEAKOPS_JOB_DETAIL_HYDRATION_V1 (2026-05-08) —
+                "No evidence attached" only when the load has
+                actually completed. While loading is in flight, show
+                a quiet skeleton so the buyer doesn't see a false
+                empty state during the post-redirect hydration race. */}
+            {evidence.length === 0 ? (
+              loading ? (
+                <div className="text-xs text-gray-400">Loading evidence…</div>
+              ) : (
+                <div className="text-xs text-gray-400">No evidence attached to this task yet.</div>
+              )
+            ) : null}
           </div>
         </section>
 
@@ -562,7 +643,7 @@ export default function JobDetailClient({
             className="w-full min-h-[120px] rounded border border-white/15 bg-black/40 px-3 py-2 text-sm"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="Job notes"
+            placeholder="Task notes"
           />
           <div className="flex items-center gap-2">
             <button

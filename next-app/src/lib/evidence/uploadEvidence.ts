@@ -1,6 +1,7 @@
 "use client";
 
 import { isHeicEvidence } from "./isHeicEvidence";
+import { authedFetch } from "@/lib/apiClient";
 
 export type StartFieldSessionResp = {
   ok: boolean;
@@ -56,8 +57,28 @@ function isLocalDev(): boolean {
   }
 }
 
+// PEAKOPS_EMULATOR_FUNCTIONS_BASE_V1
+// Authoritative signal for "the upload proxy is safe to call". We key off the
+// actual Cloud Functions base the app is pointed at — NOT the browser
+// hostname — because a developer can (and does) run the UI on localhost while
+// NEXT_PUBLIC_FUNCTIONS_BASE=https://us-central1-<project>.cloudfunctions.net.
+// In that case the functions are production, uploadEvidenceProxyV1 returns
+// 403 dev_only_endpoint, and the client must take the direct-signed-URL path.
+function isEmulatorFunctionsBase(): boolean {
+  const base = String(process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "").trim();
+  if (!base) return false;
+  try {
+    const host = new URL(base).hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost";
+  } catch {
+    return false;
+  }
+}
+
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  // PEAKOPS_PHASE3_AUTHED_FETCH_V1 (2026-04-27)
+  // Only called with /api/fn/* URLs; route through authedFetch.
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -97,11 +118,34 @@ async function uploadBytesToUploadUrl(opts: {
   const method = String(opts.uploadMethod || "PUT").toUpperCase();
   const ct = opts.file.type || "application/octet-stream";
 
+  // PEAKOPS_UPLOAD_PROXY_DEV_GATE_V2
+  // The uploadEvidenceProxyV1 endpoint is dev-only (returns 403
+  // dev_only_endpoint when deployed to production). Guarantee the proxy
+  // branch can only fire when BOTH:
+  //   (a) the Cloud Functions base points at an emulator (localhost / 127.0.0.1),
+  //       i.e. we're actually routing function calls to the local emulator, AND
+  //   (b) the backend returned an emulator-shaped Storage uploadUrl.
+  // The earlier heuristic checked window.location.hostname, which wrongly
+  // treated "UI served from localhost while pointed at prod Functions" as
+  // local dev — that configuration is common during staging smoke tests and
+  // was the reason the proxy kept getting called in prod. Now it hinges on
+  // NEXT_PUBLIC_FUNCTIONS_BASE, which is the only signal that actually tells
+  // us which backend we're talking to.
+  const emulatorFunctionsBase = isEmulatorFunctionsBase();
   const isLocalStorageEmulatorUrl =
     /127\.0\.0\.1:9199/i.test(String(opts.uploadUrl || "")) ||
     /localhost:9199/i.test(String(opts.uploadUrl || ""));
 
-  if (isLocalStorageEmulatorUrl && opts.proxyArgs) {
+  if (isLocalStorageEmulatorUrl && !emulatorFunctionsBase) {
+    throw new Error(
+      `Upload URL points at the Storage emulator (${opts.uploadUrl}) but ` +
+      `NEXT_PUBLIC_FUNCTIONS_BASE is not an emulator endpoint. Verify that ` +
+      `createEvidenceUploadUrlV1 is returning real signed URLs in production ` +
+      `and that NEXT_PUBLIC_FUNCTIONS_BASE is set correctly for this environment.`
+    );
+  }
+
+  if (emulatorFunctionsBase && isLocalStorageEmulatorUrl && opts.proxyArgs) {
     const q = new URLSearchParams({
       orgId: String(opts.proxyArgs.orgId || ""),
       incidentId: String(opts.proxyArgs.incidentId || ""),
@@ -112,7 +156,7 @@ async function uploadBytesToUploadUrl(opts: {
       originalName: String(opts.proxyArgs.originalName || opts.file.name || "upload.bin"),
     });
 
-    const res = await fetch(`/api/fn/uploadEvidenceProxyV1?${q.toString()}`, {
+    const res = await authedFetch(`/api/fn/uploadEvidenceProxyV1?${q.toString()}`, {
       method: "POST",
       headers: { "content-type": ct },
       body: opts.file,
@@ -177,7 +221,7 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
   // 1) Ensure we have a sessionId
     let activeSessionId = String(args.sessionId || "").trim();
 
-console.warn("[uploadEvidence] step=start-session", {
+if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] step=start-session", {
   orgId,
   incidentId,
   fileName: file?.name,
@@ -185,6 +229,10 @@ console.warn("[uploadEvidence] step=start-session", {
 });
 
 onStatus?.("Starting field session…");
+  if (!activeSessionId) {
+    activeSessionId = await startFreshSession();
+    if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] created fresh sessionId", { sessionId: activeSessionId });
+  }
 
   // 2) Get uploadUrl + storagePath (retry once if session is stale)
   const requestUploadUrl = async (sidToUse: string): Promise<CreateUploadUrlResp> => {
@@ -198,7 +246,7 @@ onStatus?.("Starting field session…");
     });
   };
 
-  console.warn("[uploadEvidence] step=request-upload-url", { orgId, incidentId, incomingSessionId: activeSessionId, fileName: file?.name, contentType: file?.type });
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] step=request-upload-url", { orgId, incidentId, incomingSessionId: activeSessionId, fileName: file?.name, contentType: file?.type });
   onStatus?.("Requesting upload URL…");
   let createResp: CreateUploadUrlResp;
   try {
@@ -207,14 +255,14 @@ onStatus?.("Starting field session…");
     if (isSessionMissing(e)) {
       onStatus?.("Refreshing session…");
       activeSessionId = await startFreshSession();
-      console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
+      if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
       createResp = await requestUploadUrl(activeSessionId);
     } else {
       throw e;
     }
   }
 
-  console.warn("[uploadEvidence] createResp", createResp);
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] createResp", createResp);
   const uploadUrl = String(createResp.uploadUrl || "").trim();
   const storagePath = String(createResp.storagePath || "").trim();
   const bucket = String(createResp.bucket || "").trim();
@@ -224,7 +272,7 @@ onStatus?.("Starting field session…");
   }
 
   // 3) Upload bytes
-  console.warn("[uploadEvidence] step=upload-bytes", { uploadMethod: createResp.uploadMethod, storagePath: createResp.storagePath, bucket: createResp.bucket });
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] step=upload-bytes", { uploadMethod: createResp.uploadMethod, storagePath: createResp.storagePath, bucket: createResp.bucket });
   onStatus?.("Uploading…");
   await uploadBytesToUploadUrl({
     uploadUrl,
@@ -261,8 +309,8 @@ onStatus?.("Starting field session…");
     });
   };
 
-  console.warn("[uploadEvidence] step=add-evidence", { orgId, incidentId, incomingSessionId: activeSessionId, storagePath, bucket, fileName: file?.name, jobId });
-  onStatus?.("Securing evidence…");
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] step=add-evidence", { orgId, incidentId, incomingSessionId: activeSessionId, storagePath, bucket, fileName: file?.name, jobId });
+  onStatus?.("Saving photo…");
   let addResp: AddEvidenceResp;
   try {
     addResp = await postAddEvidence(activeSessionId);
@@ -270,7 +318,7 @@ onStatus?.("Starting field session…");
     if (isSessionMissing(e)) {
       onStatus?.("Refreshing session…");
       activeSessionId = await startFreshSession();
-      console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
+      if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] refreshed sessionId", { refreshedSessionId: activeSessionId });
       addResp = await postAddEvidence(activeSessionId);
     } else {
       throw e;
@@ -281,7 +329,7 @@ onStatus?.("Starting field session…");
     // leave disabled unless you’ve stabilized HEIC end-to-end
   }
 
-  console.warn("[uploadEvidence] success", { evidenceId: addResp?.evidenceId, finalSessionId: activeSessionId, registration: addResp });
-  onStatus?.("Secured ✅");
+  if (process.env.NODE_ENV !== "production") console.warn("[uploadEvidence] success", { evidenceId: addResp?.evidenceId, finalSessionId: activeSessionId, registration: addResp });
+  onStatus?.("Saved ✅");
   return addResp;
 }
