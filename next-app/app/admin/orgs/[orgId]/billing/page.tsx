@@ -21,10 +21,7 @@
 //   - Customer-facing self-serve billing.
 //   - Pricing-page changes.
 
-// Relative import — see /api/reports/[incidentId]/download/route.ts
-// for the rationale: tsconfig path alias `@/lib/*` resolves to
-// `src/lib/*` first, which is a different (older) firebaseAdmin.ts.
-import { adminDb } from "../../../../../lib/firebaseAdmin";
+import { getAdminDb } from "@/lib/firebaseAdmin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,7 +53,8 @@ type BillingDoc = {
 };
 
 async function loadBilling(orgId: string): Promise<{ data: BillingDoc; exists: boolean }> {
-  const snap = await adminDb.doc(`orgs/${orgId}/billing/state`).get();
+  const db = getAdminDb();
+  const snap = await db.doc(`orgs/${orgId}/billing/state`).get();
   if (!snap.exists) return { data: {}, exists: false };
   return { data: (snap.data() || {}) as BillingDoc, exists: true };
 }

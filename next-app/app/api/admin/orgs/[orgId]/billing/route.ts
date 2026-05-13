@@ -16,7 +16,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import { adminDb } from "../../../../../../lib/firebaseAdmin";
+import { getAdminDb } from "@/lib/firebaseAdmin";
 
 export const runtime = "nodejs";
 
@@ -101,7 +101,7 @@ export async function POST(
   // want trailing newlines / formatting).
   update.notes = String(fd.get("notes") || "");
 
-  await adminDb
+  await getAdminDb()
     .doc(`orgs/${cleanOrgId}/billing/state`)
     .set(update, { merge: true });
 
