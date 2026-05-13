@@ -1,5 +1,6 @@
 import "./globals.css";
 import Script from "next/script";
+import AnalyticsProvider from "../components/AnalyticsProvider";
 
 export default function RootLayout({
   children,
@@ -10,6 +11,7 @@ export default function RootLayout({
     <html lang="en">
       <body style={{ margin: 0, backgroundColor: "#000", color: "#fff" }}>
         {children}
+        <AnalyticsProvider />
         {process.env.NEXT_PUBLIC_CLARITY_PROJECT_ID && (
           <Script
             id="ms-clarity"

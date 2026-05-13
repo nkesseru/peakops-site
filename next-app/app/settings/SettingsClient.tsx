@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import { logAnalyticsEvent } from "@/lib/analytics";
 import {
   DEFAULT_USER_SETTINGS,
   loadUserSettings,
@@ -68,6 +69,11 @@ export default function SettingsClient() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toastMsg, setToastMsg] = useState<string>("");
+
+  useEffect(() => {
+    if (authLoading) return;
+    void logAnalyticsEvent("SETTINGS_OPENED");
+  }, [authLoading]);
 
   // Load settings once auth has resolved + we have a uid.
   useEffect(() => {

@@ -204,6 +204,11 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
   }, [functionsBase]);
+
+  useEffect(() => {
+    if (!incidentId) return;
+    void logAnalyticsEvent("SUMMARY_VIEWED", { incidentId });
+  }, [incidentId]);
   // PEAKOPS_SUMMARY_ORGID_URL_V1
   // orgId is URL-sourced, matching IncidentClient/ReviewClient/NotesClient and
   // the single-source-of-truth rule for this app. No hardcoded fallback — if

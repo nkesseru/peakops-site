@@ -504,6 +504,11 @@ const invalidIncidentRoute = useMemo(() => {
     ensureDemoActor(incidentId);
   }, [incidentId]);
 
+  useEffect(() => {
+    if (!incidentId) return;
+    void logAnalyticsEvent("INCIDENT_OPENED", { incidentId });
+  }, [incidentId]);
+
   // PEAKOPS_NOTES_SAVED_FOCUS: re-check when user returns from Notes page
   useEffect(() => {
     try { outboxFlushSupervisorRequests(); } catch {}

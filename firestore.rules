@@ -217,6 +217,37 @@ service cloud.firestore {
       }
     }
 
+    // ─── Analytics events (append-only product telemetry) ─
+    // PEAKOPS_ANALYTICS_EVENTS_V1 (2026-05-13)
+    // Append-only client writes from next-app/lib/analytics.ts.
+    // Auth required; userId must match the caller; strict field
+    // allowlist mirrors the 10 fields the helper writes. Reads /
+    // updates / deletes are server-side only (Admin SDK bypasses
+    // rules, so analytics queries from Cloud Functions still work).
+    match /analytics_events/{eventId} {
+      allow create: if request.auth != null
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          "type",
+          "metadata",
+          "orgId",
+          "incidentId",
+          "userId",
+          "role",
+          "route",
+          "sessionId",
+          "buildVersion",
+          "createdAt"
+        ])
+        && request.resource.data.type is string
+        && request.resource.data.userId is string
+        && request.resource.data.sessionId is string
+        && request.resource.data.route is string
+        && request.resource.data.createdAt is timestamp;
+
+      allow read, update, delete: if false;
+    }
+
     // ─── Default deny ────────────────────────────────────
     // Everything not matched above is denied. The prior rules' wide-
     // open `match /{document=**} { allow read, write: if true; }`
