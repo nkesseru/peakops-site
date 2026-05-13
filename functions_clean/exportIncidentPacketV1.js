@@ -8,6 +8,10 @@ const {
   httpStatusFromAuthzError,
   ROLES_GENERATE_REPORT,
 } = require("./_authz");
+const {
+  requireEntitlement,
+  httpStatusFromEntitlementError,
+} = require("./_entitlement");
 const { extractActorUid } = require("./_actor");
 const fs = require("fs");
 const path = require("path");
@@ -1237,6 +1241,41 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       uid: actorUid,
       role: actorRole,
       requiredRoles: ROLES_GENERATE_REPORT,
+    });
+
+    // PEAKOPS_ENTITLEMENT_GATE_V1 (2026-05-13)
+    // Sprint 1 entitlement spine: gate signed-packet generation on
+    // the riskDefenseModule entitlement. Runs AFTER assertActorRole
+    // so unauthenticated/non-member callers continue to return
+    // 401/403 and never reach this point (which would otherwise leak
+    // the existence of the org/incident via a 402 response). Failure
+    // paths return 402 + structured { reason, featureKey } so the
+    // client surfaces the right UpgradePrompt copy. No artifact
+    // logic is touched.
+    try {
+      await requireEntitlement(orgId, "riskDefenseModule");
+    } catch (e) {
+      console.warn("[exportIncidentPacketV1] entitlement_denied", {
+        fn: "exportIncidentPacketV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        featureKey: "riskDefenseModule",
+        reason: (e && e.details && e.details.reason) || null,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromEntitlementError(e), {
+        ok: false,
+        error: (e && e.details && e.details.reason) || "entitlement_required",
+        featureKey: "riskDefenseModule",
+      });
+    }
+    console.log("[exportIncidentPacketV1] entitlement_ok", {
+      fn: "exportIncidentPacketV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      featureKey: "riskDefenseModule",
     });
 
     const db = getFirestore();

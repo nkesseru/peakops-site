@@ -22,6 +22,7 @@ import { buildJobUiState } from "@/lib/incidents/resolveJobDisplayState";
 import { incidentPath } from "@/lib/navigation/incidentRoutes";
 import { authedFetch } from "@/lib/apiClient";
 import { logAnalyticsEvent } from "@/lib/analytics";
+import UpgradePrompt from "@/components/UpgradePrompt";
 import { useAuth } from "@/hooks/useAuth";
 import { displayIncidentTitle } from "@/lib/incidents/displayIncidentTitle";
 // PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) — Slice Start Job 1.0.
@@ -296,6 +297,11 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
   const thumbRefreshDebounceRef = useRef<any>(null);
   const [artifactBusy, setArtifactBusy] = useState(false);
+  const [upgrade, setUpgrade] = useState<{
+    open: boolean;
+    reason: string;
+    featureKey: string;
+  }>({ open: false, reason: "", featureKey: "" });
   // PEAKOPS_REPORT_AUTHED_DOWNLOAD_V1 (2026-05-01)
   // Distinct loading state for the actual ZIP download (separate from
   // `artifactBusy` which covers report *generation*). Lets the
@@ -955,6 +961,21 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         return;
       }
 
+      // PEAKOPS_ENTITLEMENT_GATE_V1 (2026-05-13)
+      // Sprint 1: surface UpgradePrompt for 402 (entitlement-denied)
+      // responses from exportIncidentPacketV1. Distinct from generic
+      // failure because the customer needs a "contact us to upgrade"
+      // path, not "please try again." Return early so the outer
+      // catch's generic toast does not fire alongside.
+      if (exportRes.status === 402) {
+        setUpgrade({
+          open: true,
+          reason: String(out?.error || ""),
+          featureKey: String(out?.featureKey || "riskDefenseModule"),
+        });
+        return;
+      }
+
       if (!exportRes.ok || !out?.ok) {
         throw new Error(out?.error || `exportIncidentPacketV1 failed (${exportRes.status})`);
       }
@@ -1573,6 +1594,13 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
   return (
     <>
+      <UpgradePrompt
+        open={upgrade.open}
+        featureKey={upgrade.featureKey}
+        reason={upgrade.reason}
+        orgId={orgId}
+        onClose={() => setUpgrade((s) => ({ ...s, open: false }))}
+      />
       <main
         className="min-h-screen p-4 peakops-report-root"
         style={{
