@@ -3,6 +3,10 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
+const {
+  requireEntitlement,
+  httpStatusFromEntitlementError,
+} = require("./_entitlement");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -70,6 +74,37 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
+
+    // PEAKOPS_ENTITLEMENT_GATE_V1 (2026-05-13)
+    // Sprint 1 entitlement spine: gate signed-packet generation on
+    // the riskDefenseModule entitlement. Runs immediately after
+    // orgId/incidentId validation and before any Firestore reads.
+    // Failure paths return 402 + structured { reason, featureKey }
+    // so the client surfaces the right UpgradePrompt copy. No
+    // artifact logic is touched.
+    try {
+      await requireEntitlement(orgId, "riskDefenseModule");
+    } catch (e) {
+      console.warn("[exportIncidentPacketV1] entitlement_denied", {
+        fn: "exportIncidentPacketV1",
+        orgId,
+        incidentId,
+        featureKey: "riskDefenseModule",
+        reason: (e && e.details && e.details.reason) || null,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromEntitlementError(e), {
+        ok: false,
+        error: (e && e.details && e.details.reason) || "entitlement_required",
+        featureKey: "riskDefenseModule",
+      });
+    }
+    console.log("[exportIncidentPacketV1] entitlement_ok", {
+      fn: "exportIncidentPacketV1",
+      orgId,
+      incidentId,
+      featureKey: "riskDefenseModule",
+    });
 
     const db = getFirestore();
     const incRef = db.collection("incidents").doc(incidentId);

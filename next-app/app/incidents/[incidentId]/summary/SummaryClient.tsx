@@ -17,6 +17,7 @@ import {
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
+import UpgradePrompt from "@/components/UpgradePrompt";
 
 type IncidentDoc = {
   id: string;
@@ -118,6 +119,11 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
   const thumbRefreshDebounceRef = useRef<any>(null);
   const [artifactBusy, setArtifactBusy] = useState(false);
+  const [upgrade, setUpgrade] = useState<{
+    open: boolean;
+    reason: string;
+    featureKey: string;
+  }>({ open: false, reason: "", featureKey: "" });
   const [fixUnassignedBusy, setFixUnassignedBusy] = useState(false);
   const [artifactHint, setArtifactHint] = useState("Artifact not generated yet.");
   const [artifactToast, setArtifactToast] = useState("");
@@ -361,6 +367,19 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
       const exportTxt = await exportRes.text();
       const out = exportTxt ? JSON.parse(exportTxt) : {};
+
+      // PEAKOPS_ENTITLEMENT_GATE_V1 (2026-05-13)
+      // Sprint 1: surface UpgradePrompt for 402 (entitlement-denied)
+      // responses from exportIncidentPacketV1. Return early so the
+      // generic failure path below does not fire alongside.
+      if (exportRes.status === 402) {
+        setUpgrade({
+          open: true,
+          reason: String(out?.error || ""),
+          featureKey: String(out?.featureKey || "riskDefenseModule"),
+        });
+        return;
+      }
 
       if (!exportRes.ok || !out?.ok) {
         throw new Error(out?.error || `exportIncidentPacketV1 failed (${exportRes.status})`);
@@ -733,6 +752,13 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
   return (
     <>
+      <UpgradePrompt
+        open={upgrade.open}
+        featureKey={upgrade.featureKey}
+        reason={upgrade.reason}
+        orgId={orgId}
+        onClose={() => setUpgrade((s) => ({ ...s, open: false }))}
+      />
       {truthError ? (
         <div className="mb-4 rounded-xl border border-red-500/40 bg-red-950/40 p-4 text-red-100">
           <div className="text-sm font-semibold">⚠ System inconsistency detected</div>
