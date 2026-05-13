@@ -144,3 +144,14 @@ next-app/.env.local
 !next-app/.env.local.example
 peakops_*.sh
 *.bak
+
+# Cleanup 1.0 (repo-hygiene-1.0) — prevent re-introduction of removed
+# legacy trees + scratch artifacts. Top-level archive/ deliberately
+# ignored (the One-True-Stack archive/local-only/ rules above are a
+# subset of this and remain valid). Override per-file with `git add -f`
+# only if the path is intentionally part of the repo.
+archive/
+mvp_snapshots/
+/tmp/
+unzipped_regpacket_inc_*/
+google-service-account.json
