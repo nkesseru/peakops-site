@@ -548,11 +548,13 @@ async function markArrived() {
       return out;
     }
 
+    // Optimistic UI event id (stable across try/catch).
+    // Hoisted to function scope so the outer catch (which uses
+    // __optId to revert the optimistic timeline insert) can see it.
+    const __optId = "opt_arrived_" + Date.now();
     try {
       setArriving(true);
 
-      // Optimistic UI event id (stable across try/catch)
-      let __optId = "opt_arrived_" + Date.now();
       try {
         const __sid = sid || "";
         if (__sid) {
