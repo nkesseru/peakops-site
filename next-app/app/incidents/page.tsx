@@ -7,6 +7,7 @@ import { signOutUser } from "@/lib/auth";
 import { useAuth } from "@/hooks/useAuth";
 import { incidentPath } from "@/lib/navigation/incidentRoutes";
 import { authedFetch } from "@/lib/apiClient";
+import { logAnalyticsEvent } from "@/lib/analytics";
 import { resolveJobDisplayState, jobDisplayStateKey, type JobDisplayState } from "@/lib/incidents/resolveJobDisplayState";
 import NotificationsBell from "@/components/NotificationsBell";
 import RequireAuth from "@/components/RequireAuth";
@@ -1731,6 +1732,13 @@ function IncidentsIndexBody() {
       if (!res.ok || !out?.ok) {
         throw new Error(out?.error || `createIncidentV1 failed: ${res.status}`);
       }
+      void logAnalyticsEvent("INCIDENT_CREATED", {
+        incidentId: newIncidentId,
+        orgId,
+        jobType: createJobChip.normalized,
+        priority: createPriority,
+        hasLocation: Boolean(createLocation.trim()),
+      });
       router.push(incidentPath(newIncidentId, orgId));
     } catch (e: any) {
       if (process.env.NODE_ENV !== "production") {

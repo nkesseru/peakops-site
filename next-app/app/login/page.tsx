@@ -6,6 +6,7 @@ import { isSignInWithEmailLink } from "firebase/auth";
 import { auth } from "../../lib/firebaseClient";
 import { completeSignIn, sendMagicLink, signOutUser } from "../../lib/auth";
 import { useAuth } from "../../hooks/useAuth";
+import { logAnalyticsEvent } from "../../lib/analytics";
 
 // PEAKOPS_LOGIN_FRIENDLY_AUTH_ERRORS_V1 (2026-05-11)
 // Map raw Firebase Auth error codes to calm, operational copy that
@@ -134,6 +135,7 @@ export default function LoginPage() {
         const cred = await completeSignIn();
         if (cancelled) return;
         if (cred) {
+          void logAnalyticsEvent("USER_SIGNED_IN", { source: "magic_link" });
           // Strip the now-consumed magic-link query off the URL so a
           // refresh doesn't try to redeem the same code again.
           try {
@@ -191,6 +193,7 @@ export default function LoginPage() {
       if (Array.isArray(orgIds) && orgIds.length > 0) {
         firstOrgId = String(orgIds[0] || "").trim();
       }
+      void logAnalyticsEvent("USER_SIGNED_IN", { source: "continue_as" });
       routeAfterSignIn(firstOrgId);
     } catch (e) {
       setError(friendlyAuthError(e));

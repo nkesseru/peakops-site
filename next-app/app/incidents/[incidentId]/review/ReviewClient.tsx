@@ -19,6 +19,7 @@ import { getFileField } from "@/lib/evidence/fileField";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl } from "@/lib/evidence/signedThumb";
 import { incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
 import { authedFetch } from "@/lib/apiClient";
+import { logAnalyticsEvent } from "@/lib/analytics";
 import { useAuth } from "@/hooks/useAuth";
 import { deriveNextAction, type NextActionKey } from "@/lib/workflow/nextBestAction";
 import { displayIncidentTitle } from "@/lib/incidents/displayIncidentTitle";
@@ -389,6 +390,17 @@ function getTileMedia(ev: EvidenceDoc): TileMedia {
 
 export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const router = useRouter();
+
+  // PEAKOPS_ANALYTICS_EVENTS_V1 (2026-05-12) — fire REVIEW_OPENED once
+  // per mounted incidentId. Guarded with a ref so React strict-mode
+  // double-mount in dev doesn't double-log.
+  const reviewOpenedLoggedRef = useRef<string>("");
+  useEffect(() => {
+    const iid = String(incidentId || "").trim();
+    if (!iid || reviewOpenedLoggedRef.current === iid) return;
+    reviewOpenedLoggedRef.current = iid;
+    void logAnalyticsEvent("REVIEW_OPENED", { incidentId: iid });
+  }, [incidentId]);
 
   // PEAKOPS_REVIEW_QUEUE_V1
   const [queueItems, setQueueItems] = useState<Array<{ incidentId: string; orgId: string }>>([]);
@@ -1222,13 +1234,30 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     }
 
     console.log("[Approve&Lock] approved", jid);
+    void logAnalyticsEvent("SUPERVISOR_APPROVED", {
+      incidentId: iid,
+      orgId: oid,
+      jobId: jid,
+      source: "approve_and_lock",
+    });
 
     // Auto-generate compliance artifact
     try {
       const artifactUrl = await exportIncidentPacket(oid, iid);
       console.log("[Artifact] generated", artifactUrl);
+      void logAnalyticsEvent("EXPORT_GENERATED", {
+        incidentId: iid,
+        orgId: oid,
+        source: "approve_and_lock_auto",
+      });
     } catch (artifactErr) {
       console.error("[Artifact] auto-generate failed after approval", artifactErr);
+      void logAnalyticsEvent("EXPORT_FAILED", {
+        incidentId: iid,
+        orgId: oid,
+        source: "approve_and_lock_auto",
+        reason: String((artifactErr as any)?.message || artifactErr || "").slice(0, 120),
+      });
     }
 
     try {
@@ -1326,6 +1355,12 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         approvedBy: "supervisor_ui",
       }, demoHeaders);
       if (!out?.ok) throw new Error(out?.error || "approveJobV1 failed");
+      void logAnalyticsEvent("SUPERVISOR_APPROVED", {
+        incidentId,
+        orgId: activeOrgId || orgId,
+        jobId,
+        source: "approve_job",
+      });
       await refreshAfterMutation((rows) => {
         const j = (rows || []).find((x: any) => String(x?.id || x?.jobId || "") === String(jobId || ""));
         const st = String(j?.status || "").toLowerCase();
@@ -1384,6 +1419,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       let out: any = {};
       try { out = txt ? JSON.parse(txt) : {}; } catch {}
       if (!res.ok || !out?.ok) throw new Error(out?.error || `closeIncidentV1 failed: ${res.status}`);
+      void logAnalyticsEvent("INCIDENT_CLOSED", {
+        incidentId: iid,
+        orgId: oid,
+        source: "review_client",
+      });
       toast("Job closed.", 2200);
       await refresh();
     } catch (e: any) {

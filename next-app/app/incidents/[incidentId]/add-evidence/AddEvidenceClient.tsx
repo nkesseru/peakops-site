@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getFunctionsBase } from "@/lib/functionsBase";
 import { authedFetch } from "@/lib/apiClient";
+import { logAnalyticsEvent } from "@/lib/analytics";
 type Item = { id: string; file: File; url: string };
 type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string; status?: string };
 
@@ -351,6 +352,12 @@ useEffect(() => {
       // proof their work was saved before the route transition.
       const savedLabel = totalToUpload === 1 ? "Photo saved" : `${totalToUpload} photos saved`;
       setStatus(`✓ ${savedLabel}`);
+      void logAnalyticsEvent("EVIDENCE_UPLOADED", {
+        incidentId,
+        orgId,
+        count: totalToUpload,
+        attachedToJob: Boolean(selectedJobId),
+      });
       // Clear queue
       setItems((prev) => {
         try { prev.forEach((x) => URL.revokeObjectURL(x.url)); } catch {}

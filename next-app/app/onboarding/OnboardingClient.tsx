@@ -34,6 +34,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
+import { logAnalyticsEvent } from "@/lib/analytics";
 import {
   getIndustryProfile,
   type IndustryKey,
@@ -216,6 +217,20 @@ export default function OnboardingClient() {
     return Math.max(0, Math.min(STEPS.length - 1, n));
   })();
   const [stepIdx, setStepIdx] = useState<number>(requestedStep);
+
+  // PEAKOPS_ANALYTICS_EVENTS_V1 (2026-05-12) — emit ONBOARDING_STARTED once
+  // per browser session when the user lands on this client. The
+  // sessionStorage guard keeps step-back nav from re-firing.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const k = "peakops_onboarding_started_logged";
+      if (window.sessionStorage.getItem(k)) return;
+      window.sessionStorage.setItem(k, "1");
+    } catch { /* sessionStorage unavailable — fire anyway */ }
+    void logAnalyticsEvent("ONBOARDING_STARTED", { stepIdx: requestedStep });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Org id passed through to the eventual hand-off into /incidents.
   // Defaults to the demo org so a developer running through this
@@ -1201,6 +1216,7 @@ export default function OnboardingClient() {
       case "ready":
         // Fire-and-forget the completion timestamp save, then nav.
         void persistStep("ready");
+        void logAnalyticsEvent("ONBOARDING_COMPLETED", { orgId });
         try {
           router.push(`/incidents${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`);
         } catch { /* swallow nav errors */ }

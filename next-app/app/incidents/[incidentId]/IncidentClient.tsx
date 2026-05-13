@@ -25,6 +25,7 @@ import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenc
 import { deriveFieldIncidentStatus } from "@/lib/workflow/fieldIncidentStatus";
 import { hasUsableOrgId, incidentPath, notesPath, reviewPath, summaryPath } from "@/lib/navigation/incidentRoutes";
 import { authedFetch } from "@/lib/apiClient";
+import { logAnalyticsEvent } from "@/lib/analytics";
 import { useAuth } from "@/hooks/useAuth";
 import { deriveNextAction, type NextActionKey } from "@/lib/workflow/nextBestAction";
 import { incidentStatusLabel, deriveDisplayStatus } from "@/lib/incidents/incidentStatus";
@@ -719,6 +720,10 @@ async function markArrived() {
       if (!res.ok || !out?.ok || !out?.sessionId) {
         throw new Error(out?.error || `startFieldSessionV1 failed (${res.status})`);
       }
+      void logAnalyticsEvent("FIELD_SESSION_STARTED", {
+        incidentId,
+        orgId: org,
+      });
       return String(out.sessionId);
     }
 
@@ -747,6 +752,11 @@ async function markArrived() {
       // block clears it.
       arrivingRef.current = true;
       setArriving(true);
+      void logAnalyticsEvent("ARRIVE_CLICKED", {
+        incidentId,
+        orgId: org,
+        hasExistingSession: Boolean(sid),
+      });
 
       // Optimistic UI event id (stable across try/catch)
       __optId = "opt_arrived_" + Date.now();
@@ -1746,6 +1756,11 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       });
       const out = await res.json().catch(() => ({}));
       if (!res.ok || !out?.ok) throw new Error(out?.error || `closeIncidentV1 failed (${res.status})`);
+      void logAnalyticsEvent("INCIDENT_CLOSED", {
+        incidentId,
+        orgId: requestOrgId,
+        source: "incident_client",
+      });
       setIncidentStatus("closed");
       await refresh();
       toast("Job closed ✓", 2200);
@@ -1777,6 +1792,12 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         actorEmail: actorEmail(),
       });
       if (!out?.ok) throw new Error(out?.error || "createJobV1 failed");
+      void logAnalyticsEvent("JOB_CREATED", {
+        incidentId,
+        orgId,
+        jobId: String(out?.jobId || out?.id || ""),
+        hasAssignee: Boolean(String(jobAssignedTo || "").trim()),
+      });
 
       // PEAKOPS_AUTO_ATTACH_ON_CREATE_V1 (2026-04-29)
       // The user thinks in "incident → photos → tasks", not in

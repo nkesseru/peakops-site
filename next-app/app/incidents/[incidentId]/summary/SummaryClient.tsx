@@ -21,6 +21,7 @@ import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill 
 import { buildJobUiState } from "@/lib/incidents/resolveJobDisplayState";
 import { incidentPath } from "@/lib/navigation/incidentRoutes";
 import { authedFetch } from "@/lib/apiClient";
+import { logAnalyticsEvent } from "@/lib/analytics";
 import { useAuth } from "@/hooks/useAuth";
 import { displayIncidentTitle } from "@/lib/incidents/displayIncidentTitle";
 // PEAKOPS_REPORT_HEADER_VIEW_V1 (2026-05-08) — Slice Start Job 1.0.
@@ -971,6 +972,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       const ok = await downloadAuthedZip(href, filename);
       if (!ok) return;
 
+      void logAnalyticsEvent("EXPORT_GENERATED", {
+        incidentId,
+        orgId: activeOrgId,
+        source: opts.forceRegenerate ? "summary_regenerate" : "summary_export",
+      });
+
       setArtifactUrl(href);
       setArtifactReady(true);
       setLastArtifactFilename(filename);
@@ -990,6 +997,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         // eslint-disable-next-line no-console
         console.warn("[summary] artifact download failed", String(e?.message || e));
       }
+      void logAnalyticsEvent("EXPORT_FAILED", {
+        incidentId,
+        orgId: activeOrgId,
+        source: opts.forceRegenerate ? "summary_regenerate" : "summary_export",
+        reason: String(e?.message || e || "").slice(0, 120),
+      });
       setArtifactToast("We couldn't generate the report. Please try again.");
       window.setTimeout(() => setArtifactToast(""), 3500);
     } finally {

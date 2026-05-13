@@ -14,6 +14,7 @@ import { incidentStatusLabel } from "@/lib/incidents/incidentStatus";
 // enforceOrgAndProxy chain accepts them, matching the pattern
 // IncidentClient established in Slice 17 / 17C.
 import { authedFetch } from "@/../lib/apiClient";
+import { logAnalyticsEvent } from "@/../lib/analytics";
 
 type JobDoc = {
   id: string;
@@ -426,6 +427,11 @@ export default function JobDetailClient({
         actorUid: actorUid(),
         actorRole: actorRole(),
         actorEmail: actorEmail(),
+      });
+      void logAnalyticsEvent("JOB_COMPLETED", {
+        incidentId,
+        orgId,
+        jobId,
       });
       await refresh();
       if (incidentId) router.push(`/incidents/${encodeURIComponent(incidentId)}`);
