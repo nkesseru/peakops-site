@@ -1399,7 +1399,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
             const out: any = await postJson(`/api/fn/assignEvidenceToJobV1`, {
               orgId,
               incidentId,
-              evidenceId: id,
+              evidenceId,
               jobId: jid,
             });
             if (!out?.ok) throw new Error(out?.error || "assignEvidenceToJobV1 failed");
