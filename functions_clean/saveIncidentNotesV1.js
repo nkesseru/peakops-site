@@ -2,6 +2,12 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 const db = getFirestore();
@@ -34,9 +40,43 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(b.orgId, "orgId");
     const incidentId = mustStr(b.incidentId, "incidentId");
 
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 4: notes are field-or-above. Field crews routinely
+    // append to incident notes from the field surface, so the gate
+    // accepts admin/supervisor/field/owner. Viewer is denied.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, b));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[saveIncidentNotesV1] authz_denied", {
+        fn: "saveIncidentNotesV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[saveIncidentNotesV1] authz_ok", {
+      fn: "saveIncidentNotesV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
     const incidentNotes = String(b.incidentNotes || "");
     const siteNotes = String(b.siteNotes || "");
-    const updatedBy = String(b.updatedBy || "ui");
+    const updatedBy = String(actorUid || b.updatedBy || "ui");
 
     const ref = db.doc(`orgs/${orgId}/incidents/${incidentId}/notes/main`);
     await ref.set(
