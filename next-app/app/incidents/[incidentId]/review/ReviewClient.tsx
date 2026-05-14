@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { enqueueSupervisorRequestUpdate, enqueueSupervisorRequestClear, outboxFlushSupervisorRequests } from "@/lib/offlineOutbox";
 import {
   clearRememberedFunctionsBase,
@@ -311,6 +311,7 @@ function getTileMedia(ev: EvidenceDoc): TileMedia {
 
 export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const router = useRouter();
+  const sp = useSearchParams();
 
   // PEAKOPS_REVIEW_QUEUE_V1
   const [queueItems, setQueueItems] = useState<Array<{ incidentId: string; orgId: string }>>([]);
@@ -1114,7 +1115,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             </button>
             <button
               className="px-3 py-2 rounded-xl bg-blue-600/20 border border-blue-400/20 text-blue-100 hover:bg-blue-600/25 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}/notes`)}
+              onClick={() => {
+                const o = String(sp?.get("orgId") || "").trim();
+                const qs = o ? `?orgId=${encodeURIComponent(o)}` : "";
+                router.push(`/incidents/${incidentId}/notes${qs}`);
+              }}
             >
               📝 Notes
             </button>
