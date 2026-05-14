@@ -11,6 +11,10 @@ export type EvidenceImageRef = {
 type MintInput = {
   orgId: string;
   incidentId: string;
+  // Optional; ignored inside mintEvidenceReadUrl but passed by every
+  // call site in IncidentClient.tsx. Declared here so TypeScript's
+  // excess-property check doesn't reject the call.
+  evidenceId?: string;
   bucket: string;
   storagePath: string;
   expiresSec?: number;
