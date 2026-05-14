@@ -78,7 +78,14 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
     const siteNotes = String(b.siteNotes || "");
     const updatedBy = String(actorUid || b.updatedBy || "ui");
 
-    const ref = db.doc(`orgs/${orgId}/incidents/${incidentId}/notes/main`);
+    // Notes content writes to the canonical top-level path
+    // `incidents/{incidentId}/notes/main` to match what the deployed
+    // production `getIncidentNotesV1` reads. The prior org-scoped
+    // path (`orgs/{orgId}/incidents/{incidentId}/notes/main`) was a
+    // dark-write: no reader on production looks there, so saves
+    // silently failed to surface on reload. orgId is preserved in
+    // the auth gate and in the NOTES_SAVED audit emission below.
+    const ref = db.doc(`incidents/${incidentId}/notes/main`);
     await ref.set(
       {
         incidentNotes,
