@@ -74,6 +74,7 @@ export default function TimelinePanel(props: {
   items: TimelineItem[];
   onJumpToEvidence?: (evidenceId: string) => void;
   highlightId?: string | null;
+  showHeader?: boolean;
 }) {
   const { items, onJumpToEvidence, highlightId } = props;
 
