@@ -2137,7 +2137,7 @@ useEffect(() => {
     if (!v) return;
     setHi(v);
     toast("Evidence secured ✓");
-    const t = setTimeout(() => toast(null), 2200);
+    const t = setTimeout(() => toast(""), 2200);
     // Scroll tile into view (if present)
     setTimeout(() => {
       const el = document.querySelector(`[data-ev-id="${v}"]`);

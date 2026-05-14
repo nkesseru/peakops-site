@@ -193,6 +193,7 @@ type JobDoc = {
   notes?: string | null;
   assignedTo?: string | null;
   rejectReason?: string | null;
+  locked?: boolean;
 };
 
 type IncidentDoc = {

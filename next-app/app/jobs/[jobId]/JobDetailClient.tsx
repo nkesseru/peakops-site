@@ -20,6 +20,8 @@ type JobDoc = {
 
 type EvidenceDoc = {
   id: string;
+  fileName?: string;
+  label?: string;
   file?: {
     originalName?: string;
     bucket?: string;
