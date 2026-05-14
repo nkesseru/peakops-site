@@ -1,24 +1,20 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { emitTimelineEvent } = require("./timelineEmit");
 
 if (!admin.apps.length) admin.initializeApp();
 const db = getFirestore();
 
-async function emitTimelineEvent({ orgId, incidentId, type, actor, sessionId, refId, meta }) {
-  const col = db.collection(`orgs/${orgId}/incidents/${incidentId}/timeline_events`);
-  await col.add({
-    orgId,
-    incidentId,
-    type,
-    actor: actor || "ui",
-    sessionId: sessionId || null,
-    refId: refId || null,
-    meta: meta || null,
-    v: 1,
-    occurredAt: FieldValue.serverTimestamp(),
-  });
-}
+// Timeline event emission delegated to the shared helper in
+// functions_clean/timelineEmit.js which writes to the canonical
+// top-level path `incidents/{incidentId}/timeline_events`. Prior
+// to this fix this file had its own local emitTimelineEvent that
+// hardcoded `orgs/{orgId}/incidents/{incidentId}/timeline_events`,
+// causing dual-write drift between paths because every OTHER
+// timeline emitter in the codebase (timelineEmit.js consumers:
+// addEvidenceV1, startFieldSessionV1, assignJobOrgV1, etc.) goes
+// to top-level. Notes saves now agree.
 
 
 function j(res, status, body) {
