@@ -2604,7 +2604,11 @@ useEffect(() => {
 	  hasEvidence={_hasEvidence}
 	  hasNotes={_hasNotes}
 	  hasApproved={_hasApproved}
-	  onOpenNotes={() => router.push("/incidents/" + incidentId + "/notes")}
+	  onOpenNotes={() => {
+    const o = String(sp?.get("orgId") || "").trim();
+    const qs = o ? `?orgId=${encodeURIComponent(o)}` : "";
+    router.push(`/incidents/${incidentId}/notes${qs}`);
+  }}
 	  onAddEvidence={() => {
       if (isClosed) return toast("Incident is closed (read-only).", 2600);
       if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
@@ -3163,7 +3167,11 @@ useEffect(() => {
                 ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
                 : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
             }
-            onClick={() => { try { router.push("/incidents/" + incidentId + "/notes"); } catch {} }}
+            onClick={() => { try {
+              const o = String(sp?.get("orgId") || "").trim();
+              const qs = o ? `?orgId=${encodeURIComponent(o)}` : "";
+              router.push(`/incidents/${incidentId}/notes${qs}`);
+            } catch {} }}
             title={_hasNotes ? "Notes saved (done)" : "Write notes"}>
             Notes
           </button>
