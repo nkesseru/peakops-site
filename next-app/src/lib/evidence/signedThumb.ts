@@ -1,5 +1,7 @@
 "use client";
 
+import { authedFetch } from "@/lib/apiClient";
+
 export type EvidenceImageRefKind = "thumbnailPath" | "thumbPath" | "previewPath" | "original";
 
 export type EvidenceImageRef = {
@@ -192,7 +194,13 @@ export async function mintEvidenceReadUrl(
       expiresSec,
     };
 
-    const res = await fetch("/api/fn/createEvidenceReadUrlV1", {
+    // PEAKOPS_MINT_AUTH_V1 (2026-05-15)
+    // The mint endpoint is a PeakOps API call gated by Cloud Function
+    // auth — wrap in authedFetch so it carries a Firebase ID token.
+    // The resulting signed GCS URL is fetched separately (see
+    // probeMintedThumbUrl below) WITHOUT authedFetch, because adding
+    // an Authorization header to a signed URL voids the signature.
+    const res = await authedFetch("/api/fn/createEvidenceReadUrlV1", {
       method: "POST",
       headers: { "content-type": "application/json", ...(headers || {}) },
       body: JSON.stringify(body),
