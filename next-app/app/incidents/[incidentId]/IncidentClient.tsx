@@ -2440,7 +2440,12 @@ useEffect(() => {
               onClick={() => {
                 const id = String(incidentId || "");
                 if (!id || id.includes("${")) return;
-                router.push(`/incidents/${id}/review`);
+                // PEAKOPS_INCIDENT_REVIEW_NAV_ORGID_V1 (2026-05-15)
+                // Preserve orgId from URL so ReviewClient's
+                // missing-org guard (PR #27) doesn't trigger when
+                // navigating from Incident → Review.
+                const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+                router.push(`/incidents/${id}/review${qs}`);
               }}
             >
               Review
