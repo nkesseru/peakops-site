@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { authedFetch } from "@/lib/apiClient";
 
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -27,7 +28,7 @@ export default function NotesClient({ incidentId, orgId }: { incidentId: string;
     (async () => {
       try {
         setMsg("Loading…");
-        const res = await fetch(
+        const res = await authedFetch(
   `/api/fn/getIncidentNotesV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`,
   { cache: "no-store" }
 );
