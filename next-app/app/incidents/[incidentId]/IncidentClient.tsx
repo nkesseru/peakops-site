@@ -1535,6 +1535,17 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   async function refresh(retryAttempt = 0, baseOverride?: string, fallbackUsed = false) {
     const base = String(baseOverride || functionsBase || "").trim();
     if (!base) return;
+    // PEAKOPS_INCIDENT_MISSING_ORG_GUARD_V1 (2026-05-15)
+    // Short-circuit when no orgId is in the URL. Without this guard
+    // refresh() would still fire its 5-call fan-out with empty
+    // orgId, each hitting the server's mustStr() check and returning
+    // 400. The component conditionally renders a missing-org panel
+    // below, so suppressing the network noise here keeps DevTools
+    // clean and avoids any toast-error flash from setRefreshError.
+    if (!orgId) {
+      setLoading(false);
+      return;
+    }
     if (process.env.NODE_ENV !== "production") {
       console.debug("[inc-refresh] start", { incidentId, orgId, functionsBase: base, fallbackUsed });
     }
@@ -2346,6 +2357,24 @@ useEffect(() => {
           </div>
           <div className="mt-3 text-xs text-amber-100/80">
             Open `/incidents/inc_demo` or a real incident id instead.
+          </div>
+        </div>
+      </main>
+    ) : !orgId ? (
+      /* PEAKOPS_INCIDENT_MISSING_ORG_GUARD_V1 (2026-05-15)
+         Safe missing-org panel. Renders instead of the main UI when
+         the URL has no `?orgId=...` query param. The mirror guard in
+         refresh() above prevents any /api/fn/* network calls from
+         firing while this panel is shown. */
+      <main className="min-h-screen bg-black text-white p-6">
+        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+          <div className="text-sm text-amber-100 font-semibold">Incident unavailable</div>
+          <div className="mt-2 text-sm text-amber-50/90">
+            This incident page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
+          </div>
+          <div className="mt-3 text-xs text-amber-100/80">
+            Open this incident from the Dashboard or Incidents list, or include{" "}
+            <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
           </div>
         </div>
       </main>
