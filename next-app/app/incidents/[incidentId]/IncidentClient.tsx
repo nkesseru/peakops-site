@@ -2379,7 +2379,7 @@ useEffect(() => {
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-[11px] uppercase tracking-wider text-gray-400">Field Incident</div>
-            <div className="text-xl font-semibold tracking-tight">{incidentId} • Riverbend Electric</div>
+            <div className="text-xl font-semibold tracking-tight">{incidentId} • {orgId}</div>
             <div className="mt-1 text-[11px]">
               <span className={"px-2 py-0.5 rounded-full border " + (isClosed ? "bg-red-500/15 border-red-400/30 text-red-100" : "bg-emerald-500/15 border-emerald-400/30 text-emerald-100")}>
                 status: {incidentStatus || "open"}
