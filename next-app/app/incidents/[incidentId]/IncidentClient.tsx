@@ -1941,8 +1941,10 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       expiresSec: getThumbExpiresSec(),
     });
     if (out?.ok && out.url) {
-      const sep = out.url.includes("?") ? "&" : "?";
-      const fresh = `${out.url}${sep}v=${Date.now()}`;
+      // PEAKOPS_NO_POST_SIGN_CACHEBUST_V1 (2026-05-15)
+      // Use the minted GCS signed URL as-is; appending a cache-buster
+      // here voids the V4 signature (see signedThumb.ts for details).
+      const fresh = out.url;
       setThumbUrl((m) => ({ ...m, [id]: fresh }));
       setThumbPathById((m) => ({ ...m, [id]: ref.storagePath }));
       setThumbBucketById((m) => ({ ...m, [id]: ref.bucket }));

@@ -234,9 +234,15 @@ export async function mintEvidenceReadUrl(
       };
     }
 
-    // cache-bust to avoid stale image cache
-    const sep = mintedUrl.includes("?") ? "&" : "?";
-    const finalUrl = `${mintedUrl}${sep}v=${Date.now()}`;
+    // PEAKOPS_NO_POST_SIGN_CACHEBUST_V1 (2026-05-15)
+    // Do NOT append a cache-busting query param here. GCS V4 signed
+    // URLs include every query parameter in the canonicalized signing
+    // string; appending `&v=...` after signing makes GCS compute a
+    // different signature than the one in the URL → SignatureDoesNotMatch.
+    // The in-memory mint cache above (30s TTL) already dedupes
+    // back-to-back mints, and the signed URL itself carries
+    // `X-Goog-Expires` so the URL changes naturally each TTL window.
+    const finalUrl = mintedUrl;
 
     __PEAKOPS_MINT_CACHE[cacheKey] = { url: finalUrl, at: Date.now() };
 
