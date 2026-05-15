@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import {
   clearRememberedFunctionsBase,
@@ -18,6 +18,7 @@ import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/li
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
 import UpgradePrompt from "@/components/UpgradePrompt";
+import { authedFetch } from "@/lib/apiClient";
 
 type IncidentDoc = {
   id: string;
@@ -87,7 +88,15 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
   }, [functionsBase]);
-  const orgId = "riverbend-electric";
+  // PEAKOPS_SUMMARY_ORG_FROM_URL_V1 (2026-05-15)
+  // orgId comes from the URL's `?orgId=...` searchParam, mirroring
+  // the PR #16/#23 pattern for Notes/IncidentClient. The previous
+  // hardcode (`"riverbend-electric"`) caused every getIncidentV1 /
+  // listJobsV1 / exportIncidentPacketV1 call to be evaluated
+  // against the wrong org's membership doc — server returns 403,
+  // export remains blocked. Empty string when missing.
+  const sp = useSearchParams();
+  const orgId = String(sp?.get("orgId") || "").trim();
   const functionsBaseIsLocal = useMemo(() => {
     try {
       const host = String(new URL(String(functionsBase || "")).hostname || "").toLowerCase();
@@ -194,6 +203,17 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   async function refresh(retryAttempt = 0, baseOverride?: string, fallbackUsed = false) {
     const base = String(baseOverride || functionsBase || "").trim();
     if (!base) return;
+    // PEAKOPS_SUMMARY_MISSING_ORG_GUARD_V1 (2026-05-15)
+    // Short-circuit when no orgId is in the URL. Mirrors the
+    // IncidentClient guard in PR #24. Without this, refresh()
+    // would fire its 4-call fan-out with empty orgId and surface
+    // 400 errors. The component renders a safe missing-org panel
+    // below in that case, so suppressing the network noise here
+    // keeps DevTools clean.
+    if (!orgId && !activeOrgId) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setErr("");
     setErrUrl("");
@@ -201,7 +221,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     setErrBody("");
     setDemoAuthBypassMsg("");
     try {
-      let requestOrgId = String(activeOrgId || orgId || "").trim() || orgId;
+      let requestOrgId = String(activeOrgId || orgId || "").trim();
       if (isDemoMode || functionsBaseIsLocal) {
         ensureDemoActor(incidentId);
       }
@@ -214,7 +234,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       };
       const incUrl = `/api/fn/getIncidentV1?orgId=${encodeURIComponent(requestOrgId)}&incidentId=${encodeURIComponent(incidentId)}`;
       setErrUrl(incUrl);
-      const incRes = await fetch(incUrl, { headers: demoHeaders });
+      const incRes = await authedFetch(incUrl, { headers: demoHeaders });
       const incTxt = await incRes.text();
       if (!incRes.ok) {
         throwHttp("getIncidentV1", incUrl, incRes.status, incTxt);
@@ -235,7 +255,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         `&actorUid=${encodeURIComponent(getActorUid())}` +
         `&actorRole=${encodeURIComponent(getActorRole())}`;
       setErrUrl(jobsUrl);
-      const jobsRes = await fetch(jobsUrl, { headers: demoHeaders });
+      const jobsRes = await authedFetch(jobsUrl, { headers: demoHeaders });
       const jobsTxt = await jobsRes.text();
       if (!jobsRes.ok) {
         if ((isDemoMode || functionsBaseIsLocal) && jobsRes.status === 403 && jobsTxt.includes("auth_required")) {
@@ -248,7 +268,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
       const evUrl = `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(requestOrgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`;
       setErrUrl(evUrl);
-      const evRes = await fetch(evUrl, { headers: demoHeaders });
+      const evRes = await authedFetch(evUrl, { headers: demoHeaders });
       const evTxt = await evRes.text();
       if (!evRes.ok) {
         throwHttp("listEvidenceLocker", evUrl, evRes.status, evTxt);
@@ -258,7 +278,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
       const tlUrl = `/api/fn/getTimelineEventsV1?orgId=${encodeURIComponent(requestOrgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`;
       setErrUrl(tlUrl);
-      const tlRes = await fetch(tlUrl, { headers: demoHeaders });
+      const tlRes = await authedFetch(tlUrl, { headers: demoHeaders });
       const tlTxt = await tlRes.text();
       if (!tlRes.ok) {
         throwHttp("getTimelineEventsV1", tlUrl, tlRes.status, tlTxt);
@@ -353,7 +373,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     setErr("");
 
     try {
-      const exportRes = await fetch("/api/fn/exportIncidentPacketV1", {
+      const exportRes = await authedFetch("/api/fn/exportIncidentPacketV1", {
         method: "POST",
         headers: { "content-type": "application/json", ...demoHeaders },
         body: JSON.stringify({
@@ -453,7 +473,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     if (!requestOrgId || !incidentId || err) return;
     try {
       setArtifactBusy(true);
-      const res = await fetch("/api/fn/exportIncidentArtifactV1", {
+      const res = await authedFetch("/api/fn/exportIncidentArtifactV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: requestOrgId, incidentId }),
@@ -502,7 +522,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         if (!evidenceId) continue;
         const nested = String((ev as any)?.evidence?.jobId || (ev as any)?.["evidence.jobId"] || "").trim();
         const targetJobId = nested || "job_demo_002";
-        const res = await fetch("/api/fn/assignEvidenceToJobV1", {
+        const res = await authedFetch("/api/fn/assignEvidenceToJobV1", {
           method: "POST",
           headers: { "content-type": "application/json", ...demoHeaders },
           body: JSON.stringify({
@@ -749,6 +769,28 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const truthError = truthMismatchReasons.length > 0
     ? truthMismatchReasons.join(" • ")
     : "";
+
+  // PEAKOPS_SUMMARY_MISSING_ORG_GUARD_V1 (2026-05-15)
+  // Safe missing-org panel. Renders instead of the main UI when
+  // the URL has no `?orgId=...` query param. The mirror guard in
+  // refresh() above prevents any /api/fn/* network calls from
+  // firing while this panel is shown.
+  if (!orgId && !activeOrgId) {
+    return (
+      <main className="min-h-screen bg-black text-white p-6">
+        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+          <div className="text-sm text-amber-100 font-semibold">Summary unavailable</div>
+          <div className="mt-2 text-sm text-amber-50/90">
+            The incident summary page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
+          </div>
+          <div className="mt-3 text-xs text-amber-100/80">
+            Open this summary from the Incident page, or include{" "}
+            <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <>
