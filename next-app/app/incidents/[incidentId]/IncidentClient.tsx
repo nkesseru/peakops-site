@@ -21,6 +21,7 @@ import {
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+import { authedFetch } from "@/lib/apiClient";
 
 
 
@@ -83,7 +84,7 @@ function isJobLocked(job: any): boolean {
 // PEAKOPS_LABEL_PERSIST_V1
 async function persistEvidenceLabel(orgId: string, incidentId: string, evidenceId: string, label: string) {
   try {
-    await fetch("/api/fn/setEvidenceLabelV1", {
+    await authedFetch("/api/fn/setEvidenceLabelV1", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ orgId, incidentId, evidenceId, label, actorUid: "dev-admin" }),
@@ -355,7 +356,7 @@ function isConvertingHeic(ev: EvidenceDoc) {
 }
 
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -508,7 +509,7 @@ async function markArrived() {
     // If sessionId is missing or stale, create a new field session and retry once.
     const techUserId = process.env.NEXT_PUBLIC_TECH_USER_ID || "tech_web";
     const base = functionsBase;
-    const org = (typeof orgId !== "undefined" && orgId) ? String(orgId) : "spokane-valley";
+    const org = String(orgId || "").trim();
 
     if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
     if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
@@ -520,7 +521,7 @@ async function markArrived() {
     }
 
     async function startSession(): Promise<string> {
-      const res = await fetch(`/api/fn/startFieldSessionV1`, {
+      const res = await authedFetch(`/api/fn/startFieldSessionV1`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: org, incidentId, createdBy: "ui", techUserId }),
@@ -533,7 +534,7 @@ async function markArrived() {
     }
 
     async function postArrived(sessionId: string): Promise<any> {
-      const res = await fetch(`/api/fn/markArrivedV1`, {
+      const res = await authedFetch(`/api/fn/markArrivedV1`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orgId: org, incidentId, sessionId: String(sessionId), updatedBy: "ui", techUserId }),
@@ -633,7 +634,18 @@ async function markArrived() {
   }
 
   const router = useRouter();
-  const orgId = "riverbend-electric";
+  // PEAKOPS_INCIDENT_ORG_FROM_URL_V1 (2026-05-15)
+  // orgId comes from the incident URL's `?orgId=...` searchParam,
+  // mirroring the PR #16 fix for the Notes route. The previous
+  // hardcode (`"riverbend-electric"`) caused every Cloud Function
+  // call to be evaluated against the wrong org's membership doc,
+  // which now (after the PR #17/#18 auth retrofit) returns 403
+  // permission-denied for every legitimate signed-in user not in
+  // that demo org. Empty string when missing — the server-side
+  // mustStr() check returns 400 and the page surfaces a clear
+  // refresh error instead of silently misbehaving.
+  const sp = useSearchParams();
+  const orgId = String(sp?.get("orgId") || "").trim();
   // Evidence + Timeline
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
@@ -1181,7 +1193,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     if (!ok) return;
     try {
       setClosingIncident(true);
-      const res = await fetch("/api/fn/closeIncidentV1", {
+      const res = await authedFetch("/api/fn/closeIncidentV1", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -1304,7 +1316,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     if (!functionsBase) return;
     try {
       setOrgDebugBusy(true);
-      const res = await fetch(`/api/fn/debugOrgsV1`, { method: "GET" });
+      const res = await authedFetch(`/api/fn/debugOrgsV1`, { method: "GET" });
       const text = await res.text();
       let parsed: any = null;
       try { parsed = text ? JSON.parse(text) : null; } catch {}
@@ -1530,7 +1542,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
     setRefreshError(null);
 
     try {
-      let requestOrgId = String(orgId || "").trim() || "riverbend-electric";
+      let requestOrgId = String(orgId || "").trim();
       const failHttp = (name: string, url: string, status: number, body: string) => {
         const err: any = new Error(`${name} failed (${status})`);
         err.endpoint = url;
@@ -1539,7 +1551,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         throw err;
       };
       const fetchTextOrThrow = async (name: string, url: string) => {
-        const res = await fetch(url);
+        const res = await authedFetch(url);
         const body = await res.text();
         if (!res.ok) failHttp(name, url, res.status, body);
         return body;
@@ -1618,7 +1630,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
       setOrgOptionsLoadError(false);
       setOrgOptionsLoaded(false);
       try {
-        const orgsRes = await fetch(orgsUrl);
+        const orgsRes = await authedFetch(orgsUrl);
         const orgsBody = await orgsRes.text();
         if (!orgsRes.ok) {
           setOrgOptions([]);
@@ -2061,7 +2073,7 @@ const t = setInterval(refresh, 60000);
 
   async function callFn(path: string, payload: any) {
     const url = `/api/fn/${String(path || "").replace(/^\/+/, "")}`;
-    const res = await fetch(url, {
+    const res = await authedFetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload || {}),
@@ -2107,10 +2119,8 @@ return () => clearInterval(t);
     });
   }, [evidence]);
 
-  
-  // ZIP: query hi=... -> toast + pulse + auto-scroll
-  const sp = useSearchParams();
-  
+
+
   // OPTIMISTIC: Notes saved → flip readiness instantly
   useEffect(() => {
     try {
