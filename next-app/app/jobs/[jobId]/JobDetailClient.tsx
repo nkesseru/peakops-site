@@ -6,6 +6,7 @@ import { getFunctionsBase } from "@/lib/functionsBase";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { incidentStatusLabel } from "@/lib/incidents/incidentStatus";
+import { authedFetch } from "@/lib/apiClient";
 
 type JobDoc = {
   id: string;
@@ -77,7 +78,7 @@ function actorEmail() {
 }
 
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -98,7 +99,14 @@ export default function JobDetailClient({
 }) {
   const router = useRouter();
   const functionsBase = getFunctionsBase();
-  const [orgId, setOrgId] = useState(String(initialOrgId || "").trim() || "riverbend-electric");
+  // PEAKOPS_JOBDETAIL_ORG_FROM_URL_V1 (2026-05-15)
+  // orgId initializes from `initialOrgId` prop which is read from
+  // the URL searchParam in the parent server page. The previous
+  // hardcode fallback (`"riverbend-electric"`) caused 401/403 from
+  // every Cloud Function call when the URL lacked `?orgId=...`.
+  // Empty string when missing; the missing-org guard panel below
+  // renders instead of the main UI in that case.
+  const [orgId, setOrgId] = useState(String(initialOrgId || "").trim());
   const [incidentId, setIncidentId] = useState(String(initialIncidentId || "").trim());
   const [job, setJob] = useState<JobDoc | null>(null);
   const [incident, setIncident] = useState<{ id: string; title?: string; status?: string } | null>(null);
@@ -136,6 +144,16 @@ export default function JobDetailClient({
 
   async function refresh() {
     if (!functionsBase) return;
+    // PEAKOPS_JOBDETAIL_MISSING_ORG_GUARD_V1 (2026-05-15)
+    // Short-circuit when no orgId is in scope. Mirrors the
+    // IncidentClient guard in PR #24 and Summary in PR #25.
+    // Without this, getJobV1 would fire with empty orgId and
+    // server returns 400. The component renders a safe
+    // missing-org panel below in that case.
+    if (!orgId) {
+      setLoading(false);
+      return;
+    }
     if (!incidentId) {
       setErr("Missing incidentId. Open this page from Incident -> Jobs -> Open.");
       return;
@@ -149,7 +167,7 @@ export default function JobDetailClient({
         `&jobId=${encodeURIComponent(jobId)}` +
         `&actorUid=${encodeURIComponent(actorUid())}` +
         `&actorRole=${encodeURIComponent(actorRole())}`;
-      const res = await fetch(url);
+      const res = await authedFetch(url);
       const txt = await res.text();
       const out = txt ? JSON.parse(txt) : {};
       if (!res.ok || !out?.ok) throw new Error(out?.error || `getJobV1 failed (${res.status})`);
@@ -420,6 +438,28 @@ export default function JobDetailClient({
       setUploading(false);
       ev.target.value = "";
     }
+  }
+
+  // PEAKOPS_JOBDETAIL_MISSING_ORG_GUARD_V1 (2026-05-15)
+  // Safe missing-org panel. Renders instead of the main UI when
+  // the URL has no `?orgId=...` query param. The mirror guard in
+  // refresh() above prevents any /api/fn/* network calls from
+  // firing while this panel is shown.
+  if (!orgId) {
+    return (
+      <main className="min-h-screen bg-[#0A0E14] text-gray-100 p-6">
+        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+          <div className="text-sm text-amber-100 font-semibold">Job unavailable</div>
+          <div className="mt-2 text-sm text-amber-50/90">
+            The job detail page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
+          </div>
+          <div className="mt-3 text-xs text-amber-100/80">
+            Open this job from the Incident page, or include{" "}
+            <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+          </div>
+        </div>
+      </main>
+    );
   }
 
   return (

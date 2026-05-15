@@ -17,6 +17,7 @@ import {
 import { ensureDemoActor, getActorRole, getActorUid } from "@/lib/demoActor";
 import { getFileField } from "@/lib/evidence/fileField";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, logThumbEvent } from "@/lib/evidence/signedThumb";
+import { authedFetch } from "@/lib/apiClient";
 
 
 
@@ -25,7 +26,7 @@ import { getBestEvidenceImageRef, getBestEvidencePreviewRef, logThumbEvent } fro
 
 // PEAKOPS_REQUEST_UPDATE_V1
 async function createSupervisorRequest(orgId: string, incidentId: string, message: string, jobId?: string) {
-  const res = await fetch("/api/fn/createSupervisorRequestV1", {
+  const res = await authedFetch("/api/fn/createSupervisorRequestV1", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ orgId, incidentId, message, jobId: jobId || "", actorUid: "dev-admin" }),
@@ -41,7 +42,7 @@ async function createSupervisorRequest(orgId: string, incidentId: string, messag
 
 // PEAKOPS_EXPORT_PACKET_UI_V1
 async function exportIncidentPacket(orgId: string, incidentId: string): Promise<string> {
-  const res = await fetch("/api/fn/exportIncidentPacketV1", {
+  const res = await authedFetch("/api/fn/exportIncidentPacketV1", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ orgId, incidentId }),
@@ -77,7 +78,7 @@ function getSelectedJobIdForApprove(): string {
 }
 
 async function approveAndLockJob(orgId: string, incidentId: string, jobId: string) {
-  const res = await fetch("/api/fn/approveAndLockJobV1", {
+  const res = await authedFetch("/api/fn/approveAndLockJobV1", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ orgId, incidentId, jobId, actorUid: "dev-admin" }),
@@ -242,7 +243,7 @@ function computedBaseStatus(job: any): string {
 }
 
 async function postJson<T>(url: string, body: any, extraHeaders?: Record<string, string>): Promise<T> {
-  const res = await fetch(url, {
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...(extraHeaders || {}) },
     body: JSON.stringify(body || {}),
@@ -383,7 +384,15 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     } catch {}
   };
 
-  const orgId = "riverbend-electric";
+  // PEAKOPS_REVIEW_ORG_FROM_URL_V1 (2026-05-15)
+  // orgId comes from the URL's `?orgId=...` searchParam, mirroring
+  // PR #16/#23/#25 for Notes/Incident/Summary. The previous
+  // hardcode (`"riverbend-electric"`) caused every Cloud Function
+  // call to be evaluated against the wrong org's membership doc —
+  // server returned 401/403 and Review remained blocked. Empty
+  // string when missing; the missing-org guard panel below renders
+  // instead of the main UI in that case.
+  const orgId = String(sp?.get("orgId") || "").trim();
   const functionsBase = getFunctionsBase();
   useEffect(() => {
     warnFunctionsBaseIfSuspicious(functionsBase);
@@ -466,7 +475,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
   async function fetchTextOrThrow(url: string, request: string) {
-    const res = await fetch(url, { headers: demoHeaders });
+    const res = await authedFetch(url, { headers: demoHeaders });
     const text = await res.text();
     if (!res.ok) {
       if (canDevLog) {
@@ -629,11 +638,21 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   async function refresh(retryAttempt = 0, baseOverride?: string, fallbackUsed = false): Promise<JobDoc[]> {
     const base = String(baseOverride || functionsBase || "").trim();
     if (!base) return [];
+    // PEAKOPS_REVIEW_MISSING_ORG_GUARD_V1 (2026-05-15)
+    // Short-circuit when no orgId is in the URL. Mirrors the
+    // IncidentClient guard in PR #24 and the Summary guard in
+    // PR #25. Without this, refresh() would fire its fan-out
+    // with empty orgId and surface 400 errors. The component
+    // renders a safe missing-org panel below in that case.
+    if (!orgId && !activeOrgId) {
+      setLoading(false);
+      return [];
+    }
     setLoading(true);
     setErr("");
     setErrDiag(null);
     try {
-      let requestOrgId = String(activeOrgId || orgId || "").trim() || orgId;
+      let requestOrgId = String(activeOrgId || orgId || "").trim();
       let nextIncidentDoc: IncidentDoc | null = null;
       let nextEvidence: EvidenceDoc[] = [];
       let nextJobs: JobDoc[] = [];
@@ -925,7 +944,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       return;
     }
 
-    const res = await fetch("/api/fn/approveAndLockJobV1", {
+    const res = await authedFetch("/api/fn/approveAndLockJobV1", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ orgId: oid, incidentId: iid, jobId: jid }),
@@ -1078,6 +1097,28 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   }
 
 
+  // PEAKOPS_REVIEW_MISSING_ORG_GUARD_V1 (2026-05-15)
+  // Safe missing-org panel. Renders instead of the main UI when
+  // the URL has no `?orgId=...` query param. The mirror guard in
+  // refresh() above prevents any /api/fn/* network calls from
+  // firing while this panel is shown.
+  if (!orgId && !activeOrgId) {
+    return (
+      <main className="min-h-screen bg-black text-white p-6">
+        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+          <div className="text-sm text-amber-100 font-semibold">Review unavailable</div>
+          <div className="mt-2 text-sm text-amber-50/90">
+            The supervisor review page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
+          </div>
+          <div className="mt-3 text-xs text-amber-100/80">
+            Open this review from the Incident page, or include{" "}
+            <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-black text-white">
       {/* Sticky top bar */}
@@ -1109,7 +1150,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
 <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}`)}
+              onClick={() => router.push(`/incidents/${incidentId}${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
             >
               ← Back to Incident
             </button>
@@ -1125,7 +1166,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             </button>
             <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}/summary`)}
+              onClick={() => router.push(`/incidents/${incidentId}/summary${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
             >
               Summary
             </button>
@@ -1203,7 +1244,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 disabled={!prevIncident}
                 onClick={() => {
                   if (!prevIncident?.incidentId) return;
-                  router.push(`/incidents/${encodeURIComponent(String(prevIncident.incidentId))}/review`);
+                  router.push(`/incidents/${encodeURIComponent(String(prevIncident.incidentId))}/review${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`);
                 }}
               >
                 ← Previous
@@ -1215,7 +1256,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 disabled={!nextIncident}
                 onClick={() => {
                   if (!nextIncident?.incidentId) return;
-                  router.push(`/incidents/${encodeURIComponent(String(nextIncident.incidentId))}/review`);
+                  router.push(`/incidents/${encodeURIComponent(String(nextIncident.incidentId))}/review${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`);
                 }}
               >
                 Next →
@@ -1389,7 +1430,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 onClick={() => {
                   saveRequest();
                   // v2: we just store + bounce to incident evidence area with a hint.
-                  if (incidentId) router.push("/incidents/" + incidentId + "?hi=request_update");
+                  if (incidentId) router.push("/incidents/" + incidentId + "?hi=request_update" + (orgId ? "&orgId=" + encodeURIComponent(orgId) : ""));
                   setReqOpen(false);
                 }}
               >
@@ -1678,7 +1719,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm text-gray-200 hover:bg-white/10"
                 onClick={() => {
                   if (!incidentId) return;
-                  router.push("/incidents/" + incidentId + "#evidence");
+                  router.push("/incidents/" + incidentId + (orgId ? "?orgId=" + encodeURIComponent(orgId) : "") + "#evidence");
                 }}
                 title="Open the field incident page evidence rail"
               >
