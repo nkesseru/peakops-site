@@ -73,6 +73,13 @@ function getEvidenceJobId(ev: EvidenceDoc): string {
   return nestedJob;
 }
 
+function fmtAgoIso(iso?: string) {
+  if (!iso) return "—";
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return "—";
+  return fmtAgo(Math.floor(ms / 1000));
+}
+
 function fmtAgo(sec?: number) {
   if (!sec) return "—";
   const d = Math.max(0, Math.floor(Date.now() / 1000 - sec));
@@ -803,69 +810,133 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         orgId={orgId}
         onClose={() => setUpgrade((s) => ({ ...s, open: false }))}
       />
-      {truthError ? (
-        <div className="mb-4 rounded-xl border border-red-500/40 bg-red-950/40 p-4 text-red-100">
-          <div className="text-sm font-semibold">⚠ System inconsistency detected</div>
-          <div className="mt-2 text-sm">{truthError}</div>
-          <div className="mt-2 text-xs opacity-80">
-            Export should be treated as blocked until this mismatch is resolved.
+    <main className="min-h-screen bg-black text-white">
+      <div className="max-w-3xl mx-auto px-6 py-10 space-y-10">
+        {/* PEAKOPS_SUMMARY_DOSSIER_MASTHEAD_V1 (2026-05-17)
+            Operational record header. Replaces the previous "Incident
+            Summary · {incidentId}" line + Back button + full-bleed
+            red truthError banner. The integrity check still fires;
+            its visual aggression is downgraded to an inline amber
+            chip linked to an expandable detail block below. */}
+        <header className="space-y-3">
+          <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+            Incident Record{orgId ? ` · ${orgId}` : ""}
           </div>
-        </div>
-      ) : null}
-    <main className="min-h-screen bg-black text-white p-4">
-      <div className="max-w-6xl mx-auto space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-wider text-gray-400">Incident Summary</div>
-            <div className="text-xl font-semibold">{incidentId}</div>
+          <h1 className="text-2xl font-semibold leading-tight tracking-tight text-white">
+            {(incident as any)?.title || incidentId}
+          </h1>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px] text-gray-400">
+            <span className={"text-[11px] px-2 py-0.5 rounded-full border " + incidentStatusPill(incident?.status || incidentStatus)}>
+              {incidentStatusLabel(incident?.status || incidentStatus)}
+            </span>
+            <span className="text-white/20">·</span>
+            <span>{jobs.length} {jobs.length === 1 ? "job" : "jobs"}</span>
+            <span className="text-white/20">·</span>
+            <span>{evidence.length} {evidence.length === 1 ? "piece of evidence" : "pieces of evidence"}</span>
+            {(incident as any)?.updatedAt?._seconds ? (
+              <>
+                <span className="text-white/20">·</span>
+                <span>updated {fmtAgo((incident as any)?.updatedAt?._seconds)}</span>
+              </>
+            ) : null}
+            {incident?.packetMeta?.exportedAt ? (
+              <>
+                <span className="text-white/20">·</span>
+                <span>last exported {fmtAgoIso(incident.packetMeta.exportedAt)}</span>
+              </>
+            ) : null}
+            {truthError ? (
+              <>
+                <span className="text-white/20">·</span>
+                <a
+                  href="#integrity"
+                  className="text-amber-200/80 hover:text-amber-100 text-[11px] underline-offset-2 hover:underline"
+                >
+                  ⚠ integrity check · {truthMismatchReasons.length}
+                </a>
+              </>
+            ) : null}
           </div>
-          <div className="flex items-center gap-2">
-            <button className="px-3 py-2 rounded-xl bg-white/6 border border-white/10 text-sm hover:bg-white/10" onClick={() => router.push(`/incidents/${incidentId}`)}>
-              Back
+          <div className="pt-1">
+            <button
+              type="button"
+              className="text-[12px] text-gray-400 hover:text-gray-200 underline-offset-2 hover:underline"
+              onClick={() => router.push(`/incidents/${incidentId}${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+            >
+              ← Back to incident
             </button>
           </div>
-        </div>
+        </header>
 
-        {err ? (
-          <div className="rounded-xl border border-red-400/30 bg-red-500/10 text-red-100 text-sm px-3 py-2">
-            <div>{err}</div>
-            {errUrl ? <div className="mt-1 text-xs text-red-200/90 break-all">Request: {errUrl}</div> : null}
-            {errStatus ? <div className="mt-1 text-xs text-red-200/90">Status: {errStatus}</div> : null}
-            {errBody ? <pre className="mt-1 text-xs text-red-200/90 whitespace-pre-wrap break-words">{String(errBody).slice(0, 500)}</pre> : null}
-            {process.env.NODE_ENV !== "production" ? (
-              <div className="mt-1 text-xs text-red-200/90 break-all">
-                baseDebug: {(() => {
-                  const d = getFunctionsBaseDebugInfo();
-                  return `env=${d.envBase || "(unset)"} override=${d.overrideBase || "(unset)"} active=${d.activeBase || "(unset)"}`;
-                })()}
+        {/* Integrity detail — collapsed amber block linked from masthead chip */}
+        {truthError ? (
+          <details
+            id="integrity"
+            className="group rounded-lg border border-amber-400/20 bg-amber-500/5 px-4 py-3"
+          >
+            <summary className="cursor-pointer text-[12px] font-medium text-amber-200/90 list-none flex items-center justify-between">
+              <span>Integrity check · {truthMismatchReasons.length} item{truthMismatchReasons.length === 1 ? "" : "s"}</span>
+              <span className="text-[11px] text-amber-300/60 group-open:hidden">Show details</span>
+              <span className="text-[11px] text-amber-300/60 hidden group-open:inline">Hide</span>
+            </summary>
+            <div className="mt-3 text-[12px] text-amber-100/85 space-y-1.5">
+              {truthMismatchReasons.map((r, i) => (
+                <div key={i}>· {r}</div>
+              ))}
+              <div className="pt-2 text-[11px] text-amber-200/60">
+                Export should be treated as blocked until this is resolved.
               </div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" && getEnvFunctionsBase() ? (
-              <div className="mt-1 text-xs text-red-200/90">envBase present, fallback disabled</div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
-              <button
-                type="button"
-                className="mt-2 px-2 py-1 rounded border border-red-300/30 bg-black/30 hover:bg-black/50 text-[11px]"
-                onClick={() => {
-                  clearRememberedFunctionsBase();
-                  location.reload();
-                }}
-              >
-                Reset connection
-              </button>
-            ) : null}
-          </div>
+            </div>
+          </details>
         ) : null}
+
+        {/* Refresh error — calm inline strip with expandable technicalia */}
+        {err ? (
+          <details
+            className="rounded-lg border border-red-400/20 bg-red-500/5 px-4 py-2.5"
+            open={process.env.NODE_ENV !== "production"}
+          >
+            <summary className="cursor-pointer text-[12px] text-red-100/85 list-none flex items-center justify-between gap-3">
+              <span className="truncate">Couldn&apos;t load some data — {err}</span>
+              <span className="text-[11px] text-red-300/60 shrink-0">Technical details</span>
+            </summary>
+            <div className="mt-2 space-y-1 text-[11px] text-red-200/80">
+              {errUrl ? <div className="break-all">Request: {errUrl}</div> : null}
+              {errStatus ? <div>Status: {errStatus}</div> : null}
+              {errBody ? <pre className="whitespace-pre-wrap break-words">{String(errBody).slice(0, 500)}</pre> : null}
+              {process.env.NODE_ENV !== "production" ? (
+                <div className="break-all">
+                  baseDebug: {(() => {
+                    const d = getFunctionsBaseDebugInfo();
+                    return `env=${d.envBase || "(unset)"} override=${d.overrideBase || "(unset)"} active=${d.activeBase || "(unset)"}`;
+                  })()}
+                </div>
+              ) : null}
+              {process.env.NODE_ENV !== "production" && getEnvFunctionsBase() ? (
+                <div>envBase present, fallback disabled</div>
+              ) : null}
+              {process.env.NODE_ENV !== "production" && (functionsBaseIsLocal || isDemoMode) ? (
+                <button
+                  type="button"
+                  className="mt-2 px-2 py-1 rounded border border-red-300/30 bg-black/30 hover:bg-black/50 text-[11px]"
+                  onClick={() => {
+                    clearRememberedFunctionsBase();
+                    location.reload();
+                  }}
+                >
+                  Reset connection
+                </button>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
+
+        {/* Quiet status messages (replaces the old amber/emerald pill cards) */}
         {!err && demoAuthBypassMsg ? (
-          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 text-amber-100 text-sm px-3 py-2">
-            {demoAuthBypassMsg}
-          </div>
+          <div className="text-[12px] text-amber-200/85 italic">{demoAuthBypassMsg}</div>
         ) : null}
         {!err && artifactToast ? (
-          <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 text-emerald-100 text-sm px-3 py-2">
-            {artifactToast}
-          </div>
+          <div className="text-[12px] text-emerald-200/85">{artifactToast}</div>
         ) : null}
 
         <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
