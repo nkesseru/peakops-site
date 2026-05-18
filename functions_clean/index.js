@@ -49,6 +49,7 @@ safeExport("convertHeicOnFinalize", "./convertHeicOnFinalize");
 
 // --- Debug / org tools ---
 safeExport("listOrgsV1", "./listOrgsV1");
+safeExport("listOrgMembersV1", "./listOrgMembersV1");
 safeExport("debugEvidenceV1", "./debugEvidenceV1");
 safeExport("debugOrgsV1", "./debugOrgsV1");
 

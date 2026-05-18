@@ -81,6 +81,20 @@ type TimelineDoc = {
   occurredAt?: { _seconds?: number };
 };
 
+// PEAKOPS_MEMBER_IDENTITY_V1 (2026-05-18, PR 36)
+// Identity record returned by listOrgMembersV1. Minimal whitelist —
+// the Cloud Function strips everything else (permissions, source,
+// invitedBy, audit timestamps). When displayName is populated on the
+// member doc it takes precedence; otherwise the resolver falls back
+// to email, then role label, then PR 35's context-safe label.
+type MemberIdentity = {
+  uid: string;
+  displayName?: string | null;
+  email?: string | null;
+  role?: string | null;
+};
+type MemberRegistry = Record<string, MemberIdentity>;
+
 function getEvidenceJobId(ev: EvidenceDoc): string {
   const top = String((ev as any)?.jobId || (ev as any)?.["jobId"] || "").trim();
   if (top) return top;
@@ -221,19 +235,43 @@ function fmtAgo(sec?: number) {
   return `${Math.floor(d / 86400)}d`;
 }
 
-// PEAKOPS_PRETTY_ACTOR_V2 (2026-05-18, PR 35)
-// Resolves a raw actor identifier into a context-safe label. The PR
-// 30d v1 returned "User dMHgyx" style 6-char UID prefixes; PR 35
-// removes that pattern entirely. UID-shaped inputs now resolve to a
-// role label derived from the action context (chain row or timeline
-// event type). Email and human-readable inputs pass through. Real
-// names (PR 36 — Member Identity Resolver) will replace these labels
-// once a member-identity endpoint exists.
+// PEAKOPS_PRETTY_ACTOR_V3 (2026-05-18, PR 36)
+// Now consults a member identity registry (loaded once per Summary
+// refresh from listOrgMembersV1) before falling back to PR 35's
+// context-safe role labels. Display priority for a UID-shaped input
+// with a registry hit:
+//   1. displayName + role            → "Sarah Chen · Operations Supervisor"
+//   2. email + role                  → "nick@pioneercomclean.com · Operations Supervisor"
+//   3. role only                     → "Operations Supervisor"
+//   4. no registry hit               → PR 35 context label ("Supervisor", "Field crew", …)
+// Raw 28-char UIDs and 6-char UID prefixes are NEVER displayed.
 type ActorContext = {
   chainRole?: "opened" | "submitted" | "approved" | "notes";
   eventType?: string;
 };
-function prettyActor(raw?: string, ctx?: ActorContext): string {
+
+// PEAKOPS_PRETTY_ROLE_V1 (2026-05-18, PR 36)
+// Translate the raw `role` value on a member doc into a display
+// label. Tiered: owner → "Operations Supervisor", admin/supervisor →
+// "Supervisor", field/crew/tech → "Field Crew", lead → "Field Crew
+// Lead". Unknown roles get a title-cased fallback so newly-introduced
+// roles still render cleanly without code changes.
+function prettyRole(role?: string | null): string {
+  const r = String(role || "").trim().toLowerCase();
+  if (!r) return "";
+  if (r === "owner") return "Operations Supervisor";
+  if (r === "admin" || r === "supervisor") return "Supervisor";
+  if (r === "lead" || r === "field_lead") return "Field Crew Lead";
+  if (r === "field" || r === "crew" || r === "tech") return "Field Crew";
+  if (r === "viewer") return "Viewer";
+  return r
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function prettyActor(raw?: string, ctx?: ActorContext, registry?: MemberRegistry): string {
   const s = String(raw || "").trim();
   if (!s) return "System";
   const lower = s.toLowerCase();
@@ -244,9 +282,20 @@ function prettyActor(raw?: string, ctx?: ActorContext): string {
     const local = s.split("@")[0].trim();
     return local || s;
   }
-  // UID-shaped — derive a context-safe role label. Never emit "User
-  // <prefix>" or any other raw-UID-derived string.
-  if (/^[A-Za-z0-9]{20,}$/.test(s)) {
+  // UID-shaped — try the registry first, then context-safe fallback.
+  // Also covers pending_* invitee UIDs which exist in some orgs.
+  if (/^[A-Za-z0-9]{20,}$/.test(s) || /^pending_/i.test(s)) {
+    const member = registry?.[s];
+    if (member) {
+      const name = String(member.displayName || "").trim();
+      const email = String(member.email || "").trim();
+      const roleLabel = prettyRole(member.role);
+      const roleSuffix = roleLabel ? ` · ${roleLabel}` : "";
+      if (name) return name + roleSuffix;
+      if (email) return email + roleSuffix;
+      if (roleLabel) return roleLabel;
+    }
+    // No registry hit — PR 35 context-safe fallback.
     if (ctx?.chainRole === "opened") return "Operations";
     if (ctx?.chainRole === "submitted") return "Field crew";
     if (ctx?.chainRole === "approved") return "Supervisor";
@@ -493,6 +542,11 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const [jobs, setJobs] = useState<JobDoc[]>([]);
   const [evidence, setEvidence] = useState<EvidenceDoc[]>([]);
   const [timeline, setTimeline] = useState<TimelineDoc[]>([]);
+  // PEAKOPS_MEMBER_REGISTRY_V1 (2026-05-18, PR 36)
+  // UID → MemberIdentity map populated once per refresh from
+  // listOrgMembersV1. Endpoint failures are non-fatal — the resolver
+  // falls back to PR 35's context-safe labels gracefully.
+  const [memberRegistry, setMemberRegistry] = useState<MemberRegistry>({});
   const [thumbUrl, setThumbUrl] = useState<Record<string, string>>({});
   const [thumbRetryById, setThumbRetryById] = useState<Record<string, number>>({});
   const [thumbErrById, setThumbErrById] = useState<Record<string, string>>({});
@@ -679,6 +733,29 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       if (tl?.ok && Array.isArray(tl.docs)) {
         const docs = tl.docs.slice().sort((a: any, b: any) => (b?.occurredAt?._seconds || 0) - (a?.occurredAt?._seconds || 0));
         setTimeline(docs);
+      }
+
+      // PEAKOPS_MEMBER_FETCH_V1 (2026-05-18, PR 36)
+      // Identity resolver registry. Wrapped in its own try/catch so a
+      // listOrgMembersV1 failure (e.g., function not yet deployed,
+      // 403 for a non-member) doesn't break the page — the resolver
+      // falls back to PR 35's context-safe labels in that case.
+      try {
+        const memUrl = `/api/fn/listOrgMembersV1?orgId=${encodeURIComponent(requestOrgId)}`;
+        const memRes = await authedFetch(memUrl, { headers: demoHeaders });
+        if (memRes.ok) {
+          const memTxt = await memRes.text();
+          const memJson = memTxt ? JSON.parse(memTxt) : {};
+          if (memJson?.ok && Array.isArray(memJson.docs)) {
+            const map: MemberRegistry = {};
+            for (const m of memJson.docs as MemberIdentity[]) {
+              if (m?.uid) map[String(m.uid)] = m;
+            }
+            setMemberRegistry(map);
+          }
+        }
+      } catch {
+        // Silent fallback. PR 35 context labels remain available.
       }
 
       const packetMeta: any = inc?.doc?.packetMeta || {};
@@ -1296,7 +1373,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               28-char Firebase UID. */}
           {incident?.createdBy && incident?.createdAt?._seconds ? (
             <div className="text-[11px] text-gray-500">
-              Opened by {prettyActor(incident.createdBy, { chainRole: "opened" })} · {fmtAbsolute(incident.createdAt._seconds)}
+              Opened by {prettyActor(incident.createdBy, { chainRole: "opened" }, memberRegistry)} · {fmtAbsolute(incident.createdAt._seconds)}
             </div>
           ) : null}
           <div className="pt-1">
@@ -1929,7 +2006,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                       <div className="text-[11px] text-gray-500 shrink-0">{fmtAgo(t.occurredAt?._seconds)}</div>
                     </div>
                     {!isSystemActor ? (
-                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">by {prettyActor(actor, { eventType: tType })}</div>
+                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">by {prettyActor(actor, { eventType: tType }, memberRegistry)}</div>
                     ) : null}
                   </li>
                 );
@@ -1953,7 +2030,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           // Opened
           if (incident?.createdBy && incident?.createdAt?._seconds) {
             rows.push({
-              label: `Opened by ${prettyActor(incident.createdBy, { chainRole: "opened" })}`,
+              label: `Opened by ${prettyActor(incident.createdBy, { chainRole: "opened" }, memberRegistry)}`,
               when: fmtAbsolute(incident.createdAt._seconds),
             });
           } else {
@@ -1966,7 +2043,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           );
           if (fieldSubmittedEvent) {
             rows.push({
-              label: `Field package submitted by ${prettyActor(String(fieldSubmittedEvent.actor || ""), { chainRole: "submitted" })}`,
+              label: `Field package submitted by ${prettyActor(String(fieldSubmittedEvent.actor || ""), { chainRole: "submitted" }, memberRegistry)}`,
               when: fmtAbsolute(fieldSubmittedEvent.occurredAt?._seconds),
             });
           } else {
@@ -1991,7 +2068,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               0
             );
             const approverLabel = approvers.length === 1
-              ? prettyActor(approvers[0], { chainRole: "approved" })
+              ? prettyActor(approvers[0], { chainRole: "approved" }, memberRegistry)
               : "multiple supervisors";
             const jobCountSuffix = approvedJobsForChain.length > 1
               ? ` (${approvedJobsForChain.length} jobs)`
