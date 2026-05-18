@@ -78,6 +78,20 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
     const siteNotes = String(b.siteNotes || "");
     const updatedBy = String(actorUid || b.updatedBy || "ui");
 
+    // PEAKOPS_SEALED_RECORD_V1 (2026-05-18, PR 41)
+    // Sealed operational records are immutable. Reject note saves
+    // post-closure; post-closure context must go through the
+    // addendum model (PR 43).
+    const sealIncSnap = await db.collection("incidents").doc(incidentId).get();
+    const sealIncStatus = String((sealIncSnap.exists ? (sealIncSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (sealIncStatus === "closed") {
+      return j(res, 409, {
+        ok: false,
+        error: "incident_closed",
+        detail: "Operational record is sealed — file an addendum to attach supplemental context.",
+      });
+    }
+
     // Notes content writes to the canonical top-level path
     // `incidents/{incidentId}/notes/main` to match what the deployed
     // production `getIncidentNotesV1` reads. The prior org-scoped

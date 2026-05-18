@@ -2,6 +2,7 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getStorage } = require("firebase-admin/storage");
+const { getFirestore } = require("firebase-admin/firestore");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -197,6 +198,21 @@ exports.uploadEvidenceProxyV1 = onRequest({ cors: true }, async (req, res) => {
     }
     if (!bucketName) return j(res, 400, { ok: false, error: "bucket_missing" });
     if (!dataBuffer || !dataBuffer.length) return j(res, 400, { ok: false, error: "file_body_missing" });
+
+    // PEAKOPS_SEALED_RECORD_V1 (2026-05-18, PR 41)
+    // Reject byte upload onto a closed operational record. Mirror of
+    // the gate in createEvidenceUploadUrlV1 + addEvidenceV1, closing
+    // the orphan-GCS-object failure mode in this dev/proxy path.
+    const sealDb = getFirestore();
+    const sealIncSnap = await sealDb.collection("incidents").doc(incidentId).get();
+    const sealIncStatus = String((sealIncSnap.exists ? (sealIncSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (sealIncStatus === "closed") {
+      return j(res, 409, {
+        ok: false,
+        error: "incident_closed",
+        detail: "Operational record is sealed — file an addendum to attach supplemental context.",
+      });
+    }
 
     const contentType = resolveUploadContentType({
       multipartType: multipartContentType,

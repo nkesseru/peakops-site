@@ -26,6 +26,21 @@ exports.approveAndLockJobV1 = onRequest({ cors: true }, async (req, res) => {
     const actorUid = String(body.actorUid || body.actorId || "dev").trim() || "dev";
 
     const db = getFirestore();
+
+    // PEAKOPS_SEALED_RECORD_V1 (2026-05-18, PR 41)
+    // Sealed operational records are immutable. Reject approve+lock
+    // post-closure. Post-closure supervisory follow-up goes through
+    // the addendum model (PR 43).
+    const sealIncSnap = await db.collection("incidents").doc(incidentId).get();
+    const sealIncStatus = String((sealIncSnap.exists ? (sealIncSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (sealIncStatus === "closed") {
+      return j(res, 409, {
+        ok: false,
+        error: "incident_closed",
+        detail: "Operational record is sealed — file an addendum to attach supplemental context.",
+      });
+    }
+
     const ref = db.collection("incidents").doc(incidentId).collection("jobs").doc(jobId);
 
     await ref.set({

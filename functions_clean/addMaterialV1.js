@@ -48,6 +48,20 @@ exports.addMaterialV1 = onRequest({ cors: true }, async (req, res) => {
 
     const db = getFirestore();
 
+    // PEAKOPS_SEALED_RECORD_V1 (2026-05-18, PR 41)
+    // Sealed records are immutable. Reject material additions
+    // post-closure. Post-closure material/parts context goes through
+    // the addendum model (PR 43).
+    const sealIncSnap = await db.collection("incidents").doc(incidentId).get();
+    const sealIncStatus = String((sealIncSnap.exists ? (sealIncSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (sealIncStatus === "closed") {
+      return j(res, 409, {
+        ok: false,
+        error: "incident_closed",
+        detail: "Operational record is sealed — file an addendum to attach supplemental context.",
+      });
+    }
+
     // verify session exists (org-scoped)
     const sesRef = db.collection("orgs").doc(orgId)
       .collection("incidents").doc(incidentId)
