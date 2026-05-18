@@ -1966,18 +1966,18 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                         const id = String(ev.id || "");
                         const u = thumbUrl[id];
                         return (
-                          <div key={id} className="relative min-w-[160px] w-[160px] aspect-[4/3] rounded-lg overflow-hidden border border-white/8 bg-black/40">
+                          <div key={id} className="relative min-w-[160px] w-[160px] aspect-[4/3] rounded-lg overflow-hidden border border-white/8 bg-black/40 transition-colors hover:border-white/20">
                             {u ? (
-                              // PEAKOPS_EVIDENCE_CLICK_EXPAND_V1 (2026-05-18, PR 38)
-                              // Tile becomes an anchor to the full-resolution
-                              // signed URL in a new tab. Browser-native zoom
-                              // and save. Uses the existing signed URL (15-min
-                              // TTL); if expired, re-loading Summary remints.
+                              // PEAKOPS_EVIDENCE_CLICK_EXPAND_V2 (2026-05-18, PR 39)
+                              // PR 38 wired the new-tab anchor. PR 39 adds a
+                              // quiet hover affordance + cursor-zoom-in so the
+                              // tile signals its inspectability without an
+                              // icon overlay. Browser-native zoom remains.
                               <a
                                 href={u}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="block w-full h-full"
+                                className="block w-full h-full cursor-zoom-in"
                                 title="Open full-resolution image"
                               >
                                 <img
@@ -2091,7 +2091,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                             <summary className="cursor-pointer hover:text-gray-300 list-none underline-offset-2 hover:underline">
                               {gpsLabel}
                             </summary>
-                            <span className="ml-2 font-mono text-gray-400">
+                            {/* PEAKOPS_GPS_MAP_LINK_STUB_V1 (2026-05-18, PR 39)
+                                Coordinates wrapped in a slot so a future PR
+                                can drop in a "View on map" link without
+                                restructuring this disclosure. No third-party
+                                link is shipped today. */}
+                            <span className="ml-2 font-mono text-gray-400" data-peakops-gps-slot="coords">
                               {coordsText}
                               {overflow}
                             </span>
@@ -2113,6 +2118,100 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                         </div>
                       );
                     })()}
+                    {/* PEAKOPS_EVIDENCE_INTEGRITY_DISCLOSURE_V1 (2026-05-18, PR 39)
+                        Per-job progressive disclosure expanding to per-
+                        evidence integrity rows. Every field below is
+                        traceable to a real field on the evidence doc —
+                        no SHA-256 / device / EXIF claims since none of
+                        those exist on the docs today. Closed by default;
+                        the trigger styling matches the rest of the
+                        dossier's quiet uppercase-tracking disclosures. */}
+                    <details className="pl-0.5">
+                      <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300 list-none">
+                        Show integrity details
+                      </summary>
+                      <div className="mt-2 space-y-3">
+                        {list.map((ev) => {
+                          const id = String(ev.id || "");
+                          const file = (ev as any).file || {};
+                          const filename = String(file.originalName || file.filename || "(unnamed)");
+                          const contentType = String(file.contentType || "—");
+                          const bucket = String(file.bucket || "—");
+                          const storagePath = String(file.storagePath || "—");
+                          const sessionId = String((ev as any).sessionId || "—");
+                          const phase = String((ev as any).phase || "—");
+                          const labels = Array.isArray((ev as any).labels)
+                            ? (ev as any).labels.filter(Boolean).join(", ")
+                            : "";
+                          const storedSec = Number((ev as any).storedAt?._seconds || (ev as any).createdAt?._seconds || 0);
+                          const gps = (ev as any).gps;
+                          let gpsCoord = "";
+                          if (gps && typeof gps === "object") {
+                            const lat = Number(gps.lat ?? gps.latitude);
+                            const lng = Number(gps.lng ?? gps.longitude ?? gps.lon);
+                            if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                              gpsCoord = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+                            }
+                          }
+                          return (
+                            <div key={id} className="space-y-1 text-[11px] leading-relaxed">
+                              <div className="text-gray-200">
+                                {filename}
+                                {contentType !== "—" ? (
+                                  <span className="ml-2 text-gray-500">· {contentType}</span>
+                                ) : null}
+                              </div>
+                              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-gray-500">
+                                {storedSec > 0 ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">Stored</dt>
+                                    <dd className="text-gray-300">{fmtAbsolute(storedSec)}</dd>
+                                  </>
+                                ) : null}
+                                {bucket !== "—" ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">Bucket</dt>
+                                    <dd className="text-gray-300 font-mono break-all">{bucket}</dd>
+                                  </>
+                                ) : null}
+                                {storagePath !== "—" ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">Storage reference</dt>
+                                    <dd className="text-gray-300 font-mono break-all">{storagePath}</dd>
+                                  </>
+                                ) : null}
+                                {sessionId !== "—" ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">Session</dt>
+                                    <dd className="text-gray-300 font-mono break-all">{sessionId}</dd>
+                                  </>
+                                ) : null}
+                                {phase !== "—" ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">Phase</dt>
+                                    <dd className="text-gray-300">{phase}</dd>
+                                  </>
+                                ) : null}
+                                {gpsCoord ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">GPS</dt>
+                                    <dd className="text-gray-300 font-mono" data-peakops-gps-slot="coords">
+                                      {gpsCoord}
+                                    </dd>
+                                  </>
+                                ) : null}
+                                {labels ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">Labels</dt>
+                                    <dd className="text-gray-300">{labels}</dd>
+                                  </>
+                                ) : null}
+                              </dl>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </details>
                   </div>
                 );
               })}
