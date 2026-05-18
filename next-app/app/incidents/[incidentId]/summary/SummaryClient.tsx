@@ -22,7 +22,18 @@ import { authedFetch } from "@/lib/apiClient";
 
 type IncidentDoc = {
   id: string;
+  title?: string;
   status?: string;
+  // PEAKOPS_INCIDENT_DOC_TYPE_V2 (2026-05-18, PR 30e)
+  // Surface dossier fields that were previously read via `(incident as any)`
+  // — location, priority, jobType, and provenance (createdBy + createdAt).
+  // Reads only; no shape change to the wire response.
+  location?: string;
+  priority?: string;
+  jobType?: string;
+  createdBy?: string;
+  createdAt?: { _seconds?: number };
+  updatedAt?: { _seconds?: number };
   packetMeta?: {
     status?: string;
     exportedAt?: string;
@@ -122,7 +133,7 @@ function prettyTimelineEvent(t?: string, ctx?: TimelineEventContext): string {
     evidence_added: "Evidence captured and attached",
     incident_opened: "Incident opened",
     incident_closed: "Operational record closed",
-    notes_saved: "Notes updated",
+    notes_saved: "Supervisor notes updated",
     material_added: "Material logged",
     debug_event: "Debug event",
   };
@@ -267,6 +278,26 @@ function prettyIntegrityReason(raw: string): string {
     return "Operational record has not been closed yet.";
   }
 
+  // PEAKOPS_PRETTY_INTEGRITY_REASON_V2 (2026-05-18, PR 30e)
+  // New rule emitted by truthMismatchReasons when packetMeta is absent
+  // but the record has approved jobs or evidence. Differentiates
+  // "never exported" from the prior "regenerate to refresh" copy.
+  if (/^packet\s+not\s+yet\s+generated$/i.test(s)) {
+    return "Export packet hasn't been generated yet for this operational record.";
+  }
+
+  // PEAKOPS_PRETTY_INTEGRITY_REASON_V2 (2026-05-18, PR 30e)
+  // Replaces the prior "expected at least N job_approved events" hard
+  // threshold with a job-derived check. The approval is recorded on
+  // the job itself; the gap is that the audit timeline lacks the
+  // corresponding event. Copy reflects that nuance so it doesn't
+  // contradict the readiness strip's ✓ "Supervisor approval complete".
+  m = s.match(/^(\d+)\s+approved\s+jobs?\s+missing\s+approval\s+timeline\s+events?$/i);
+  if (m) {
+    const n = Number(m[1]);
+    return `${n} approved ${n === 1 ? "job is" : "jobs are"} missing an approval timeline event. The approval is recorded on the job, but the audit timeline doesn't show it — investigate before delivery.`;
+  }
+
   m = s.match(/^expected\s+at\s+least\s+(\d+)\s+job_approved\s+events$/i);
   if (m) {
     const expected = Number(m[1]);
@@ -319,6 +350,22 @@ function composeOperationalSummary(args: {
 
   if (jobsTotal === 0) {
     parts.push("No jobs recorded yet.");
+  } else if (evidenceCount === 0 && jobsApproved > 0) {
+    // PEAKOPS_OPERATIONAL_SUMMARY_NO_EVIDENCE_V1 (2026-05-18, PR 30e)
+    // Approved jobs with zero evidence is a confidence problem the
+    // earlier summary missed — it celebrated "All approved" and only
+    // mentioned the evidence gap as a side count. Lead with the gap
+    // so a supervisor reading the first clause doesn't get false
+    // reassurance.
+    if (jobsApproved === jobsTotal) {
+      parts.push(
+        jobsTotal === 1
+          ? "The approved job has no evidence attached — verify before delivery."
+          : `The ${jobsTotal} approved jobs have no evidence attached — verify before delivery.`
+      );
+    } else {
+      parts.push(`${jobsApproved} of ${jobsTotal} jobs approved; no evidence attached — verify before delivery.`);
+    }
   } else if (jobsApproved === jobsTotal) {
     parts.push(`All ${jobsTotal} ${jobsTotal === 1 ? "job" : "jobs"} approved with ${evidenceCount} ${evidenceCount === 1 ? "piece" : "pieces"} of evidence attached.`);
   } else if (jobsApproved > 0) {
@@ -475,7 +522,21 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const liveJobsCount = Array.isArray(jobs) ? jobs.length : 0;
 
   const timelineHighlights = useMemo(() => {
-    const interesting = new Set(["job_completed", "job_approved", "job_rejected", "incident_closed", "field_submitted", "evidence_added"]);
+    // PEAKOPS_TIMELINE_HIGHLIGHTS_V2 (2026-05-18, PR 30e)
+    // Include `notes_saved` so supervisor notes activity stops being
+    // invisible. PR #33 surfaced this gap: incidents whose only
+    // activity was notes saves would render "No recorded events yet"
+    // beneath the "Audit-traceable record of every operational
+    // milestone" caption — a contradiction.
+    const interesting = new Set([
+      "job_completed",
+      "job_approved",
+      "job_rejected",
+      "incident_closed",
+      "field_submitted",
+      "evidence_added",
+      "notes_saved",
+    ]);
     return (timeline || [])
       .filter((t) => {
         const ty = String(t.type || "").toLowerCase();
@@ -1017,6 +1078,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     const packetMeta: any = (incident as any)?.packetMeta || {};
     const packetJobCount = Number(packetMeta?.jobCount || 0);
     const packetEvidenceCount = Number(packetMeta?.evidenceCount || 0);
+    // PEAKOPS_TRUTH_PACKET_EXISTENCE_V1 (2026-05-18, PR 30e)
+    // Distinguish "packet has never been exported" from "packet
+    // exported but stale". Without this, the page emits "Regenerate
+    // the packet to refresh" copy when no packet exists, which is
+    // misleading and undermines trust in the integrity panel.
+    const hasPacket = !!String(packetMeta?.exportedAt || "").trim();
 
     const approvedJobs = (Array.isArray(jobs) ? jobs : []).filter((j: any) => {
       const rs = String(j?.reviewStatus || "").toLowerCase();
@@ -1031,12 +1098,17 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       return acc;
     }, {});
 
-    if (packetJobCount !== approvedJobs.length) {
-      reasons.push(`packet jobCount ${packetJobCount} != approved jobs ${approvedJobs.length}`);
-    }
+    const evidenceLen = Array.isArray(evidence) ? evidence.length : 0;
 
-    if (packetEvidenceCount !== (Array.isArray(evidence) ? evidence.length : 0)) {
-      reasons.push(`packet evidenceCount ${packetEvidenceCount} != evidence rows ${(Array.isArray(evidence) ? evidence.length : 0)}`);
+    if (hasPacket) {
+      if (packetJobCount !== approvedJobs.length) {
+        reasons.push(`packet jobCount ${packetJobCount} != approved jobs ${approvedJobs.length}`);
+      }
+      if (packetEvidenceCount !== evidenceLen) {
+        reasons.push(`packet evidenceCount ${packetEvidenceCount} != evidence rows ${evidenceLen}`);
+      }
+    } else if (approvedJobs.length > 0 || evidenceLen > 0) {
+      reasons.push("packet not yet generated");
     }
 
     if ((timelineCounts["field_submitted"] || 0) < 1) {
@@ -1045,8 +1117,19 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     if ((timelineCounts["incident_closed"] || 0) < 1) {
       reasons.push("missing incident_closed event");
     }
-    if ((timelineCounts["job_approved"] || 0) < 2) {
-      reasons.push("expected at least 2 job_approved events");
+
+    // PEAKOPS_TRUTH_JOB_APPROVAL_V1 (2026-05-18, PR 30e)
+    // Replaces the prior hard-coded "expected at least 2 job_approved
+    // events" threshold. The new rule is derived from real jobs: if
+    // there are more approved jobs than approval events in the audit
+    // timeline, surface the gap. This eliminates the contradiction
+    // PR #33's audit found (readiness ✓ "Supervisor approval complete"
+    // alongside ⚠ "fewer approvals than expected") when a single
+    // approved job has no `job_approved` timeline event.
+    const jobApprovedEventCount = timelineCounts["job_approved"] || 0;
+    if (approvedJobs.length > 0 && jobApprovedEventCount < approvedJobs.length) {
+      const missing = approvedJobs.length - jobApprovedEventCount;
+      reasons.push(`${missing} approved ${missing === 1 ? "job" : "jobs"} missing approval timeline ${missing === 1 ? "event" : "events"}`);
     }
 
     return reasons;
@@ -1106,8 +1189,15 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             Incident Record{orgId ? ` · ${orgId}` : ""}
           </div>
           <h1 className="text-2xl font-semibold leading-tight tracking-tight text-white">
-            {(incident as any)?.title || incidentId}
+            {incident?.title || incidentId}
           </h1>
+          {/* PEAKOPS_DOSSIER_LOCATION_V1 (2026-05-18, PR 30e)
+              Surfaces incident.location directly under the title when
+              present. Quiet weight, no icon — the dossier voice should
+              feel like a printed operational record header. */}
+          {incident?.location ? (
+            <div className="text-[12px] text-gray-300">{incident.location}</div>
+          ) : null}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px] text-gray-400">
             <span className={"text-[11px] px-2 py-0.5 rounded-full border " + incidentStatusPill(incident?.status || incidentStatus)}>
               {incidentStatusLabel(incident?.status || incidentStatus)}
@@ -1116,12 +1206,24 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             <span>{jobs.length} {jobs.length === 1 ? "job" : "jobs"}</span>
             <span className="text-white/20">·</span>
             <span>{evidence.length} {evidence.length === 1 ? "piece of evidence" : "pieces of evidence"}</span>
-            {(incident as any)?.updatedAt?._seconds ? (
-              <>
-                <span className="text-white/20">·</span>
-                <span>updated {fmtAgo((incident as any)?.updatedAt?._seconds)}</span>
-              </>
-            ) : null}
+            {/* PEAKOPS_LAST_ACTIVITY_V1 (2026-05-18, PR 30e)
+                Last activity = max(incident.updatedAt, latest timeline
+                event). PR #33 audit caught that notes saves don't bump
+                the incident root doc's updatedAt, leaving the masthead
+                "updated 10d" stale while real activity was minutes ago.
+                Timeline is sorted desc on load (refresh() line ~572),
+                so timeline[0] is the most recent event. */}
+            {(() => {
+              const updatedSec = Number(incident?.updatedAt?._seconds || 0);
+              const latestEventSec = Number(timeline[0]?.occurredAt?._seconds || 0);
+              const lastActivitySec = Math.max(updatedSec, latestEventSec);
+              return lastActivitySec > 0 ? (
+                <>
+                  <span className="text-white/20">·</span>
+                  <span>last activity {fmtAgo(lastActivitySec)}</span>
+                </>
+              ) : null;
+            })()}
             {incident?.packetMeta?.exportedAt ? (
               <>
                 <span className="text-white/20">·</span>
@@ -1140,6 +1242,16 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               </>
             ) : null}
           </div>
+          {/* PEAKOPS_PROVENANCE_V1 (2026-05-18, PR 30e)
+              Quiet "Opened by {actor} · {Xd ago}" line. Builds dossier
+              authority — a real operational record always names its
+              author. Uses prettyActor so we never display the raw
+              28-char Firebase UID. */}
+          {incident?.createdBy && incident?.createdAt?._seconds ? (
+            <div className="text-[11px] text-gray-500">
+              Opened by {prettyActor(incident.createdBy)} · {fmtAgo(incident.createdAt._seconds)} ago
+            </div>
+          ) : null}
           <div className="pt-1">
             <button
               type="button"
@@ -1284,6 +1396,23 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           return (
             <div className="text-[13px] text-gray-300 leading-relaxed border-l-2 border-amber-300/30 pl-3">
               {summary}
+            </div>
+          );
+        })()}
+
+        {/* PEAKOPS_NOTES_ACTIVITY_V1 (2026-05-18, PR 30e)
+            Deterministic notes activity surface. Supervisor notes are
+            real operational work; PR #33's audit caught that this
+            activity was completely invisible on the page. Counts
+            NOTES_SAVED events from the timeline already in scope. */}
+        {(() => {
+          const notesSavedCount = (timeline || []).filter(
+            (t) => String(t?.type || "").toLowerCase() === "notes_saved"
+          ).length;
+          if (notesSavedCount === 0) return null;
+          return (
+            <div className="text-[12px] text-gray-400 italic">
+              Supervisor notes updated {notesSavedCount} {notesSavedCount === 1 ? "time" : "times"}.
             </div>
           );
         })()}
