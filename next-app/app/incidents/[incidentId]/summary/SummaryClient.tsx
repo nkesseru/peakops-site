@@ -221,12 +221,19 @@ function fmtAgo(sec?: number) {
   return `${Math.floor(d / 86400)}d`;
 }
 
-// PEAKOPS_PRETTY_ACTOR_V1 (2026-05-18, PR 30d)
-// Translate raw actor identifiers into supervisor-readable labels.
-// No directory fetch — only local transforms over the string itself.
-// Worst case is a 6-char UID prefix; we never display the full
-// 28-char Firebase UID anywhere.
-function prettyActor(raw?: string): string {
+// PEAKOPS_PRETTY_ACTOR_V2 (2026-05-18, PR 35)
+// Resolves a raw actor identifier into a context-safe label. The PR
+// 30d v1 returned "User dMHgyx" style 6-char UID prefixes; PR 35
+// removes that pattern entirely. UID-shaped inputs now resolve to a
+// role label derived from the action context (chain row or timeline
+// event type). Email and human-readable inputs pass through. Real
+// names (PR 36 — Member Identity Resolver) will replace these labels
+// once a member-identity endpoint exists.
+type ActorContext = {
+  chainRole?: "opened" | "submitted" | "approved" | "notes";
+  eventType?: string;
+};
+function prettyActor(raw?: string, ctx?: ActorContext): string {
   const s = String(raw || "").trim();
   if (!s) return "System";
   const lower = s.toLowerCase();
@@ -237,7 +244,20 @@ function prettyActor(raw?: string): string {
     const local = s.split("@")[0].trim();
     return local || s;
   }
-  if (/^[A-Za-z0-9]{20,}$/.test(s)) return `User ${s.slice(0, 6)}`;
+  // UID-shaped — derive a context-safe role label. Never emit "User
+  // <prefix>" or any other raw-UID-derived string.
+  if (/^[A-Za-z0-9]{20,}$/.test(s)) {
+    if (ctx?.chainRole === "opened") return "Operations";
+    if (ctx?.chainRole === "submitted") return "Field crew";
+    if (ctx?.chainRole === "approved") return "Supervisor";
+    if (ctx?.chainRole === "notes") return "Notes author";
+    const t = String(ctx?.eventType || "").toLowerCase();
+    if (t === "job_approved" || t === "job_rejected" || t === "incident_closed") return "Supervisor";
+    if (t === "field_submitted" || t === "field_arrived" || t === "session_started" || t === "session_completed" || t === "evidence_added") return "Field crew";
+    if (t === "notes_saved") return "Notes author";
+    if (t === "incident_opened") return "Operations";
+    return "Internal user";
+  }
   // Snake/underscore/dash forms get title-cased.
   if (/[_-]/.test(s)) {
     return s
@@ -246,6 +266,33 @@ function prettyActor(raw?: string): string {
       .replace(/\b\w/g, (c) => c.toUpperCase());
   }
   return s;
+}
+
+// PEAKOPS_FMT_ABSOLUTE_V1 (2026-05-18, PR 35)
+// Audit-grade absolute timestamp formatter. Browser-local timezone
+// (Intl.DateTimeFormat). Example: "May 8, 2026 · 14:14 PDT". Used
+// in the chain of accountability section + operational facts where
+// audit value of absolute time outweighs the relative-ago glance.
+function fmtAbsolute(sec?: number): string {
+  if (!sec) return "—";
+  try {
+    const d = new Date(sec * 1000);
+    if (!Number.isFinite(d.getTime())) return "—";
+    const date = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+    const tz = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+      .formatToParts(d)
+      .find((p) => p.type === "timeZoneName")?.value || "";
+    return `${date} · ${time}${tz ? " " + tz : ""}`;
+  } catch {
+    return "—";
+  }
+}
+function fmtAbsoluteIso(iso?: string): string {
+  if (!iso) return "—";
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return "—";
+  return fmtAbsolute(Math.floor(ms / 1000));
 }
 
 // PEAKOPS_PRETTY_INTEGRITY_REASON_V1 (2026-05-18, PR 30d)
@@ -1249,7 +1296,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               28-char Firebase UID. */}
           {incident?.createdBy && incident?.createdAt?._seconds ? (
             <div className="text-[11px] text-gray-500">
-              Opened by {prettyActor(incident.createdBy)} · {fmtAgo(incident.createdAt._seconds)} ago
+              Opened by {prettyActor(incident.createdBy, { chainRole: "opened" })} · {fmtAbsolute(incident.createdAt._seconds)}
             </div>
           ) : null}
           <div className="pt-1">
@@ -1400,23 +1447,6 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           );
         })()}
 
-        {/* PEAKOPS_NOTES_ACTIVITY_V1 (2026-05-18, PR 30e)
-            Deterministic notes activity surface. Supervisor notes are
-            real operational work; PR #33's audit caught that this
-            activity was completely invisible on the page. Counts
-            NOTES_SAVED events from the timeline already in scope. */}
-        {(() => {
-          const notesSavedCount = (timeline || []).filter(
-            (t) => String(t?.type || "").toLowerCase() === "notes_saved"
-          ).length;
-          if (notesSavedCount === 0) return null;
-          return (
-            <div className="text-[12px] text-gray-400 italic">
-              Supervisor notes updated {notesSavedCount} {notesSavedCount === 1 ? "time" : "times"}.
-            </div>
-          );
-        })()}
-
         {/* PEAKOPS_OPERATIONAL_READINESS_V1 (2026-05-17)
             Compact operational readiness strip. Only deterministic
             truths from real data — no AI scores, no percentages, no
@@ -1458,6 +1488,23 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           const packetStatus = String(incident?.packetMeta?.status || "").toLowerCase();
           const packetReady = packetStatus === "ready";
 
+          // PEAKOPS_PACKET_FRESHNESS_V1 (2026-05-18, PR 35)
+          // Differentiate "synchronized" (ready + fresh) from "stale"
+          // (ready but operational activity occurred more than the
+          // 1-hour grace after export). Both states matter for audit
+          // confidence; the page now names them explicitly.
+          const exportedAtMsStrip = incident?.packetMeta?.exportedAt
+            ? Date.parse(incident.packetMeta.exportedAt)
+            : NaN;
+          const stripUpdatedAtSec = Number(incident?.updatedAt?._seconds || 0);
+          const stripLatestEventSec = Number(timeline[0]?.occurredAt?._seconds || 0);
+          const stripActivityMs = Math.max(stripUpdatedAtSec, stripLatestEventSec) * 1000;
+          const packetStaleStrip =
+            packetReady &&
+            Number.isFinite(exportedAtMsStrip) &&
+            stripActivityMs > 0 &&
+            stripActivityMs - exportedAtMsStrip > 60 * 60 * 1000;
+
           // Build operational-language labels with synthesized context.
           const fieldLabel = hasFieldSubmitted
             ? fieldWorkSecs > 0
@@ -1484,18 +1531,23 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             ? "Operational record consistent"
             : `Attention needed: ${truthMismatchReasons.length} item${truthMismatchReasons.length === 1 ? "" : "s"} to review`;
 
-          const packetLabel = packetReady
-            ? incident?.packetMeta?.exportedAt
-              ? `Export packet ready (generated ${fmtAgoIso(incident.packetMeta.exportedAt)} ago)`
-              : "Export packet ready"
-            : "Export packet pending";
+          // PEAKOPS_PACKET_FRESHNESS_V1 (2026-05-18, PR 35)
+          // Explicit "synchronized" / "stale" wording — the page now
+          // names packet freshness instead of just "ready".
+          const packetLabel = !packetReady
+            ? "Export packet pending"
+            : packetStaleStrip
+            ? `Packet stale — operational activity occurred after export${incident?.packetMeta?.exportedAt ? ` (generated ${fmtAgoIso(incident.packetMeta.exportedAt)} ago)` : ""}`
+            : incident?.packetMeta?.exportedAt
+            ? `Packet synchronized with current operational state (generated ${fmtAgoIso(incident.packetMeta.exportedAt)} ago)`
+            : "Packet synchronized with current operational state";
 
           const items: Array<{ ok: boolean | "warn"; label: string }> = [
             { ok: hasFieldSubmitted, label: fieldLabel },
             { ok: evidence.length > 0, label: evidenceLabel },
             { ok: hasApproval, label: approvalLabel },
             { ok: integrityClean ? true : "warn", label: integrityLabel },
-            { ok: packetReady && integrityClean, label: packetLabel },
+            { ok: packetReady && integrityClean && !packetStaleStrip ? true : packetStaleStrip ? "warn" : false, label: packetLabel },
           ];
           return (
             <section aria-label="Operational readiness" className="space-y-3">
@@ -1515,6 +1567,158 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                     <li key={i} className="flex items-start gap-3 text-[13px] leading-relaxed">
                       <span className={`mt-[2px] inline-block w-3 text-center font-semibold ${tone}`}>{sym}</span>
                       <span className={it.ok === true ? "text-gray-100" : it.ok === "warn" ? "text-amber-100/90" : "text-gray-400"}>{it.label}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          );
+        })()}
+
+        {/* PEAKOPS_OPERATIONAL_FACTS_V1 (2026-05-18, PR 35)
+            Deterministic operational facts synthesized from real
+            Firestore timestamps and counts — no AI, no scoring, no
+            inference beyond comparing two numbers. Each fact reads
+            as an audit-defensible statement; rendering is suppressed
+            when its source data isn't present. */}
+        {(() => {
+          type Fact = { tone: "info" | "warn" | "good"; text: string };
+          const facts: Fact[] = [];
+
+          // Field response began Xm after incident opened
+          const createdAtSec = Number(incident?.createdAt?._seconds || 0);
+          const inProgressAtSec = Number((incident as any)?.inProgressAt?._seconds || 0);
+          if (createdAtSec > 0 && inProgressAtSec > createdAtSec) {
+            facts.push({
+              tone: "info",
+              text: `Field response began ${formatDuration(inProgressAtSec - createdAtSec)} after incident opened.`,
+            });
+          }
+
+          // Field work completed in Xh
+          const sessionStartFact = findEarliestEventSeconds(timeline as any, "session_started");
+          const sessionEndFact =
+            findLatestEventSeconds(timeline as any, "session_completed") ||
+            findLatestEventSeconds(timeline as any, "field_submitted");
+          if (sessionStartFact && sessionEndFact && sessionEndFact > sessionStartFact) {
+            facts.push({
+              tone: "info",
+              text: `Field work completed in ${formatDuration(sessionEndFact - sessionStartFact)}.`,
+            });
+          }
+
+          // Supervisor approval issued Xh after completion (average across approved jobs that have both timestamps)
+          const approvedJobsWithLatency = jobs.filter((j: any) => {
+            const isApproved = String(j?.reviewStatus || j?.status || "").toLowerCase() === "approved";
+            return isApproved && Number(j?.completedAt?._seconds || 0) > 0 && Number(j?.approvedAt?._seconds || 0) > 0;
+          });
+          if (approvedJobsWithLatency.length > 0) {
+            const totalLatency = approvedJobsWithLatency.reduce(
+              (acc: number, j: any) => acc + Math.max(0, Number(j.approvedAt._seconds) - Number(j.completedAt._seconds)),
+              0
+            );
+            const avgLatency = Math.floor(totalLatency / approvedJobsWithLatency.length);
+            if (avgLatency > 0) {
+              facts.push({
+                tone: "info",
+                text: `Supervisor approval issued ${formatDuration(avgLatency)} after completion.`,
+              });
+            }
+          }
+
+          // All / N of M evidence captured during active work session
+          if (evidence.length > 0 && sessionStartFact && sessionEndFact) {
+            const inWindow = evidence.filter((e) => {
+              const s = Number((e as any).storedAt?._seconds || (e as any).createdAt?._seconds || 0);
+              return s >= sessionStartFact && s <= sessionEndFact;
+            }).length;
+            if (inWindow > 0 && inWindow === evidence.length) {
+              facts.push({
+                tone: "good",
+                text: "All evidence captured during active work session.",
+              });
+            } else if (inWindow > 0) {
+              facts.push({
+                tone: "info",
+                text: `${inWindow} of ${evidence.length} evidence ${inWindow === 1 ? "piece" : "pieces"} captured during active work session.`,
+              });
+            }
+          }
+
+          // All approved jobs contain evidence (or warn when not)
+          const approvedJobIds = jobs
+            .filter((j: any) => String(j?.reviewStatus || j?.status || "").toLowerCase() === "approved")
+            .map((j: any) => String(j?.id || j?.jobId || ""));
+          if (approvedJobIds.length > 0) {
+            const allHaveEvidence = approvedJobIds.every((id) => (evidenceByJob[id]?.length || 0) > 0);
+            if (allHaveEvidence) {
+              facts.push({ tone: "good", text: "All approved jobs contain evidence." });
+            } else {
+              facts.push({ tone: "warn", text: "Approved jobs missing evidence — verify before delivery." });
+            }
+          }
+
+          // Packet generated after final approval
+          const packetExportedSec = incident?.packetMeta?.exportedAt
+            ? Math.floor(Date.parse(incident.packetMeta.exportedAt) / 1000)
+            : 0;
+          const latestApprovedAtSec = jobs.reduce((max: number, j: any) => {
+            const a = Number(j?.approvedAt?._seconds || 0);
+            return a > max ? a : max;
+          }, 0);
+          if (packetExportedSec > 0 && latestApprovedAtSec > 0 && packetExportedSec >= latestApprovedAtSec) {
+            facts.push({ tone: "good", text: "Packet generated after final approval." });
+          }
+
+          // Packet synchronized / stale
+          if (packetExportedSec > 0) {
+            const latestActivityMsFact = Math.max(
+              Number(incident?.updatedAt?._seconds || 0),
+              Number(timeline[0]?.occurredAt?._seconds || 0)
+            ) * 1000;
+            const exportedMsFact = packetExportedSec * 1000;
+            if (latestActivityMsFact > 0 && latestActivityMsFact - exportedMsFact > 60 * 60 * 1000) {
+              const drift = Math.floor((latestActivityMsFact - exportedMsFact) / 1000);
+              facts.push({
+                tone: "warn",
+                text: `Packet stale — operational activity occurred ${formatDuration(drift)} after export.`,
+              });
+            } else {
+              facts.push({ tone: "good", text: "Packet synchronized with current operational state." });
+            }
+          }
+
+          // Supervisor notes updated N times (moved from PR 30e standalone line)
+          const notesSavedCount = (timeline || []).filter(
+            (t) => String(t?.type || "").toLowerCase() === "notes_saved"
+          ).length;
+          if (notesSavedCount > 0) {
+            facts.push({
+              tone: "info",
+              text: `Supervisor notes updated ${notesSavedCount} ${notesSavedCount === 1 ? "time" : "times"}.`,
+            });
+          }
+
+          if (facts.length === 0) return null;
+
+          return (
+            <section aria-label="Operational facts" className="space-y-3">
+              <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+                Operational facts
+              </div>
+              <ul className="space-y-1.5">
+                {facts.map((f, i) => {
+                  const sym = f.tone === "warn" ? "⚠" : "·";
+                  const tone =
+                    f.tone === "good"
+                      ? "text-emerald-200/90"
+                      : f.tone === "warn"
+                      ? "text-amber-200/90"
+                      : "text-gray-300";
+                  return (
+                    <li key={i} className="flex items-start gap-3 text-[13px] leading-relaxed">
+                      <span className={`mt-[2px] inline-block w-3 text-center ${tone}`}>{sym}</span>
+                      <span className={f.tone === "warn" ? "text-amber-100/90" : f.tone === "good" ? "text-emerald-100/95" : "text-gray-200"}>{f.text}</span>
                     </li>
                   );
                 })}
@@ -1555,6 +1759,37 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 </button>
               ) : null}
             </div>
+            {/* PEAKOPS_EVIDENCE_SESSION_CHIP_V1 (2026-05-18, PR 35)
+                Surfaces chain-of-custody confidence when evidence
+                timestamps fall inside the active session window.
+                Quiet single-line chip — no widget energy, just a
+                deterministic trust signal. */}
+            {(() => {
+              const ss = findEarliestEventSeconds(timeline as any, "session_started");
+              const se =
+                findLatestEventSeconds(timeline as any, "session_completed") ||
+                findLatestEventSeconds(timeline as any, "field_submitted");
+              if (!ss || !se || evidence.length === 0) return null;
+              const inWindow = evidence.filter((e) => {
+                const s = Number((e as any).storedAt?._seconds || (e as any).createdAt?._seconds || 0);
+                return s >= ss && s <= se;
+              }).length;
+              if (inWindow === 0) return null;
+              const allInWindow = inWindow === evidence.length;
+              const chipClass = allInWindow
+                ? "text-emerald-200/85 border-emerald-300/25 bg-emerald-500/[0.08]"
+                : "text-amber-200/85 border-amber-300/25 bg-amber-500/[0.08]";
+              const chipText = allInWindow
+                ? "Captured during active work session"
+                : `${inWindow} of ${evidence.length} captured during active session`;
+              return (
+                <div className="mt-2">
+                  <span className={`text-[11px] inline-flex items-center px-2 py-0.5 rounded-full border ${chipClass}`}>
+                    {chipText}
+                  </span>
+                </div>
+              );
+            })()}
           </div>
 
           {Object.keys(evidenceByJob).length === 0 ? (
@@ -1633,35 +1868,14 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             </div>
           )}
 
-          {/* PEAKOPS_JOBS_PROSE_V1 (2026-05-18, PR 30d)
-              Single-sentence jobs status (composeJobsProse) replaces
-              the inline chip dump. Detailed counts remain accessible
-              via the nested <details> for engineers/auditors. */}
+          {/* PEAKOPS_JOBS_PROSE_V2 (2026-05-18, PR 35)
+              Single-sentence jobs status (composeJobsProse). PR #33's
+              "Status breakdown" <details> was removed in PR 35 per
+              audit feedback — it surfaced developer-grade counts that
+              didn't belong in a customer-facing operational record. */}
           {jobs.length > 0 ? (
-            <div className="pt-1 space-y-1.5">
-              <div className="text-[13px] text-gray-200">
-                {composeJobsProse(statusCounts as StatusCountsLike, jobs.length)}
-              </div>
-              <details>
-                <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300 list-none">
-                  Status breakdown
-                </summary>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  {Object.entries(statusCounts).map(([k, v]) => (
-                    <span
-                      key={k}
-                      className={
-                        "text-[11px] px-2 py-0.5 rounded-full border " +
-                        (v > 0
-                          ? "border-white/15 bg-white/[0.04] text-gray-200"
-                          : "border-white/5 bg-transparent text-gray-600")
-                      }
-                    >
-                      {v} {k}
-                    </span>
-                  ))}
-                </div>
-              </details>
+            <div className="pt-1 text-[13px] text-gray-200">
+              {composeJobsProse(statusCounts as StatusCountsLike, jobs.length)}
             </div>
           ) : null}
         </section>
@@ -1715,7 +1929,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                       <div className="text-[11px] text-gray-500 shrink-0">{fmtAgo(t.occurredAt?._seconds)}</div>
                     </div>
                     {!isSystemActor ? (
-                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">by {prettyActor(actor)}</div>
+                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">by {prettyActor(actor, { eventType: tType })}</div>
                     ) : null}
                   </li>
                 );
@@ -1723,6 +1937,103 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             </ol>
           )}
         </section>
+
+        {/* PEAKOPS_CHAIN_OF_ACCOUNTABILITY_V1 (2026-05-18, PR 35)
+            Audit-grade chain of accountability. Each row names a
+            single transition in the operational record's lifecycle
+            with an absolute timestamp. Pending rows render muted so
+            completed rows visually anchor. Attribution uses
+            context-safe role labels (Operations / Field crew /
+            Supervisor) — PR 36's Member Identity Resolver will
+            substitute real names. */}
+        {(() => {
+          type ChainRow = { label: string; when?: string; pending?: boolean };
+          const rows: ChainRow[] = [];
+
+          // Opened
+          if (incident?.createdBy && incident?.createdAt?._seconds) {
+            rows.push({
+              label: `Opened by ${prettyActor(incident.createdBy, { chainRole: "opened" })}`,
+              when: fmtAbsolute(incident.createdAt._seconds),
+            });
+          } else {
+            rows.push({ label: "Opened", pending: true });
+          }
+
+          // Field package submitted
+          const fieldSubmittedEvent = (timeline || []).find(
+            (t) => String(t?.type || "").toLowerCase() === "field_submitted"
+          );
+          if (fieldSubmittedEvent) {
+            rows.push({
+              label: `Field package submitted by ${prettyActor(String(fieldSubmittedEvent.actor || ""), { chainRole: "submitted" })}`,
+              when: fmtAbsolute(fieldSubmittedEvent.occurredAt?._seconds),
+            });
+          } else {
+            rows.push({ label: "Field package submitted", pending: true });
+          }
+
+          // Approved
+          const approvedJobsForChain = jobs.filter((j: any) => {
+            const isApproved = String(j?.reviewStatus || j?.status || "").toLowerCase() === "approved";
+            return isApproved && (j?.approvedBy || j?.approvedAt?._seconds);
+          });
+          if (approvedJobsForChain.length > 0) {
+            const approvers = Array.from(
+              new Set(
+                approvedJobsForChain
+                  .map((j: any) => String(j?.approvedBy || "").trim())
+                  .filter((a: string) => a)
+              )
+            );
+            const latestApprovedAt = approvedJobsForChain.reduce(
+              (max: number, j: any) => Math.max(max, Number(j?.approvedAt?._seconds || 0)),
+              0
+            );
+            const approverLabel = approvers.length === 1
+              ? prettyActor(approvers[0], { chainRole: "approved" })
+              : "multiple supervisors";
+            const jobCountSuffix = approvedJobsForChain.length > 1
+              ? ` (${approvedJobsForChain.length} jobs)`
+              : "";
+            rows.push({
+              label: `Approved by ${approverLabel}${jobCountSuffix}`,
+              when: latestApprovedAt > 0 ? fmtAbsolute(latestApprovedAt) : undefined,
+            });
+          } else {
+            rows.push({ label: "Approved", pending: true });
+          }
+
+          // Packet generated
+          if (incident?.packetMeta?.exportedAt) {
+            rows.push({
+              label: "Packet generated",
+              when: fmtAbsoluteIso(incident.packetMeta.exportedAt),
+            });
+          } else {
+            rows.push({ label: "Packet generated", pending: true });
+          }
+
+          return (
+            <section aria-label="Chain of accountability" className="space-y-3">
+              <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+                Chain of accountability
+              </div>
+              <ul className="space-y-1.5">
+                {rows.map((r, i) => (
+                  <li key={i} className="flex items-baseline gap-3 text-[13px] leading-relaxed">
+                    <span className={`mt-[2px] inline-block w-3 text-center ${r.pending ? "text-gray-600" : "text-gray-400"}`}>·</span>
+                    <span className={r.pending ? "text-gray-500" : "text-gray-100"}>{r.label}</span>
+                    <span className="flex-1" />
+                    <span className={`text-[11px] shrink-0 ${r.pending ? "text-gray-600 italic" : "text-gray-400"}`}>
+                      {r.pending ? "Pending" : r.when}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          );
+        })()}
 
         {/* PEAKOPS_EXPORT_PACKET_CHAPTER_V1 (2026-05-17)
             Renamed from "Incident Status" card. The status pill is
@@ -1832,30 +2143,32 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             </div>
           ) : null}
 
-          {/* PEAKOPS_SUPERVISOR_ACTION_RAIL_V1 (2026-05-18, PR 30c)
-              Quiet secondary actions. Only surfacing real, wired
-              destinations — no button soup. Each nav preserves
-              orgId on the push (mirrors PR #16 / #23 / #28 pattern). */}
+          {/* PEAKOPS_SUPERVISOR_ACTION_RAIL_V2 (2026-05-18, PR 35)
+              De-footerified per PR 35 audit feedback: the bordered
+              "More actions" strip read as a page footer. Now renders
+              as quiet inline links directly below the CTA hint, no
+              divider, no eyebrow label. */}
           {orgId && incidentId ? (
-            <div className="pt-3 border-t border-white/[0.04] flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px]">
-              <span className="text-[10px] uppercase tracking-wider text-gray-500">More actions</span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-gray-500">
               <button
                 type="button"
-                className="text-gray-300 hover:text-white underline-offset-2 hover:underline"
+                className="hover:text-gray-200 underline-offset-2 hover:underline"
                 onClick={() => router.push(`/incidents/${incidentId}/review?orgId=${encodeURIComponent(orgId)}`)}
               >
                 Open review
               </button>
+              <span className="text-white/10">·</span>
               <button
                 type="button"
-                className="text-gray-300 hover:text-white underline-offset-2 hover:underline"
+                className="hover:text-gray-200 underline-offset-2 hover:underline"
                 onClick={() => router.push(`/incidents/${incidentId}/notes?orgId=${encodeURIComponent(orgId)}`)}
               >
                 Open notes
               </button>
+              <span className="text-white/10">·</span>
               <button
                 type="button"
-                className="text-gray-300 hover:text-white underline-offset-2 hover:underline"
+                className="hover:text-gray-200 underline-offset-2 hover:underline"
                 onClick={() => router.push(`/incidents/${incidentId}?orgId=${encodeURIComponent(orgId)}`)}
               >
                 Back to incident
