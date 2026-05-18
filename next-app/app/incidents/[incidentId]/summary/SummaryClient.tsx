@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import {
@@ -1967,15 +1968,28 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                         return (
                           <div key={id} className="relative min-w-[160px] w-[160px] aspect-[4/3] rounded-lg overflow-hidden border border-white/8 bg-black/40">
                             {u ? (
-                              <img
-                                src={u}
-                                className="w-full h-full object-cover"
-                                onLoad={() => {
-                                  setThumbStatusById((m) => ({ ...m, [id]: 200 }));
-                                  setThumbErrById((m) => ({ ...m, [id]: "" }));
-                                }}
-                                onError={() => { void renewThumbOnce(ev, u); }}
-                              />
+                              // PEAKOPS_EVIDENCE_CLICK_EXPAND_V1 (2026-05-18, PR 38)
+                              // Tile becomes an anchor to the full-resolution
+                              // signed URL in a new tab. Browser-native zoom
+                              // and save. Uses the existing signed URL (15-min
+                              // TTL); if expired, re-loading Summary remints.
+                              <a
+                                href={u}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block w-full h-full"
+                                title="Open full-resolution image"
+                              >
+                                <img
+                                  src={u}
+                                  className="w-full h-full object-cover"
+                                  onLoad={() => {
+                                    setThumbStatusById((m) => ({ ...m, [id]: 200 }));
+                                    setThumbErrById((m) => ({ ...m, [id]: "" }));
+                                  }}
+                                  onError={() => { void renewThumbOnce(ev, u); }}
+                                />
+                              </a>
                             ) : (
                               <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-500 text-center px-1">
                                 {thumbErrById[id] ? "Unavailable" : "Loading…"}
@@ -2011,6 +2025,94 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                         );
                       })}
                     </div>
+                    {/* PEAKOPS_EVIDENCE_INTEGRITY_STRIP_V1 (2026-05-18, PR 38)
+                        Per-job tile-row caption. Single quiet line of
+                        deterministic operational metadata: most-recent
+                        stored timestamp, session-window membership, and
+                        GPS confirmation (with coordinates revealed on
+                        click). Only renders signals derivable from real
+                        fields on the evidence doc — never claims hash
+                        verification or device provenance the doc
+                        doesn't carry. */}
+                    {(() => {
+                      const ss = findEarliestEventSeconds(timeline as any, "session_started");
+                      const se =
+                        findLatestEventSeconds(timeline as any, "session_completed") ||
+                        findLatestEventSeconds(timeline as any, "field_submitted");
+
+                      const storedSecs = list
+                        .map((e) => Number((e as any).storedAt?._seconds || (e as any).createdAt?._seconds || 0))
+                        .filter((s) => s > 0);
+                      const latestStored = storedSecs.length > 0 ? Math.max(...storedSecs) : 0;
+
+                      const inSessionCount =
+                        ss && se
+                          ? list.filter((e) => {
+                              const s = Number((e as any).storedAt?._seconds || (e as any).createdAt?._seconds || 0);
+                              return s > 0 && s >= ss && s <= se;
+                            }).length
+                          : 0;
+
+                      type Geo = { lat: number; lng: number };
+                      const gpsTiles: Geo[] = list
+                        .map((e) => {
+                          const g = (e as any).gps;
+                          if (!g || typeof g !== "object") return null;
+                          const lat = Number(g.lat ?? g.latitude);
+                          const lng = Number(g.lng ?? g.longitude ?? g.lon);
+                          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+                          return { lat, lng };
+                        })
+                        .filter((g): g is Geo => g !== null);
+
+                      const parts: ReactNode[] = [];
+                      if (latestStored > 0) {
+                        parts.push(<span key="stored">Stored {fmtAbsolute(latestStored)}</span>);
+                      }
+                      if (ss && se && inSessionCount > 0) {
+                        const sessionText =
+                          inSessionCount === list.length
+                            ? "All captured during active field session"
+                            : `${inSessionCount} of ${list.length} captured during active field session`;
+                        parts.push(<span key="session">{sessionText}</span>);
+                      }
+                      if (gpsTiles.length > 0) {
+                        const gpsLabel =
+                          gpsTiles.length === list.length && list.length === 1
+                            ? "GPS recorded"
+                            : `GPS recorded for ${gpsTiles.length} of ${list.length}`;
+                        const coordsText = gpsTiles
+                          .slice(0, 5)
+                          .map((g) => `${g.lat.toFixed(4)}, ${g.lng.toFixed(4)}`)
+                          .join(" · ");
+                        const overflow = gpsTiles.length > 5 ? ` · +${gpsTiles.length - 5} more` : "";
+                        parts.push(
+                          <details key="gps" className="inline">
+                            <summary className="cursor-pointer hover:text-gray-300 list-none underline-offset-2 hover:underline">
+                              {gpsLabel}
+                            </summary>
+                            <span className="ml-2 font-mono text-gray-400">
+                              {coordsText}
+                              {overflow}
+                            </span>
+                          </details>
+                        );
+                      }
+
+                      if (parts.length === 0) return null;
+                      const interleaved: ReactNode[] = [];
+                      parts.forEach((p, i) => {
+                        if (i > 0) {
+                          interleaved.push(<span key={`sep-${i}`} className="text-white/15">·</span>);
+                        }
+                        interleaved.push(p);
+                      });
+                      return (
+                        <div className="text-[11px] text-gray-500 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-0.5">
+                          {interleaved}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -2080,13 +2182,17 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 let attributionLine: string | null = null;
                 if (isClosedEvent) {
                   if (isSystemActor) {
+                    // PEAKOPS_SYSTEM_ATTRIBUTION_V1 (2026-05-18, PR 38)
+                    // Append explicit "by system" so auto-close events
+                    // are never ambiguous about who acted. PR 37 left
+                    // this implicit; PR 38 makes it audit-explicit.
                     const priorApprovalExists = (timeline || []).some((tt) => {
                       const ty = String(tt?.type || "").toLowerCase();
                       return ty === "job_approved";
                     });
                     attributionLine = priorApprovalExists
-                      ? "Closed automatically after final approval"
-                      : "Closed automatically";
+                      ? "Closed automatically after final approval · by system"
+                      : "Closed automatically · by system";
                   } else {
                     attributionLine = `Closed by ${prettyActor(actor, { eventType: tType }, memberRegistry)}`;
                   }
@@ -2178,10 +2284,47 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             rows.push({ label: "Approved", pending: true });
           }
 
-          // Packet generated
+          // PEAKOPS_CHAIN_CLOSED_ROW_V1 (2026-05-18, PR 38)
+          // Adds the missing closure row to the chain of accountability.
+          // System actor + prior approval → "Closed automatically after
+          // final approval · by system". System actor, no prior approval
+          // → "Closed automatically · by system". Real actor → "Closed by
+          // {prettyActor}". Mirrors the timeline row PR 37 added under
+          // the incident_closed event.
+          const closedEventForChain = (timeline || []).find(
+            (t) => String(t?.type || "").toLowerCase() === "incident_closed"
+          );
+          if (closedEventForChain) {
+            const closedActor = String(closedEventForChain.actor || "").trim();
+            const closedIsSystem =
+              !closedActor || closedActor === "ui" || closedActor === "system";
+            const closedWhen = Number(closedEventForChain.occurredAt?._seconds || 0);
+            let closedLabel: string;
+            if (closedIsSystem) {
+              const priorApproval = (timeline || []).some(
+                (tt) => String(tt?.type || "").toLowerCase() === "job_approved"
+              );
+              closedLabel = priorApproval
+                ? "Closed automatically after final approval · by system"
+                : "Closed automatically · by system";
+            } else {
+              closedLabel = `Closed by ${prettyActor(closedActor, { eventType: "incident_closed" }, memberRegistry)}`;
+            }
+            rows.push({
+              label: closedLabel,
+              when: closedWhen > 0 ? fmtAbsolute(closedWhen) : undefined,
+            });
+          } else {
+            rows.push({ label: "Closed", pending: true });
+          }
+
+          // Packet generated — PEAKOPS_SYSTEM_ATTRIBUTION_V1 (2026-05-18, PR 38)
+          // Packet generation is a system action (no human actor field
+          // on packetMeta). Append "· by system" for explicit
+          // attribution, consistent with the Closed row above.
           if (incident?.packetMeta?.exportedAt) {
             rows.push({
-              label: "Packet generated",
+              label: "Packet generated · by system",
               when: fmtAbsoluteIso(incident.packetMeta.exportedAt),
             });
           } else {
