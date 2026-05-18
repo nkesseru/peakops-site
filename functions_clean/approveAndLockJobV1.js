@@ -86,6 +86,20 @@ exports.approveAndLockJobV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 409, { ok: false, error: "org_mismatch" });
     }
 
+    // PEAKOPS_SEALED_RECORD_V1 (2026-05-18, PR 41)
+    // Sealed operational records are immutable. Reject approve+lock
+    // post-closure. Post-closure supervisory follow-up goes through
+    // the addendum model (PR 43). incSnap is already fetched above
+    // for the existence check; reuse it to avoid an extra read.
+    const sealIncStatus = String((incSnap.data() || {}).status || "").toLowerCase();
+    if (sealIncStatus === "closed") {
+      return j(res, 409, {
+        ok: false,
+        error: "incident_closed",
+        detail: "Operational record is sealed — file an addendum to attach supplemental context.",
+      });
+    }
+
     const ref = db.collection("incidents").doc(incidentId).collection("jobs").doc(jobId);
 
     await ref.set({

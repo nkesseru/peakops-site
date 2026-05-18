@@ -81,6 +81,21 @@ exports.approveJobV1 = onRequest({ cors: true }, async (req, res) => {
     const db = getFirestore();
     await assertIncidentOrg(db, orgId, incidentId);
 
+    // PEAKOPS_SEALED_RECORD_V1 (2026-05-18, PR 41)
+    // Closed records are immutable. Job approval is a state mutation;
+    // reject it post-closure. If approval is genuinely needed after a
+    // record is sealed, the operational answer is an addendum
+    // (PR 43), not retroactive job-state changes.
+    const sealIncSnap = await db.collection("incidents").doc(incidentId).get();
+    const sealIncStatus = String((sealIncSnap.exists ? (sealIncSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (sealIncStatus === "closed") {
+      return j(res, 409, {
+        ok: false,
+        error: "incident_closed",
+        detail: "Operational record is sealed — file an addendum to attach supplemental context.",
+      });
+    }
+
     const ref = db.collection("incidents").doc(incidentId).collection("jobs").doc(jobId);
     const snap = await ref.get();
     if (!snap.exists) return j(res, 404, { ok: false, error: "job_not_found" });
