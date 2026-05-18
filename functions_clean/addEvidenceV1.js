@@ -4,8 +4,22 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
 const { resolveEvidenceBucket } = require("./evidenceBucket");
 const { normalizeContentType, isHeicEvidence } = require("./evidenceHeic");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
+
+// PEAKOPS_DEVICE_PLATFORM_V1 (2026-05-18, PR 40 Phase A)
+// Lightweight UA → coarse platform classifier. Regex-based, no
+// ua-parser dep. iPhone/iPad/iPod → iOS, Android → Android, else
+// Web. Sufficient for chain-of-custody platform indicators in the
+// Summary integrity disclosure.
+function derivePlatform(ua) {
+  const u = String(ua || "");
+  if (!u) return "";
+  if (/iPhone|iPad|iPod/i.test(u)) return "iOS";
+  if (/Android/i.test(u)) return "Android";
+  return "Web";
+}
 
 function j(res, status, body) {
   res.status(status).set("content-type", "application/json").send(JSON.stringify(body));
@@ -232,6 +246,24 @@ const orgId = mustStr(body.orgId, "orgId");
         }
       : {};
 
+    // PEAKOPS_UPLOADER_IDENTITY_V1 (2026-05-18, PR 40 Phase A)
+    // Resolve the authenticated uploader from the Bearer ID token and
+    // capture coarse device/userAgent metadata for chain-of-custody.
+    // Failure-tolerant — falls back to empty uploaderUid if the token
+    // can't be verified (smoke-test / legacy / proxy paths). Device
+    // metadata only persisted when a non-empty UA was sent.
+    let uploaderUid = "";
+    try {
+      const a = await extractActorUid(req, body);
+      uploaderUid = String((a && a.uid) || "").trim();
+    } catch (_e) {
+      // tolerate — uploaderUid stays empty
+    }
+    const userAgentRaw = String((req && req.headers && req.headers["user-agent"]) || "").trim();
+    const userAgent = userAgentRaw ? userAgentRaw.slice(0, 256) : "";
+    const platform = userAgent ? derivePlatform(userAgent) : "";
+    const deviceMeta = userAgent ? { userAgent, platform } : null;
+
     await evidenceRef.set(
       {
         orgId,
@@ -244,6 +276,12 @@ const orgId = mustStr(body.orgId, "orgId");
         gps,
         createdAt: now,
         storedAt: now,
+        // PEAKOPS_UPLOADER_IDENTITY_V1 (2026-05-18, PR 40 Phase A)
+        // Per-evidence chain-of-custody fields. Both nullable so
+        // documents written by paths that don't carry a Bearer token
+        // (smoke tests, legacy migration scripts) don't fail loudly.
+        uploaderUid: uploaderUid || null,
+        device: deviceMeta,
         file: {
           storagePath: storagePath || null,
           contentType,
@@ -260,7 +298,20 @@ const orgId = mustStr(body.orgId, "orgId");
       { merge: true }
     );
 
-    await emitTimelineEvent({ orgId, incidentId, type: "EVIDENCE_ADDED", sessionId, refId: evidenceId, gps, actor: "field" });
+    // PEAKOPS_TIMELINE_ACTOR_UID_V1 (2026-05-18, PR 40 Phase A)
+    // Keep actor: "field" for backwards compatibility per the locked
+    // PR 40 decisions. actorUid is the new audit-grade field carrying
+    // the verified Bearer-token uid (when available).
+    await emitTimelineEvent({
+      orgId,
+      incidentId,
+      type: "EVIDENCE_ADDED",
+      sessionId,
+      refId: evidenceId,
+      gps,
+      actor: "field",
+      actorUid: uploaderUid || null,
+    });
 
     // Queue HEIC conversion job for deterministic processing by runConversionJobsV1.
     if (heicCandidate && storagePath) {
