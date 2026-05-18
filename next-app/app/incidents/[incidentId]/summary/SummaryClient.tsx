@@ -80,6 +80,75 @@ function fmtAgoIso(iso?: string) {
   return fmtAgo(Math.floor(ms / 1000));
 }
 
+// PEAKOPS_OPERATIONAL_LANGUAGE_V1 (2026-05-17)
+// Translate raw timeline event types into operational language so the
+// page reads like an incident command record, not a database dump.
+function prettyTimelineEvent(t?: string): string {
+  const norm = String(t || "").trim().toLowerCase();
+  const map: Record<string, string> = {
+    field_submitted: "Field crew submitted completion package",
+    field_arrived: "Field crew arrived on site",
+    session_started: "Field session started",
+    session_completed: "Field session completed",
+    job_approved: "Supervisor approved job",
+    job_rejected: "Supervisor rejected job",
+    job_completed: "Job marked complete",
+    evidence_added: "Evidence captured and attached",
+    incident_opened: "Incident opened",
+    incident_closed: "Operational record closed",
+    notes_saved: "Notes updated",
+    material_added: "Material logged",
+    debug_event: "Debug event",
+  };
+  if (map[norm]) return map[norm];
+  if (!t) return "Event";
+  return String(t)
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function eventIcon(t?: string): string {
+  const norm = String(t || "").trim().toLowerCase();
+  const map: Record<string, string> = {
+    field_submitted: "📋",
+    field_arrived: "✅",
+    session_started: "🧑‍🔧",
+    session_completed: "🏁",
+    job_approved: "🛡",
+    job_rejected: "❌",
+    job_completed: "✓",
+    evidence_added: "📸",
+    incident_opened: "⚡",
+    incident_closed: "🔒",
+    notes_saved: "📝",
+    material_added: "🧱",
+    debug_event: "🧪",
+  };
+  return map[norm] || "•";
+}
+
+function formatDuration(secs?: number): string {
+  if (!secs || secs < 0) return "—";
+  if (secs < 60) return `${Math.floor(secs)}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(secs / 3600);
+  const remMins = Math.floor((secs % 3600) / 60);
+  if (hrs < 24) return remMins > 0 ? `${hrs}h ${remMins}m` : `${hrs}h`;
+  const days = Math.floor(secs / 86400);
+  const remHrs = Math.floor((secs % 86400) / 3600);
+  return remHrs > 0 ? `${days}d ${remHrs}h` : `${days}d`;
+}
+
+function packetButtonLabel(hint?: string, busy?: boolean): string {
+  if (busy) return "Preparing Packet…";
+  const h = String(hint || "").toLowerCase();
+  if (h.includes("ready")) return "Download Packet";
+  if (h.includes("building")) return "Packet Building…";
+  return "Generate Packet";
+}
+
 function fmtAgo(sec?: number) {
   if (!sec) return "—";
   const d = Math.max(0, Math.floor(Date.now() / 1000 - sec));
@@ -939,167 +1008,315 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           <div className="text-[12px] text-emerald-200/85">{artifactToast}</div>
         ) : null}
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Incident Status</div>
-            <span className={"text-[11px] px-2 py-0.5 rounded-full border " + incidentStatusPill(incidentStatus)}>{incidentStatusLabel(incidentStatus)}</span>
+        {/* PEAKOPS_OPERATIONAL_READINESS_V1 (2026-05-17)
+            Compact operational readiness strip. Only deterministic
+            truths from real data — no AI scores, no percentages, no
+            fake confidence. Each row reflects an audit-defensible
+            signal a supervisor would check before approving the
+            record. */}
+        {(() => {
+          const hasFieldSubmitted = timeline.some((t) => {
+            const k = String(t.type || "").toLowerCase();
+            return k === "field_submitted" || k === "session_completed";
+          });
+          const approvedJobs = jobs.filter((j) => String(j.status || "").toLowerCase() === "approved").length;
+          const hasApproval = approvedJobs > 0;
+          const integrityClean = truthMismatchReasons.length === 0;
+          const packetStatus = String(incident?.packetMeta?.status || "").toLowerCase();
+          const packetReady = packetStatus === "ready";
+          const items: Array<{ ok: boolean | "warn"; label: string }> = [
+            { ok: hasFieldSubmitted, label: hasFieldSubmitted ? "Field crew submitted completion package" : "Field crew completion pending" },
+            { ok: evidence.length > 0, label: evidence.length > 0 ? `${evidence.length} ${evidence.length === 1 ? "piece" : "pieces"} of evidence captured` : "Evidence not yet captured" },
+            { ok: hasApproval, label: hasApproval ? `Supervisor approval complete (${approvedJobs} ${approvedJobs === 1 ? "job" : "jobs"})` : "Supervisor approval pending" },
+            { ok: integrityClean ? true : "warn", label: integrityClean ? "Operational record consistent" : `Integrity check: ${truthMismatchReasons.length} item${truthMismatchReasons.length === 1 ? "" : "s"} need review` },
+            { ok: packetReady && integrityClean, label: packetReady ? (integrityClean ? "Export packet ready" : "Export packet ready — review integrity first") : "Export packet pending" },
+          ];
+          return (
+            <section aria-label="Operational readiness" className="rounded-lg border border-white/8 bg-white/[0.02] px-5 py-4">
+              <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60 mb-3">
+                Operational readiness
+              </div>
+              <ul className="space-y-1.5">
+                {items.map((it, i) => {
+                  const sym = it.ok === true ? "✓" : it.ok === "warn" ? "⚠" : "○";
+                  const tone =
+                    it.ok === true
+                      ? "text-emerald-300/90"
+                      : it.ok === "warn"
+                      ? "text-amber-200/90"
+                      : "text-gray-400";
+                  return (
+                    <li key={i} className="flex items-start gap-3 text-[13px] leading-relaxed">
+                      <span className={`mt-[2px] inline-block w-3 text-center font-semibold ${tone}`}>{sym}</span>
+                      <span className={it.ok === true ? "text-gray-100" : it.ok === "warn" ? "text-amber-100/90" : "text-gray-400"}>{it.label}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          );
+        })()}
+
+        {/* PEAKOPS_FIELD_WORK_CHAPTER_V1 (2026-05-17)
+            Combines jobs + evidence into a single operational-proof
+            chapter. Evidence is the hero (gallery treatment). Jobs
+            status appears below as inline chips, not a 6-cell grid.
+            Per-job groupings are quiet captions, not boxed cards.
+            Dev-only thumb-debug buttons have moved to the Developer
+            Tools drawer at the bottom. */}
+        <section aria-label="Field work performed" className="space-y-5">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+              Field work performed
+            </div>
+            <div className="mt-1 text-[12px] text-gray-400">
+              {jobs.length} {jobs.length === 1 ? "job" : "jobs"} · {evidence.length} {evidence.length === 1 ? "piece" : "pieces"} of evidence
+              {(() => {
+                const approved = jobs.filter((j) => String(j.status || "").toLowerCase() === "approved").length;
+                return approved > 0 ? ` · ${approved} approved` : "";
+              })()}
+              {unassignedEvidenceCount > 0 ? (
+                <span className="ml-2 text-amber-200/80">· {unassignedEvidenceCount} unassigned</span>
+              ) : null}
+              {unassignedEvidenceCount > 0 && (isDemoMode || process.env.NODE_ENV !== "production") ? (
+                <button
+                  type="button"
+                  className="ml-2 text-[11px] text-amber-200/80 hover:text-amber-100 underline-offset-2 hover:underline disabled:opacity-50"
+                  onClick={() => { void fixUnassignedEvidence(); }}
+                  disabled={fixUnassignedBusy}
+                >
+                  {fixUnassignedBusy ? "Fixing…" : "Fix unassigned"}
+                </button>
+              ) : null}
+            </div>
           </div>
-          <div className="mt-3">
+
+          {Object.keys(evidenceByJob).length === 0 ? (
+            <div className="rounded-lg border border-white/5 bg-white/[0.02] px-5 py-8 text-center">
+              <div className="text-[13px] text-gray-400">No evidence captured yet.</div>
+              <div className="mt-1 text-[11px] text-gray-500">
+                Evidence captured in the field will appear here as the operational record.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {Object.entries(evidenceByJob).map(([jobId, list]) => {
+                const job = jobs.find((j) => String(j?.id || j?.jobId || "") === jobId);
+                const label = job ? String(job.title || jobId) : (jobId === "unassigned" ? "Unassigned" : jobId);
+                const jobStatus = job ? String(job.status || "").toLowerCase() : "";
+                return (
+                  <div key={jobId} className="space-y-2.5">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <div className="text-[13px] font-medium text-gray-100 truncate">{label}</div>
+                      <div className="flex items-baseline gap-2 text-[11px] text-gray-400 shrink-0">
+                        {jobStatus ? <span className="text-gray-300">{jobStatus}</span> : null}
+                        <span>· {list.length} {list.length === 1 ? "piece" : "pieces"}</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2.5 overflow-x-auto -mx-1 px-1 pb-1">
+                      {list.slice(0, 8).map((ev) => {
+                        const id = String(ev.id || "");
+                        const u = thumbUrl[id];
+                        return (
+                          <div key={id} className="relative min-w-[140px] w-[140px] aspect-[4/3] rounded-lg overflow-hidden border border-white/8 bg-black/40">
+                            {u ? (
+                              <img
+                                src={u}
+                                className="w-full h-full object-cover"
+                                onLoad={() => {
+                                  setThumbStatusById((m) => ({ ...m, [id]: 200 }));
+                                  setThumbErrById((m) => ({ ...m, [id]: "" }));
+                                }}
+                                onError={() => { void renewThumbOnce(ev, u); }}
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-500 text-center px-1">
+                                {thumbErrById[id] ? "Unavailable" : "Loading…"}
+                              </div>
+                            )}
+                            {process.env.NODE_ENV !== "production" && thumbErrById[id] ? (
+                              <div className="absolute left-1 right-1 bottom-1 text-[9px] text-red-200 truncate bg-black/70 px-1 py-0.5 rounded border border-red-400/30">
+                                {thumbErrById[id]}
+                              </div>
+                            ) : null}
+                            {process.env.NODE_ENV !== "production" && thumbDebugOverlay ? (
+                              <div className="absolute left-1 right-1 top-1 text-[9px] text-cyan-100 bg-black/65 px-1 py-0.5 rounded border border-cyan-300/30">
+                                <div className="truncate">id={id}</div>
+                                <div className="truncate">bucket={String(thumbBucketById[id] || "")}</div>
+                                <div className="truncate">path={String(thumbPathById[id] || "")}</div>
+                                <div className="truncate">mint_http={String(thumbStatusById[id] || 0)}</div>
+                                <div className="truncate">mint_error={String(thumbMintErrorById[id] || "-")}</div>
+                                <div className="truncate">probe_http={String(thumbProbeStatusById[id] || "-")}</div>
+                                <div className="truncate">probe_error={String(thumbProbeErrorById[id] || "-")}</div>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Jobs status as inline chips (replaces 6-cell grid) */}
+          {Object.values(statusCounts).some((v) => v > 0) ? (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <span className="text-[11px] uppercase tracking-wider text-gray-500">Jobs</span>
+              {Object.entries(statusCounts).map(([k, v]) => (
+                <span
+                  key={k}
+                  className={
+                    "text-[11px] px-2 py-0.5 rounded-full border " +
+                    (v > 0
+                      ? "border-white/15 bg-white/[0.04] text-gray-200"
+                      : "border-white/5 bg-transparent text-gray-600")
+                  }
+                >
+                  {v} {k}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </section>
+
+        {/* PEAKOPS_OPERATIONAL_TIMELINE_V1 (2026-05-17)
+            Narrative audit timeline with a single vertical rule on
+            the left. Event labels read in operational language
+            (prettyTimelineEvent) instead of raw FIELD_SUBMITTED-style
+            tokens. Dots inline with text; time right-aligned. */}
+        <section aria-label="Operational timeline" className="space-y-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+              Operational timeline
+            </div>
+            <div className="mt-1 text-[12px] text-gray-400">
+              Audit-traceable record of every operational milestone.
+            </div>
+          </div>
+          {timelineHighlights.length === 0 ? (
+            <div className="rounded-lg border border-white/5 bg-white/[0.02] px-5 py-6">
+              <div className="text-[13px] text-gray-400">No recorded events yet.</div>
+            </div>
+          ) : (
+            <ol className="relative border-l border-white/8 ml-2 space-y-3 pt-1">
+              {timelineHighlights.map((t) => {
+                const tType = String(t.type || "");
+                const label = prettyTimelineEvent(tType);
+                const icon = eventIcon(tType);
+                const actor = String(t.actor || "");
+                const isSystemActor = !actor || actor === "ui" || actor === "system";
+                return (
+                  <li key={t.id} className="pl-5 -ml-[7px]">
+                    <span className="absolute -left-[7px] mt-1.5 w-[13px] h-[13px] rounded-full border border-white/15 bg-black flex items-center justify-center text-[8px]">
+                      {icon}
+                    </span>
+                    <div className="flex items-baseline justify-between gap-3">
+                      <div className="text-[13px] text-gray-100 leading-snug">{label}</div>
+                      <div className="text-[11px] text-gray-500 shrink-0">{fmtAgo(t.occurredAt?._seconds)}</div>
+                    </div>
+                    {!isSystemActor || t.refId ? (
+                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">
+                        {!isSystemActor ? `by ${actor}` : ""}
+                        {!isSystemActor && t.refId ? " · " : ""}
+                        {t.refId ? `ref ${String(t.refId)}` : ""}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </section>
+
+        {/* PEAKOPS_EXPORT_PACKET_CHAPTER_V1 (2026-05-17)
+            Renamed from "Incident Status" card. The status pill is
+            already in the masthead; this chapter is purely about the
+            export action. Aligns with ReviewClient's "Download
+            Packet" vocabulary. */}
+        <section aria-label="Export packet" className="space-y-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+              Export packet
+            </div>
+            <div className="mt-1 text-[12px] text-gray-400">
+              Operational record output for delivery.{" "}
+              {(incident?.packetMeta?.evidenceCount ?? packetEvidenceCount) > 0 ||
+              (incident?.packetMeta?.jobCount ?? packetJobCount) > 0 ? (
+                <>
+                  Includes {incident?.packetMeta?.evidenceCount ?? packetEvidenceCount}{" "}
+                  {(incident?.packetMeta?.evidenceCount ?? packetEvidenceCount) === 1 ? "piece" : "pieces"} of evidence and{" "}
+                  {incident?.packetMeta?.jobCount ?? packetJobCount}{" "}
+                  {(incident?.packetMeta?.jobCount ?? packetJobCount) === 1 ? "job" : "jobs"}.
+                </>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
             <button
               type="button"
-              className={"px-3 py-2 rounded-xl text-sm border " + (!err && orgId && incidentId ? "bg-emerald-600/20 border-emerald-300/30 text-emerald-100 hover:bg-emerald-600/30" : "bg-white/5 border-white/10 text-gray-400")}
+              className={
+                "px-4 py-2.5 rounded-lg text-[13px] font-medium border transition " +
+                (!err && orgId && incidentId && !artifactBusy
+                  ? "bg-emerald-600/15 border-emerald-400/30 text-emerald-100 hover:bg-emerald-600/25"
+                  : "bg-white/[0.03] border-white/10 text-gray-500 cursor-not-allowed")
+              }
               disabled={artifactBusy || !orgId || !incidentId || !!err}
               onClick={() => { void handleArtifactDownload(); }}
               title={artifactHint}
             >
-              {artifactBusy ? "Preparing Artifact..." : (artifactHint.toLowerCase().includes("ready") ? "Download Artifact" : artifactHint.toLowerCase().includes("building") ? "Artifact Building..." : "Generate Artifact")}
+              {packetButtonLabel(artifactHint, artifactBusy)}
             </button>
-            <div className="mt-2 text-xs text-gray-500">{artifactHint}</div>
-            {lastArtifactFilename ? (
-              <div className="mt-1 text-xs text-gray-500">
-                Last artifact: {lastArtifactFilename} {lastArtifactAt ? `• ${lastArtifactAt}` : ""}
-              </div>
+            {artifactHint ? (
+              <div className="text-[12px] text-gray-500">{artifactHint}</div>
             ) : null}
-            <div className="mt-1 text-xs text-gray-500">
-              Packet counts: evidence {incident?.packetMeta?.evidenceCount ?? packetEvidenceCount} • jobs {incident?.packetMeta?.jobCount ?? packetJobCount}
+          </div>
+          {lastArtifactFilename ? (
+            <div className="text-[11px] text-gray-500">
+              Last export: {lastArtifactFilename}
+              {lastArtifactAt ? ` · ${lastArtifactAt}` : ""}
             </div>
-          </div>
+          ) : null}
         </section>
 
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="text-xs uppercase tracking-wide text-gray-400">Jobs Breakdown</div>
-          <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
-            {Object.entries(statusCounts).map(([k, v]) => (
-              <div key={k} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2">
-                <div className="text-[10px] uppercase text-gray-400">{k}</div>
-                <div className="text-lg font-semibold">{v}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Evidence by Job</div>
-            {unassignedEvidenceCount > 0 ? (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] px-2 py-1 rounded-full border border-amber-300/30 bg-amber-500/15 text-amber-100">
-                  {unassignedEvidenceCount} unassigned evidence
-                </span>
-                {(isDemoMode || process.env.NODE_ENV !== "production") ? (
-                  <button
-                    type="button"
-                    className="text-[11px] px-2 py-1 rounded border border-amber-300/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
-                    onClick={() => { void fixUnassignedEvidence(); }}
-                    disabled={fixUnassignedBusy}
-                  >
-                    {fixUnassignedBusy ? "Fixing…" : "Fix unassigned"}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-            {process.env.NODE_ENV !== "production" ? (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => refreshVisibleThumbsDebounced()}
-                >
-                  Refresh thumbnails
-                </button>
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => forceRemintVisibleThumbs()}
-                >
-                  Force remint URLs
-                </button>
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
-                  onClick={() => setThumbDebugOverlay((v) => !v)}
-                >
-                  {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
-                </button>
-              </div>
-            ) : null}
-          </div>
-          <div className="mt-3 space-y-3">
-            {Object.keys(evidenceByJob).length === 0 ? (
-              <div className="text-sm text-gray-400">No evidence found.</div>
-            ) : Object.entries(evidenceByJob).map(([jobId, list]) => {
-              const job = jobs.find((j) => String(j?.id || j?.jobId || "") === jobId);
-              return (
-                <div key={jobId} className="rounded-xl border border-white/10 bg-black/30 p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm text-gray-100 truncate">{job ? String(job.title || jobId) : (jobId === "unassigned" ? "Unassigned" : jobId)}</div>
-                    <span className="text-xs text-gray-400">{list.length} evidence</span>
-                  </div>
-                  <div className="mt-2 flex gap-2 overflow-x-auto">
-                    {list.slice(0, 8).map((ev) => {
-                      const id = String(ev.id || "");
-                      const u = thumbUrl[id];
-                      return (
-                        <div key={id} className="relative min-w-[110px] w-[110px] aspect-[4/3] rounded-lg overflow-hidden border border-white/10 bg-black">
-                          {u ? (
-                            <img
-                              src={u}
-                              className="w-full h-full object-cover"
-                              onLoad={() => {
-                                setThumbStatusById((m) => ({ ...m, [id]: 200 }));
-                                setThumbErrById((m) => ({ ...m, [id]: "" }));
-                              }}
-                              onError={() => { void renewThumbOnce(ev, u); }}
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-500 text-center px-1">
-                              {thumbErrById[id] ? "Unavailable" : "Loading…"}
-                            </div>
-                          )}
-                          {process.env.NODE_ENV !== "production" && thumbErrById[id] ? (
-                            <div className="absolute left-1 right-1 bottom-1 text-[9px] text-red-200 truncate bg-black/70 px-1 py-0.5 rounded border border-red-400/30">
-                              {thumbErrById[id]}
-                            </div>
-                          ) : null}
-                          {process.env.NODE_ENV !== "production" && thumbDebugOverlay ? (
-                            <div className="absolute left-1 right-1 top-1 text-[9px] text-cyan-100 bg-black/65 px-1 py-0.5 rounded border border-cyan-300/30">
-                              <div className="truncate">id={id}</div>
-                              <div className="truncate">bucket={String(thumbBucketById[id] || "")}</div>
-                              <div className="truncate">path={String(thumbPathById[id] || "")}</div>
-                              <div className="truncate">mint_http={String(thumbStatusById[id] || 0)}</div>
-                              <div className="truncate">mint_error={String(thumbMintErrorById[id] || "-")}</div>
-                              <div className="truncate">probe_http={String(thumbProbeStatusById[id] || "-")}</div>
-                              <div className="truncate">probe_error={String(thumbProbeErrorById[id] || "-")}</div>
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <div className="text-xs uppercase tracking-wide text-gray-400">Timeline Highlights</div>
-          <div className="mt-3 space-y-2">
-            {timelineHighlights.length === 0 ? (
-              <div className="text-sm text-gray-400">No highlights yet.</div>
-            ) : timelineHighlights.map((t) => (
-              <div key={t.id} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-sm text-gray-100">{String(t.type || "event")}</div>
-                  <div className="text-xs text-gray-500 truncate">
-                    actor: {String(t.actor || "system")} {t.refId ? `• ref: ${String(t.refId)}` : ""}
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500">{fmtAgo(t.occurredAt?._seconds)}</div>
-              </div>
-            ))}
-          </div>
-        </section>
+        {/* PEAKOPS_DEV_TOOLS_DRAWER_V1 (2026-05-17)
+            Closed by default. Houses the thumbnail-refresh / remint /
+            debug-overlay buttons that previously rendered inline in
+            the Evidence header. Production users see only the closed
+            summary line; expanding it surfaces the dev buttons. The
+            outer conditional keeps this absent from prod entirely. */}
+        {process.env.NODE_ENV !== "production" ? (
+          <details className="rounded-lg border border-white/5 bg-white/[0.02] px-4 py-2">
+            <summary className="cursor-pointer text-[11px] uppercase tracking-wider text-gray-500 list-none flex items-center justify-between">
+              <span>Developer tools</span>
+              <span className="text-[10px] text-gray-600">click to expand</span>
+            </summary>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
+                onClick={() => refreshVisibleThumbsDebounced()}
+              >
+                Refresh thumbnails
+              </button>
+              <button
+                type="button"
+                className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
+                onClick={() => forceRemintVisibleThumbs()}
+              >
+                Force remint URLs
+              </button>
+              <button
+                type="button"
+                className="px-2 py-1 rounded border border-white/15 bg-white/5 text-[11px] text-gray-200 hover:bg-white/10"
+                onClick={() => setThumbDebugOverlay((v) => !v)}
+              >
+                {thumbDebugOverlay ? "Hide thumb debug" : "Show thumb debug"}
+              </button>
+            </div>
+          </details>
+        ) : null}
 
         {loading ? <div className="text-xs text-gray-500">Refreshing summary…</div> : null}
       </div>
