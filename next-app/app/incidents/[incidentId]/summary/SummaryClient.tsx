@@ -54,6 +54,12 @@ type EvidenceDoc = {
   };
   jobId?: string | null;
   storedAt?: { _seconds?: number };
+  // PEAKOPS_EVIDENCE_LABELS_V1 (2026-05-18, PR 30d)
+  // Optional operational labels (e.g., "DAMAGE", "SAFETY"). The
+  // EvidenceDoc on the wire carries this field even though we
+  // previously didn't declare it here. Surfacing the first label as
+  // a small overlaid chip on the tile.
+  labels?: string[];
 };
 
 type TimelineDoc = {
@@ -202,6 +208,162 @@ function fmtAgo(sec?: number) {
   if (d < 3600) return `${Math.floor(d / 60)}m`;
   if (d < 86400) return `${Math.floor(d / 3600)}h`;
   return `${Math.floor(d / 86400)}d`;
+}
+
+// PEAKOPS_PRETTY_ACTOR_V1 (2026-05-18, PR 30d)
+// Translate raw actor identifiers into supervisor-readable labels.
+// No directory fetch — only local transforms over the string itself.
+// Worst case is a 6-char UID prefix; we never display the full
+// 28-char Firebase UID anywhere.
+function prettyActor(raw?: string): string {
+  const s = String(raw || "").trim();
+  if (!s) return "System";
+  const lower = s.toLowerCase();
+  if (lower === "ui" || lower === "system") return "System";
+  if (lower === "supervisor_ui" || lower === "summary_ui" || lower === "review_ui") return "Supervisor";
+  if (lower === "dev-admin" || lower === "admin") return "Admin";
+  if (lower.includes("@")) {
+    const local = s.split("@")[0].trim();
+    return local || s;
+  }
+  if (/^[A-Za-z0-9]{20,}$/.test(s)) return `User ${s.slice(0, 6)}`;
+  // Snake/underscore/dash forms get title-cased.
+  if (/[_-]/.test(s)) {
+    return s
+      .replace(/[_-]/g, " ")
+      .toLowerCase()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return s;
+}
+
+// PEAKOPS_PRETTY_INTEGRITY_REASON_V1 (2026-05-18, PR 30d)
+// Translate the raw integrity-check strings (emitted by the
+// truthMismatchReasons computation in this same file) into
+// supervisor-readable copy. Falls back to the raw string when no
+// pattern matches — defensive against future reason strings.
+function prettyIntegrityReason(raw: string): string {
+  const s = String(raw || "").trim();
+
+  let m = s.match(/^packet\s+jobCount\s+(\d+)\s+!=\s+approved\s+jobs\s+(\d+)$/);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    return `Export packet shows ${a} ${a === 1 ? "job" : "jobs"}, but ${b} ${b === 1 ? "is" : "are"} actually approved. Regenerate the packet to refresh.`;
+  }
+
+  m = s.match(/^packet\s+evidenceCount\s+(\d+)\s+!=\s+evidence\s+rows\s+(\d+)$/);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    return `Export packet shows ${a} ${a === 1 ? "piece" : "pieces"} of evidence, but ${b} ${b === 1 ? "is" : "are"} attached. Regenerate the packet to refresh.`;
+  }
+
+  if (/^missing\s+field_submitted\s+event$/i.test(s)) {
+    return "No field submission event recorded. Verify the field crew completed and submitted the package.";
+  }
+
+  if (/^missing\s+incident_closed\s+event$/i.test(s)) {
+    return "Operational record has not been closed yet.";
+  }
+
+  m = s.match(/^expected\s+at\s+least\s+(\d+)\s+job_approved\s+events$/i);
+  if (m) {
+    const expected = Number(m[1]);
+    return `Fewer supervisor approvals are recorded than expected for this incident (expected at least ${expected}). Verify whether additional approval is needed before delivery.`;
+  }
+
+  return s;
+}
+
+// PEAKOPS_COMPOSE_JOBS_PROSE_V1 (2026-05-18, PR 30d)
+// One-line operational summary of jobs status, replacing the chip
+// dump. Deterministic — derives only from statusCounts.
+type StatusCountsLike = Record<string, number>;
+function composeJobsProse(statusCounts: StatusCountsLike, totalJobs: number): string {
+  if (totalJobs === 0) return "No jobs recorded yet.";
+  const approved = Number(statusCounts.approved || 0);
+  const rejected = Number(statusCounts.rejected || 0);
+  const remaining = totalJobs - approved - rejected;
+  let core: string;
+  if (approved === totalJobs) {
+    core = `All ${totalJobs} ${totalJobs === 1 ? "job is" : "jobs are"} approved.`;
+  } else if (approved > 0 && remaining > 0) {
+    core = `${approved} of ${totalJobs} jobs approved · ${remaining} still ${remaining === 1 ? "needs" : "need"} review.`;
+  } else if (approved === 0 && remaining > 0) {
+    core = `${totalJobs} ${totalJobs === 1 ? "job" : "jobs"} awaiting approval.`;
+  } else {
+    core = `${approved} of ${totalJobs} jobs approved.`;
+  }
+  if (rejected > 0) {
+    core = core.replace(/\.$/, "") + ` · ${rejected} ${rejected === 1 ? "was" : "were"} rejected.`;
+  }
+  return core;
+}
+
+// PEAKOPS_COMPOSE_OPERATIONAL_SUMMARY_V1 (2026-05-18, PR 30d)
+// One-sentence operational summary rendered just below the
+// masthead. Deterministic composition from real state — no AI,
+// no scoring, no inference beyond simple counting.
+function composeOperationalSummary(args: {
+  jobsTotal: number;
+  jobsApproved: number;
+  evidenceCount: number;
+  attentionCount: number;
+  packetStatus: "ready" | "building" | "stale" | "pending";
+  inProgress: boolean;
+}): string {
+  const { jobsTotal, jobsApproved, evidenceCount, attentionCount, packetStatus, inProgress } = args;
+
+  const parts: string[] = [];
+
+  if (jobsTotal === 0) {
+    parts.push("No jobs recorded yet.");
+  } else if (jobsApproved === jobsTotal) {
+    parts.push(`All ${jobsTotal} ${jobsTotal === 1 ? "job" : "jobs"} approved with ${evidenceCount} ${evidenceCount === 1 ? "piece" : "pieces"} of evidence attached.`);
+  } else if (jobsApproved > 0) {
+    parts.push(`${jobsApproved} of ${jobsTotal} jobs approved with ${evidenceCount} ${evidenceCount === 1 ? "piece" : "pieces"} of evidence attached.`);
+  } else {
+    parts.push(`${jobsTotal} ${jobsTotal === 1 ? "job" : "jobs"} awaiting approval; ${evidenceCount} ${evidenceCount === 1 ? "piece" : "pieces"} of evidence attached.`);
+  }
+
+  if (attentionCount > 0) {
+    parts.push(`${attentionCount} readiness ${attentionCount === 1 ? "item needs" : "items need"} review before delivery.`);
+  } else if (packetStatus === "ready") {
+    parts.push("Export packet is ready.");
+  } else if (packetStatus === "building") {
+    parts.push("Export packet is building.");
+  } else if (packetStatus === "stale") {
+    parts.push("Export packet is older than the latest activity — regenerate before delivery.");
+  } else if (inProgress) {
+    parts.push("Operational record is in progress.");
+  } else {
+    parts.push("Export packet pending.");
+  }
+
+  return parts.join(" ");
+}
+
+// PEAKOPS_PRIMARY_CTA_V1 (2026-05-18, PR 30d)
+// Decide what the Export Packet primary CTA should read + do.
+// Mode "review" scrolls to #integrity; "download"/"regenerate"/
+// "generate" each invoke the existing handleArtifactDownload (no
+// new backend behavior — label change only).
+type PrimaryCtaMode = "review" | "download" | "regenerate" | "generate" | "building" | "disabled";
+function composePrimaryCta(args: {
+  attentionCount: number;
+  packetStatus: "ready" | "building" | "stale" | "pending";
+  artifactBusy: boolean;
+  hasOrgAndIncident: boolean;
+  hasErr: boolean;
+}): { label: string; mode: PrimaryCtaMode } {
+  if (args.artifactBusy) return { label: "Preparing Packet…", mode: "building" };
+  if (!args.hasOrgAndIncident || args.hasErr) return { label: "Generate Packet", mode: "disabled" };
+  if (args.attentionCount > 0) return { label: "Review attention items", mode: "review" };
+  if (args.packetStatus === "stale") return { label: "Regenerate Packet", mode: "regenerate" };
+  if (args.packetStatus === "ready") return { label: "Download Packet", mode: "download" };
+  if (args.packetStatus === "building") return { label: "Packet Building…", mode: "building" };
+  return { label: "Generate Packet", mode: "generate" };
 }
 
 export default function SummaryClient({ incidentId }: { incidentId: string }) {
@@ -1002,11 +1164,25 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             </summary>
             <div className="mt-3 text-[12px] text-amber-100/85 space-y-1.5">
               {truthMismatchReasons.map((r, i) => (
-                <div key={i}>· {r}</div>
+                <div key={i}>· {prettyIntegrityReason(r)}</div>
               ))}
               <div className="pt-2 text-[11px] text-amber-200/60">
                 Review the items above before exporting this operational packet.
               </div>
+              {/* PEAKOPS_INTEGRITY_RAW_DETAILS_V1 (2026-05-18, PR 30d)
+                  Raw technical reasons available for engineers / auditors
+                  behind a nested disclosure. Default visible copy stays
+                  in operational language. */}
+              <details className="pt-2">
+                <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-amber-300/50 hover:text-amber-200/70 list-none">
+                  Show raw technical detail
+                </summary>
+                <ul className="mt-1.5 text-[11px] text-amber-200/60 font-mono space-y-0.5">
+                  {truthMismatchReasons.map((r, i) => (
+                    <li key={i}>· {r}</li>
+                  ))}
+                </ul>
+              </details>
             </div>
           </details>
         ) : null}
@@ -1059,6 +1235,58 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         {!err && artifactToast ? (
           <div className="text-[12px] text-emerald-200/85">{artifactToast}</div>
         ) : null}
+
+        {/* PEAKOPS_OPERATIONAL_SUMMARY_V1 (2026-05-18, PR 30d)
+            One deterministic sentence describing the operational
+            state of the record. Composed from real counts only —
+            no AI, no scoring, no inference. Reads as the first
+            line a supervisor needs to scan to know what's going
+            on. */}
+        {(() => {
+          const jobsApproved = jobs.filter((j: any) => {
+            const rs = String(j?.reviewStatus || "").toLowerCase();
+            const st = String(j?.status || "").toLowerCase();
+            return rs === "approved" || st === "approved";
+          }).length;
+          const packetStatusRaw = String(incident?.packetMeta?.status || "").toLowerCase();
+          const packetReady = packetStatusRaw === "ready";
+          const packetBuilding = packetStatusRaw === "building";
+          // PEAKOPS_PACKET_STALENESS_V1 (2026-05-18, PR 30d)
+          // Stale only if exportedAt is more than 1 hour older than
+          // incident.updatedAt — 1-hour grace per user decision.
+          const exportedAtMs = incident?.packetMeta?.exportedAt
+            ? Date.parse(incident.packetMeta.exportedAt)
+            : NaN;
+          const updatedAtSec = Number((incident as any)?.updatedAt?._seconds || 0);
+          const updatedAtMs = updatedAtSec ? updatedAtSec * 1000 : 0;
+          const packetStale =
+            Number.isFinite(exportedAtMs) &&
+            updatedAtMs > 0 &&
+            updatedAtMs - exportedAtMs > 60 * 60 * 1000;
+          const packetStatusKey: "ready" | "building" | "stale" | "pending" =
+            packetReady && packetStale
+              ? "stale"
+              : packetReady
+              ? "ready"
+              : packetBuilding
+              ? "building"
+              : "pending";
+          const inProgress = String(incident?.status || "").toLowerCase() === "in_progress" ||
+            String(incidentStatus || "").toLowerCase() === "in_progress";
+          const summary = composeOperationalSummary({
+            jobsTotal: jobs.length,
+            jobsApproved,
+            evidenceCount: evidence.length,
+            attentionCount: truthMismatchReasons.length,
+            packetStatus: packetStatusKey,
+            inProgress,
+          });
+          return (
+            <div className="text-[13px] text-gray-300 leading-relaxed border-l-2 border-amber-300/30 pl-3">
+              {summary}
+            </div>
+          );
+        })()}
 
         {/* PEAKOPS_OPERATIONAL_READINESS_V1 (2026-05-17)
             Compact operational readiness strip. Only deterministic
@@ -1240,6 +1468,16 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                                 {thumbErrById[id] ? "Unavailable" : "Loading…"}
                               </div>
                             )}
+                            {/* PEAKOPS_EVIDENCE_LABEL_CHIP_V1 (2026-05-18, PR 30d)
+                                Surfaces the first operational label on the
+                                tile. Top-left placement avoids the bottom
+                                debug overlay; small enough not to obstruct
+                                the image. */}
+                            {Array.isArray((ev as any).labels) && (ev as any).labels[0] ? (
+                              <div className="absolute left-1.5 top-1.5 text-[9px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-300/30 text-amber-100">
+                                {String((ev as any).labels[0])}
+                              </div>
+                            ) : null}
                             {process.env.NODE_ENV !== "production" && thumbErrById[id] ? (
                               <div className="absolute left-1 right-1 bottom-1 text-[9px] text-red-200 truncate bg-black/70 px-1 py-0.5 rounded border border-red-400/30">
                                 {thumbErrById[id]}
@@ -1266,23 +1504,35 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             </div>
           )}
 
-          {/* Jobs status as inline chips (replaces 6-cell grid) */}
-          {Object.values(statusCounts).some((v) => v > 0) ? (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="text-[11px] uppercase tracking-wider text-gray-500">Jobs</span>
-              {Object.entries(statusCounts).map(([k, v]) => (
-                <span
-                  key={k}
-                  className={
-                    "text-[11px] px-2 py-0.5 rounded-full border " +
-                    (v > 0
-                      ? "border-white/15 bg-white/[0.04] text-gray-200"
-                      : "border-white/5 bg-transparent text-gray-600")
-                  }
-                >
-                  {v} {k}
-                </span>
-              ))}
+          {/* PEAKOPS_JOBS_PROSE_V1 (2026-05-18, PR 30d)
+              Single-sentence jobs status (composeJobsProse) replaces
+              the inline chip dump. Detailed counts remain accessible
+              via the nested <details> for engineers/auditors. */}
+          {jobs.length > 0 ? (
+            <div className="pt-1 space-y-1.5">
+              <div className="text-[13px] text-gray-200">
+                {composeJobsProse(statusCounts as StatusCountsLike, jobs.length)}
+              </div>
+              <details>
+                <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300 list-none">
+                  Status breakdown
+                </summary>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {Object.entries(statusCounts).map(([k, v]) => (
+                    <span
+                      key={k}
+                      className={
+                        "text-[11px] px-2 py-0.5 rounded-full border " +
+                        (v > 0
+                          ? "border-white/15 bg-white/[0.04] text-gray-200"
+                          : "border-white/5 bg-transparent text-gray-600")
+                      }
+                    >
+                      {v} {k}
+                    </span>
+                  ))}
+                </div>
+              </details>
             </div>
           ) : null}
         </section>
@@ -1336,7 +1586,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                       <div className="text-[11px] text-gray-500 shrink-0">{fmtAgo(t.occurredAt?._seconds)}</div>
                     </div>
                     {!isSystemActor ? (
-                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">by {actor}</div>
+                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">by {prettyActor(actor)}</div>
                     ) : null}
                   </li>
                 );
@@ -1368,25 +1618,84 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               ) : null}
             </div>
           </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <button
-              type="button"
-              className={
-                "px-4 py-2.5 rounded-lg text-[13px] font-medium border transition " +
-                (!err && orgId && incidentId && !artifactBusy
-                  ? "bg-emerald-600/15 border-emerald-400/30 text-emerald-100 hover:bg-emerald-600/25"
-                  : "bg-white/[0.03] border-white/10 text-gray-500 cursor-not-allowed")
+          {/* PEAKOPS_PRIMARY_CTA_RENDER_V1 (2026-05-18, PR 30d)
+              CTA label + action are decided by composePrimaryCta()
+              based on attention items, packet staleness (1h grace),
+              and basic disabled state. "Review attention items"
+              scrolls to #integrity rather than triggering export. */}
+          {(() => {
+            const exportedAtMs2 = incident?.packetMeta?.exportedAt
+              ? Date.parse(incident.packetMeta.exportedAt)
+              : NaN;
+            const updatedAtSec2 = Number((incident as any)?.updatedAt?._seconds || 0);
+            const updatedAtMs2 = updatedAtSec2 ? updatedAtSec2 * 1000 : 0;
+            const packetStale2 =
+              Number.isFinite(exportedAtMs2) &&
+              updatedAtMs2 > 0 &&
+              updatedAtMs2 - exportedAtMs2 > 60 * 60 * 1000;
+            const packetStatusRaw2 = String(incident?.packetMeta?.status || "").toLowerCase();
+            const packetStatusKey2: "ready" | "building" | "stale" | "pending" =
+              packetStatusRaw2 === "ready" && packetStale2
+                ? "stale"
+                : packetStatusRaw2 === "ready"
+                ? "ready"
+                : packetStatusRaw2 === "building"
+                ? "building"
+                : "pending";
+            const cta = composePrimaryCta({
+              attentionCount: truthMismatchReasons.length,
+              packetStatus: packetStatusKey2,
+              artifactBusy,
+              hasOrgAndIncident: !!orgId && !!incidentId,
+              hasErr: !!err,
+            });
+            const onClick = () => {
+              if (cta.mode === "review") {
+                if (typeof document !== "undefined") {
+                  const el = document.getElementById("integrity");
+                  if (el) {
+                    // Open the <details> if collapsed.
+                    if ((el as HTMLDetailsElement).open === false) {
+                      (el as HTMLDetailsElement).open = true;
+                    }
+                    el.scrollIntoView({ behavior: "smooth", block: "start" });
+                    return;
+                  }
+                }
+                return;
               }
-              disabled={artifactBusy || !orgId || !incidentId || !!err}
-              onClick={() => { void handleArtifactDownload(); }}
-              title={artifactHint}
-            >
-              {packetButtonLabel(artifactHint, artifactBusy)}
-            </button>
-            {artifactHint ? (
-              <div className="text-[12px] text-gray-500">{artifactHint}</div>
-            ) : null}
-          </div>
+              if (cta.mode === "disabled" || cta.mode === "building") return;
+              void handleArtifactDownload();
+            };
+            const isAttention = cta.mode === "review";
+            const isDisabled =
+              cta.mode === "disabled" || cta.mode === "building";
+            const stylePrimary =
+              "bg-emerald-600/15 border-emerald-400/30 text-emerald-100 hover:bg-emerald-600/25";
+            const styleAttention =
+              "bg-amber-500/15 border-amber-300/30 text-amber-100 hover:bg-amber-500/25";
+            const styleDisabled =
+              "bg-white/[0.03] border-white/10 text-gray-500 cursor-not-allowed";
+            return (
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  className={
+                    "px-4 py-2.5 rounded-lg text-[13px] font-medium border transition " +
+                    (isDisabled ? styleDisabled : isAttention ? styleAttention : stylePrimary)
+                  }
+                  disabled={isDisabled}
+                  onClick={onClick}
+                  title={artifactHint}
+                >
+                  {cta.label}
+                </button>
+                {artifactHint ? (
+                  <div className="text-[12px] text-gray-500">{artifactHint}</div>
+                ) : null}
+              </div>
+            );
+          })()}
           {lastArtifactFilename ? (
             <div className="text-[11px] text-gray-500">
               Last export: {lastArtifactFilename}
