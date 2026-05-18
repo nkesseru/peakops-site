@@ -290,6 +290,25 @@ const orgId = mustStr(body.orgId, "orgId");
         }
       : {};
 
+    // PEAKOPS_UPLOADER_IDENTITY_V1 (2026-05-18, PR 40 Phase A)
+    // Per-evidence chain-of-custody fields. `actorUid` is already
+    // extracted above (line ~106) for the authz gate; we reuse it as
+    // the uploaderUid persisted on the doc. Device userAgent +
+    // coarse platform are derived from request headers — regex only,
+    // no ua-parser dependency. Both nullable so paths that don't
+    // carry a Bearer token / UA don't fail loudly.
+    const userAgentRaw = String((req && req.headers && req.headers["user-agent"]) || "").trim();
+    const userAgent = userAgentRaw ? userAgentRaw.slice(0, 256) : "";
+    const derivePlatform = (ua) => {
+      const u = String(ua || "");
+      if (!u) return "";
+      if (/iPhone|iPad|iPod/i.test(u)) return "iOS";
+      if (/Android/i.test(u)) return "Android";
+      return "Web";
+    };
+    const platform = userAgent ? derivePlatform(userAgent) : "";
+    const deviceMeta = userAgent ? { userAgent, platform } : null;
+
     await evidenceRef.set(
       {
         orgId,
@@ -302,6 +321,8 @@ const orgId = mustStr(body.orgId, "orgId");
         gps,
         createdAt: now,
         storedAt: now,
+        uploaderUid: actorUid || null,
+        device: deviceMeta,
         file: {
           storagePath: storagePath || null,
           contentType,
@@ -318,7 +339,20 @@ const orgId = mustStr(body.orgId, "orgId");
       { merge: true }
     );
 
-    await emitTimelineEvent({ orgId, incidentId, type: "EVIDENCE_ADDED", sessionId, refId: evidenceId, gps, actor: "field" });
+    // PEAKOPS_TIMELINE_ACTOR_UID_V1 (2026-05-18, PR 40 Phase A)
+    // Keep actor: "field" for backwards compatibility. actorUid is
+    // the new audit-grade field carrying the verified Bearer-token
+    // uid (already extracted above for the authz gate).
+    await emitTimelineEvent({
+      orgId,
+      incidentId,
+      type: "EVIDENCE_ADDED",
+      sessionId,
+      refId: evidenceId,
+      gps,
+      actor: "field",
+      actorUid: actorUid || null,
+    });
 
     // Queue HEIC conversion job for deterministic processing by runConversionJobsV1.
     if (heicCandidate && storagePath) {
