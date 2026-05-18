@@ -307,6 +307,18 @@ function prettyActor(raw?: string, ctx?: ActorContext, registry?: MemberRegistry
     if (t === "incident_opened") return "Operations";
     return "Internal user";
   }
+  // PEAKOPS_PRETTY_ACTOR_ROLE_STRING_V1 (2026-05-18, PR 37)
+  // Some timeline events carry a bare role-name string in `actor`
+  // (e.g., "field" from legacy seed paths). Without this branch the
+  // helper falls through to the trailing `return s` and renders
+  // "by field" verbatim in the timeline — a prototype seam PR 37 closes.
+  const knownRoleKeys = new Set([
+    "field", "crew", "tech", "lead", "field_lead",
+    "supervisor", "owner", "admin", "viewer", "operations",
+  ]);
+  if (knownRoleKeys.has(lower)) {
+    return prettyRole(lower);
+  }
   // Snake/underscore/dash forms get title-cased.
   if (/[_-]/.test(s)) {
     return s
@@ -1703,21 +1715,24 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             }
           }
 
-          // All / N of M evidence captured during active work session
+          // PEAKOPS_EVIDENCE_OUT_OF_SESSION_V1 (2026-05-18, PR 37)
+          // Audit-grade framing: surface the OUT-of-session count
+          // rather than the in-session count. Strict bounds — evidence
+          // captured exactly at session boundary stays "in session".
           if (evidence.length > 0 && sessionStartFact && sessionEndFact) {
-            const inWindow = evidence.filter((e) => {
+            const outOfSession = evidence.filter((e) => {
               const s = Number((e as any).storedAt?._seconds || (e as any).createdAt?._seconds || 0);
-              return s >= sessionStartFact && s <= sessionEndFact;
+              return s > 0 && (s < sessionStartFact || s > sessionEndFact);
             }).length;
-            if (inWindow > 0 && inWindow === evidence.length) {
+            if (outOfSession === 0) {
               facts.push({
                 tone: "good",
-                text: "All evidence captured during active work session.",
+                text: "Evidence captured during active field session.",
               });
-            } else if (inWindow > 0) {
+            } else {
               facts.push({
-                tone: "info",
-                text: `${inWindow} of ${evidence.length} evidence ${inWindow === 1 ? "piece" : "pieces"} captured during active work session.`,
+                tone: "warn",
+                text: `${outOfSession} evidence ${outOfSession === 1 ? "item" : "items"} captured outside active field session.`,
               });
             }
           }
@@ -1735,24 +1750,75 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             }
           }
 
-          // Packet generated after final approval
+          // PEAKOPS_SEGREGATION_OF_DUTIES_V1 (2026-05-18, PR 37)
+          // Deterministic comparison of submitter vs approver actor
+          // identities. UID-shaped on both sides required — context
+          // strings ("supervisor_ui", system) can't be reliably
+          // compared and would risk false positives. When data is
+          // insufficient, the fact is omitted entirely.
+          const isUidShape = (s: string) => /^[A-Za-z0-9]{20,}$/.test(String(s || "").trim());
+          const submitterUid = (() => {
+            const fromJob = jobs.find((j: any) => isUidShape(String(j?.completedBy?.uid || "")));
+            if (fromJob) return String((fromJob as any).completedBy.uid);
+            const fromTl = (timeline || []).find(
+              (t) => String(t?.type || "").toLowerCase() === "field_submitted" && isUidShape(String(t?.actor || ""))
+            );
+            return fromTl ? String(fromTl.actor || "") : "";
+          })();
+          const approverUid = (() => {
+            const fromJob = jobs.find((j: any) => isUidShape(String(j?.approvedBy || "")));
+            if (fromJob) return String((fromJob as any).approvedBy);
+            const fromTl = (timeline || []).find(
+              (t) => String(t?.type || "").toLowerCase() === "job_approved" && isUidShape(String(t?.actor || ""))
+            );
+            return fromTl ? String(fromTl.actor || "") : "";
+          })();
+          if (submitterUid && approverUid) {
+            if (submitterUid === approverUid) {
+              facts.push({
+                tone: "warn",
+                text: "Supervisor approval performed by same user who submitted the field package.",
+              });
+            } else {
+              facts.push({
+                tone: "good",
+                text: "Submitter and approver are different users.",
+              });
+            }
+          }
+
+          // PEAKOPS_INCIDENT_OPEN_DURATION_V1 (2026-05-18, PR 37)
+          // Total operational duration from incident open to closure.
+          // Only fires when an incident_closed event has been
+          // recorded — in-progress incidents omit this fact entirely.
+          const closedEvent = (timeline || []).find(
+            (t) => String(t?.type || "").toLowerCase() === "incident_closed"
+          );
+          const incidentCreatedSec = Number(incident?.createdAt?._seconds || 0);
+          if (closedEvent?.occurredAt?._seconds && incidentCreatedSec > 0) {
+            const dur = Number(closedEvent.occurredAt._seconds) - incidentCreatedSec;
+            if (dur > 0) {
+              facts.push({ tone: "info", text: `Incident open ${formatDuration(dur)} before closure.` });
+            }
+          }
+
+          // PEAKOPS_PACKET_LATEST_ACTIVITY_V1 (2026-05-18, PR 37)
+          // Strictly stronger than the prior PR 35 "after final
+          // approval" fact: now compares packet exportedAt against
+          // the latest of incident.updatedAt and the most recent
+          // timeline event. Notes activity and any other event type
+          // count, not just approval.
           const packetExportedSec = incident?.packetMeta?.exportedAt
             ? Math.floor(Date.parse(incident.packetMeta.exportedAt) / 1000)
             : 0;
-          const latestApprovedAtSec = jobs.reduce((max: number, j: any) => {
-            const a = Number(j?.approvedAt?._seconds || 0);
-            return a > max ? a : max;
-          }, 0);
-          if (packetExportedSec > 0 && latestApprovedAtSec > 0 && packetExportedSec >= latestApprovedAtSec) {
-            facts.push({ tone: "good", text: "Packet generated after final approval." });
-          }
 
-          // Packet synchronized / stale
+          // Packet synchronized / stale (1-hour grace from PR 35)
           if (packetExportedSec > 0) {
-            const latestActivityMsFact = Math.max(
+            const latestActivitySecFact = Math.max(
               Number(incident?.updatedAt?._seconds || 0),
               Number(timeline[0]?.occurredAt?._seconds || 0)
-            ) * 1000;
+            );
+            const latestActivityMsFact = latestActivitySecFact * 1000;
             const exportedMsFact = packetExportedSec * 1000;
             if (latestActivityMsFact > 0 && latestActivityMsFact - exportedMsFact > 60 * 60 * 1000) {
               const drift = Math.floor((latestActivityMsFact - exportedMsFact) / 1000);
@@ -1762,6 +1828,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               });
             } else {
               facts.push({ tone: "good", text: "Packet synchronized with current operational state." });
+              // Strictly stronger claim — only when packet was generated
+              // at or after every recorded activity timestamp. Replaces
+              // the prior approval-relative line.
+              if (latestActivitySecFact > 0 && packetExportedSec >= latestActivitySecFact) {
+                facts.push({ tone: "good", text: "Packet generated after latest operational activity." });
+              }
             }
           }
 
@@ -1996,6 +2068,31 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 const icon = eventIcon(tType);
                 const actor = String(t.actor || "");
                 const isSystemActor = !actor || actor === "ui" || actor === "system";
+                // PEAKOPS_INCIDENT_CLOSED_ATTRIBUTION_V1 (2026-05-18, PR 37)
+                // The Operational record closed row deserves clearer
+                // attribution than a bare missing "by" line. When the
+                // close was emitted with a system/UI actor and there's
+                // a prior approval in the timeline, label as
+                // automatic. When a real actor is present, label
+                // explicitly. Otherwise (system close with no prior
+                // approval) fall back to generic auto-close.
+                const isClosedEvent = String(tType).toLowerCase() === "incident_closed";
+                let attributionLine: string | null = null;
+                if (isClosedEvent) {
+                  if (isSystemActor) {
+                    const priorApprovalExists = (timeline || []).some((tt) => {
+                      const ty = String(tt?.type || "").toLowerCase();
+                      return ty === "job_approved";
+                    });
+                    attributionLine = priorApprovalExists
+                      ? "Closed automatically after final approval"
+                      : "Closed automatically";
+                  } else {
+                    attributionLine = `Closed by ${prettyActor(actor, { eventType: tType }, memberRegistry)}`;
+                  }
+                } else if (!isSystemActor) {
+                  attributionLine = `by ${prettyActor(actor, { eventType: tType }, memberRegistry)}`;
+                }
                 return (
                   <li key={t.id} className="pl-5 -ml-[7px]">
                     <span className="absolute -left-[7px] mt-1.5 w-[13px] h-[13px] rounded-full border border-white/15 bg-black flex items-center justify-center text-[8px]">
@@ -2005,8 +2102,8 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                       <div className="text-[13px] text-gray-100 leading-snug">{label}</div>
                       <div className="text-[11px] text-gray-500 shrink-0">{fmtAgo(t.occurredAt?._seconds)}</div>
                     </div>
-                    {!isSystemActor ? (
-                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">by {prettyActor(actor, { eventType: tType }, memberRegistry)}</div>
+                    {attributionLine ? (
+                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">{attributionLine}</div>
                     ) : null}
                   </li>
                 );
