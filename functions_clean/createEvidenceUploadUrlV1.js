@@ -2,6 +2,7 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getStorage } = require("firebase-admin/storage");
+const { getFirestore } = require("firebase-admin/firestore");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -37,6 +38,23 @@ exports.createEvidenceUploadUrlV1 = onRequest({ cors: true }, async (req, res) =
     const sessionId = mustStr(body.sessionId, "sessionId");
     const fileName = mustStr(body.fileName, "fileName");
     const contentType = String(body.contentType || "application/octet-stream").trim() || "application/octet-stream";
+
+    // PEAKOPS_SEALED_RECORD_V1 (2026-05-18, PR 41)
+    // Closed operational records are immutable. Reject upload-URL
+    // minting before any GCS write so a sealed record cannot accrue
+    // orphan objects. Supplemental post-closure context goes through
+    // the addendum model (PR 43), not back into the original evidence
+    // collection.
+    const db = getFirestore();
+    const incSnap = await db.collection("incidents").doc(incidentId).get();
+    const incStatus = String((incSnap.exists ? (incSnap.data() || {}) : {}).status || "").toLowerCase();
+    if (incStatus === "closed") {
+      return j(res, 409, {
+        ok: false,
+        error: "incident_closed",
+        detail: "Operational record is sealed — file an addendum to attach supplemental context.",
+      });
+    }
 
     const bucketObj = getStorage().bucket();
     const bucket = bucketObj.name;
