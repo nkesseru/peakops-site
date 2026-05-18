@@ -25,7 +25,13 @@ function normGps(gps) {
  * @param {string} [args.refId] evidenceId/materialId/etc
  * @param {object} [args.gps]
  * @param {object} [args.meta]
- * @param {string} [args.actor]
+ * @param {string} [args.actor]   Backwards-compatible role-style string
+ *                                ("field", "ui", "supervisor_ui", etc.)
+ * @param {string} [args.actorUid] PEAKOPS_ACTOR_UID_V1 (2026-05-18, PR 40
+ *                                 Phase A): optional verified Bearer-token
+ *                                 uid of the human actor. Persisted as a
+ *                                 separate field so existing `actor`
+ *                                 semantics don't change.
  */
 async function emitTimelineEvent(args = {}) {
   const db = getFirestore();
@@ -45,6 +51,7 @@ async function emitTimelineEvent(args = {}) {
     refId: args.refId ? clean(args.refId, 128) : null,
     gps: normGps(args.gps),
     actor: args.actor ? clean(args.actor, 64) : null,
+    actorUid: args.actorUid ? clean(args.actorUid, 64) : null,
     meta: args.meta && typeof args.meta === "object" ? args.meta : null,
     v: 1
   };

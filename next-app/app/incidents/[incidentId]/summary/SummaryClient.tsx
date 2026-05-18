@@ -2153,6 +2153,22 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                               gpsCoord = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
                             }
                           }
+                          // PEAKOPS_UPLOADER_DEVICE_DISCLOSURE_V1 (2026-05-18, PR 40 Phase A)
+                          // Two new rows wired to the fields PR 40
+                          // started persisting on the evidence doc.
+                          // Uploaded-by routes through prettyActor +
+                          // memberRegistry so it benefits automatically
+                          // from PR 36's identity resolver. Device row
+                          // shows coarse platform; full userAgent
+                          // available via title-attribute on hover for
+                          // forensic detail without dominating layout.
+                          const uploaderUid = String((ev as any).uploaderUid || "").trim();
+                          const device = (ev as any).device;
+                          const devicePlatform = device && typeof device === "object" ? String(device.platform || "").trim() : "";
+                          const deviceUa = device && typeof device === "object" ? String(device.userAgent || "").trim() : "";
+                          const uploaderDisplay = uploaderUid
+                            ? prettyActor(uploaderUid, { eventType: "evidence_added" }, memberRegistry)
+                            : "";
                           return (
                             <div key={id} className="space-y-1 text-[11px] leading-relaxed">
                               <div className="text-gray-200">
@@ -2162,6 +2178,18 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                                 ) : null}
                               </div>
                               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-gray-500">
+                                {uploaderDisplay ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">Uploaded by</dt>
+                                    <dd className="text-gray-300">{uploaderDisplay}</dd>
+                                  </>
+                                ) : null}
+                                {devicePlatform ? (
+                                  <>
+                                    <dt className="text-[10px] uppercase tracking-wider text-gray-600">Device</dt>
+                                    <dd className="text-gray-300" title={deviceUa || undefined}>{devicePlatform}</dd>
+                                  </>
+                                ) : null}
                                 {storedSec > 0 ? (
                                   <>
                                     <dt className="text-[10px] uppercase tracking-wider text-gray-600">Stored</dt>
