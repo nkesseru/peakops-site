@@ -73,6 +73,10 @@ safeExport("convertHeicOnFinalize", "./convertHeicOnFinalize");
 
 // --- Debug / org tools ---
 safeExport("listOrgsV1", "./listOrgsV1");
+// PEAKOPS_LIST_ORG_MEMBERS_V1 (2026-05-18, PR 36)
+// Read-only member directory endpoint. Returns minimal whitelisted
+// identity fields to power the Summary page's actor resolver.
+safeExport("listOrgMembersV1", "./listOrgMembersV1");
 // PEAKOPS_SLICE14_BOOTSTRAP_PILOT_V1 (2026-05-06)
 // Internal-staff-only callable that creates a customer org plus its
 // owner member doc atomically. Production blocker §5.1 from the
