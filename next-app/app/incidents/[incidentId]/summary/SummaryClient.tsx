@@ -83,8 +83,28 @@ function fmtAgoIso(iso?: string) {
 // PEAKOPS_OPERATIONAL_LANGUAGE_V1 (2026-05-17)
 // Translate raw timeline event types into operational language so the
 // page reads like an incident command record, not a database dump.
-function prettyTimelineEvent(t?: string): string {
+//
+// PEAKOPS_OPERATIONAL_LANGUAGE_V2 (2026-05-18, PR 30c)
+// Optional `ctx` parameter folds in job titles and evidence labels so
+// `job_approved` reads as "Supervisor approved <Job Title>" instead
+// of the generic "Supervisor approved job". Falls back gracefully
+// when context isn't available.
+type TimelineEventContext = {
+  jobTitle?: string;
+  evidenceLabel?: string;
+};
+
+function prettyTimelineEvent(t?: string, ctx?: TimelineEventContext): string {
   const norm = String(t || "").trim().toLowerCase();
+  const jobTitle = ctx?.jobTitle ? String(ctx.jobTitle).trim() : "";
+  const evidenceLabel = ctx?.evidenceLabel ? String(ctx.evidenceLabel).trim() : "";
+
+  // Context-aware labels first
+  if (norm === "job_approved" && jobTitle) return `Supervisor approved ${jobTitle}`;
+  if (norm === "job_rejected" && jobTitle) return `Supervisor rejected ${jobTitle}`;
+  if (norm === "job_completed" && jobTitle) return `${jobTitle} marked complete`;
+  if (norm === "evidence_added" && evidenceLabel) return `Field crew attached ${evidenceLabel}`;
+
   const map: Record<string, string> = {
     field_submitted: "Field crew submitted completion package",
     field_arrived: "Field crew arrived on site",
@@ -106,6 +126,32 @@ function prettyTimelineEvent(t?: string): string {
     .replace(/_/g, " ")
     .toLowerCase()
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// PEAKOPS_TIMELINE_LOOKUPS_V1 (2026-05-18, PR 30c)
+// Small helpers for deriving operational interpretation from real
+// timeline data. Each returns undefined when the relevant event is
+// absent — UI must handle the missing case gracefully.
+function findEarliestEventSeconds(timeline: Array<{ type?: string; occurredAt?: { _seconds?: number } }>, typeKey: string): number | undefined {
+  const norm = typeKey.toLowerCase();
+  let earliest: number | undefined;
+  for (const t of timeline) {
+    if (String(t.type || "").toLowerCase() !== norm) continue;
+    const s = Number(t.occurredAt?._seconds || 0);
+    if (s > 0 && (earliest === undefined || s < earliest)) earliest = s;
+  }
+  return earliest;
+}
+
+function findLatestEventSeconds(timeline: Array<{ type?: string; occurredAt?: { _seconds?: number } }>, typeKey: string): number | undefined {
+  const norm = typeKey.toLowerCase();
+  let latest: number | undefined;
+  for (const t of timeline) {
+    if (String(t.type || "").toLowerCase() !== norm) continue;
+    const s = Number(t.occurredAt?._seconds || 0);
+    if (s > 0 && (latest === undefined || s > latest)) latest = s;
+  }
+  return latest;
 }
 
 function eventIcon(t?: string): string {
@@ -879,8 +925,14 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         orgId={orgId}
         onClose={() => setUpgrade((s) => ({ ...s, open: false }))}
       />
-    <main className="min-h-screen bg-black text-white">
-      <div className="max-w-3xl mx-auto px-6 py-10 space-y-10">
+    <main className="min-h-screen bg-black text-white py-8 sm:py-12">
+      {/* PEAKOPS_DOSSIER_CONTAINMENT_V1 (2026-05-18, PR 30c)
+          Outer dossier shell. A single subtle bordered surface with
+          a faint top-down gradient and ambient shadow makes the page
+          read as "one incident record contained in space" rather
+          than a stack of floating sections on black. */}
+      <div className="max-w-3xl mx-auto px-3 sm:px-4">
+        <div className="rounded-2xl border border-white/[0.05] bg-gradient-to-b from-white/[0.018] via-white/[0.005] to-transparent px-6 sm:px-9 py-9 sm:py-12 space-y-10 shadow-[0_10px_60px_rgba(0,0,0,0.55)]">
         {/* PEAKOPS_SUMMARY_DOSSIER_MASTHEAD_V1 (2026-05-17)
             Operational record header. Replaces the previous "Incident
             Summary · {incidentId}" line + Back button + full-bleed
@@ -921,7 +973,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                   href="#integrity"
                   className="text-amber-200/80 hover:text-amber-100 text-[11px] underline-offset-2 hover:underline"
                 >
-                  ⚠ integrity check · {truthMismatchReasons.length}
+                  Attention needed · {truthMismatchReasons.length} item{truthMismatchReasons.length === 1 ? "" : "s"}
                 </a>
               </>
             ) : null}
@@ -944,7 +996,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             className="group rounded-lg border border-amber-400/20 bg-amber-500/5 px-4 py-3"
           >
             <summary className="cursor-pointer text-[12px] font-medium text-amber-200/90 list-none flex items-center justify-between">
-              <span>Integrity check · {truthMismatchReasons.length} item{truthMismatchReasons.length === 1 ? "" : "s"}</span>
+              <span>Attention needed · {truthMismatchReasons.length} item{truthMismatchReasons.length === 1 ? "" : "s"} to review</span>
               <span className="text-[11px] text-amber-300/60 group-open:hidden">Show details</span>
               <span className="text-[11px] text-amber-300/60 hidden group-open:inline">Hide</span>
             </summary>
@@ -953,7 +1005,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 <div key={i}>· {r}</div>
               ))}
               <div className="pt-2 text-[11px] text-amber-200/60">
-                Export should be treated as blocked until this is resolved.
+                Review the items above before exporting this operational packet.
               </div>
             </div>
           </details>
@@ -1015,25 +1067,82 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             signal a supervisor would check before approving the
             record. */}
         {(() => {
-          const hasFieldSubmitted = timeline.some((t) => {
+          // PEAKOPS_OPERATIONAL_INTERPRETATION_V1 (2026-05-18, PR 30c)
+          // Each readiness signal now carries synthesized operational
+          // context derived from real timestamps and events — no fake
+          // AI scores, no percentages, no opaque "confidence" — every
+          // number on this strip is traceable to a Firestore fact.
+          const sessionStart = findEarliestEventSeconds(timeline as any, "session_started");
+          const sessionEnd =
+            findLatestEventSeconds(timeline as any, "session_completed") ||
+            findLatestEventSeconds(timeline as any, "field_submitted");
+          const fieldWorkSecs =
+            sessionStart && sessionEnd && sessionEnd > sessionStart
+              ? sessionEnd - sessionStart
+              : 0;
+          const hasFieldSubmitted = !!(sessionEnd || timeline.some((t) => {
             const k = String(t.type || "").toLowerCase();
             return k === "field_submitted" || k === "session_completed";
-          });
+          }));
+
+          const evidenceInWindow =
+            sessionStart && sessionEnd
+              ? evidence.filter((e) => {
+                  const s = Number((e as any).storedAt?._seconds || (e as any).createdAt?._seconds || 0);
+                  return s >= sessionStart && s <= sessionEnd;
+                }).length
+              : 0;
+
           const approvedJobs = jobs.filter((j) => String(j.status || "").toLowerCase() === "approved").length;
           const hasApproval = approvedJobs > 0;
+          const latestApprovalSec = findLatestEventSeconds(timeline as any, "job_approved");
+
           const integrityClean = truthMismatchReasons.length === 0;
           const packetStatus = String(incident?.packetMeta?.status || "").toLowerCase();
           const packetReady = packetStatus === "ready";
+
+          // Build operational-language labels with synthesized context.
+          const fieldLabel = hasFieldSubmitted
+            ? fieldWorkSecs > 0
+              ? `Field work completed in ${formatDuration(fieldWorkSecs)}`
+              : "Field crew submitted completion package"
+            : "Field crew completion pending";
+
+          const evidenceLabel =
+            evidence.length > 0
+              ? evidenceInWindow > 0 && evidenceInWindow < evidence.length
+                ? `${evidence.length} ${evidence.length === 1 ? "piece" : "pieces"} of evidence captured — ${evidenceInWindow} during active work window`
+                : evidenceInWindow > 0 && evidenceInWindow === evidence.length
+                  ? `${evidence.length} ${evidence.length === 1 ? "piece" : "pieces"} of evidence captured during active work window`
+                  : `${evidence.length} ${evidence.length === 1 ? "piece" : "pieces"} of evidence captured`
+              : "Evidence not yet captured";
+
+          const approvalLabel = hasApproval
+            ? latestApprovalSec
+              ? `Supervisor approval logged ${fmtAgo(latestApprovalSec)} ago (${approvedJobs} ${approvedJobs === 1 ? "job" : "jobs"})`
+              : `Supervisor approval complete (${approvedJobs} ${approvedJobs === 1 ? "job" : "jobs"})`
+            : "Supervisor approval pending";
+
+          const integrityLabel = integrityClean
+            ? "Operational record consistent"
+            : `Attention needed: ${truthMismatchReasons.length} item${truthMismatchReasons.length === 1 ? "" : "s"} to review`;
+
+          const packetLabel = packetReady
+            ? incident?.packetMeta?.exportedAt
+              ? `Export packet ready (generated ${fmtAgoIso(incident.packetMeta.exportedAt)} ago)`
+              : "Export packet ready"
+            : "Export packet pending";
+
           const items: Array<{ ok: boolean | "warn"; label: string }> = [
-            { ok: hasFieldSubmitted, label: hasFieldSubmitted ? "Field crew submitted completion package" : "Field crew completion pending" },
-            { ok: evidence.length > 0, label: evidence.length > 0 ? `${evidence.length} ${evidence.length === 1 ? "piece" : "pieces"} of evidence captured` : "Evidence not yet captured" },
-            { ok: hasApproval, label: hasApproval ? `Supervisor approval complete (${approvedJobs} ${approvedJobs === 1 ? "job" : "jobs"})` : "Supervisor approval pending" },
-            { ok: integrityClean ? true : "warn", label: integrityClean ? "Operational record consistent" : `Integrity check: ${truthMismatchReasons.length} item${truthMismatchReasons.length === 1 ? "" : "s"} need review` },
-            { ok: packetReady && integrityClean, label: packetReady ? (integrityClean ? "Export packet ready" : "Export packet ready — review integrity first") : "Export packet pending" },
+            { ok: hasFieldSubmitted, label: fieldLabel },
+            { ok: evidence.length > 0, label: evidenceLabel },
+            { ok: hasApproval, label: approvalLabel },
+            { ok: integrityClean ? true : "warn", label: integrityLabel },
+            { ok: packetReady && integrityClean, label: packetLabel },
           ];
           return (
-            <section aria-label="Operational readiness" className="rounded-lg border border-white/8 bg-white/[0.02] px-5 py-4">
-              <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60 mb-3">
+            <section aria-label="Operational readiness" className="space-y-3">
+              <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
                 Operational readiness
               </div>
               <ul className="space-y-1.5">
@@ -1092,11 +1201,8 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           </div>
 
           {Object.keys(evidenceByJob).length === 0 ? (
-            <div className="rounded-lg border border-white/5 bg-white/[0.02] px-5 py-8 text-center">
-              <div className="text-[13px] text-gray-400">No evidence captured yet.</div>
-              <div className="mt-1 text-[11px] text-gray-500">
-                Evidence captured in the field will appear here as the operational record.
-              </div>
+            <div className="text-[12px] text-gray-500 italic">
+              No evidence captured yet — field photos and inspections will appear here as the operational record.
             </div>
           ) : (
             <div className="space-y-5">
@@ -1118,7 +1224,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                         const id = String(ev.id || "");
                         const u = thumbUrl[id];
                         return (
-                          <div key={id} className="relative min-w-[140px] w-[140px] aspect-[4/3] rounded-lg overflow-hidden border border-white/8 bg-black/40">
+                          <div key={id} className="relative min-w-[160px] w-[160px] aspect-[4/3] rounded-lg overflow-hidden border border-white/8 bg-black/40">
                             {u ? (
                               <img
                                 src={u}
@@ -1196,14 +1302,27 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             </div>
           </div>
           {timelineHighlights.length === 0 ? (
-            <div className="rounded-lg border border-white/5 bg-white/[0.02] px-5 py-6">
-              <div className="text-[13px] text-gray-400">No recorded events yet.</div>
-            </div>
+            <div className="text-[12px] text-gray-500 italic pl-1">No recorded events yet.</div>
           ) : (
             <ol className="relative border-l border-white/8 ml-2 space-y-3 pt-1">
               {timelineHighlights.map((t) => {
                 const tType = String(t.type || "");
-                const label = prettyTimelineEvent(tType);
+                // PEAKOPS_TIMELINE_PROSE_V2 (2026-05-18, PR 30c)
+                // Look up job title / evidence label by refId so the
+                // event reads like "Supervisor approved <Job Title>"
+                // instead of the generic "Supervisor approved job".
+                const ref = t.refId ? String(t.refId) : "";
+                const job = ref ? jobs.find((j) => String((j as any).id || j.jobId || "") === ref) : undefined;
+                const evMatch = ref ? evidence.find((e) => String((e as any).id || "") === ref) : undefined;
+                const evidenceLabel = (() => {
+                  if (!evMatch) return "";
+                  const file = (evMatch as any).file || {};
+                  return String(file.originalName || file.label || "").trim();
+                })();
+                const label = prettyTimelineEvent(tType, {
+                  jobTitle: job?.title,
+                  evidenceLabel: evidenceLabel || undefined,
+                });
                 const icon = eventIcon(tType);
                 const actor = String(t.actor || "");
                 const isSystemActor = !actor || actor === "ui" || actor === "system";
@@ -1216,12 +1335,8 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                       <div className="text-[13px] text-gray-100 leading-snug">{label}</div>
                       <div className="text-[11px] text-gray-500 shrink-0">{fmtAgo(t.occurredAt?._seconds)}</div>
                     </div>
-                    {!isSystemActor || t.refId ? (
-                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">
-                        {!isSystemActor ? `by ${actor}` : ""}
-                        {!isSystemActor && t.refId ? " · " : ""}
-                        {t.refId ? `ref ${String(t.refId)}` : ""}
-                      </div>
+                    {!isSystemActor ? (
+                      <div className="mt-0.5 text-[11px] text-gray-500 truncate">by {actor}</div>
                     ) : null}
                   </li>
                 );
@@ -1278,6 +1393,37 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               {lastArtifactAt ? ` · ${lastArtifactAt}` : ""}
             </div>
           ) : null}
+
+          {/* PEAKOPS_SUPERVISOR_ACTION_RAIL_V1 (2026-05-18, PR 30c)
+              Quiet secondary actions. Only surfacing real, wired
+              destinations — no button soup. Each nav preserves
+              orgId on the push (mirrors PR #16 / #23 / #28 pattern). */}
+          {orgId && incidentId ? (
+            <div className="pt-3 border-t border-white/[0.04] flex flex-wrap items-center gap-x-5 gap-y-2 text-[12px]">
+              <span className="text-[10px] uppercase tracking-wider text-gray-500">More actions</span>
+              <button
+                type="button"
+                className="text-gray-300 hover:text-white underline-offset-2 hover:underline"
+                onClick={() => router.push(`/incidents/${incidentId}/review?orgId=${encodeURIComponent(orgId)}`)}
+              >
+                Open review
+              </button>
+              <button
+                type="button"
+                className="text-gray-300 hover:text-white underline-offset-2 hover:underline"
+                onClick={() => router.push(`/incidents/${incidentId}/notes?orgId=${encodeURIComponent(orgId)}`)}
+              >
+                Open notes
+              </button>
+              <button
+                type="button"
+                className="text-gray-300 hover:text-white underline-offset-2 hover:underline"
+                onClick={() => router.push(`/incidents/${incidentId}?orgId=${encodeURIComponent(orgId)}`)}
+              >
+                Back to incident
+              </button>
+            </div>
+          ) : null}
         </section>
 
         {/* PEAKOPS_DEV_TOOLS_DRAWER_V1 (2026-05-17)
@@ -1319,6 +1465,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         ) : null}
 
         {loading ? <div className="text-xs text-gray-500">Refreshing summary…</div> : null}
+        </div>
       </div>
     </main>
     </>
