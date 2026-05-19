@@ -50,6 +50,13 @@ safeExport("createEvidenceUploadUrlV1", "./createEvidenceUploadUrlV1");
 safeExport("createEvidenceReadUrlV1", "./createEvidenceReadUrlV1");
 safeExport("uploadEvidenceProxyV1", "./uploadEvidenceProxyV1");
 
+// --- Addenda (PR 43) ---
+// Post-closure supplemental context. createAddendumV1 commits the
+// record; createAddendumUploadUrlV1 mints a signed PUT URL for the
+// optional single file attachment per addendum.
+safeExport("createAddendumV1", "./createAddendumV1");
+safeExport("createAddendumUploadUrlV1", "./createAddendumUploadUrlV1");
+
 // --- Jobs ---
   safeExport("createJobV1", "./createJobV1");
 safeExport("listJobsV1", "./listJobsV1");
