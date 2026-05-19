@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getFunctionsBase } from "@/lib/functionsBase";
+import { authedFetch } from "@/lib/apiClient";
+import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
 type Item = { id: string; file: File; url: string };
 type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string; status?: string };
 
@@ -35,6 +37,14 @@ useEffect(() => {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [jobs, setJobs] = useState<JobLite[]>([]);
+  // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
+  // Pre-emptive incident.status fetch so we render the sealed-record
+  // panel from the first paint when the record is closed, instead of
+  // letting the user start camera/file flows that will 409 server-side.
+  // sealedAfterMutation covers the reactive case where the record gets
+  // sealed mid-edit while the user is on this page.
+  const [incidentStatus, setIncidentStatus] = useState<string>("");
+  const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
 
   // Env / context
   const functionsBase = getFunctionsBase();
@@ -108,6 +118,36 @@ useEffect(() => {
       cancelled = true;
     };
   }, [incidentId, orgId, sp]);
+
+  // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
+  // Pre-emptive incident-status check. Defense-in-depth: even though
+  // the backend mutation gate (PR 41) rejects sealed-record writes,
+  // surfacing the sealed UI before the user attempts any action is
+  // calmer and avoids any time spent in the camera/file flow.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadIncidentStatus() {
+      if (!incidentId || !orgId) return;
+      try {
+        const res = await authedFetch(
+          `/api/fn/getIncidentV1?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) return;
+        const txt = await res.text().catch(() => "");
+        const out: any = txt ? JSON.parse(txt) : {};
+        if (cancelled) return;
+        const s = String(out?.doc?.status || "").toLowerCase();
+        if (s) setIncidentStatus(s);
+      } catch {
+        // tolerate — fall back to reactive 409 handling
+      }
+    }
+    void loadIncidentStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [incidentId, orgId]);
 
   useEffect(() => {
     const jid = String(selectedJobId || "").trim();
@@ -327,12 +367,44 @@ useEffect(() => {
     } catch (e: any) {
       console.error("UPLOAD FAIL", e);
       const m = (e && (e.message || e.toString())) || String(e);
+      // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
+      // Reactive 409: if the record was sealed while the user was
+      // staging uploads, surface the calm sealed-state panel instead
+      // of a generic alert. The check covers both the JSON error
+      // body ("incident_closed") and the HTTP status path.
+      if (/incident_closed/i.test(m) || / 409 /.test(m)) {
+        setSealedAfterMutation(true);
+        setStatus("");
+        return;
+      }
       setErrMsg(m);
       setStatus("");
       alert(m);
     } finally {
       setBusy(false);
     }
+  }
+
+  // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
+  // Sealed-record full-page swap. Fires either pre-emptively (incident
+  // status === "closed" on load) or reactively (a 409 came back from
+  // the upload attempt). Either way the user sees a calm sealed panel
+  // instead of the camera/file flow.
+  const isSealed = incidentStatus === "closed" || sealedAfterMutation;
+  if (isSealed) {
+    return (
+      <SealedRecordPanel
+        variant="fullPage"
+        title="Operational record sealed"
+        body={
+          sealedAfterMutation
+            ? "This record was sealed while you were preparing uploads. Your photos were not attached. Use an addendum to file supplemental context."
+            : "This record has been finalized. Supplemental context can be attached as an addendum without modifying the original field record."
+        }
+        orgId={orgId}
+        incidentId={incidentId}
+      />
+    );
   }
 
   return (
