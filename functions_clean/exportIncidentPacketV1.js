@@ -37,6 +37,60 @@ function emuDownloadUrl(bucket, storagePath) {
 async function writeJson(fp, obj) {
   await fs.promises.writeFile(fp, JSON.stringify(obj, null, 2), "utf8");
 }
+// PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+// stableSortKeys + stableStringify: produce byte-identical JSON for the
+// same input object regardless of how its keys were originally inserted.
+// Used for original-record/ files so re-exporting the same incident
+// produces the same originalRecordHash.
+function stableSortKeys(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map(stableSortKeys);
+  if (typeof obj === "object") {
+    const out = {};
+    for (const k of Object.keys(obj).sort()) out[k] = stableSortKeys(obj[k]);
+    return out;
+  }
+  return obj;
+}
+function stableStringify(obj) {
+  return JSON.stringify(stableSortKeys(obj), null, 2);
+}
+async function writeStableJson(fp, obj) {
+  await fs.promises.writeFile(fp, stableStringify(obj), "utf8");
+}
+// Walk a directory recursively in deterministic order.
+async function walkFiles(rootDir) {
+  const out = [];
+  async function recur(dir, prefix) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        await recur(full, rel);
+      } else if (e.isFile()) {
+        out.push({ relPath: rel, fullPath: full });
+      }
+    }
+  }
+  await recur(rootDir, "");
+  return out;
+}
+// Compute the deterministic originalRecordHash. The hash file itself is
+// excluded from the input (recursion guard).
+async function computeOriginalRecordHash(originalRecordDir, excludeRelPath) {
+  const files = await walkFiles(originalRecordDir);
+  const filtered = files.filter((f) => f.relPath !== excludeRelPath);
+  const perFile = {};
+  for (const f of filtered) {
+    const buf = await fs.promises.readFile(f.fullPath);
+    perFile[f.relPath] = require("crypto").createHash("sha256").update(buf).digest("hex");
+  }
+  const manifestStr = stableStringify(perFile);
+  const hash = require("crypto").createHash("sha256").update(manifestStr, "utf8").digest("hex");
+  return { hash: `sha256:${hash}`, perFile };
+}
 async function fetchEvidenceBytes(bucket, storagePath) {
   const url = emuDownloadUrl(bucket, storagePath);
   const r = await fetch(url, { method: "GET" });
@@ -119,9 +173,17 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     ]);
 
     const incident = { id: incSnap.id, ...incSnap.data() };
-    const jobs = jobsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    const evidence = evSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    const timeline = tlSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // Sort by doc.id for stable ordering across re-exports.
+    const jobs = jobsSnap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const evidence = evSnap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const timeline = tlSnap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const approvedJobs = jobs.filter((j) => isApprovedJob(j));
     const evidenceByJob = evidence.reduce((acc, ev) => {
       const key = getEvidenceJobId(ev) || "unassigned";
@@ -175,10 +237,13 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     const evidenceDir = path.join(originalRecordDir, "evidence");
     await fs.promises.mkdir(evidenceDir, { recursive: true });
 
-    await writeJson(path.join(originalRecordDir, "incident.json"), incident);
-    await writeJson(path.join(originalRecordDir, "jobs.json"), jobs);
-    await writeJson(path.join(originalRecordDir, "evidence_locker.json"), evidence);
-    await writeJson(path.join(originalRecordDir, "timeline_events.json"), timelineNormalized);
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // Stable serialization (sorted keys) for byte-identical bytes
+    // across re-exports.
+    await writeStableJson(path.join(originalRecordDir, "incident.json"), incident);
+    await writeStableJson(path.join(originalRecordDir, "jobs.json"), jobs);
+    await writeStableJson(path.join(originalRecordDir, "evidence_locker.json"), evidence);
+    await writeStableJson(path.join(originalRecordDir, "timeline_events.json"), timelineNormalized);
 
     const downloaded = [];
     const skipped = [];
@@ -207,11 +272,26 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45)
     // Operational-record manifest moves under original-record/.
-    await writeJson(path.join(originalRecordDir, "manifest.json"), {
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // generatedAt frozen to incident.closedAt for byte-stability.
+    const _closedAtIso = (() => {
+      try {
+        if (!incident || !incident.closedAt) return null;
+        if (typeof incident.closedAt === "string") return incident.closedAt;
+        if (typeof incident.closedAt.toDate === "function") {
+          return incident.closedAt.toDate().toISOString();
+        }
+        if (incident.closedAt._seconds) {
+          return new Date(Number(incident.closedAt._seconds) * 1000).toISOString();
+        }
+      } catch (_) { /* fall through */ }
+      return null;
+    })();
+    await writeStableJson(path.join(originalRecordDir, "manifest.json"), {
       ok: true,
       orgId,
       incidentId,
-      generatedAt: new Date().toISOString(),
+      generatedAt: _closedAtIso,
       bucket,
       counts: { jobs: approvedJobs.length, evidence: evidence.length, timeline: timelineNormalized.length },
       evidenceByJob,
@@ -335,11 +415,18 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       );
     }
 
-    // PEAKOPS_SEALED_PACKET_V2_ORIGINAL_HASH_PLACEHOLDER_V1 (2026-05-19, PR 45)
-    // Placeholder; PR 46 makes this a deterministic byte-stable hash.
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // Compute the real originalRecordHash now that all
+    // original-record/ files are written. The hash file itself is
+    // excluded from the input (recursion guard).
+    const _originalHashResult = await computeOriginalRecordHash(
+      originalRecordDir,
+      "original-record-hash.txt"
+    );
+    const _originalRecordHash = _originalHashResult.hash;
     await fs.promises.writeFile(
       path.join(originalRecordDir, "original-record-hash.txt"),
-      "pending-deterministic-hash\n",
+      _originalRecordHash + "\n",
       "utf8"
     );
 
@@ -393,7 +480,14 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     // PEAKOPS_SEALED_PACKET_V2_PACKET_MANIFEST_V1 (2026-05-19, PR 45)
     // Top-level audit manifest.
-    const originalRecordHashStr = "pending-deterministic-hash"; // PR 46 fills this in
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // Real hash from computeOriginalRecordHash above.
+    const originalRecordHashStr = _originalRecordHash;
+    const _topLevelInput = _originalRecordHash + "||" + (supplementalSectionHash || "");
+    const _topLevelHash = "sha256:" + require("crypto")
+      .createHash("sha256")
+      .update(_topLevelInput, "utf8")
+      .digest("hex");
     const packetManifest = {
       schemaVersion: 1,
       formatVersion: 2,
@@ -413,7 +507,7 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         hash: supplementalSectionHash,
         addenda: addendaEmitted,
       },
-      topLevelHash: null,    // PR 46: sha256(originalRecord.hash || supplementalAddenda.hash)
+      topLevelHash: _topLevelHash,
     };
     await writeJson(path.join(workDir, "packet-manifest.json"), packetManifest);
 
@@ -484,7 +578,8 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         formatVersion: 2,
         packetVersion,
         reportRevision: packetVersion,    // mirror for deploy-branch counter convention
-        originalRecordHash: "pending-deterministic-hash",
+        originalRecordHash: _originalRecordHash,
+        topLevelHash: _topLevelHash,
         supplementalAddendaHash: supplementalSectionHash,
         addendaCount: addendaEmitted.length,
       },
