@@ -1433,7 +1433,16 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     // for audit hash continuity but never enter the ZIP.
 
     const workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `peakops_packet_${incidentId}_`));
-    const evidenceDir = path.join(workDir, "evidence");
+    // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45)
+    // The operational record's sealed contents (JSON + evidence
+    // photos) move into original-record/ so an unzipper sees the
+    // two-section split immediately. The customer/audit HTML reports
+    // in REPORTS/ stay at the zip root; their image src paths shift
+    // from ../evidence/<slug>/<file> to ../original-record/evidence/...
+    // (handled in the relPath construction below).
+    const originalRecordDir = path.join(workDir, "original-record");
+    await fs.promises.mkdir(originalRecordDir, { recursive: true });
+    const evidenceDir = path.join(originalRecordDir, "evidence");
     await fs.promises.mkdir(evidenceDir, { recursive: true });
 
     // Read field-note + bypass state for the cover doc + notes.txt.
@@ -1593,11 +1602,15 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       }
       return lines.join("\n") + "\n";
     })();
-    await fs.promises.writeFile(path.join(workDir, "notes.txt"), notesTxt, "utf8");
+    // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45)
+    // The sealed operational record's files live under original-record/.
+    // Customer/audit HTMLs at workDir/REPORTS/ reach them via
+    // ../original-record/{file}.
+    await fs.promises.writeFile(path.join(originalRecordDir, "notes.txt"), notesTxt, "utf8");
 
-    await writeJson(path.join(workDir, "tasks.json"), tasksOut);
-    await writeJson(path.join(workDir, "approvals.json"), approvalsOut);
-    await writeJson(path.join(workDir, "timeline_events.json"), humanTimeline);
+    await writeJson(path.join(originalRecordDir, "tasks.json"), tasksOut);
+    await writeJson(path.join(originalRecordDir, "approvals.json"), approvalsOut);
+    await writeJson(path.join(originalRecordDir, "timeline_events.json"), humanTimeline);
 
     // Evidence: group by task. Each task gets a slugged subdirectory
     // under evidence/. Unassigned photos go to evidence/unassigned/.
@@ -1688,9 +1701,11 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         name: d.name,
         label: d.label || "",
         index: d.index,
+        // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45)
         // REPORTS/REPORT_SUMMARY.html is one level deep, evidence/
-        // is at the ZIP root → relative path is "../evidence/<slug>/<name>".
-        relPath: `../evidence/${slug}/${d.name}`,
+        // now lives under original-record/ → relative path is
+        // "../original-record/evidence/<slug>/<name>".
+        relPath: `../original-record/evidence/${slug}/${d.name}`,
       });
     }
     for (const s of skipped) {
@@ -2023,7 +2038,10 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     // any actual bucket/path string. The HTML body never references
     // this value — it's only readable by anyone inspecting the ZIP's
     // manifest.
-    await writeJson(path.join(workDir, "manifest.json"), {
+    // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45)
+    // The operational-record manifest moves under original-record/.
+    // Its reportImagePath now reflects the new evidence location.
+    await writeJson(path.join(originalRecordDir, "manifest.json"), {
       title: resolvedTitle,
       incidentId,
       orgId,
@@ -2038,22 +2056,265 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         evidenceSkipped: skipped.length,
         timelineEvents: humanTimeline.length,
       },
-      reportImagePath: "../evidence/<task-slug>/<filename>",
+      reportImagePath: "../original-record/evidence/<task-slug>/<filename>",
       evidenceSkipped: skipped,
     });
 
+    // PEAKOPS_SEALED_PACKET_V2_ADDENDA_V1 (2026-05-19, PR 45)
+    // Fetch supplemental addenda (PR 43 collection). Failure here
+    // is non-fatal — the packet still emits with an empty
+    // supplemental section. Addenda are returned newest-first by
+    // listAddendaV1; for export the chain reads chronologically.
+    let addenda = [];
+    try {
+      const addSnap = await incRef
+        .collection("addenda")
+        .orderBy("createdAt", "asc")
+        .limit(500)
+        .get();
+      addenda = addSnap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[exportIncidentPacketV1] addenda_fetch_failed", e && e.message);
+      addenda = [];
+    }
+
+    // PEAKOPS_SEALED_PACKET_V2_SUPPLEMENTAL_V1 (2026-05-19, PR 45)
+    // supplemental-addenda/ directory only created when at least one
+    // addendum exists — incidents with no addenda emit a clean
+    // two-section packet (original-record + REPORTS) with no empty
+    // supplemental folder.
+    const addendaEmitted = [];
+    const addendaSkipped = [];
+    let supplementalSectionHash = null;
+    if (addenda.length > 0) {
+      const supplementalDir = path.join(workDir, "supplemental-addenda");
+      const addendaRootDir = path.join(supplementalDir, "addenda");
+      await fs.promises.mkdir(addendaRootDir, { recursive: true });
+
+      for (const ad of addenda) {
+        const aid = String(ad.id || ad.addendumId || "").trim();
+        if (!aid) continue;
+        const adDir = path.join(addendaRootDir, aid);
+        await fs.promises.mkdir(adDir, { recursive: true });
+
+        // Resolve filer identity via the same actor-label resolver
+        // used by the rest of the packet.
+        const filerUid = String(ad.createdBy || "").trim();
+        if (filerUid) actorUids.add(filerUid);
+        // Note: resolveActorLabels was already invoked above with the
+        // original set; for addenda filers added after that resolve,
+        // we fall through to labelFor which returns "Authorized
+        // reviewer" if unresolved. Acceptable interim — PR 47 / future
+        // polish can re-resolve.
+
+        let attachmentBlock = null;
+        const f = (ad.file && typeof ad.file === "object") ? ad.file : null;
+        if (f && f.bucket && f.storagePath) {
+          const origName = String(f.originalName || "attachment").trim();
+          const safeName = origName.replace(/[^\w.\-]+/g, "_").slice(0, 120) || "attachment";
+          try {
+            const buf = await fetchEvidenceBytes(String(f.bucket), String(f.storagePath));
+            await fs.promises.writeFile(path.join(adDir, safeName), buf);
+            const fileHash = require("crypto").createHash("sha256").update(buf).digest("hex");
+            attachmentBlock = {
+              filenameInPacket: safeName,
+              originalName: origName,
+              contentType: String(f.contentType || "application/octet-stream"),
+              sizeBytes: buf.length,
+              sha256: fileHash,
+            };
+          } catch (e) {
+            addendaSkipped.push({ addendumId: aid, reason: String(e && e.message) || "attachment_download_failed" });
+          }
+        }
+
+        const filedAtIso = safeIso(ad.createdAt);
+        const reasonRaw = String(ad.reason || "").toLowerCase();
+        const reasonLabel =
+          reasonRaw === "clarification" ? "Clarification" :
+          reasonRaw === "customer_followup" ? "Customer follow-up" :
+          reasonRaw === "audit_support" ? "Audit support" :
+          reasonRaw === "other" ? "Other" :
+          reasonRaw || "Addendum";
+
+        const addendumJson = {
+          addendumId: aid,
+          filedAt: filedAtIso,
+          filedBy: {
+            uid: filerUid || null,
+            label: filerUid ? labelFor(filerUid) : null,
+          },
+          reason: reasonRaw || null,
+          reasonLabel,
+          note: String(ad.note || ""),
+          attachment: attachmentBlock,
+          recordSealAtAddendumTime: ad.recordSealAtAddendumTime || null,
+          relatedJobId: String(ad.relatedJobId || "") || null,
+          disclaimer: "This addendum was filed after operational record closure and does not modify the original field record.",
+        };
+        await writeJson(path.join(adDir, "addendum.json"), addendumJson);
+        addendaEmitted.push({
+          addendumId: aid,
+          filedAt: filedAtIso,
+          filedBy: filerUid ? labelFor(filerUid) : null,
+          reason: reasonRaw || null,
+          reasonLabel,
+          hasAttachment: !!attachmentBlock,
+        });
+      }
+
+      await writeJson(path.join(supplementalDir, "manifest.json"), {
+        title: "Supplemental addenda",
+        incidentId,
+        orgId,
+        generatedAt: new Date().toISOString(),
+        count: addendaEmitted.length,
+        skipped: addendaSkipped,
+        disclaimer: "Addenda are filed after operational record closure and do not modify the original record.",
+        addenda: addendaEmitted,
+      });
+
+      // Placeholder hash for the supplemental section. PR 46 makes
+      // both section hashes deterministic + byte-stable across
+      // re-exports.
+      const supplementalHashStr = require("crypto")
+        .createHash("sha256")
+        .update(JSON.stringify(addendaEmitted))
+        .digest("hex");
+      supplementalSectionHash = `sha256:${supplementalHashStr}`;
+      await fs.promises.writeFile(
+        path.join(supplementalDir, "supplemental-addenda-hash.txt"),
+        `${supplementalSectionHash}\n`,
+        "utf8"
+      );
+    }
+
+    // PEAKOPS_SEALED_PACKET_V2_ORIGINAL_HASH_PLACEHOLDER_V1 (2026-05-19, PR 45)
+    // original-record-hash.txt — PR 45 emits a placeholder. PR 46
+    // replaces this with a deterministic hash that's byte-identical
+    // across re-exports of the same incident.
+    await fs.promises.writeFile(
+      path.join(originalRecordDir, "original-record-hash.txt"),
+      "pending-deterministic-hash\n",
+      "utf8"
+    );
+
+    // PEAKOPS_SEALED_PACKET_V2_CHAIN_OF_CUSTODY_V1 (2026-05-19, PR 45)
+    // Combined chain: every operational-record timeline event with
+    // origin="operational_record", followed by every addendum filing
+    // with origin="supplemental_addendum". Sorted ascending by ISO
+    // timestamp; entries without a valid timestamp sort to the
+    // bottom (mirrors humanTimeline's safeIso behavior above).
+    const chainEntries = [
+      ...humanTimeline.map((t) => ({
+        when: t.when,
+        kind: t.rawType || t.label,
+        label: t.label,
+        actor: t.actor || null,
+        origin: "operational_record",
+      })),
+      ...addendaEmitted.map((a) => ({
+        when: a.filedAt,
+        kind: "ADDENDUM_FILED",
+        label: `Addendum filed (${a.reasonLabel})`,
+        actor: a.filedBy || null,
+        origin: "supplemental_addendum",
+        addendumId: a.addendumId,
+        reason: a.reason,
+      })),
+    ].sort((x, y) => {
+      const ax = x.when ? Date.parse(x.when) : Number.POSITIVE_INFINITY;
+      const ay = y.when ? Date.parse(y.when) : Number.POSITIVE_INFINITY;
+      return ax - ay;
+    });
+    await writeJson(path.join(workDir, "chain-of-custody.json"), {
+      incidentId,
+      orgId,
+      generatedAt: new Date().toISOString(),
+      operationalRecordEventCount: humanTimeline.length,
+      supplementalAddendumCount: addendaEmitted.length,
+      entries: chainEntries,
+    });
+
+    // PEAKOPS_SEALED_PACKET_V2_PACKET_MANIFEST_V1 (2026-05-19, PR 45)
+    // Top-level audit manifest. Distinct from original-record/manifest.json
+    // (operational record details) and report_manifest.json (REPORTS/
+    // artifact details). This manifest is the single document that
+    // describes the packet as a whole: format version, two-section
+    // hashes, and history.
+    const originalRecordHashStr = "pending-deterministic-hash"; // PR 46 fills this in
+    const packetManifest = {
+      schemaVersion: 1,
+      formatVersion: 2,
+      incidentId,
+      orgId,
+      packetVersion: reportRevision,
+      exportedAt: new Date().toISOString(),
+      originalRecord: {
+        closedAt: (incident && incident.closedAt) ? (incident.closedAt?.toDate?.().toISOString?.() || incident.closedAt) : null,
+        hash: originalRecordHashStr,
+        evidenceCount: evidence.length,
+        jobCount: approvedJobs.length,
+        timelineEventCount: humanTimeline.length,
+      },
+      supplementalAddenda: {
+        count: addendaEmitted.length,
+        hash: supplementalSectionHash,
+        addenda: addendaEmitted,
+      },
+      topLevelHash: null,    // PR 46: sha256(originalRecord.hash || supplementalAddenda.hash)
+      history: reportHistory,
+    };
+    await writeJson(path.join(workDir, "packet-manifest.json"), packetManifest);
+
+    // PEAKOPS_SEALED_PACKET_V2_README_V1 (2026-05-19, PR 45)
+    // README_FIRST.txt — plain-text, intentionally NOT markdown for
+    // maximum compatibility with offline / customer / auditor
+    // unzipping tools.
+    const readmeLines = [
+      "PEAKOPS OPERATIONAL RECORD PACKET",
+      "─────────────────────────────────",
+      "",
+      `Incident:     ${resolvedTitle}`,
+      `Org:          ${orgId}`,
+      `Closed:       ${packetManifest.originalRecord.closedAt || "(not recorded)"}`,
+      `Exported:     ${packetManifest.exportedAt}`,
+      `Packet ID:    ${incidentId}__v${reportRevision}`,
+      "",
+      "This packet contains two sections:",
+      "",
+      "  1. ORIGINAL OPERATIONAL RECORD  (original-record/)",
+      "     The sealed field record as it existed at incident closure.",
+      "     Re-exporting the same incident later produces an identical",
+      "     original-record/ section (verifiable by hash). Original",
+      "     record hash: " + originalRecordHashStr,
+      "",
+      "  2. SUPPLEMENTAL ADDENDA  (supplemental-addenda/)",
+      "     Context filed after closure, in chronological order. Each",
+      "     addendum identifies the filer, the time of filing, and the",
+      "     stated reason. Addenda do not modify the original record —",
+      "     they exist alongside it as transparent supplemental material.",
+      `     Addenda included: ${addendaEmitted.length}`,
+      "     Supplemental section hash: " + (supplementalSectionHash || "(none — no addenda filed)"),
+      "",
+      "Customer + audit reports live under REPORTS/.",
+      "Combined chain-of-custody record: chain-of-custody.json.",
+      "",
+      "This packet was generated by PeakOps.",
+      "",
+    ];
+    await fs.promises.writeFile(path.join(workDir, "README_FIRST.txt"), readmeLines.join("\n"), "utf8");
+
     // PEAKOPS_REPORT_ENGINE_V1 (2026-04-30)
-    // Customer-facing filename — `<title>_<MMMdd>.zip`. Same-day
-    // re-exports of the same incident overwrite a single Storage
-    // object; the audit-history hash chain (zipSha256, exportedAt)
-    // still lives on incident.packetMeta so older versions are
-    // identifiable from the incident doc even though the ZIP itself
-    // is replaced.
+    // Customer-facing filename — `<title>_<MMMdd>__v<n>.zip`. PR 45
+    // adds the version suffix so prior packet versions are retained
+    // (per locked decision) rather than overwritten on re-export.
     const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     const today = new Date();
     const stamp = `${months[today.getMonth()]}${String(today.getDate()).padStart(2, "0")}`;
     const titleSlug = slugify(resolvedTitle).slice(0, 60);
-    const zipName = `${titleSlug}_${stamp}.zip`;
+    const zipName = `${titleSlug}_${stamp}__v${reportRevision}.zip`;
     const zipPath = path.join(os.tmpdir(), `peakops_${incidentId}_${zipName}`);
 
     // PEAKOPS_REPORT_CUSTOMER_V1 (2026-05-01)
@@ -2074,7 +2335,12 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     await runZip(workDir, zipPath);
 
-    const outStoragePath = `exports/incidents/${incidentId}/${zipName}`;
+    // PEAKOPS_SEALED_PACKET_V2_VERSIONED_PATH_V1 (2026-05-19, PR 45)
+    // Versioned storage path. Prior versions are RETAINED at their
+    // original paths (locked decision: keep all forever). The
+    // packetMeta.storagePath below points at this latest version;
+    // packetMeta.history[].storagePath gives per-version access.
+    const outStoragePath = `exports/incidents/${incidentId}/v${reportRevision}__${zipName}`;
     await bucketObj.file(outStoragePath).save(await fs.promises.readFile(zipPath), {
       contentType: "application/zip",
       resumable: false,
@@ -2085,6 +2351,20 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     const zipBuf = await fs.promises.readFile(zipPath);
     const zipSha256 = require("crypto").createHash("sha256").update(zipBuf).digest("hex");
     const exportedAt = new Date().toISOString();
+
+    // PEAKOPS_SEALED_PACKET_V2_HISTORY_STORAGE_PATH_V1 (2026-05-19, PR 45)
+    // Backfill storagePath on the last entry of reportHistory (which
+    // was just appended for this export upstream). Older entries
+    // pre-PR-45 don't carry storagePath; that's acceptable — older
+    // packets live at their original non-versioned paths and the
+    // Summary "Export history" UI in PR 47 will gracefully handle
+    // mixed history shapes.
+    const reportHistoryWithPath = Array.isArray(reportHistory) ? reportHistory.map((entry, i) => {
+      if (i === reportHistory.length - 1 && entry && typeof entry === "object" && !entry.storagePath) {
+        return { ...entry, storagePath: outStoragePath };
+      }
+      return entry;
+    }) : reportHistory;
 
         await incRef.set({
       packetMeta: {
@@ -2103,6 +2383,16 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         exportedCount: downloaded.length,
         skippedCount: skipped.length,
         jobCount: approvedJobs.length,
+        // PEAKOPS_SEALED_PACKET_V2_PACKETMETA_V1 (2026-05-19, PR 45)
+        // Two-section packet markers. PR 46 will populate the hash
+        // fields with deterministic byte-stable values; for now they
+        // mirror what was emitted into the zip (placeholder
+        // original-record hash + real supplemental section hash).
+        formatVersion: 2,
+        packetVersion: reportRevision,
+        originalRecordHash: "pending-deterministic-hash",
+        supplementalAddendaHash: supplementalSectionHash,
+        addendaCount: addendaEmitted.length,
         // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
         // Persisted so the next export reads the right base value
         // and increments cleanly — the source of truth for the
@@ -2111,7 +2401,10 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         // PEAKOPS_REPORT_LINEAGE_V1 (2026-05-04)
         // Source-of-truth history. Persisted append-only on the
         // incident doc; every export reads, appends, writes back.
-        history: reportHistory,
+        // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45): the latest
+        // entry now carries its own storagePath so PR 47's Export
+        // History UI can resolve each version's GCS object.
+        history: reportHistoryWithPath,
       },
       updatedAt: exportedAt,
     }, { merge: true });
