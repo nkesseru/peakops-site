@@ -47,6 +47,73 @@ function emuDownloadUrl(bucket, storagePath) {
 async function writeJson(fp, obj) {
   await fs.promises.writeFile(fp, JSON.stringify(obj, null, 2), "utf8");
 }
+// PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+// stableSortKeys + stableStringify: produce byte-identical JSON for the
+// same input object regardless of how its keys were originally inserted.
+// Used for original-record/ files so re-exporting the same incident
+// produces the same originalRecordHash. Mirrors the approach in
+// evidenceExport.mjs.
+function stableSortKeys(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map(stableSortKeys);
+  if (typeof obj === "object") {
+    // Skip Firestore Timestamp-like objects ({ _seconds, _nanoseconds })
+    // so they serialize as a plain object with the same field order
+    // every time. JSON.stringify handles plain objects deterministically
+    // once their keys are sorted.
+    const out = {};
+    for (const k of Object.keys(obj).sort()) out[k] = stableSortKeys(obj[k]);
+    return out;
+  }
+  return obj;
+}
+function stableStringify(obj) {
+  return JSON.stringify(stableSortKeys(obj), null, 2);
+}
+async function writeStableJson(fp, obj) {
+  await fs.promises.writeFile(fp, stableStringify(obj), "utf8");
+}
+// PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+// Walk a directory recursively and yield { relPath, fullPath } for every
+// file. Used by computeOriginalRecordHash to enumerate the original-
+// record/ contents in deterministic order. Sorted ascending by relPath
+// so the resulting hash map's key order is stable.
+async function walkFiles(rootDir) {
+  const out = [];
+  async function recur(dir, prefix) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        await recur(full, rel);
+      } else if (e.isFile()) {
+        out.push({ relPath: rel, fullPath: full });
+      }
+    }
+  }
+  await recur(rootDir, "");
+  return out;
+}
+// PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+// Compute the originalRecordHash. The hash file itself is excluded from
+// the input (it doesn't exist yet at compute time; this guard documents
+// the recursion-avoidance contract — even if it did exist from a prior
+// run, it would be excluded). The hash is sha256 of a stable-stringified
+// { relPath: sha256(fileBytes) } map.
+async function computeOriginalRecordHash(originalRecordDir, excludeRelPath) {
+  const files = await walkFiles(originalRecordDir);
+  const filtered = files.filter((f) => f.relPath !== excludeRelPath);
+  const perFile = {};
+  for (const f of filtered) {
+    const buf = await fs.promises.readFile(f.fullPath);
+    perFile[f.relPath] = require("crypto").createHash("sha256").update(buf).digest("hex");
+  }
+  const manifestStr = stableStringify(perFile);
+  const hash = require("crypto").createHash("sha256").update(manifestStr, "utf8").digest("hex");
+  return { hash: `sha256:${hash}`, perFile };
+}
 // PEAKOPS_EXPORT_FETCH_BYTES_V2 (2026-04-24)
 // Previously this hard-coded a 127.0.0.1:9199 emulator URL, making every
 // evidence download fail in production. Use the Admin SDK's file.download()
@@ -1277,7 +1344,13 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     ]);
 
     const incident = { id: incSnap.id, ...incSnap.data() };
-    const jobs = jobsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // Sort docs by id so subsequent reads produce the same ordering
+    // even though Firestore doesn't guarantee insertion order. No
+    // index required — client-side string sort on the doc id.
+    const jobs = jobsSnap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
     // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
     // Monotonic revision counter on the incident. First export →
@@ -1367,8 +1440,14 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       const id = String(vendorId || "").trim();
       return !!id && archivedVendorIds.has(id);
     }
-    const evidence = evSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    const timeline = tlSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // Sort by id for deterministic order across re-exports.
+    const evidence = evSnap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const timeline = tlSnap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const approvedJobs = jobs.filter((j) => isApprovedJob(j));
     const evidenceByJob = evidence.reduce((acc, ev) => {
       const key = getEvidenceJobId(ev) || "unassigned";
@@ -1608,9 +1687,12 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     // ../original-record/{file}.
     await fs.promises.writeFile(path.join(originalRecordDir, "notes.txt"), notesTxt, "utf8");
 
-    await writeJson(path.join(originalRecordDir, "tasks.json"), tasksOut);
-    await writeJson(path.join(originalRecordDir, "approvals.json"), approvalsOut);
-    await writeJson(path.join(originalRecordDir, "timeline_events.json"), humanTimeline);
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // original-record/ writes use stable serialization (sorted keys)
+    // so the resulting hash is byte-identical across re-exports.
+    await writeStableJson(path.join(originalRecordDir, "tasks.json"), tasksOut);
+    await writeStableJson(path.join(originalRecordDir, "approvals.json"), approvalsOut);
+    await writeStableJson(path.join(originalRecordDir, "timeline_events.json"), humanTimeline);
 
     // Evidence: group by task. Each task gets a slugged subdirectory
     // under evidence/. Unassigned photos go to evidence/unassigned/.
@@ -2041,13 +2123,30 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45)
     // The operational-record manifest moves under original-record/.
     // Its reportImagePath now reflects the new evidence location.
-    await writeJson(path.join(originalRecordDir, "manifest.json"), {
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // generatedAt is FROZEN to incident closure time so re-exports
+    // produce identical manifest bytes. reportRevision is removed
+    // from this manifest (per-export state belongs in packet-
+    // manifest.json, not in the sealed original record). Both
+    // changes are required for originalRecordHash byte-stability.
+    const _closedAtIso = (() => {
+      try {
+        if (!incident || !incident.closedAt) return null;
+        if (typeof incident.closedAt === "string") return incident.closedAt;
+        if (typeof incident.closedAt.toDate === "function") {
+          return incident.closedAt.toDate().toISOString();
+        }
+        if (incident.closedAt._seconds) {
+          return new Date(Number(incident.closedAt._seconds) * 1000).toISOString();
+        }
+      } catch (_) { /* fall through */ }
+      return null;
+    })();
+    await writeStableJson(path.join(originalRecordDir, "manifest.json"), {
       title: resolvedTitle,
       incidentId,
       orgId,
-      generatedAt: new Date().toISOString(),
-      // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
-      reportRevision,
+      generatedAt: _closedAtIso,
       counts: {
         tasksTotal: jobs.length,
         tasksApproved: approvedJobs.length,
@@ -2190,13 +2289,20 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       );
     }
 
-    // PEAKOPS_SEALED_PACKET_V2_ORIGINAL_HASH_PLACEHOLDER_V1 (2026-05-19, PR 45)
-    // original-record-hash.txt — PR 45 emits a placeholder. PR 46
-    // replaces this with a deterministic hash that's byte-identical
-    // across re-exports of the same incident.
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // Compute the real originalRecordHash now that all original-
+    // record/ files are written and content-stable. The hash file
+    // itself is excluded from the input (recursion guard). The
+    // resulting hash is byte-identical across re-exports of the
+    // same Firestore state.
+    const _originalHashResult = await computeOriginalRecordHash(
+      originalRecordDir,
+      "original-record-hash.txt"
+    );
+    const _originalRecordHash = _originalHashResult.hash;
     await fs.promises.writeFile(
       path.join(originalRecordDir, "original-record-hash.txt"),
-      "pending-deterministic-hash\n",
+      _originalRecordHash + "\n",
       "utf8"
     );
 
@@ -2243,7 +2349,17 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     // artifact details). This manifest is the single document that
     // describes the packet as a whole: format version, two-section
     // hashes, and history.
-    const originalRecordHashStr = "pending-deterministic-hash"; // PR 46 fills this in
+    // PEAKOPS_DETERMINISTIC_HASH_V1 (2026-05-19, PR 46)
+    // Real originalRecordHash now (computed above). topLevelHash is
+    // sha256(originalRecordHash || (supplementalAddendaHash || "")):
+    // sealed-section identity stays stable across re-exports; topLevel
+    // changes only when addenda accumulate.
+    const _topLevelInput = _originalRecordHash + "||" + (supplementalSectionHash || "");
+    const _topLevelHash = "sha256:" + require("crypto")
+      .createHash("sha256")
+      .update(_topLevelInput, "utf8")
+      .digest("hex");
+
     const packetManifest = {
       schemaVersion: 1,
       formatVersion: 2,
@@ -2252,8 +2368,8 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       packetVersion: reportRevision,
       exportedAt: new Date().toISOString(),
       originalRecord: {
-        closedAt: (incident && incident.closedAt) ? (incident.closedAt?.toDate?.().toISOString?.() || incident.closedAt) : null,
-        hash: originalRecordHashStr,
+        closedAt: _closedAtIso,
+        hash: _originalRecordHash,
         evidenceCount: evidence.length,
         jobCount: approvedJobs.length,
         timelineEventCount: humanTimeline.length,
@@ -2263,7 +2379,7 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         hash: supplementalSectionHash,
         addenda: addendaEmitted,
       },
-      topLevelHash: null,    // PR 46: sha256(originalRecord.hash || supplementalAddenda.hash)
+      topLevelHash: _topLevelHash,
       history: reportHistory,
     };
     await writeJson(path.join(workDir, "packet-manifest.json"), packetManifest);
@@ -2288,7 +2404,7 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       "     The sealed field record as it existed at incident closure.",
       "     Re-exporting the same incident later produces an identical",
       "     original-record/ section (verifiable by hash). Original",
-      "     record hash: " + originalRecordHashStr,
+      "     record hash: " + _originalRecordHash,
       "",
       "  2. SUPPLEMENTAL ADDENDA  (supplemental-addenda/)",
       "     Context filed after closure, in chronological order. Each",
@@ -2390,7 +2506,8 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         // original-record hash + real supplemental section hash).
         formatVersion: 2,
         packetVersion: reportRevision,
-        originalRecordHash: "pending-deterministic-hash",
+        originalRecordHash: _originalRecordHash,
+        topLevelHash: _topLevelHash,
         supplementalAddendaHash: supplementalSectionHash,
         addendaCount: addendaEmitted.length,
         // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
