@@ -96,6 +96,26 @@ type MemberIdentity = {
 };
 type MemberRegistry = Record<string, MemberIdentity>;
 
+// PEAKOPS_ADDENDUM_DOC_V1 (2026-05-19, PR 44)
+// Addendum doc shape returned by listAddendaV1. Matches the
+// whitelist in that function; chain-of-custody internals
+// (raw userAgent, seal-state snapshot) stay server-side.
+type AddendumDoc = {
+  addendumId: string;
+  createdAt?: { _seconds?: number } | null;
+  createdBy?: string | null;
+  reason?: string | null;
+  note?: string;
+  file?: {
+    bucket: string;
+    storagePath: string;
+    contentType?: string;
+    originalName?: string;
+    sizeBytes?: number | null;
+  } | null;
+  relatedJobId?: string | null;
+};
+
 function getEvidenceJobId(ev: EvidenceDoc): string {
   const top = String((ev as any)?.jobId || (ev as any)?.["jobId"] || "").trim();
   if (top) return top;
@@ -560,6 +580,20 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   // listOrgMembersV1. Endpoint failures are non-fatal — the resolver
   // falls back to PR 35's context-safe labels gracefully.
   const [memberRegistry, setMemberRegistry] = useState<MemberRegistry>({});
+  // PEAKOPS_ADDENDA_STATE_V1 (2026-05-19, PR 44)
+  // Supplemental addenda fetched from listAddendaV1. Sorted desc by
+  // createdAt on the wire. Endpoint failure is non-fatal — existing
+  // Summary surfaces remain unaffected.
+  const [addenda, setAddenda] = useState<AddendumDoc[]>([]);
+  // Per-addendum signed-URL cache for file attachments. Lazy-minted
+  // on click of the file link via the existing createEvidenceReadUrlV1
+  // endpoint (which is path-agnostic — verified in PR 44 planning).
+  const [addendumFileUrls, setAddendumFileUrls] = useState<Record<string, string>>({});
+  const [addendumFileBusy, setAddendumFileBusy] = useState<Record<string, boolean>>({});
+  // Confirmation chip when navigating in from a fresh /add-addendum
+  // submit (?addendumFiled=1). Auto-dismisses after 4s and the URL
+  // is cleaned to avoid the chip re-appearing on browser back.
+  const [showAddendumFiledChip, setShowAddendumFiledChip] = useState(false);
   const [thumbUrl, setThumbUrl] = useState<Record<string, string>>({});
   const [thumbRetryById, setThumbRetryById] = useState<Record<string, number>>({});
   const [thumbErrById, setThumbErrById] = useState<Record<string, string>>({});
@@ -769,6 +803,27 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         }
       } catch {
         // Silent fallback. PR 35 context labels remain available.
+      }
+
+      // PEAKOPS_ADDENDA_FETCH_V1 (2026-05-19, PR 44)
+      // Supplemental addenda. Same graceful pattern as the member
+      // fetch — endpoint failure leaves addenda empty and the section
+      // renders nothing, which is correct for incidents that have
+      // never had an addendum filed.
+      try {
+        const addUrl =
+          `/api/fn/listAddendaV1?orgId=${encodeURIComponent(requestOrgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}&limit=200`;
+        const addRes = await authedFetch(addUrl, { headers: demoHeaders });
+        if (addRes.ok) {
+          const addTxt = await addRes.text();
+          const addJson = addTxt ? JSON.parse(addTxt) : {};
+          if (addJson?.ok && Array.isArray(addJson.docs)) {
+            setAddenda(addJson.docs as AddendumDoc[]);
+          }
+        }
+      } catch {
+        // Silent fallback. Empty addenda → no section rendered.
       }
 
       const packetMeta: any = inc?.doc?.packetMeta || {};
@@ -1164,6 +1219,65 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incidentId, functionsBase]);
 
+  // PEAKOPS_ADDENDUM_FILED_CHIP_V1 (2026-05-19, PR 44)
+  // When /add-addendum redirects here with addendumFiled=1, flash a
+  // quiet confirmation chip for 4s and clean the URL so refreshing
+  // / back-button doesn't re-trigger it.
+  useEffect(() => {
+    const v = String(sp?.get("addendumFiled") || "").trim();
+    if (v !== "1") return;
+    setShowAddendumFiledChip(true);
+    // Clean the URL without adding a history entry.
+    try {
+      const next = `/incidents/${encodeURIComponent(incidentId)}/summary${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`;
+      router.replace(next);
+    } catch {
+      // tolerate
+    }
+    const t = setTimeout(() => setShowAddendumFiledChip(false), 4000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sp, incidentId, orgId]);
+
+  // PEAKOPS_ADDENDUM_FILE_OPEN_V1 (2026-05-19, PR 44)
+  // Lazy-mint signed read URL for an addendum's file attachment and
+  // open it in a new tab. Reuses the existing createEvidenceReadUrlV1
+  // endpoint (verified path-agnostic in PR 44 planning) so no new
+  // backend function is required.
+  async function openAddendumFile(addendum: AddendumDoc) {
+    const id = String(addendum.addendumId || "");
+    const file = addendum.file;
+    if (!id || !file || !file.bucket || !file.storagePath) return;
+    // If we already have a minted URL, open it directly.
+    const cached = addendumFileUrls[id];
+    if (cached) {
+      try { window.open(cached, "_blank", "noopener"); } catch {}
+      return;
+    }
+    setAddendumFileBusy((m) => ({ ...m, [id]: true }));
+    try {
+      const res = await mintEvidenceReadUrl(
+        {
+          orgId: String(orgId || ""),
+          incidentId,
+          evidenceId: id,
+          bucket: String(file.bucket || ""),
+          storagePath: String(file.storagePath || ""),
+          expiresSec: getThumbExpiresSec(),
+        },
+        demoHeaders
+      );
+      if (res?.ok && res.url) {
+        setAddendumFileUrls((m) => ({ ...m, [id]: res.url! }));
+        try { window.open(res.url, "_blank", "noopener"); } catch {}
+      }
+    } catch {
+      // tolerate — user can retry
+    } finally {
+      setAddendumFileBusy((m) => ({ ...m, [id]: false }));
+    }
+  }
+
   useEffect(() => {
     (evidence || []).slice(0, 40).forEach((ev) => { prefetchThumb(ev); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1483,6 +1597,20 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         ) : null}
         {!err && artifactToast ? (
           <div className="text-[12px] text-emerald-200/85">{artifactToast}</div>
+        ) : null}
+        {/* PEAKOPS_ADDENDUM_FILED_CHIP_V1 (2026-05-19, PR 44)
+            Quiet confirmation when /add-addendum redirected here.
+            Auto-dismisses after 4s; URL is cleaned on first paint so
+            it doesn't re-trigger on browser back. */}
+        {showAddendumFiledChip ? (
+          <div
+            role="status"
+            aria-live="polite"
+            className="text-[12px] text-emerald-200/90 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-300/25 bg-emerald-500/[0.08]"
+          >
+            <span>✓</span>
+            <span>Addendum filed.</span>
+          </div>
         ) : null}
 
         {/* PEAKOPS_OPERATIONAL_SUMMARY_V1 (2026-05-18, PR 30d)
@@ -2345,6 +2473,90 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           )}
         </section>
 
+        {/* PEAKOPS_SUPPLEMENTAL_ADDENDA_V1 (2026-05-19, PR 44)
+            Read-side surface for post-closure addenda. Renders only
+            when at least one addendum has been filed. Each addendum
+            row carries: reason chip (color per reason) · absolute
+            timestamp · attribution via PR 36 identity registry ·
+            note · optional file link (lazy-mints signed URL via
+            createEvidenceReadUrlV1 on click, opens new tab). */}
+        {addenda.length > 0 ? (
+          <section aria-label="Supplemental addenda" className="space-y-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+                Supplemental addenda
+              </div>
+              <div className="mt-1 text-[12px] text-gray-400">
+                Post-closure context attached to the operational record. The original field record remains unchanged.
+              </div>
+            </div>
+            <ol className="space-y-4">
+              {addenda.map((ad) => {
+                const reasonKey = String(ad.reason || "").toLowerCase();
+                const reasonLabel =
+                  reasonKey === "clarification" ? "Clarification" :
+                  reasonKey === "customer_followup" ? "Customer follow-up" :
+                  reasonKey === "audit_support" ? "Audit support" :
+                  reasonKey === "other" ? "Other" :
+                  reasonKey ? reasonKey.replace(/_/g, " ") : "Addendum";
+                const reasonChipClass =
+                  reasonKey === "clarification" ? "border-white/15 bg-white/[0.04] text-gray-200" :
+                  reasonKey === "customer_followup" ? "border-cyan-300/30 bg-cyan-500/[0.08] text-cyan-100" :
+                  reasonKey === "audit_support" ? "border-amber-300/30 bg-amber-500/[0.08] text-amber-100" :
+                  "border-white/15 bg-white/[0.04] text-gray-200";
+                const createdSec = Number(ad.createdAt?._seconds || 0);
+                const actor = prettyActor(
+                  String(ad.createdBy || ""),
+                  { chainRole: "notes" },
+                  memberRegistry
+                );
+                const id = String(ad.addendumId || "");
+                const fileBusy = !!addendumFileBusy[id];
+                const file = ad.file;
+                const fileName = String(file?.originalName || "").trim();
+                const fileSizeKb = file && Number(file.sizeBytes) > 0
+                  ? `${(Number(file.sizeBytes) / 1024).toFixed(1)} KB`
+                  : "";
+                return (
+                  <li key={id} className="space-y-1.5">
+                    <div className="flex items-baseline gap-3 flex-wrap">
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full border ${reasonChipClass}`}>
+                        {reasonLabel}
+                      </span>
+                      <span className="text-[12px] text-gray-400">
+                        {createdSec > 0 ? fmtAbsolute(createdSec) : "—"}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-gray-500">
+                      Filed by {actor}
+                    </div>
+                    {ad.note ? (
+                      <div className="text-[13px] text-gray-200 leading-relaxed border-l-2 border-amber-300/25 pl-3 whitespace-pre-wrap">
+                        {ad.note}
+                      </div>
+                    ) : null}
+                    {file && file.storagePath ? (
+                      <div className="text-[11px] text-gray-500">
+                        Attached:{" "}
+                        <button
+                          type="button"
+                          className="text-gray-300 hover:text-gray-100 underline underline-offset-2 disabled:opacity-50"
+                          onClick={() => { void openAddendumFile(ad); }}
+                          disabled={fileBusy}
+                          title={file.storagePath}
+                        >
+                          {fileBusy ? "Opening…" : (fileName || "attachment")}
+                        </button>
+                        {fileSizeKb ? <span className="ml-1 text-gray-600">({fileSizeKb})</span> : null}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        ) : null}
+
         {/* PEAKOPS_CHAIN_OF_ACCOUNTABILITY_V1 (2026-05-18, PR 35)
             Audit-grade chain of accountability. Each row names a
             single transition in the operational record's lifecycle
@@ -2456,6 +2668,25 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             });
           } else {
             rows.push({ label: "Packet generated", pending: true });
+          }
+
+          // PEAKOPS_CHAIN_ADDENDUM_ROWS_V1 (2026-05-19, PR 44)
+          // Every filed addendum extends the chain of accountability.
+          // No cap per locked decision — the chain stays audit-honest
+          // even on heavily-addended incidents. addenda are returned
+          // desc by createdAt; reverse so chain reads chronologically.
+          const addendaForChain = [...addenda].reverse();
+          for (const ad of addendaForChain) {
+            const createdSec = Number(ad.createdAt?._seconds || 0);
+            const actor = prettyActor(
+              String(ad.createdBy || ""),
+              { chainRole: "notes" },
+              memberRegistry
+            );
+            rows.push({
+              label: `Addendum filed by ${actor}`,
+              when: createdSec > 0 ? fmtAbsolute(createdSec) : undefined,
+            });
           }
 
           return (
