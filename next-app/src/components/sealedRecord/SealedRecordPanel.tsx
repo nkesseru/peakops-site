@@ -19,7 +19,6 @@
  *     unsaved notes"). Renders next to the addendum CTA when present.
  */
 
-import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 export type SealedVariant = "fullPage" | "inlineBanner" | "notesBanner";
@@ -49,22 +48,13 @@ export function SealedRecordPanel({
   recovery,
 }: SealedRecordPanelProps) {
   const router = useRouter();
-  const [comingSoonOpen, setComingSoonOpen] = useState(false);
-  const comingSoonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (comingSoonTimerRef.current) clearTimeout(comingSoonTimerRef.current);
-    };
-  }, []);
 
   function handleCreateAddendum() {
-    // PR 42 placeholder behavior — PR 43 swaps this for real navigation
-    // to /incidents/{id}/add-addendum?orgId=... once the addendum
-    // model ships.
-    setComingSoonOpen(true);
-    if (comingSoonTimerRef.current) clearTimeout(comingSoonTimerRef.current);
-    comingSoonTimerRef.current = setTimeout(() => setComingSoonOpen(false), 4000);
+    // PEAKOPS_ADDENDUM_NAV_V1 (2026-05-19, PR 43)
+    // PR 42 had a 4s "coming soon" placeholder. PR 43 ships the real
+    // addendum flow at /incidents/{id}/add-addendum?orgId=...
+    const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+    router.push(`/incidents/${encodeURIComponent(incidentId)}/add-addendum${qs}`);
   }
 
   function handleBackToSummary() {
@@ -123,15 +113,6 @@ export function SealedRecordPanel({
           </button>
         ) : null}
       </div>
-      {comingSoonOpen ? (
-        <div
-          role="status"
-          className="mt-1 text-[12px] text-gray-400 italic"
-          aria-live="polite"
-        >
-          Addendum filing will be available in the next release.
-        </div>
-      ) : null}
     </div>
   );
 
