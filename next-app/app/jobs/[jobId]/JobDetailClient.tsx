@@ -7,6 +7,7 @@ import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { incidentStatusLabel } from "@/lib/incidents/incidentStatus";
 import { authedFetch } from "@/lib/apiClient";
+import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
 
 type JobDoc = {
   id: string;
@@ -413,6 +414,12 @@ export default function JobDetailClient({
     }
   }
 
+  // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
+  // sealedAfterMutation flips on if upload encounters a 409 because
+  // the incident was sealed mid-edit. The render then swaps the
+  // upload control for the inline sealed banner.
+  const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
+
   async function onUpload(ev: React.ChangeEvent<HTMLInputElement>) {
     const file = ev.target.files?.[0];
     if (!file || !functionsBase || !incidentId) return;
@@ -434,7 +441,17 @@ export default function JobDetailClient({
       await refresh();
       setUploadStatus("Uploaded");
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      const m = String(e?.message || e);
+      // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
+      // Reactive 409: replace the generic "Upload failed" with the
+      // sealed-state banner so the supervisor sees an operational
+      // explanation instead of a raw failure.
+      if (/incident_closed/i.test(m) || / 409 /.test(m)) {
+        setSealedAfterMutation(true);
+        setUploadStatus("");
+        return;
+      }
+      setErr(m);
       setUploadStatus("Upload failed");
     } finally {
       setUploading(false);
@@ -520,23 +537,51 @@ export default function JobDetailClient({
               </div>
             ) : null}
           </div>
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor="job-detail-upload-input"
-              className={"px-3 py-1.5 rounded border text-xs " + (uploading ? "border-white/10 bg-white/5 text-gray-500 cursor-not-allowed" : "border-white/15 bg-white/5 text-gray-200 hover:bg-white/10 cursor-pointer")}
-            >
-              {uploading ? "Uploading..." : "Upload photo"}
-            </label>
-            <input
-              id="job-detail-upload-input"
-              type="file"
-              accept="image/*,.heic,.heif"
-              onChange={onUpload}
-              disabled={uploading}
-              className="hidden"
-            />
-            <span className="text-xs text-gray-400">{uploadStatus}</span>
-          </div>
+          {/* PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
+              Sealed-record swap: when the incident is closed (pre-
+              emptively known from incident.status, or reactively after
+              a 409), replace the upload control with the calm inline
+              sealed banner pointing at the addendum flow. The
+              existing read-only evidence grid below still renders. */}
+          {(() => {
+            const incClosed =
+              String(incident?.status || "").toLowerCase() === "closed" ||
+              sealedAfterMutation;
+            if (incClosed) {
+              return (
+                <SealedRecordPanel
+                  variant="inlineBanner"
+                  title={sealedAfterMutation ? "Record sealed mid-edit" : "Record sealed — upload disabled"}
+                  body={
+                    sealedAfterMutation
+                      ? "This record was sealed while you were preparing the upload. Your photo was not attached. Use an addendum to file supplemental context."
+                      : "Use an addendum to attach supplemental context. The original field record remains unchanged."
+                  }
+                  orgId={orgId}
+                  incidentId={String(incidentId || "")}
+                />
+              );
+            }
+            return (
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="job-detail-upload-input"
+                  className={"px-3 py-1.5 rounded border text-xs " + (uploading ? "border-white/10 bg-white/5 text-gray-500 cursor-not-allowed" : "border-white/15 bg-white/5 text-gray-200 hover:bg-white/10 cursor-pointer")}
+                >
+                  {uploading ? "Uploading..." : "Upload photo"}
+                </label>
+                <input
+                  id="job-detail-upload-input"
+                  type="file"
+                  accept="image/*,.heic,.heif"
+                  onChange={onUpload}
+                  disabled={uploading}
+                  className="hidden"
+                />
+                <span className="text-xs text-gray-400">{uploadStatus}</span>
+              </div>
+            );
+          })()}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {evidence.map((ev) => {
               const key = String(ev.id || "").trim();
