@@ -1,7 +1,9 @@
 import {
   isSignInWithEmailLink,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   sendSignInLinkToEmail,
+  signInWithEmailAndPassword,
   signInWithEmailLink,
   signOut,
   type ActionCodeSettings,
@@ -84,6 +86,42 @@ export async function completeSignIn(): Promise<UserCredential | null> {
   const cred = await signInWithEmailLink(auth, email, href);
   window.localStorage.removeItem(EMAIL_STORAGE_KEY);
   return cred;
+}
+
+// PEAKOPS_AUTH_PASSWORD_PRIMARY_V1 (PR 48)
+// Phase A of the Authentication UX Stabilization (PR 48): email +
+// password becomes the primary customer sign-in path; magic-link
+// stays enabled as a fallback for users without a password set.
+//
+// signInWithPassword is a thin wrapper around the SDK call so the
+// /login page doesn't have to import from "firebase/auth" directly
+// (kept consistent with the existing sendMagicLink / completeSignIn
+// surface). Trimming and lower-casing of the email mirrors what
+// Firebase itself does server-side, so the caller never sees an
+// auth/user-not-found purely because of trailing whitespace.
+export async function signInWithPassword(
+  email: string,
+  password: string,
+): Promise<UserCredential> {
+  const trimmed = String(email || "").trim();
+  return signInWithEmailAndPassword(auth, trimmed, password);
+}
+
+// sendPasswordReset uses the Firebase-hosted password reset action
+// page (handleCodeInApp omitted = false). The user lands on
+// Firebase's "Set a new password" UI, completes the reset, then
+// gets bounced back to actionCodeSettings.url (/login on the same
+// origin) so they can sign in with the new password. No new app
+// route needs to handle the reset code itself — that complexity is
+// reserved for a possible later phase if/when we want to brand the
+// password-set screen.
+export async function sendPasswordReset(email: string): Promise<void> {
+  const trimmed = String(email || "").trim();
+  const base = getActionCodeSettings();
+  await sendPasswordResetEmail(auth, trimmed, {
+    url: base.url,
+    handleCodeInApp: false,
+  });
 }
 
 // PEAKOPS_GET_ID_TOKEN_HYDRATE_V1 (2026-04-27)
