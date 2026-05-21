@@ -83,4 +83,4 @@ safeExport("assignJobOrgV1", "./assignJobOrgV1");
 // Lets org owner/admin/supervisor help a teammate regain access
 // without password visibility. Two modes: send-reset-email and
 // copy-reset-link. Every attempt is written to orgs/{orgId}/admin_audit.
-safeExport("sendUserAccessRecoveryV1", "./sendUserAccessRecoveryV1");
+safeExport("teamRecoveryV1", "./teamRecoveryV1");

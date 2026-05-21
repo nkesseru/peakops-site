@@ -103,7 +103,7 @@ async function writeAuditEntry(db, entry) {
         createdAt: FieldValue.serverTimestamp(),
       });
   } catch (e) {
-    console.error("[sendUserAccessRecoveryV1] audit write failed", e && e.message);
+    console.error("[teamRecoveryV1] audit write failed", e && e.message);
   }
 }
 
@@ -142,7 +142,7 @@ async function sendResetEmailViaIdentityToolkit(targetEmail, actionCodeSettings)
   }
 }
 
-exports.sendUserAccessRecoveryV1 = onRequest({ cors: true }, async (req, res) => {
+exports.teamRecoveryV1 = onRequest({ cors: true }, async (req, res) => {
   try {
     if (req.method !== "POST") {
       return j(res, 405, { ok: false, error: "POST required" });

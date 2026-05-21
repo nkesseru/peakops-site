@@ -9,7 +9,7 @@ import { requireOrgAccess, AuthError } from "../../../../lib/verifyAuth";
 // Customer-app side of the Rapid Access Recovery flow. Verifies the
 // caller is authenticated and a member of the target org via the same
 // Bearer + orgIds claim gate the rest of /api/fn uses, then proxies
-// to sendUserAccessRecoveryV1 (which enforces role + audits the
+// to teamRecoveryV1 (which enforces role + audits the
 // action server-side).
 //
 // We do NOT enforce role here — that lives in the Cloud Function so a
@@ -84,5 +84,5 @@ export async function POST(req: Request) {
     body: JSON.stringify(body),
   });
 
-  return proxy(forwarded, "sendUserAccessRecoveryV1");
+  return proxy(forwarded, "teamRecoveryV1");
 }
