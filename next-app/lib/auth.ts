@@ -107,20 +107,36 @@ export async function signInWithPassword(
   return signInWithEmailAndPassword(auth, trimmed, password);
 }
 
-// sendPasswordReset uses the Firebase-hosted password reset action
-// page (handleCodeInApp omitted = false). The user lands on
-// Firebase's "Set a new password" UI, completes the reset, then
-// gets bounced back to actionCodeSettings.url (/login on the same
-// origin) so they can sign in with the new password. No new app
-// route needs to handle the reset code itself — that complexity is
-// reserved for a possible later phase if/when we want to brand the
-// password-set screen.
+// PEAKOPS_AUTH_ACTION_IN_APP_V1 (PR 49 Phase B)
+// sendPasswordReset now points the reset link at our in-app handler
+// (/auth/action) instead of Firebase's *.firebaseapp.com hosted
+// page. Why this matters:
+//
+//   - The previous handleCodeInApp:false path produced links of
+//     the form https://<authDomain>/__/auth/action?... — i.e.
+//     firebaseapp.com, a Google-owned property. For users with any
+//     Google account active in the same browser, Google's account
+//     chooser / security UI could intervene before the reset form
+//     rendered, sending them to myaccount.google.com instead of
+//     PeakOps. Pilot users were reporting exactly that.
+//
+//   - handleCodeInApp:true tells Firebase to embed mode + oobCode
+//     directly into our continueUrl, so the email link is
+//     https://app.peakops.app/auth/action?mode=resetPassword&
+//     oobCode=...&apiKey=... — never touching firebaseapp.com.
+//     Our /auth/action page consumes the oobCode and calls
+//     confirmPasswordReset itself.
 export async function sendPasswordReset(email: string): Promise<void> {
   const trimmed = String(email || "").trim();
+  // getActionCodeSettings() returns a URL at /login. The new
+  // in-app handler lives at /auth/action — derive its URL from the
+  // same origin logic so we keep the existing single source of
+  // truth for the app's canonical origin.
   const base = getActionCodeSettings();
+  const baseUrl = String(base.url || "").replace(/\/login$/, "/auth/action");
   await sendPasswordResetEmail(auth, trimmed, {
-    url: base.url,
-    handleCodeInApp: false,
+    url: baseUrl,
+    handleCodeInApp: true,
   });
 }
 
