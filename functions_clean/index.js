@@ -78,3 +78,9 @@ safeExport("createSupervisorRequestV1", "./createSupervisorRequestV1");
 
 // Job org assignment
 safeExport("assignJobOrgV1", "./assignJobOrgV1");
+
+// --- Rapid Access Recovery (PR 49) ---
+// Lets org owner/admin/supervisor help a teammate regain access
+// without password visibility. Two modes: send-reset-email and
+// copy-reset-link. Every attempt is written to orgs/{orgId}/admin_audit.
+safeExport("sendUserAccessRecoveryV1", "./sendUserAccessRecoveryV1");
