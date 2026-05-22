@@ -44,6 +44,17 @@ export type UploadEvidenceArgs = {
   jobId?: string;
 
   onStatus?: (s: string) => void;
+
+  // PEAKOPS_UPLOAD_ACTOR_FROM_CLAIMS_V1 (PR 53)
+  // Optional actor identity passed through to startFieldSessionV1 /
+  // addEvidenceV1 bodies. When omitted the helpers fall back to
+  // techUserId as the uid and a neutral "field" role — same posture
+  // as the prior hardcoded "dev-admin"/"admin" pair, but no longer
+  // claiming admin authority by default. JobDetail (PR 53) wires
+  // these from useAuth claims so audit events get the real signed-in
+  // identity instead of a static placeholder.
+  actorUid?: string;
+  actorRole?: string;
 };
 
 function isLocalDev(): boolean {
@@ -154,6 +165,15 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
     jobId,
   } = args;
 
+  // PEAKOPS_UPLOAD_ACTOR_FROM_CLAIMS_V1 (PR 53)
+  // Prefer caller-provided actor identity (sourced from useAuth in
+  // JobDetail / IncidentClient) over the legacy "dev-admin"/"admin"
+  // hardcodes. Default uid falls back to techUserId (already plumbed
+  // from the actor's claim uid). Default role drops to "field" —
+  // the prior implicit "admin" was a placeholder, not authority.
+  const actorUid = String(args.actorUid || techUserId || "").trim();
+  const actorRole = String(args.actorRole || "").trim().toLowerCase() || "field";
+
   const localDev = isLocalDev();
 
   const startFreshSession = async (): Promise<string> => {
@@ -161,17 +181,33 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
       orgId,
       incidentId,
       techUserId,
-      actorUid: "dev-admin",
-      actorRole: "admin",
+      actorUid,
+      actorRole,
     });
     const sid = String(sess.sessionId || sess.id || "").trim();
     if (!sid) throw new Error(`startFieldSessionV1 missing sessionId: ${JSON.stringify(sess)}`);
     return sid;
   };
 
+  // PEAKOPS_UPLOAD_SESSION_BOOT_V1 (PR 53)
+  // Pre-PR-53 behavior: a caller could omit sessionId, the first
+  // requestUploadUrl call would fail with "sessionId required" (400)
+  // from createEvidenceUploadUrlV1, and the retry trigger
+  // (isSessionMissing) only matched "session not found" — so the
+  // upload would surface a raw error to the user without ever
+  // attempting to mint a fresh session. JobDetail's onUpload was the
+  // primary victim because it never passes sessionId.
+  //
+  // PR 53 fix: if the caller didn't supply a sessionId, start a fresh
+  // session up-front (the canonical bootstrap path) before the first
+  // requestUploadUrl. The "session not found" retry path stays as a
+  // backstop for the legitimate stale-mid-flight case. Also widen the
+  // retry trigger to include the literal "sessionId required" string
+  // so legacy call sites that still hit this race recover instead of
+  // exposing the raw 400.
   const isSessionMissing = (err: any): boolean => {
     const msg = String(err?.message || err || "").toLowerCase();
-    return msg.includes("session not found");
+    return msg.includes("session not found") || msg.includes("sessionid required");
   };
 
   // 1) Ensure we have a sessionId
@@ -185,6 +221,13 @@ console.warn("[uploadEvidence] step=start-session", {
 });
 
 onStatus?.("Starting field session…");
+
+  if (!activeSessionId) {
+    activeSessionId = await startFreshSession();
+    console.warn("[uploadEvidence] bootstrapped sessionId", {
+      bootstrappedSessionId: activeSessionId,
+    });
+  }
 
   // 2) Get uploadUrl + storagePath (retry once if session is stale)
   const requestUploadUrl = async (sidToUse: string): Promise<CreateUploadUrlResp> => {
@@ -256,8 +299,8 @@ onStatus?.("Starting field session…");
       notes: notes || "",
       originalName: file.name || "upload.bin",
       jobId: String(jobId || "").trim() || null,
-      actorUid: "dev-admin",
-      actorRole: "admin",
+      actorUid,
+      actorRole,
     });
   };
 

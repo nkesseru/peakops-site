@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { getFunctionsBase } from "@/lib/functionsBase";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
-import { incidentStatusLabel } from "@/lib/incidents/incidentStatus";
+import { incidentStatusLabel, incidentStatusPill, normalizeIncidentStatusShared } from "@/lib/incidents/incidentStatus";
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
+import { useAuth } from "@/hooks/useAuth";
 
 type JobDoc = {
   id: string;
@@ -54,28 +55,38 @@ function statusChip(status: string) {
   return "bg-white/10 border-white/20 text-gray-200";
 }
 
-function actorUid() {
+// PEAKOPS_JOBDETAIL_ACTOR_FROM_CLAIMS_V1 (PR 53)
+// Resolve actor identity from Firebase Auth claims (the canonical
+// post-Slice-12 source) with a one-step localStorage fallback for
+// callers that haven't yet plumbed useAuth context. Returns "tech_web"
+// only as a last-resort sentinel — server-side resolveActor reads the
+// Bearer ID token first regardless, so the value is mostly cosmetic
+// when authedFetch is in use. Replaces the prior actorUid/actorRole/
+// actorEmail localStorage-only helpers that defaulted to legacy
+// "tech_web" / "field" and bypassed the real signed-in identity.
+function readLocalStorage(key: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
   try {
-    return String(localStorage.getItem("peakops_uid") || "tech_web").trim();
+    const v = String(window.localStorage.getItem(key) || "").trim();
+    return v || fallback;
   } catch {
-    return "tech_web";
+    return fallback;
   }
 }
-
-function actorRole() {
-  try {
-    return String(localStorage.getItem("peakops_role") || "field").trim().toLowerCase();
-  } catch {
-    return "field";
-  }
+function deriveActorUid(authedUid: string | null | undefined): string {
+  const claim = String(authedUid || "").trim();
+  if (claim) return claim;
+  return readLocalStorage("peakops_uid", "tech_web");
 }
-
-function actorEmail() {
-  try {
-    return String(localStorage.getItem("peakops_email") || "").trim();
-  } catch {
-    return "";
-  }
+function deriveActorRole(claimRole: string | null | undefined): string {
+  const claim = String(claimRole || "").trim().toLowerCase();
+  if (claim) return claim;
+  return readLocalStorage("peakops_role", "field").toLowerCase();
+}
+function deriveActorEmail(authedEmail: string | null | undefined): string {
+  const claim = String(authedEmail || "").trim();
+  if (claim) return claim;
+  return readLocalStorage("peakops_email", "");
 }
 
 async function postJson<T>(url: string, body: any): Promise<T> {
@@ -100,6 +111,15 @@ export default function JobDetailClient({
 }) {
   const router = useRouter();
   const functionsBase = getFunctionsBase();
+  // PEAKOPS_JOBDETAIL_ACTOR_FROM_CLAIMS_V1 (PR 53)
+  // Pull the canonical actor identity off Firebase Auth claims. Falls
+  // back to the legacy localStorage values when claims haven't loaded
+  // yet (cold start) so first-paint API calls don't strand without
+  // any actor at all. Server still trusts Bearer over body claims.
+  const { user, claims } = useAuth();
+  const authUid = user?.uid || "";
+  const authEmail = user?.email || "";
+  const authRole = claims?.role || "";
   // PEAKOPS_JOBDETAIL_ORG_FROM_URL_V1 (2026-05-15)
   // orgId initializes from `initialOrgId` prop which is read from
   // the URL searchParam in the parent server page. The previous
@@ -166,8 +186,8 @@ export default function JobDetailClient({
         `${functionsBase}/getJobV1?orgId=${encodeURIComponent(orgId)}` +
         `&incidentId=${encodeURIComponent(incidentId)}` +
         `&jobId=${encodeURIComponent(jobId)}` +
-        `&actorUid=${encodeURIComponent(actorUid())}` +
-        `&actorRole=${encodeURIComponent(actorRole())}`;
+        `&actorUid=${encodeURIComponent(deriveActorUid(authUid))}` +
+        `&actorRole=${encodeURIComponent(deriveActorRole(authRole))}`;
       const res = await authedFetch(url);
       const txt = await res.text();
       const out = txt ? JSON.parse(txt) : {};
@@ -205,11 +225,31 @@ export default function JobDetailClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, incidentId, orgId, functionsBase]);
 
+  // PEAKOPS_JOBDETAIL_EVIDENCE_SCOPE_V1 (PR 53)
+  // Defense-in-depth client-side filter. The server's getJobV1 already
+  // filters by linkedJobId(ev) === jobId, but a mid-flight state swap
+  // (e.g., refresh races with a new fetch) can briefly surface
+  // evidence from an adjacent job. Belt-and-suspenders: re-verify
+  // every render that what we're about to show is bound to THIS job.
+  // No widening of the data contract; just a paranoid filter. Hoisted
+  // up here so the resolveThumbs useEffect below can read it without
+  // a TS use-before-declaration error.
+  const visibleEvidence = useMemo(() => {
+    return (evidence || []).filter((ev) => {
+      const ejid = String(ev?.jobId || ev?.evidence?.jobId || "").trim();
+      return ejid === String(jobId || "").trim();
+    });
+  }, [evidence, jobId]);
+
   useEffect(() => {
     let cancelled = false;
     async function resolveThumbs() {
       if (!incidentId || !orgId) return;
-      for (const ev of evidence) {
+      // PEAKOPS_JOBDETAIL_EVIDENCE_SCOPE_V1 (PR 53)
+      // Only mint signed URLs for evidence that survives the
+      // client-side job-scope filter. Prevents wasting Identity
+      // Toolkit cycles on items we won't render anyway.
+      for (const ev of visibleEvidence) {
         const ref = getBestEvidencePreviewRef(ev);
         const key = String(ev.id || "").trim();
         if (!ref?.storagePath || !ref?.bucket || thumbUrlByKey[key]) continue;
@@ -260,7 +300,7 @@ export default function JobDetailClient({
     return () => {
       cancelled = true;
     };
-  }, [evidence, incidentId, orgId, thumbUrlByKey]);
+  }, [visibleEvidence, incidentId, orgId, thumbUrlByKey]);
 
   async function renewThumbOnce(ev: EvidenceDoc, currentSrc: string) {
     const id = String(ev?.id || "").trim();
@@ -352,7 +392,7 @@ export default function JobDetailClient({
   function refreshVisibleThumbsDebounced() {
     if (thumbRefreshDebounceRef.current) clearTimeout(thumbRefreshDebounceRef.current);
     thumbRefreshDebounceRef.current = setTimeout(() => {
-      (evidence || []).forEach((ev) => {
+      visibleEvidence.forEach((ev) => {
         const id = String(ev?.id || "").trim();
         if (!id || thumbRefreshInflightRef.current[id]) return;
         thumbRefreshInflightRef.current[id] = true;
@@ -372,8 +412,19 @@ export default function JobDetailClient({
     };
   }, []);
 
+  // PEAKOPS_JOBDETAIL_SEALED_GATE_V1 (PR 53)
+  // Mirror the upload path's reactive 409 handling — if a sealed-state
+  // race fires while the user is mid-edit, flip into sealed mode so the
+  // banner takes over instead of a raw error string.
+  function isSealedMutationError(msg: string): boolean {
+    return /incident_closed/i.test(msg) || / 409 /.test(msg);
+  }
+
   async function saveNotes() {
     if (!functionsBase || !incidentId) return;
+    // Proactive guard. The button is hidden when isIncidentClosed,
+    // but defend against any future call site forcing the action.
+    if (isIncidentClosed) return;
     try {
       setSavingNotes(true);
       await postJson(`/api/fn/updateJobNotesV1`, {
@@ -381,13 +432,18 @@ export default function JobDetailClient({
         incidentId,
         jobId,
         notes,
-        actorUid: actorUid(),
-        actorRole: actorRole(),
-        actorEmail: actorEmail(),
+        actorUid: deriveActorUid(authUid),
+        actorRole: deriveActorRole(authRole),
+        actorEmail: deriveActorEmail(authEmail),
       });
       await refresh();
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      const m = String(e?.message || e);
+      if (isSealedMutationError(m)) {
+        setSealedAfterMutation(true);
+        return;
+      }
+      setErr(m);
     } finally {
       setSavingNotes(false);
     }
@@ -395,6 +451,7 @@ export default function JobDetailClient({
 
   async function markComplete() {
     if (!functionsBase || !incidentId) return;
+    if (isIncidentClosed) return;
     try {
       setMarkingComplete(true);
       await postJson(`/api/fn/markJobCompleteV1`, {
@@ -402,33 +459,62 @@ export default function JobDetailClient({
         incidentId,
         jobId,
         assignedOrgId: String(job?.assignedOrgId || "").trim() || undefined,
-        actorUid: actorUid(),
-        actorRole: actorRole(),
-        actorEmail: actorEmail(),
+        actorUid: deriveActorUid(authUid),
+        actorRole: deriveActorRole(authRole),
+        actorEmail: deriveActorEmail(authEmail),
       });
       await refresh();
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      const m = String(e?.message || e);
+      if (isSealedMutationError(m)) {
+        setSealedAfterMutation(true);
+        return;
+      }
+      setErr(m);
     } finally {
       setMarkingComplete(false);
     }
   }
 
   // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
-  // sealedAfterMutation flips on if upload encounters a 409 because
-  // the incident was sealed mid-edit. The render then swaps the
-  // upload control for the inline sealed banner.
+  // sealedAfterMutation flips on if a mutating call encounters a 409
+  // because the incident was sealed mid-edit. The render then swaps
+  // the affected control for the inline sealed banner. PR 53 extends
+  // this from "upload-only" to also cover saveNotes + markComplete —
+  // both function endpoints already gate sealed state server-side
+  // (PR 41/42) but JobDetail wasn't catching the 409 to swap UI.
   const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
+
+  // PEAKOPS_JOBDETAIL_SEALED_GATE_V1 (PR 53)
+  // Canonical closed-state predicate. Hoisted to component scope so
+  // the upload section, Notes section, and Mark Complete button all
+  // read from one source instead of recomputing inline. Matches the
+  // rest of the app's status pipeline (lib/incidents/incidentStatus).
+  const isIncidentClosed =
+    normalizeIncidentStatusShared(incident?.status) === "closed" ||
+    sealedAfterMutation;
+
+  // visibleEvidence hoisted above the resolveThumbs useEffect (PR 53).
 
   async function onUpload(ev: React.ChangeEvent<HTMLInputElement>) {
     const file = ev.target.files?.[0];
     if (!file || !functionsBase || !incidentId) return;
+    // PEAKOPS_JOBDETAIL_SEALED_GATE_V1 (PR 53)
+    // Proactive client-side guard. The upload input is already hidden
+    // when isIncidentClosed (the SealedRecordPanel takes its place),
+    // but if some future call site forces the action, refuse here
+    // before the bytes leave the browser. Server still enforces via
+    // 409 incident_closed (PR 41).
+    if (isIncidentClosed) {
+      ev.target.value = "";
+      return;
+    }
     try {
       setUploading(true);
       setUploadStatus("Preparing upload...");
       await uploadEvidence({
         functionsBase,
-        techUserId: actorUid(),
+        techUserId: deriveActorUid(authUid),
         orgId,
         incidentId,
         phase: "INSPECTION",
@@ -437,6 +523,12 @@ export default function JobDetailClient({
         file,
         jobId,
         onStatus: (s) => setUploadStatus(s),
+        // PEAKOPS_UPLOAD_ACTOR_FROM_CLAIMS_V1 (PR 53)
+        // Plumb the real signed-in identity through so audit events
+        // (EVIDENCE_ADDED, SESSION_STARTED) carry the actor's claim
+        // uid + role instead of the legacy "dev-admin"/"admin" pair.
+        actorUid: deriveActorUid(authUid),
+        actorRole: deriveActorRole(authRole),
       });
       await refresh();
       setUploadStatus("Uploaded");
@@ -505,13 +597,49 @@ export default function JobDetailClient({
         {err ? <div className="text-sm text-amber-300">{err}</div> : null}
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
-          <div className="flex items-center gap-2">
-            <span className={"px-2 py-0.5 rounded-full border text-xs " + statusChip(fmtStatus(job?.status))}>
-              {fmtStatus(job?.status)}
-            </span>
-            <span className="text-xs text-gray-400">incident: {incident?.title || incident?.id || incidentId || "-"}</span>
-            <span className="text-xs text-gray-400">incidentStatus: {incident ? incidentStatusLabel(incident?.status) : "-"}</span>
-          </div>
+          {/* PEAKOPS_JOBDETAIL_LIFECYCLE_HIERARCHY_V1 (PR 53)
+              When the incident is sealed, the incident's status is the
+              load-bearing lifecycle signal — supervisors need to read
+              "Closed" as the page-level state, not "in_progress" from
+              the job chip. The job's status moves into the secondary
+              meta line as "Job: in_progress" with a clear prefix.
+              When the incident is still open, the job chip leads as
+              before. */}
+          {isIncidentClosed ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={
+                  "px-2 py-0.5 rounded-full border text-xs " +
+                  incidentStatusPill(incident?.status || "closed")
+                }
+              >
+                {incidentStatusLabel(incident?.status || "closed")}
+              </span>
+              <span className="text-xs text-gray-400">
+                Job: {fmtStatus(job?.status)}
+              </span>
+              <span className="text-xs text-gray-400">
+                · incident: {incident?.title || incident?.id || incidentId || "-"}
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={
+                  "px-2 py-0.5 rounded-full border text-xs " +
+                  statusChip(fmtStatus(job?.status))
+                }
+              >
+                {fmtStatus(job?.status)}
+              </span>
+              <span className="text-xs text-gray-400">
+                incident: {incident?.title || incident?.id || incidentId || "-"}
+              </span>
+              <span className="text-xs text-gray-400">
+                incidentStatus: {incident ? incidentStatusLabel(incident?.status) : "-"}
+              </span>
+            </div>
+          )}
           <div className="text-xs text-gray-400">org: {orgId} · assignedOrg: {String(job?.assignedOrgId || "-")}</div>
         </section>
 
@@ -544,10 +672,11 @@ export default function JobDetailClient({
               sealed banner pointing at the addendum flow. The
               existing read-only evidence grid below still renders. */}
           {(() => {
-            const incClosed =
-              String(incident?.status || "").toLowerCase() === "closed" ||
-              sealedAfterMutation;
-            if (incClosed) {
+            // PEAKOPS_JOBDETAIL_SEALED_GATE_V1 (PR 53)
+            // Source the predicate from the hoisted isIncidentClosed
+            // so this surface stays in sync with the Notes + Mark
+            // Complete gates below.
+            if (isIncidentClosed) {
               return (
                 <SealedRecordPanel
                   variant="inlineBanner"
@@ -583,7 +712,7 @@ export default function JobDetailClient({
             );
           })()}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {evidence.map((ev) => {
+            {visibleEvidence.map((ev) => {
               const key = String(ev.id || "").trim();
               const src = String(thumbUrlByKey[key] || "").trim();
               return (
@@ -641,36 +770,74 @@ export default function JobDetailClient({
                 </div>
               );
             })}
-            {evidence.length === 0 ? <div className="text-xs text-gray-400">No evidence linked to this job yet.</div> : null}
+            {visibleEvidence.length === 0 ? <div className="text-xs text-gray-400">No evidence linked to this job yet.</div> : null}
           </div>
         </section>
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
           <div className="text-sm font-medium">Notes</div>
-          <textarea
-            className="w-full min-h-[120px] rounded border border-white/15 bg-black/40 px-3 py-2 text-sm"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Job notes"
-          />
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="px-3 py-1.5 rounded border border-white/15 bg-white/5 text-sm disabled:opacity-50"
-              onClick={saveNotes}
-              disabled={savingNotes || loading}
-            >
-              {savingNotes ? "Saving..." : "Save Notes"}
-            </button>
-            <button
-              type="button"
-              className="px-3 py-1.5 rounded border border-emerald-300/30 bg-emerald-600/20 text-sm disabled:opacity-50"
-              onClick={markComplete}
-              disabled={markingComplete || loading || !canMarkComplete}
-            >
-              {markingComplete ? "Completing..." : "Mark Complete"}
-            </button>
-          </div>
+          {/* PEAKOPS_JOBDETAIL_SEALED_GATE_V1 (PR 53)
+              Closed-record gate. When the incident is sealed, the
+              entire mutation surface (textarea + Save Notes + Mark
+              Complete) collapses to a calm SealedRecordPanel that
+              points the supervisor at the addendum flow. The textarea
+              still shows the prior notes as a read-only audit view so
+              context isn't hidden — only the ability to mutate is
+              removed. Mirrors the upload section's pattern + matches
+              NotesClient's sealed handling (PR 42). */}
+          {isIncidentClosed ? (
+            <>
+              <SealedRecordPanel
+                variant="inlineBanner"
+                title={
+                  sealedAfterMutation
+                    ? "Record sealed mid-edit"
+                    : "Record sealed — notes locked"
+                }
+                body={
+                  sealedAfterMutation
+                    ? "This record was sealed while you were editing. Save Notes and Mark Complete are no longer available. Use an addendum for supplemental context."
+                    : "This operational record is finalized. Job notes and completion state are immutable. Use an addendum to attach post-closure context."
+                }
+                orgId={orgId}
+                incidentId={String(incidentId || "")}
+              />
+              <textarea
+                className="w-full min-h-[120px] rounded border border-white/10 bg-black/30 px-3 py-2 text-sm opacity-80 cursor-not-allowed"
+                value={notes}
+                readOnly
+                aria-readonly="true"
+                placeholder="Job notes"
+              />
+            </>
+          ) : (
+            <>
+              <textarea
+                className="w-full min-h-[120px] rounded border border-white/15 bg-black/40 px-3 py-2 text-sm"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Job notes"
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded border border-white/15 bg-white/5 text-sm disabled:opacity-50"
+                  onClick={saveNotes}
+                  disabled={savingNotes || loading}
+                >
+                  {savingNotes ? "Saving..." : "Save Notes"}
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded border border-emerald-300/30 bg-emerald-600/20 text-sm disabled:opacity-50"
+                  onClick={markComplete}
+                  disabled={markingComplete || loading || !canMarkComplete}
+                >
+                  {markingComplete ? "Completing..." : "Mark Complete"}
+                </button>
+              </div>
+            </>
+          )}
         </section>
 
         <div className="text-xs text-gray-500">{loading ? "Loading..." : ""}</div>
