@@ -19,6 +19,14 @@ type JobDoc = {
   assignedOrgId?: string | null;
   notes?: string;
   updatedAt?: { _seconds?: number };
+  // PEAKOPS_JOBDETAIL_SEALED_GATE_V2 (PR 53.5)
+  // Job-level lock signals the sealed predicate factors in. Both are
+  // already on the wire from getJobV1; widening the local type so the
+  // predicate doesn't need any-casts. `locked` is the PR 19+ canonical
+  // field; reviewStatus === "approved" is the legacy shape some
+  // pre-PR-19 jobs still set.
+  locked?: boolean;
+  reviewStatus?: string;
 };
 
 type EvidenceDoc = {
@@ -424,7 +432,7 @@ export default function JobDetailClient({
     if (!functionsBase || !incidentId) return;
     // Proactive guard. The button is hidden when isIncidentClosed,
     // but defend against any future call site forcing the action.
-    if (isIncidentClosed) return;
+    if (isJobSealed) return;
     try {
       setSavingNotes(true);
       await postJson(`/api/fn/updateJobNotesV1`, {
@@ -451,7 +459,7 @@ export default function JobDetailClient({
 
   async function markComplete() {
     if (!functionsBase || !incidentId) return;
-    if (isIncidentClosed) return;
+    if (isJobSealed) return;
     try {
       setMarkingComplete(true);
       await postJson(`/api/fn/markJobCompleteV1`, {
@@ -486,13 +494,33 @@ export default function JobDetailClient({
   const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
 
   // PEAKOPS_JOBDETAIL_SEALED_GATE_V1 (PR 53)
-  // Canonical closed-state predicate. Hoisted to component scope so
-  // the upload section, Notes section, and Mark Complete button all
-  // read from one source instead of recomputing inline. Matches the
-  // rest of the app's status pipeline (lib/incidents/incidentStatus).
-  const isIncidentClosed =
+  // PEAKOPS_JOBDETAIL_SEALED_GATE_V2 (PR 53.5) — widened predicate
+  //
+  // The sealed predicate now factors in THREE load-bearing signals,
+  // not just incident closure:
+  //   1. incident.status === "closed"  → operational record sealed
+  //   2. job.locked === true            → job approved + locked
+  //   3. job.reviewStatus === "approved" → legacy approval shape some
+  //                                        pre-PR-19 jobs still use
+  //   4. sealedAfterMutation            → reactive 409 mid-edit race
+  //
+  // Pre-PR-53.5 used only signal (1), so a job-locked-but-incident-
+  // open record fell through the gate entirely and rendered every
+  // mutation affordance. Renaming isIncidentClosed → isJobSealed so
+  // the predicate's wider scope is visible at call sites.
+  const isJobSealed =
     normalizeIncidentStatusShared(incident?.status) === "closed" ||
+    job?.locked === true ||
+    String(job?.reviewStatus || "").toLowerCase() === "approved" ||
     sealedAfterMutation;
+
+  // PEAKOPS_JOBDETAIL_HYDRATION_GATE_V1 (PR 53.5)
+  // Distinct from `loading` (which tracks refresh() in-flight). This
+  // guards the hero against rendering the raw UID as the H1 fallback
+  // during the cold-start window where job is still null. The hero
+  // surface uses a skeleton placeholder until both incident and job
+  // resolve so we never flash the bare Firestore ID at a supervisor.
+  const isHydrating = !incident || !job;
 
   // visibleEvidence hoisted above the resolveThumbs useEffect (PR 53).
 
@@ -505,7 +533,7 @@ export default function JobDetailClient({
     // but if some future call site forces the action, refuse here
     // before the bytes leave the browser. Server still enforces via
     // 409 incident_closed (PR 41).
-    if (isIncidentClosed) {
+    if (isJobSealed) {
       ev.target.value = "";
       return;
     }
@@ -576,72 +604,121 @@ export default function JobDetailClient({
   return (
     <main className="min-h-screen bg-[#0A0E14] text-gray-100 px-4 py-5 md:px-8">
       <div className="max-w-5xl mx-auto space-y-4">
+        {/* PEAKOPS_JOBDETAIL_HERO_V2 (PR 53.5)
+            Hero header. The H1 no longer falls back to the raw 28-char
+            Firestore jobId — during hydration a skeleton placeholder
+            renders; after load, job.title (or "Untitled job" as a
+            calm fallback). The "jobId: <uid>" debug line is removed;
+            the raw reference moves into the humanized metadata row
+            below as a quiet "Job reference" disclosure.
+            Top-right button toggles based on sealed state: sealed
+            records bounce to Summary (their canonical exit); open
+            records keep the Back to Incident link. */}
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-xs uppercase tracking-wide text-gray-400">Job Detail</div>
-            <h1 className="text-xl font-semibold">{job?.title || jobId}</h1>
-            <div className="text-xs text-gray-400">jobId: {jobId}</div>
+            {isHydrating ? (
+              <div
+                aria-hidden
+                className="mt-1 h-7 w-56 rounded bg-white/[0.06] animate-pulse"
+              />
+            ) : (
+              <h1 className="text-xl font-semibold">
+                {job?.title || "Untitled job"}
+              </h1>
+            )}
           </div>
           <button
             type="button"
             className="px-3 py-1.5 rounded border border-white/15 bg-white/5 text-sm"
             onClick={() => {
-              if (incidentId) router.push(`/incidents/${encodeURIComponent(incidentId)}`);
-              else router.back();
+              if (isJobSealed && incidentId) {
+                const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+                router.push(
+                  `/incidents/${encodeURIComponent(incidentId)}/summary${qs}`,
+                );
+                return;
+              }
+              if (incidentId) {
+                router.push(`/incidents/${encodeURIComponent(incidentId)}`);
+              } else {
+                router.back();
+              }
             }}
           >
-            Back to Incident
+            {isJobSealed ? "← Back to Summary" : "← Back to Incident"}
           </button>
         </div>
 
         {err ? <div className="text-sm text-amber-300">{err}</div> : null}
 
+        {/* PEAKOPS_JOBDETAIL_METADATA_HUMANIZED_V1 (PR 53.5)
+            Humanized metadata row. Replaces the prior debug-coded
+            "incidentStatus: / incident: / org: / assignedOrg: / jobId:"
+            schema labels with operational language. Status reads from
+            incident chip; incident title; assigned-to org name; and a
+            quiet "Job reference" disclosure carries the raw Firestore
+            ID for cross-system lookups. */}
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
-          {/* PEAKOPS_JOBDETAIL_LIFECYCLE_HIERARCHY_V1 (PR 53)
-              When the incident is sealed, the incident's status is the
-              load-bearing lifecycle signal — supervisors need to read
-              "Closed" as the page-level state, not "in_progress" from
-              the job chip. The job's status moves into the secondary
-              meta line as "Job: in_progress" with a clear prefix.
-              When the incident is still open, the job chip leads as
-              before. */}
-          {isIncidentClosed ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={
-                  "px-2 py-0.5 rounded-full border text-xs " +
-                  incidentStatusPill(incident?.status || "closed")
-                }
-              >
-                {incidentStatusLabel(incident?.status || "closed")}
-              </span>
-              <span className="text-xs text-gray-400">
-                Job: {fmtStatus(job?.status)}
-              </span>
-              <span className="text-xs text-gray-400">
-                · incident: {incident?.title || incident?.id || incidentId || "-"}
-              </span>
+          {isHydrating ? (
+            <div className="space-y-2">
+              <div aria-hidden className="h-4 w-40 rounded bg-white/[0.05] animate-pulse" />
+              <div aria-hidden className="h-3 w-72 rounded bg-white/[0.03] animate-pulse" />
             </div>
           ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={
-                  "px-2 py-0.5 rounded-full border text-xs " +
-                  statusChip(fmtStatus(job?.status))
-                }
-              >
-                {fmtStatus(job?.status)}
-              </span>
-              <span className="text-xs text-gray-400">
-                incident: {incident?.title || incident?.id || incidentId || "-"}
-              </span>
-              <span className="text-xs text-gray-400">
-                incidentStatus: {incident ? incidentStatusLabel(incident?.status) : "-"}
-              </span>
-            </div>
+            <>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <span
+                  className={
+                    "px-2 py-0.5 rounded-full border text-xs " +
+                    (isJobSealed
+                      ? incidentStatusPill(incident?.status || "closed")
+                      : statusChip(fmtStatus(job?.status)))
+                  }
+                >
+                  {isJobSealed
+                    ? incidentStatusLabel(incident?.status || "closed")
+                    : fmtStatus(job?.status)}
+                </span>
+                <span className="text-xs text-gray-400">
+                  {incident?.title || incident?.id || incidentId || "—"}
+                </span>
+              </div>
+              <div className="text-xs text-gray-400">
+                Assigned to{" "}
+                <span className="text-gray-200">
+                  {String(job?.assignedOrgId || orgId || "—")}
+                </span>
+              </div>
+              <div className="text-[11px] text-gray-500 font-mono">
+                Job reference {jobId}
+              </div>
+            </>
           )}
-          <div className="text-xs text-gray-400">org: {orgId} · assignedOrg: {String(job?.assignedOrgId || "-")}</div>
         </section>
+
+        {/* PEAKOPS_JOBDETAIL_SEALED_SHELL_V1 (PR 53.5)
+            Top-level sealed-state shell. When the job is sealed (by
+            incident closure, job.locked, or job.reviewStatus ===
+            approved), this is the page's authoritative statement of
+            the lifecycle: the operational record cannot be modified
+            from here. The shell appears between the humanized
+            metadata row and the (now read-only) Notes / Evidence
+            sections below.
+
+            Single unified body covers both "incident closed" and
+            "job-only locked" — the addendum pathway works the same
+            in both cases, and avoiding the branch keeps the message
+            consistent. */}
+        {isJobSealed ? (
+          <SealedRecordPanel
+            variant="fullPage"
+            title="Operational record sealed"
+            body="This job is locked. The operational record cannot be modified from here — supplemental context goes through addenda."
+            orgId={orgId}
+            incidentId={String(incidentId || "")}
+          />
+        ) : null}
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
           <div className="flex items-center justify-between gap-2">
@@ -665,31 +742,18 @@ export default function JobDetailClient({
               </div>
             ) : null}
           </div>
-          {/* PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
-              Sealed-record swap: when the incident is closed (pre-
-              emptively known from incident.status, or reactively after
-              a 409), replace the upload control with the calm inline
-              sealed banner pointing at the addendum flow. The
-              existing read-only evidence grid below still renders. */}
+          {/* PEAKOPS_JOBDETAIL_SEALED_SHELL_V1 (PR 53.5)
+              On sealed records, the top-level SealedRecordPanel above
+              already communicates the lifecycle. We don't render
+              another inline banner here — the upload control is just
+              absent. The existing read-only evidence grid below still
+              renders so supervisors can audit what was captured.
+              On open records, the upload control renders as normal. */}
           {(() => {
-            // PEAKOPS_JOBDETAIL_SEALED_GATE_V1 (PR 53)
-            // Source the predicate from the hoisted isIncidentClosed
-            // so this surface stays in sync with the Notes + Mark
-            // Complete gates below.
-            if (isIncidentClosed) {
-              return (
-                <SealedRecordPanel
-                  variant="inlineBanner"
-                  title={sealedAfterMutation ? "Record sealed mid-edit" : "Record sealed — upload disabled"}
-                  body={
-                    sealedAfterMutation
-                      ? "This record was sealed while you were preparing the upload. Your photo was not attached. Use an addendum to file supplemental context."
-                      : "Use an addendum to attach supplemental context. The original field record remains unchanged."
-                  }
-                  orgId={orgId}
-                  incidentId={String(incidentId || "")}
-                />
-              );
+            if (isJobSealed) {
+              // Sealed: no upload control, no inline banner. Grid below
+              // continues to render as a read-only audit view.
+              return null;
             }
             return (
               <div className="flex items-center gap-2">
@@ -776,38 +840,20 @@ export default function JobDetailClient({
 
         <section className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
           <div className="text-sm font-medium">Notes</div>
-          {/* PEAKOPS_JOBDETAIL_SEALED_GATE_V1 (PR 53)
-              Closed-record gate. When the incident is sealed, the
-              entire mutation surface (textarea + Save Notes + Mark
-              Complete) collapses to a calm SealedRecordPanel that
-              points the supervisor at the addendum flow. The textarea
-              still shows the prior notes as a read-only audit view so
-              context isn't hidden — only the ability to mutate is
-              removed. Mirrors the upload section's pattern + matches
-              NotesClient's sealed handling (PR 42). */}
-          {isIncidentClosed ? (
+          {/* PEAKOPS_JOBDETAIL_SEALED_SHELL_V1 (PR 53.5)
+              On sealed records, the top-level SealedRecordPanel above
+              already states the lifecycle. The Notes section here
+              renders the textarea as a read-only audit view — no
+              additional inline banner, no Save Notes / Mark Complete
+              buttons, no editing affordances of any kind. */}
+          {isJobSealed ? (
             <>
-              <SealedRecordPanel
-                variant="inlineBanner"
-                title={
-                  sealedAfterMutation
-                    ? "Record sealed mid-edit"
-                    : "Record sealed — notes locked"
-                }
-                body={
-                  sealedAfterMutation
-                    ? "This record was sealed while you were editing. Save Notes and Mark Complete are no longer available. Use an addendum for supplemental context."
-                    : "This operational record is finalized. Job notes and completion state are immutable. Use an addendum to attach post-closure context."
-                }
-                orgId={orgId}
-                incidentId={String(incidentId || "")}
-              />
               <textarea
                 className="w-full min-h-[120px] rounded border border-white/10 bg-black/30 px-3 py-2 text-sm opacity-80 cursor-not-allowed"
                 value={notes}
                 readOnly
                 aria-readonly="true"
-                placeholder="Job notes"
+                placeholder="No job notes recorded."
               />
             </>
           ) : (
