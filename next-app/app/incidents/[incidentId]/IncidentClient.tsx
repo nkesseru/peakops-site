@@ -22,6 +22,7 @@ import {
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { authedFetch } from "@/lib/apiClient";
+import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
 
 
 
@@ -2501,8 +2502,34 @@ useEffect(() => {
           ))}
         </div>
 
+        {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+            Sealed-state informational panel. Replaces the now-hidden
+            operational cockpit (Active Job card, NextBestAction,
+            Timers, Readiness, bottom dock) on the overview tab. Same
+            calm SealedRecordPanel pattern PR 53.5 uses on JobDetail
+            and PR 42 uses on Notes/AddEvidence — single source of
+            sealed-state voice. Routes "Create addendum" →
+            /incidents/{id}/add-addendum and "Back to summary" →
+            /incidents/{id}/summary. Renders only on the overview
+            tab so it doesn't double up with the evidence/timeline
+            informational content on those tabs. */}
+        {isClosed && activeTab === "overview" ? (
+          <SealedRecordPanel
+            variant="fullPage"
+            title="Operational record sealed"
+            body="This incident is closed. Field operations are complete and the record is immutable. Supplemental context attaches through addenda."
+            orgId={orgId}
+            incidentId={String(incidentId || "")}
+          />
+        ) : null}
+
 {/* PEAKOPS_ACTIVE_JOB_CARD_UI_V1 */}
-{(() => {
+{/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+    Mutation card carries Capture Evidence / Mark Complete / Send to
+    Review affordances. On sealed records the operational record is
+    immutable; the card is hidden entirely and the calm sealed-state
+    informational panel below takes its place on the overview tab. */}
+{!isClosed && (() => {
   try {
     const req = latestSupervisorRequest(timeline as any[]);
     const reqMsg = String(req?.message || "").trim();
@@ -2643,7 +2670,11 @@ useEffect(() => {
               
 {/* PEAKOPS: removed big Open Notes bar */}
 {/* PEAKOPS_NEXTBESTACTION_V1_RENDER */}
-        {activeTab === "overview" ? (
+{/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+    NextBestAction is the operational cockpit (Arrive / Add Evidence /
+    Open Notes / Submit). Suppressed on sealed records — the sealed
+    state has no "next best action" beyond filing an addendum. */}
+        {activeTab === "overview" && !isClosed ? (
 		<NextBestAction
 	  arrived={arrived}
 	  hasSession={_hasSession}
@@ -2667,7 +2698,12 @@ useEffect(() => {
 
 {/* PHASE6_1_TIMERS_V1_RENDER */}
         {/* PHASE6_1_TIMERS_POLISH_V2 + PHASE6_2_ACTION_NEEDED_V1 */}
-{activeTab === "overview" ? (
+{/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+    "Time since arrival / submission / approval" timers belong to the
+    open-state operational cockpit. On a sealed record nothing more is
+    going to happen — the timers just tick beside a closed banner.
+    Hidden when isClosed. */}
+{activeTab === "overview" && !isClosed ? (
 <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-3">
     <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
@@ -2896,7 +2932,12 @@ useEffect(() => {
 </section>
         ) : null}
 
-        {activeTab === "jobs" ? (
+        {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+            "My Job — default for new evidence" is a mutation context
+            for choosing which job a future upload will attach to. On
+            sealed records no new evidence can attach, so the section
+            has no purpose. The Jobs tab keeps the job list itself. */}
+        {activeTab === "jobs" && !isClosed ? (
         <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs uppercase tracking-[0.16em] text-gray-400">My Job</div>
@@ -2999,7 +3040,12 @@ useEffect(() => {
         </section>
         ) : null}
 
-        {activeTab === "evidence" ? (
+        {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+            Evidence to Job Mapping is a mutation surface — it sets
+            evidence.jobId. On sealed records evidence linkage is
+            immutable. Hidden when isClosed. The Evidence gallery
+            above this section stays visible as a read-only display. */}
+        {activeTab === "evidence" && !isClosed ? (
         <section ref={evidenceMappingSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between gap-2">
             <div id="evidence-mapping" className="text-xs uppercase tracking-wide text-gray-400">Evidence to Job Mapping</div>
@@ -3119,7 +3165,13 @@ useEffect(() => {
 
         {/* Notes section will remain below if you already inserted it elsewhere */}
         {/* Readiness Checklist */}
-        {activeTab === "overview" ? (
+        {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+            Readiness checklist ("Field activity detected", "Selected
+            job evidence", "Selected job state") is workshop-coded
+            audit of whether the incident is ready to close. On a
+            closed incident the answer is permanently "yes" and the
+            checklist is dead weight beside the sealed banner. */}
+        {activeTab === "overview" && !isClosed ? (
         <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between">
             <div className="text-xs uppercase tracking-wide text-gray-400">Readiness</div>
@@ -3164,10 +3216,20 @@ useEffect(() => {
         </section>
         ) : null}
 
-        <div className="h-20" />
+        {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+            Bottom-dock spacer. Reserves vertical room for the fixed
+            dock below. Hidden when isClosed since the dock itself is
+            hidden. */}
+        {!isClosed ? <div className="h-20" /> : null}
       </div>
 
       {/* Bottom dock */}
+      {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
+          Bottom dock is the primary operational cockpit (Arrive /
+          Evidence / Notes / Submit). On sealed records every action
+          here either no-ops or 409s server-side. Hidden entirely —
+          no disabled buttons left to confuse the supervisor. */}
+      {!isClosed ? (
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/10">
         <div className="grid grid-cols-4 gap-2">
           {/* Arrive */}
@@ -3247,6 +3309,7 @@ useEffect(() => {
           </button>
         </div>
       </div>
+      ) : null}
 
 {/* Modal */}
       {showCreateJob ? (
