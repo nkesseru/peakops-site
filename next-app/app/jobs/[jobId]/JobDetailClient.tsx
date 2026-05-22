@@ -668,16 +668,29 @@ export default function JobDetailClient({
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                {/* PEAKOPS_JOBDETAIL_CHIP_TRUTH_V1 (PR 54.5)
+                    On a sealed record, the chip must reflect the
+                    SEALED lifecycle truth — not the underlying
+                    incident.status. Pre-PR-54.5 path: when isJobSealed
+                    was triggered by job.locked / reviewStatus while
+                    incident.status was still "in_progress", the chip
+                    showed "In Progress" right above a banner that
+                    says the record is sealed. Now the chip is forced
+                    to "Closed" (matching Summary's vocabulary) for
+                    every isJobSealed scenario. The neutral-gray
+                    incidentStatusPill("closed") styling also keeps
+                    the chip quiet so the sealed banner stays the
+                    page's primary lifecycle signal. */}
                 <span
                   className={
                     "px-2 py-0.5 rounded-full border text-xs " +
                     (isJobSealed
-                      ? incidentStatusPill(incident?.status || "closed")
+                      ? incidentStatusPill("closed")
                       : statusChip(fmtStatus(job?.status)))
                   }
                 >
                   {isJobSealed
-                    ? incidentStatusLabel(incident?.status || "closed")
+                    ? incidentStatusLabel("closed")
                     : fmtStatus(job?.status)}
                 </span>
                 <span className="text-xs text-gray-400">
