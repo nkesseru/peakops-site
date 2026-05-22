@@ -18,6 +18,63 @@ import { ensureDemoActor, getActorRole, getActorUid } from "@/lib/demoActor";
 import { getFileField } from "@/lib/evidence/fileField";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, logThumbEvent } from "@/lib/evidence/signedThumb";
 import { authedFetch } from "@/lib/apiClient";
+import {
+  incidentStatusLabel,
+  incidentStatusPill,
+  normalizeIncidentStatusShared,
+} from "@/lib/incidents/incidentStatus";
+
+// PEAKOPS_REVIEW_OPERATIONAL_LANGUAGE_V1 (PR 51)
+// Inline minimal translation helpers so Review reads as an
+// operational record instead of a database dump. Mirrors the
+// SummaryClient pattern (PEAKOPS_OPERATIONAL_LANGUAGE_V1) but
+// without the member-registry lookup — Phase 1 uses event-type
+// role fallbacks. A shared lib/operationalLanguage.ts would let
+// both files import the same source; deferred until Review and
+// Summary are aligned and the extract is fully mechanical.
+function prettyTimelineEventReview(t?: string): string {
+  const norm = String(t || "").trim().toLowerCase();
+  const map: Record<string, string> = {
+    incident_opened: "Incident opened",
+    incident_closed: "Operational record closed",
+    job_approved: "Supervisor approved job",
+    job_rejected: "Supervisor rejected job",
+    job_completed: "Job marked complete",
+    field_submitted: "Field crew submitted completion package",
+    field_arrived: "Field crew arrived",
+    session_started: "Field session started",
+    session_completed: "Field session completed",
+    evidence_added: "Evidence captured and attached",
+    notes_saved: "Supervisor notes updated",
+    material_added: "Material logged",
+    supervisor_request_update: "Supervisor requested update",
+  };
+  if (map[norm]) return map[norm];
+  if (!t) return "Event";
+  return String(t)
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function actorFallbackForEvent(t?: string): string {
+  const norm = String(t || "").trim().toLowerCase();
+  if (
+    norm.startsWith("field_") ||
+    norm.startsWith("session_") ||
+    norm === "evidence_added" ||
+    norm === "material_added"
+  )
+    return "Field crew";
+  if (
+    norm.startsWith("job_") ||
+    norm === "notes_saved" ||
+    norm === "incident_closed" ||
+    norm === "supervisor_request_update"
+  )
+    return "Supervisor";
+  return "System";
+}
 
 
 
@@ -199,6 +256,15 @@ type JobDoc = {
 
 type IncidentDoc = {
   id?: string;
+  // PEAKOPS_REVIEW_HEADER_FIELDS_V1 (PR 51)
+  // Surface dossier fields needed by the Summary-style header. The
+  // wire response already returns these; we just type them so we
+  // don't have to cast on read.
+  title?: string;
+  status?: string;
+  location?: string;
+  createdAt?: { _seconds?: number };
+  updatedAt?: { _seconds?: number };
   notesSummary?: {
     saved?: boolean;
     savedAt?: any;
@@ -1119,38 +1185,86 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     );
   }
 
+  // PEAKOPS_REVIEW_CLOSED_STATE_V1 (PR 51)
+  // Canonical closed-state predicate. Mirrors the rest of the app's
+  // status pipeline (lib/incidents/incidentStatus) — the only true
+  // "review is finished" signal is incident.status === "closed".
+  const incidentStatusNormalized = normalizeIncidentStatusShared(
+    incidentDoc?.status,
+  );
+  const isIncidentClosed = incidentStatusNormalized === "closed";
+
+  // Last activity = max(incident.updatedAt, latest timeline event).
+  // Same pattern Summary uses for the masthead meta line.
+  const lastActivitySec = (() => {
+    const updatedSec = Number(incidentDoc?.updatedAt?._seconds || 0);
+    const latestEventSec = Number(timeline[0]?.occurredAt?._seconds || 0);
+    return Math.max(updatedSec, latestEventSec);
+  })();
+
   return (
     <main className="min-h-screen bg-black text-white">
-      {/* Sticky top bar */}
-      <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[11px] uppercase tracking-wider text-gray-400">Supervisor Review</div>
-            <div className="text-lg font-semibold truncate">{incidentId}</div>
+      {/* PEAKOPS_REVIEW_HEADER_SHELL_V1 (PR 51)
+          Sticky top bar realigned to the Summary dossier voice. Eyebrow
+          names the surface ("INCIDENT RECORD · {org} · SUPERVISOR
+          REVIEW"); title prefers incident.title and falls back to the
+          raw incidentId only when no title exists. Location surfaces
+          directly under the title when present. Meta line carries the
+          status chip + job count + evidence count + last activity.
+          Download Packet removed from the header — the Summary CTA
+          remains the export gateway. */}
+      <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-4">
+        <div className="max-w-3xl mx-auto flex items-start justify-between gap-4">
+          <div className="min-w-0 space-y-1.5">
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+              Incident Record
+              {orgId ? ` · ${orgId}` : ""}
+              <span className="text-amber-200/30"> · </span>
+              Supervisor Review
+            </div>
+            <h1 className="text-xl sm:text-2xl font-semibold leading-tight tracking-tight text-white truncate">
+              {incidentDoc?.title || incidentId}
+            </h1>
+            {incidentDoc?.location ? (
+              <div className="text-[12px] text-gray-300 truncate">
+                {incidentDoc.location}
+              </div>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-gray-400">
+              {incidentDoc?.status ? (
+                <span
+                  className={
+                    "text-[11px] px-2 py-0.5 rounded-full border " +
+                    incidentStatusPill(incidentDoc.status)
+                  }
+                >
+                  {incidentStatusLabel(incidentDoc.status)}
+                </span>
+              ) : null}
+              <span className="text-white/20">·</span>
+              <span>{jobs.length} {jobs.length === 1 ? "job" : "jobs"}</span>
+              <span className="text-white/20">·</span>
+              <span>
+                {evidence.length}{" "}
+                {evidence.length === 1 ? "piece of evidence" : "pieces of evidence"}
+              </span>
+              {lastActivitySec > 0 ? (
+                <>
+                  <span className="text-white/20">·</span>
+                  <span>last activity {fmtAgo(lastActivitySec)}</span>
+                </>
+              ) : null}
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            
-<button
-  className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-  onClick={() => {
-    try {
-      exportIncidentPacket(String(orgId||""), String(incidentId||""))
-        .then((url) => {
-          console.log("[ExportPacket] url:", url);
-          window.open(url, "_blank", "noreferrer");
-        })
-        .catch((e:any) => console.error(e));
-    } catch (e) { console.error(e); }
-  }}
-  title="Export incident packet ZIP"
->
-  📦 Download Packet
-</button>
-
-<button
+          <div className="flex items-center gap-2 shrink-0 pt-0.5">
+            <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+              onClick={() =>
+                router.push(
+                  `/incidents/${incidentId}${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`,
+                )
+              }
             >
               ← Back to Incident
             </button>
@@ -1166,7 +1280,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             </button>
             <button
               className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
-              onClick={() => router.push(`/incidents/${incidentId}/summary${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`)}
+              onClick={() =>
+                router.push(
+                  `/incidents/${incidentId}/summary${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`,
+                )
+              }
             >
               Summary
             </button>
@@ -1174,7 +1292,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         </div>
       </div>
 
-      <div className="p-4 space-y-4">
+      <div className="max-w-3xl mx-auto p-4 space-y-4">
         {toastMsg ? (
           <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 text-amber-100 text-xs px-3 py-2">
             {toastMsg}
@@ -1222,6 +1340,38 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             </div>
           </div>
         ) : null}
+        {/* PEAKOPS_REVIEW_CLOSED_BANNER_V1 (PR 51)
+            When the incident is closed, the active-review controls
+            (Decision, Request Update, Readiness, Jobs Review) are
+            hidden and replaced with a calm finish-state banner.
+            Timeline + Evidence remain visible — they're informational
+            records of what already happened, not actions to take. */}
+        {isIncidentClosed ? (
+          <section className="rounded-2xl bg-emerald-500/[0.04] border border-emerald-300/20 px-5 py-6 sm:px-7 sm:py-7">
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-emerald-200/70">
+              Review complete
+            </div>
+            <div className="mt-2 text-[15px] sm:text-base text-emerald-50/90 leading-snug">
+              Operational record closed after supervisor approval.
+            </div>
+            <div className="mt-5">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-xl bg-emerald-500/15 border border-emerald-300/30 text-emerald-50 hover:bg-emerald-500/25 text-sm font-medium"
+                onClick={() =>
+                  router.push(
+                    `/incidents/${incidentId}/summary${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`,
+                  )
+                }
+              >
+                View Summary
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {!isIncidentClosed ? (
+        <>
         {/* Status + actions */}
         <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between gap-3">
@@ -1671,15 +1821,27 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             </div>
           </div>
         </section>
+        </>
+        ) : null}
 
-        
                 {/* PEAKOPS_REVIEW_EVIDENCE_GALLERY_V1 */}
         <section ref={evidenceSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4" id="review-evidence">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-xs uppercase tracking-wide text-gray-400">Evidence</div>
               <div className="text-xs text-gray-500">
-                {evidenceN} captured • showing {visibleEvidence.length}{evidenceFilterJobId ? " (filtered)" : " (latest)"}
+                {/* PEAKOPS_REVIEW_EVIDENCE_COPY_V1 (PR 51) — operational
+                    voice instead of debug-ish "captured • showing X". */}
+                {evidenceN === 0
+                  ? "No evidence captured yet"
+                  : `${evidenceN} ${evidenceN === 1 ? "piece" : "pieces"} captured`}
+                {evidenceFilterJobId
+                  ? ` · filtered to ${visibleEvidence.length}`
+                  : visibleEvidence.length < evidenceN
+                  ? ` · showing latest ${visibleEvidence.length}`
+                  : evidenceN > 0
+                  ? " · evidence reviewed"
+                  : ""}
               </div>
             </div>
 
@@ -1763,7 +1925,12 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                       key={id || name}
                       type="button"
                       className={
-                        "min-w-[148px] w-[148px] sm:min-w-[168px] sm:w-[168px] aspect-[4/3] relative rounded-xl overflow-hidden border " +
+                        // PEAKOPS_REVIEW_EVIDENCE_CARD_SIZE_V1 (PR 51)
+                        // Bumped from 148/168 → 200/220 so evidence
+                        // doesn't read as a debug thumbnail strip.
+                        // No change to signed-URL plumbing (PR 29
+                        // SignatureDoesNotMatch fix lives there).
+                        "min-w-[200px] w-[200px] sm:min-w-[220px] sm:w-[220px] aspect-[4/3] relative rounded-xl overflow-hidden border " +
                         (selectedEvidenceId === id ? "border-blue-400/40 ring-2 ring-blue-500/20 " : "border-white/10 ") +
                         "bg-black/40 hover:border-white/25 hover:scale-[1.015] hover:bg-black/50 transition-all duration-150"
                       }
@@ -1892,23 +2059,44 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div className="text-xs text-gray-500">{timeline.length} events</div>
           </div>
 
+          {/* PEAKOPS_REVIEW_TIMELINE_HUMANIZED_V1 (PR 51)
+              Default visible timeline reads as operational language —
+              no raw enum types, no raw 28-char UIDs. The underlying
+              event type is preserved on the row's `title` attribute
+              so a power user can hover for the lookup. A click-to-
+              expand technical-details disclosure is reserved for a
+              later phase. */}
           <div className="mt-3 space-y-2">
-            {timeline.slice(0, 12).map((t) => (
-              <div
-                key={t.id}
-                className="rounded-lg bg-black/30 border border-white/10 px-3 py-2 flex items-center justify-between gap-3"
-              >
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-gray-100">
-                    {String(t.type || "EVENT")}
+            {timeline.slice(0, 12).map((t) => {
+              const rawType = String(t.type || "");
+              const human = prettyTimelineEventReview(rawType);
+              const actorLabel = actorFallbackForEvent(rawType);
+              const hoverDetails = [
+                rawType ? `event: ${rawType}` : null,
+                t.refId ? `ref: ${t.refId}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <div
+                  key={t.id}
+                  className="rounded-lg bg-black/30 border border-white/10 px-3 py-2 flex items-center justify-between gap-3"
+                  title={hoverDetails || undefined}
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-gray-100 truncate">
+                      {human}
+                    </div>
+                    <div className="text-xs text-gray-500 truncate">
+                      {actorLabel}
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-500 truncate">
-                    actor: {String(t.actor || "system")} {t.refId ? `• ref: ${t.refId}` : ""}
+                  <div className="text-xs text-gray-500 shrink-0">
+                    {fmtAgo(t.occurredAt?._seconds)}
                   </div>
                 </div>
-                <div className="text-xs text-gray-500">{fmtAgo(t.occurredAt?._seconds)}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       </div>
