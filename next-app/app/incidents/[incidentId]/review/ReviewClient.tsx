@@ -76,6 +76,226 @@ function actorFallbackForEvent(t?: string): string {
   return "System";
 }
 
+// PEAKOPS_REVIEW_TRUST_STRIP_V1 (PR 52)
+// Deterministic operational-trust signals. No AI, no probabilistic
+// confidence score, no greenwashing — every state derives from pure
+// data already loaded in ReviewClient. A signal that can't be
+// verified surfaces a neutral "partial" or "unverified" state with
+// factual detail copy, never a red flag.
+type PelletState = "verified" | "partial" | "unverified";
+type TrustPellet = {
+  key: "evidence" | "sequence" | "identity" | "integrity";
+  label: string;
+  state: PelletState;
+  detail: string;
+};
+
+type PelletTimeline = Array<{
+  type?: string;
+  actor?: string;
+  occurredAt?: { _seconds?: number } | null;
+}>;
+
+type PelletJob = { id?: string; jobId?: string; status?: string; reviewStatus?: string; locked?: boolean };
+type PelletEvidence = { jobId?: string | null; evidence?: { jobId?: string | null } | null };
+
+function _normEvent(t?: string): string {
+  return String(t || "").trim().toLowerCase();
+}
+
+function _isTerminalJob(j: PelletJob): boolean {
+  // Mirrors the latestTerminalStatus derivation already in ReviewClient:
+  // a job counts as "decided" when it's been approved, locked, or
+  // rejected. Phase 2 only inspects closed incidents, so terminal-set
+  // membership is the right unit for the Evidence pellet.
+  const s = String(j.status || "").toLowerCase();
+  const rs = String(j.reviewStatus || "").toLowerCase();
+  if (j.locked) return true;
+  return s === "approved" || s === "rejected" || rs === "approved" || rs === "rejected";
+}
+
+function _evidenceLinkedJobId(ev: PelletEvidence): string {
+  return String(ev?.evidence?.jobId || ev?.jobId || "").trim();
+}
+
+function _minOccurredAtSec(timeline: PelletTimeline, typeKeys: string[]): number | undefined {
+  const wanted = new Set(typeKeys.map((t) => t.toLowerCase()));
+  let earliest: number | undefined;
+  for (const t of timeline) {
+    if (!wanted.has(_normEvent(t.type))) continue;
+    const s = Number(t.occurredAt?._seconds || 0);
+    if (s > 0 && (earliest === undefined || s < earliest)) earliest = s;
+  }
+  return earliest;
+}
+
+function pelletEvidence(jobs: PelletJob[], evidence: PelletEvidence[]): TrustPellet {
+  const terminal = (jobs || []).filter(_isTerminalJob);
+  if (terminal.length === 0) {
+    return {
+      key: "evidence",
+      label: "Evidence",
+      state: "unverified",
+      detail: "No closed jobs to verify.",
+    };
+  }
+  const linked = terminal.filter((j) => {
+    const jid = String(j.id || j.jobId || "").trim();
+    if (!jid) return false;
+    return (evidence || []).some((ev) => _evidenceLinkedJobId(ev) === jid);
+  });
+  if (linked.length === terminal.length) {
+    return {
+      key: "evidence",
+      label: "Evidence",
+      state: "verified",
+      detail: `${terminal.length} of ${terminal.length} ${terminal.length === 1 ? "job has" : "jobs have"} linked evidence.`,
+    };
+  }
+  return {
+    key: "evidence",
+    label: "Evidence",
+    state: "partial",
+    detail: `${linked.length} of ${terminal.length} ${terminal.length === 1 ? "job has" : "jobs have"} linked evidence.`,
+  };
+}
+
+function pelletSequence(timeline: PelletTimeline): TrustPellet {
+  const earliestField = _minOccurredAtSec(timeline || [], [
+    "field_arrived",
+    "session_started",
+    "field_submitted",
+  ]);
+  const earliestApproval = _minOccurredAtSec(timeline || [], [
+    "job_approved",
+    "incident_closed",
+  ]);
+  if (!earliestApproval) {
+    return {
+      key: "sequence",
+      label: "Sequence",
+      state: "unverified",
+      detail: "No supervisor approval recorded yet.",
+    };
+  }
+  if (!earliestField) {
+    return {
+      key: "sequence",
+      label: "Sequence",
+      state: "partial",
+      detail: "Field activity not separately timestamped.",
+    };
+  }
+  if (earliestApproval > earliestField) {
+    return {
+      key: "sequence",
+      label: "Sequence",
+      state: "verified",
+      detail: "Field activity preceded supervisor approval.",
+    };
+  }
+  return {
+    key: "sequence",
+    label: "Sequence",
+    state: "partial",
+    detail: "Field activity and approval timestamps overlap.",
+  };
+}
+
+function pelletIdentity(timeline: PelletTimeline): TrustPellet {
+  const decisive = (timeline || []).filter((t) => {
+    const n = _normEvent(t.type);
+    return n === "job_approved" || n === "incident_closed";
+  });
+  if (decisive.length === 0) {
+    return {
+      key: "identity",
+      label: "Identity",
+      state: "unverified",
+      detail: "No supervisor decisions recorded.",
+    };
+  }
+  const unattributed = decisive.filter((t) => !String(t.actor || "").trim());
+  if (unattributed.length === 0) {
+    return {
+      key: "identity",
+      label: "Identity",
+      state: "verified",
+      detail: `${decisive.length} ${decisive.length === 1 ? "decision" : "decisions"} attributed to a supervisor.`,
+    };
+  }
+  return {
+    key: "identity",
+    label: "Identity",
+    state: "partial",
+    detail: `${decisive.length - unattributed.length} of ${decisive.length} decisions attributed.`,
+  };
+}
+
+function pelletIntegrity(
+  incident: IncidentDoc | null | undefined,
+  timeline: PelletTimeline,
+): TrustPellet {
+  const closed = String(incident?.status || "").toLowerCase() === "closed";
+  const closedEvent = (timeline || []).find((t) => _normEvent(t.type) === "incident_closed");
+  const hash = String(incident?.packetMeta?.originalRecordHash || "").trim();
+  if (closed && closedEvent && hash) {
+    // Show the sha256 prefix — enough to be a meaningful fingerprint
+    // for a supervisor cross-referencing the export, not enough to be
+    // a security surface on its own.
+    const fingerprint = hash.replace(/^sha256:/i, "").slice(0, 12);
+    return {
+      key: "integrity",
+      label: "Integrity",
+      state: "verified",
+      detail: `Sealed packet hash ${fingerprint}…`,
+    };
+  }
+  if (closed && closedEvent) {
+    return {
+      key: "integrity",
+      label: "Integrity",
+      state: "partial",
+      detail: "Closed, but no exported packet hash yet.",
+    };
+  }
+  return {
+    key: "integrity",
+    label: "Integrity",
+    state: "unverified",
+    detail: "Record not yet closed.",
+  };
+}
+
+function rationaleSentence(
+  pellets: { evidence: TrustPellet; sequence: TrustPellet; identity: TrustPellet },
+  jobs: PelletJob[],
+): string | null {
+  const parts: string[] = [];
+
+  if (pellets.evidence.state === "verified") {
+    const n = (jobs || []).filter(_isTerminalJob).length;
+    parts.push(`All ${n} ${n === 1 ? "job has" : "jobs have"} linked evidence`);
+  } else if (pellets.evidence.state === "partial") {
+    // Trim the trailing period from the pellet's detail for prose flow.
+    parts.push(pellets.evidence.detail.replace(/\.$/, ""));
+  }
+  // unverified evidence → omit from rationale entirely
+
+  if (pellets.identity.state === "verified") {
+    parts.push("supervisor approval is logged");
+  }
+
+  if (pellets.sequence.state === "verified") {
+    parts.push("the operational sequence is consistent");
+  }
+
+  if (parts.length === 0) return null;
+  if (parts.length === 1) return parts[0] + ".";
+  if (parts.length === 2) return parts[0] + " and " + parts[1] + ".";
+  return parts.slice(0, -1).join(", ") + ", and " + parts[parts.length - 1] + ".";
+}
+
 
 
 
@@ -265,6 +485,21 @@ type IncidentDoc = {
   location?: string;
   createdAt?: { _seconds?: number };
   updatedAt?: { _seconds?: number };
+  // PEAKOPS_REVIEW_TRUST_STRIP_V1 (PR 52)
+  // packetMeta is read by the Integrity trust pellet to verify the
+  // exported packet's deterministic originalRecordHash (PR 46). All
+  // other Phase 2 trust signals derive from the existing
+  // jobs / evidence / timeline state, which already loads.
+  packetMeta?: {
+    status?: string;
+    exportedAt?: string;
+    originalRecordHash?: string;
+    topLevelHash?: string;
+    supplementalAddendaHash?: string;
+    packetVersion?: number;
+    evidenceCount?: number;
+    jobCount?: number;
+  };
   notesSummary?: {
     saved?: boolean;
     savedAt?: any;
@@ -1202,6 +1437,81 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     return Math.max(updatedSec, latestEventSec);
   })();
 
+  // PEAKOPS_REVIEW_TRUST_STRIP_V1 (PR 52)
+  // Compute the four deterministic trust pellets + the rationale
+  // sentence the closed-state banner reads from. All four signals
+  // are pure data; no AI, no fake confidence score. A signal that
+  // can't be verified surfaces a neutral "partial"/"unverified"
+  // state rather than a red flag — see the helper definitions at
+  // module scope for the exact derivation rules.
+  const trustPellets = useMemo(() => {
+    const ev = pelletEvidence(jobs as any, evidence as any);
+    const seq = pelletSequence(timeline as any);
+    const id = pelletIdentity(timeline as any);
+    const intg = pelletIntegrity(incidentDoc, timeline as any);
+    return { evidence: ev, sequence: seq, identity: id, integrity: intg };
+  }, [jobs, evidence, timeline, incidentDoc]);
+
+  const closedRationale = useMemo(
+    () =>
+      rationaleSentence(
+        {
+          evidence: trustPellets.evidence,
+          sequence: trustPellets.sequence,
+          identity: trustPellets.identity,
+        },
+        jobs as any,
+      ),
+    [trustPellets, jobs],
+  );
+
+  // Hero preview selection. Reuses the existing selectedEvidenceId
+  // state from Phase 1 so a click in the hero's secondary strip
+  // updates the same selection the modal-open path reads. Default
+  // hero piece = the most recently-stored evidence with a renderable
+  // image; falls back to first in the list.
+  const heroEvidence = useMemo(() => {
+    if (!evidence || evidence.length === 0) return null;
+    if (selectedEvidenceId) {
+      const found = evidence.find(
+        (ev: any) => String(ev?.id || ev?.evidenceId || "") === selectedEvidenceId,
+      );
+      if (found) return found;
+    }
+    return evidence[0];
+  }, [evidence, selectedEvidenceId]);
+
+  // Pull the EVIDENCE_ADDED timeline event for the hero piece so we
+  // can surface "captured by" + GPS provenance. Both fields are
+  // optional on the wire — render only if populated.
+  const heroProvenance = useMemo(() => {
+    const id = String((heroEvidence as any)?.id || "");
+    if (!id) return null;
+    const ev = (timeline || []).find(
+      (t: any) =>
+        _normEvent(t.type) === "evidence_added" && String(t.refId || "") === id,
+    );
+    if (!ev) return null;
+    const actorRaw = String(ev.actor || "").trim();
+    const sessionIdRaw = String(ev.sessionId || "").trim();
+    const meta = (ev as any).meta || {};
+    const gps = meta.gps && typeof meta.gps === "object" ? meta.gps : null;
+    const lat = gps && Number.isFinite(Number(gps.lat)) ? Number(gps.lat) : null;
+    const lon = gps && Number.isFinite(Number(gps.lon)) ? Number(gps.lon) : null;
+    return {
+      actorLabel:
+        actorRaw === "field" || actorRaw === "field_crew"
+          ? "Field crew"
+          : actorRaw === "supervisor"
+          ? "Supervisor"
+          : actorFallbackForEvent("evidence_added"),
+      sessionId: sessionIdRaw || null,
+      gpsLat: lat,
+      gpsLon: lon,
+      occurredAtSec: Number(ev.occurredAt?._seconds || 0) || null,
+    };
+  }, [heroEvidence, timeline]);
+
   return (
     <main className="min-h-screen bg-black text-white">
       {/* PEAKOPS_REVIEW_HEADER_SHELL_V1 (PR 51)
@@ -1354,6 +1664,60 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div className="mt-2 text-[15px] sm:text-base text-emerald-50/90 leading-snug">
               Operational record closed after supervisor approval.
             </div>
+
+            {/* PEAKOPS_REVIEW_TRUST_STRIP_V1 (PR 52)
+                One-sentence command-confidence rationale assembled
+                from the same deterministic checks the trust pellets
+                read from. Sentence is omitted entirely when no
+                clauses verify, so we never display empty filler. */}
+            {closedRationale ? (
+              <div className="mt-2 text-[13px] text-emerald-50/75 leading-snug">
+                {closedRationale}
+              </div>
+            ) : null}
+
+            {/* PEAKOPS_REVIEW_TRUST_PELLETS_V1 (PR 52)
+                Four operational-trust pellets — Evidence, Sequence,
+                Identity, Integrity. State derives purely from
+                already-loaded data. "verified" wears a soft green
+                check; "partial" / "unverified" wear neutral gray
+                dots so the absence of a signal never reads as red.
+                Detail copy lives in the title attribute for hover —
+                no probabilistic scores, no greenwashing. */}
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              {[
+                trustPellets.evidence,
+                trustPellets.sequence,
+                trustPellets.identity,
+                trustPellets.integrity,
+              ].map((p) => {
+                const verified = p.state === "verified";
+                return (
+                  <span
+                    key={p.key}
+                    title={p.detail}
+                    className={
+                      "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] " +
+                      (verified
+                        ? "bg-emerald-500/12 border-emerald-300/35 text-emerald-50"
+                        : "bg-white/[0.04] border-white/15 text-gray-300/85")
+                    }
+                  >
+                    <span
+                      className={
+                        "inline-block w-[14px] text-center font-semibold leading-none " +
+                        (verified ? "text-emerald-200" : "text-gray-500")
+                      }
+                      aria-hidden
+                    >
+                      {verified ? "✓" : "·"}
+                    </span>
+                    <span>{p.label}</span>
+                  </span>
+                );
+              })}
+            </div>
+
             <div className="mt-5">
               <button
                 type="button"
@@ -1367,6 +1731,189 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 View Summary
               </button>
             </div>
+          </section>
+        ) : null}
+
+        {/* PEAKOPS_REVIEW_EVIDENCE_HERO_V1 (PR 52)
+            Closed-state Evidence Hero. Promotes the evidence section
+            from a horizontal thumbnail strip (Phase 1) to a hero
+            panel: large preview of one piece + a secondary strip for
+            the rest + a provenance line surfacing the recorded
+            captured-by actor, session, and (when present) GPS from
+            the evidence_added timeline event meta. Pipeline is the
+            same as Phase 1 — getTileMedia → buildThumbProxyUrl for
+            thumbs, openEvidence for the full-size modal click. PR 29
+            SignatureDoesNotMatch fix lives in that path; no changes. */}
+        {isIncidentClosed && heroEvidence ? (
+          <section className="rounded-2xl bg-white/5 border border-white/10 p-4 sm:p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-gray-400">
+                  Evidence
+                </div>
+                <div className="text-xs text-gray-500">
+                  {evidence.length === 1
+                    ? "1 piece captured · reviewed"
+                    : `${evidence.length} pieces captured · reviewed`}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-lg bg-white/6 border border-white/10 hover:bg-white/10 text-[12px] text-gray-200"
+                  onClick={() => {
+                    if (!incidentId) return;
+                    router.push(
+                      "/incidents/" +
+                        incidentId +
+                        (orgId ? "?orgId=" + encodeURIComponent(orgId) : "") +
+                        "#evidence",
+                    );
+                  }}
+                >
+                  Open full evidence
+                </button>
+              </div>
+            </div>
+
+            {/* Hero preview tile */}
+            <div className="mt-4">
+              {(() => {
+                const ev: any = heroEvidence;
+                const id = String(ev?.id || ev?.evidenceId || "");
+                const media = getTileMedia(ev);
+                const u = media.mode === "image" ? buildThumbProxyUrl(media.ref, id) : "";
+                const name = String(getFileField(ev, "originalName") || id);
+                const labels = (ev?.labels || []).map((x: any) => String(x).toUpperCase());
+                return (
+                  <button
+                    type="button"
+                    className="relative w-full aspect-[16/10] sm:aspect-[16/9] rounded-xl overflow-hidden border border-white/10 bg-black/40 hover:border-white/25 hover:bg-black/50 transition-all"
+                    onClick={() => openEvidence(ev)}
+                    title={name}
+                  >
+                    {u ? (
+                      <img
+                        src={u}
+                        className="w-full h-full object-contain"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-sm text-gray-500">
+                        {media.mode === "placeholder" ? media.label : "Unavailable"}
+                      </div>
+                    )}
+
+                    {labels.length ? (
+                      <div className="absolute top-3 left-3 flex flex-wrap gap-1.5">
+                        {labels.slice(0, 3).map((l: string) => (
+                          <span
+                            key={l}
+                            className="text-[11px] px-2 py-0.5 rounded-full bg-black/55 border border-white/20 text-gray-50 backdrop-blur"
+                          >
+                            {l}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <div className="absolute bottom-3 left-3 right-3 text-[12px] text-gray-100 bg-black/55 px-3 py-1.5 rounded-md truncate">
+                      {name || "evidence"}
+                    </div>
+                  </button>
+                );
+              })()}
+            </div>
+
+            {/* Secondary strip — only when >1 evidence */}
+            {evidence.length > 1 ? (
+              <div className="mt-3 -mx-1 px-1 overflow-x-auto">
+                <div className="flex gap-2">
+                  {evidence.map((ev: any) => {
+                    const id = String(ev?.id || ev?.evidenceId || "");
+                    const isHero =
+                      id === String((heroEvidence as any)?.id || "");
+                    const media = getTileMedia(ev);
+                    const u =
+                      media.mode === "image" ? buildThumbProxyUrl(media.ref, id) : "";
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setSelectedEvidenceId(id)}
+                        className={
+                          "min-w-[88px] w-[88px] aspect-square rounded-lg overflow-hidden border " +
+                          (isHero
+                            ? "border-emerald-300/50 ring-2 ring-emerald-400/20 "
+                            : "border-white/10 hover:border-white/25 ") +
+                          "bg-black/40 transition-all"
+                        }
+                      >
+                        {u ? (
+                          <img src={u} className="w-full h-full object-cover" loading="lazy" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-500 px-1 text-center">
+                            {media.mode === "placeholder" ? media.label : "—"}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Provenance strip — only renders rows that have data */}
+            {(() => {
+              const ev: any = heroEvidence;
+              const storedSec = Number(
+                ev?.storedAt?._seconds || ev?.createdAt?._seconds || 0,
+              );
+              const rows: React.ReactNode[] = [];
+              if (heroProvenance?.actorLabel) {
+                rows.push(
+                  <span key="actor">
+                    Captured by {heroProvenance.actorLabel}
+                  </span>,
+                );
+              }
+              if (storedSec > 0) {
+                rows.push(<span key="stored">Stored {fmtAgo(storedSec)}</span>);
+              }
+              if (heroProvenance?.sessionId) {
+                rows.push(
+                  <span key="session" className="font-mono text-[11px]">
+                    Session {heroProvenance.sessionId.slice(0, 12)}
+                  </span>,
+                );
+              }
+              if (heroProvenance?.gpsLat !== null && heroProvenance?.gpsLon !== null) {
+                rows.push(
+                  <span key="gps">
+                    GPS {heroProvenance!.gpsLat!.toFixed(3)}°,{" "}
+                    {heroProvenance!.gpsLon!.toFixed(3)}°
+                  </span>,
+                );
+              }
+              if (rows.length === 0) return null;
+              return (
+                <div className="mt-4 pt-3 border-t border-white/[0.06]">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500 mb-1.5">
+                    Provenance
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-gray-300">
+                    {rows.map((r, i) => (
+                      <span key={i} className="flex items-center gap-3">
+                        {r}
+                        {i < rows.length - 1 ? (
+                          <span className="text-white/20">·</span>
+                        ) : null}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </section>
         ) : null}
 
@@ -1824,7 +2371,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         </>
         ) : null}
 
-                {/* PEAKOPS_REVIEW_EVIDENCE_GALLERY_V1 */}
+                {/* PEAKOPS_REVIEW_EVIDENCE_GALLERY_V1
+                    PEAKOPS_REVIEW_EVIDENCE_HERO_V1 (PR 52) — the
+                    horizontal-strip gallery is hidden in closed state.
+                    The Evidence Hero panel above takes its place. */}
+        {!isIncidentClosed ? (
         <section ref={evidenceSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4" id="review-evidence">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -2011,6 +2562,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             Click a tile to preview. Use “Open full evidence” for the full field page rail.
           </div>
         </section>
+        ) : null}
 
 
         {/* PEAKOPS_REVIEW_EVIDENCE_MODAL_V1 */}
