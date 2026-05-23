@@ -414,6 +414,14 @@ useEffect(() => {
   // optional on the wire; the hero renders fallbacks when missing.
   const [incidentTitle, setIncidentTitle] = useState<string>("");
   const [incidentLocation, setIncidentLocation] = useState<string>("");
+
+  // PEAKOPS_INCIDENT_HERO_HYDRATION_V1 (tiny PR)
+  // First-load gate. Without it, the meta line briefly renders
+  // "0 jobs · 0 pieces of evidence" against the initial useState
+  // defaults before refresh() resolves. We flip this true once at
+  // the end of the first refresh (success or failure — doesn't
+  // matter, we just want to stop pretending zero is meaningful).
+  const [hasInitialLoad, setHasInitialLoad] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
   const [pendingJumpToEvidenceMapping, setPendingJumpToEvidenceMapping] = useState(false);
   const setTab = (tab: "overview" | "timeline" | "evidence" | "jobs") => {
@@ -1800,6 +1808,12 @@ if (selectedEvidenceId && !ev.docs.some((d:any) => d.id === selectedEvidenceId))
       setDataStatus("error");
     } finally {
       setLoading(false);
+      // PEAKOPS_INCIDENT_HERO_HYDRATION_V1 (tiny PR)
+      // Flip the first-load gate. Even when refresh() errors out we
+      // mark the page as "hydrated" so the meta line stops showing
+      // its zero-state placeholder forever — the error banner takes
+      // over the visible feedback instead.
+      setHasInitialLoad(true);
     }
   }
 
@@ -2448,39 +2462,52 @@ useEffect(() => {
               </div>
             ) : null}
             <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-gray-400">
-              <span
-                className={
-                  "text-[11px] px-2 py-0.5 rounded-full border " +
-                  incidentStatusPill(incidentStatus || "open")
-                }
-              >
-                {incidentStatusLabel(incidentStatus || "open")}
-              </span>
-              <span className="text-white/20">·</span>
-              <span>
-                {jobs.length} {jobs.length === 1 ? "job" : "jobs"}
-              </span>
-              <span className="text-white/20">·</span>
-              {/* PEAKOPS_INCIDENT_HERO_EVIDENCE_COUNT_V1 (tiny PR)
-                  Use the same filtered evidence count the Evidence
-                  tab tile renderer and the Readiness check already
-                  use (_evidenceN at module scope above): drops docs
-                  missing file.storagePath and drops demo_placeholder
-                  entries. Pre-fix the header used raw evidence.length
-                  which could include placeholder/empty entries the
-                  Evidence tab itself doesn't render — producing a
-                  visible mismatch between the header facts row and
-                  the actual tile count. */}
-              <span>
-                {_evidenceN}{" "}
-                {_evidenceN === 1 ? "piece of evidence" : "pieces of evidence"}
-              </span>
-              {incidentUpdatedAtSec ? (
+              {/* PEAKOPS_INCIDENT_HERO_HYDRATION_V1 (tiny PR)
+                  Pre-hydration the meta line was flashing
+                  "[open] · 0 jobs · 0 pieces of evidence" against
+                  the initial useState defaults before refresh()
+                  resolved. Now we render a single calm
+                  "loading record details…" line until hasInitialLoad
+                  flips true, then swap in the real counts. The chip
+                  is also withheld so we don't briefly assert
+                  "open" against an incident that's actually closed. */}
+              {!hasInitialLoad ? (
+                <span className="text-gray-500 italic">
+                  loading record details…
+                </span>
+              ) : (
                 <>
+                  <span
+                    className={
+                      "text-[11px] px-2 py-0.5 rounded-full border " +
+                      incidentStatusPill(incidentStatus || "open")
+                    }
+                  >
+                    {incidentStatusLabel(incidentStatus || "open")}
+                  </span>
                   <span className="text-white/20">·</span>
-                  <span>last activity {fmtAgo(incidentUpdatedAtSec)}</span>
+                  <span>
+                    {jobs.length} {jobs.length === 1 ? "job" : "jobs"}
+                  </span>
+                  <span className="text-white/20">·</span>
+                  {/* PEAKOPS_INCIDENT_HERO_EVIDENCE_COUNT_V1 (tiny PR)
+                      Use the same filtered evidence count the Evidence
+                      tab tile renderer and the Readiness check already
+                      use (_evidenceN at module scope above): drops docs
+                      missing file.storagePath and drops demo_placeholder
+                      entries. */}
+                  <span>
+                    {_evidenceN}{" "}
+                    {_evidenceN === 1 ? "piece of evidence" : "pieces of evidence"}
+                  </span>
+                  {incidentUpdatedAtSec ? (
+                    <>
+                      <span className="text-white/20">·</span>
+                      <span>last activity {fmtAgo(incidentUpdatedAtSec)}</span>
+                    </>
+                  ) : null}
                 </>
-              ) : null}
+              )}
               {/* PEAKOPS_INCIDENT_HERO_CONVERGENCE_V1 (PR 56)
                   Demo Mode chip + Reset demo button stay accessible
                   on localhost (NODE_ENV !== "production") for
