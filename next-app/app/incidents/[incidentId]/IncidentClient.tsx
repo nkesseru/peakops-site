@@ -2461,9 +2461,19 @@ useEffect(() => {
                 {jobs.length} {jobs.length === 1 ? "job" : "jobs"}
               </span>
               <span className="text-white/20">·</span>
+              {/* PEAKOPS_INCIDENT_HERO_EVIDENCE_COUNT_V1 (tiny PR)
+                  Use the same filtered evidence count the Evidence
+                  tab tile renderer and the Readiness check already
+                  use (_evidenceN at module scope above): drops docs
+                  missing file.storagePath and drops demo_placeholder
+                  entries. Pre-fix the header used raw evidence.length
+                  which could include placeholder/empty entries the
+                  Evidence tab itself doesn't render — producing a
+                  visible mismatch between the header facts row and
+                  the actual tile count. */}
               <span>
-                {evidence.length}{" "}
-                {evidence.length === 1 ? "piece of evidence" : "pieces of evidence"}
+                {_evidenceN}{" "}
+                {_evidenceN === 1 ? "piece of evidence" : "pieces of evidence"}
               </span>
               {incidentUpdatedAtSec ? (
                 <>
