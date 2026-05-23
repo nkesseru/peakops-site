@@ -23,6 +23,10 @@ import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/li
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
+import {
+  incidentStatusLabel,
+  incidentStatusPill,
+} from "@/lib/incidents/incidentStatus";
 
 
 
@@ -404,6 +408,12 @@ useEffect(() => {
   const [closingIncident, setClosingIncident] = useState(false);
   const [incidentStatus, setIncidentStatus] = useState<string>("open");
   const [incidentUpdatedAtSec, setIncidentUpdatedAtSec] = useState<number | null>(null);
+  // PEAKOPS_INCIDENT_HERO_CONVERGENCE_V1 (PR 56)
+  // Title + location lifted from getIncidentV1's response so the
+  // header can render the Summary-style identity hero. Both are
+  // optional on the wire; the hero renders fallbacks when missing.
+  const [incidentTitle, setIncidentTitle] = useState<string>("");
+  const [incidentLocation, setIncidentLocation] = useState<string>("");
   const [activeTab, setActiveTab] = useState<"overview" | "timeline" | "evidence" | "jobs">("overview");
   const [pendingJumpToEvidenceMapping, setPendingJumpToEvidenceMapping] = useState(false);
   const setTab = (tab: "overview" | "timeline" | "evidence" | "jobs") => {
@@ -1584,6 +1594,11 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         );
         setIncidentStatus(st || "open");
         setIncidentUpdatedAtSec(updatedSec || null);
+        // PEAKOPS_INCIDENT_HERO_CONVERGENCE_V1 (PR 56)
+        // Plumb title + location for the Summary-style hero. Both
+        // are read-only here; the wire doc shape is unchanged.
+        setIncidentTitle(String(inc?.doc?.title || "").trim());
+        setIncidentLocation(String(inc?.doc?.location || "").trim());
         const nextOrg = String(inc?.doc?.orgId || "").trim();
         if (nextOrg) requestOrgId = nextOrg;
       }
@@ -2406,25 +2421,70 @@ useEffect(() => {
       }}
     >
       
-      {/* Top bar */}
+      {/* PEAKOPS_INCIDENT_HERO_CONVERGENCE_V1 (PR 56)
+          Identity hero. Replaces the prior "Field Incident /
+          {incidentId} • {orgId} / status: closed / updated: Xd"
+          debug-coded top bar with the Summary-style dossier shell:
+          eyebrow ("INCIDENT RECORD · ORGID"), incident.title as H1
+          (raw ID never appears as the page title), location below
+          the title when present, and a meta line with the shared
+          StateChip + job count + evidence count + last activity.
+          Demo Mode chip + Reset demo button are gated behind
+          NODE_ENV !== "production" so they no longer leak to the
+          customer/demo surface. */}
       <div className="px-4 pt-4 pb-3 border-b border-white/10 sticky top-0 bg-black/80 backdrop-blur z-10">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-wider text-gray-400">Field Incident</div>
-            <div className="text-xl font-semibold tracking-tight">{incidentId} • {orgId}</div>
-            <div className="mt-1 text-[11px]">
-              <span className={"px-2 py-0.5 rounded-full border " + (isClosed ? "bg-red-500/15 border-red-400/30 text-red-100" : "bg-emerald-500/15 border-emerald-400/30 text-emerald-100")}>
-                status: {incidentStatus || "open"}
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+              Incident Record
+              {orgId ? ` · ${orgId.toUpperCase()}` : ""}
+            </div>
+            <h1 className="mt-1 text-xl sm:text-2xl font-semibold leading-tight tracking-tight text-white truncate">
+              {incidentTitle || "Untitled incident"}
+            </h1>
+            {incidentLocation ? (
+              <div className="mt-0.5 text-[12px] text-gray-300 truncate">
+                {incidentLocation}
+              </div>
+            ) : null}
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-gray-400">
+              <span
+                className={
+                  "text-[11px] px-2 py-0.5 rounded-full border " +
+                  incidentStatusPill(incidentStatus || "open")
+                }
+              >
+                {incidentStatusLabel(incidentStatus || "open")}
               </span>
-              <span className="ml-2 text-gray-400">updated: {incidentUpdatedAtSec ? fmtAgo(incidentUpdatedAtSec) : "—"}</span>
-              {isDemoMode ? (
+              <span className="text-white/20">·</span>
+              <span>
+                {jobs.length} {jobs.length === 1 ? "job" : "jobs"}
+              </span>
+              <span className="text-white/20">·</span>
+              <span>
+                {evidence.length}{" "}
+                {evidence.length === 1 ? "piece of evidence" : "pieces of evidence"}
+              </span>
+              {incidentUpdatedAtSec ? (
                 <>
-                  <span className="ml-2 px-2 py-0.5 rounded-full border bg-blue-500/15 border-blue-300/30 text-blue-100">
+                  <span className="text-white/20">·</span>
+                  <span>last activity {fmtAgo(incidentUpdatedAtSec)}</span>
+                </>
+              ) : null}
+              {/* PEAKOPS_INCIDENT_HERO_CONVERGENCE_V1 (PR 56)
+                  Demo Mode chip + Reset demo button stay accessible
+                  on localhost (NODE_ENV !== "production") for
+                  internal demo state seeding, but no longer leak
+                  to the live customer-facing app. */}
+              {isDemoMode && process.env.NODE_ENV !== "production" ? (
+                <>
+                  <span className="text-white/20">·</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full border bg-blue-500/15 border-blue-300/30 text-blue-100">
                     Demo Mode
                   </span>
                   <button
                     type="button"
-                    className="ml-2 px-2 py-0.5 rounded-full border bg-white/6 border-white/12 text-gray-200 hover:bg-white/10"
+                    className="px-2 py-0.5 rounded-full border bg-white/6 border-white/12 text-gray-200 hover:bg-white/10 text-[11px]"
                     onClick={() => { void copyDemoResetCommand(); }}
                     title="Copy deterministic demo reset command"
                   >
@@ -2435,42 +2495,53 @@ useEffect(() => {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* PEAKOPS_INCIDENT_HERO_CONVERGENCE_V1 (PR 56)
+              CTA hierarchy:
+                Sealed: Summary (primary, white background) + Review
+                        (neutral chip). Close Incident removed.
+                Open:   Review + Close Incident (muted amber, no
+                        longer destructive-red) + Summary.
+              All routes preserve orgId so downstream guards don't
+              trigger. */}
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              className="px-2 py-1 rounded-full text-xs bg-purple-600/20 border border-purple-400/20 text-purple-100 hover:bg-purple-600/30 transition"
+              className="px-3 py-1.5 rounded-full text-xs bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 transition"
               title="Supervisor review + approve/lock"
               onClick={() => {
                 const id = String(incidentId || "");
                 if (!id || id.includes("${")) return;
-                // PEAKOPS_INCIDENT_REVIEW_NAV_ORGID_V1 (2026-05-15)
-                // Preserve orgId from URL so ReviewClient's
-                // missing-org guard (PR #27) doesn't trigger when
-                // navigating from Incident → Review.
                 const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
                 router.push(`/incidents/${id}/review${qs}`);
               }}
             >
               Review
             </button>
+            {!isClosed ? (
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-full text-xs bg-amber-500/15 border border-amber-300/25 text-amber-100 hover:bg-amber-500/25 transition disabled:opacity-50"
+                disabled={closingIncident}
+                onClick={() => { try { closeIncident(); } catch {} }}
+                title="Set incident status to closed"
+              >
+                {closingIncident ? "Closing..." : "Close Incident"}
+              </button>
+            ) : null}
             <button
               type="button"
               className={
-                "px-2 py-1 rounded-full text-xs border transition " +
+                "px-3 py-1.5 rounded-full text-xs border transition " +
                 (isClosed
-                  ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
-                  : "bg-red-600/20 border-red-400/30 text-red-100 hover:bg-red-600/30")
+                  ? "bg-white text-black border-white/30 hover:bg-white/90"
+                  : "bg-white/8 border-white/15 text-gray-200 hover:bg-white/12")
               }
-              disabled={isClosed || closingIncident}
-              onClick={() => { try { closeIncident(); } catch {} }}
-              title={isClosed ? "Incident already closed" : "Set incident status to closed"}
-            >
-              {closingIncident ? "Closing..." : "Close Incident"}
-            </button>
-            <button
-              type="button"
-              className="px-2 py-1 rounded-full text-xs bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 transition"
-              onClick={() => { try { router.push(`/incidents/${incidentId}/summary`); } catch {} }}
+              onClick={() => {
+                const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+                try {
+                  router.push(`/incidents/${incidentId}/summary${qs}`);
+                } catch {}
+              }}
               title="Open incident summary"
             >
               Summary
