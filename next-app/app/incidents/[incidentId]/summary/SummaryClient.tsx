@@ -19,6 +19,7 @@ import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/li
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
 import UpgradePrompt from "@/components/UpgradePrompt";
+import RecordNav from "@/components/RecordNav";
 import { authedFetch } from "@/lib/apiClient";
 
 type IncidentDoc = {
@@ -1513,6 +1514,14 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             </button>
           </div>
         </header>
+
+        {/* PEAKOPS_RECORD_NAV_V1 */}
+        <RecordNav
+          incidentId={String(incidentId || "")}
+          orgId={orgId}
+          current="summary"
+          isSealed={String(incident?.status || "").toLowerCase() === "closed"}
+        />
 
         {/* Integrity detail — collapsed amber block linked from masthead chip */}
         {truthError ? (
