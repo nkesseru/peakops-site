@@ -25,10 +25,27 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
 
   const body = (typeof req.body === "object" && req.body) ? req.body : {};
   const orgId = String(body.orgId || "").trim();
-  const incidentId = String(body.incidentId || "").trim();
 
   if (!orgId) return j(res, 400, { ok: false, error: "orgId required" });
-  if (!incidentId) return j(res, 400, { ok: false, error: "incidentId required" });
+
+  // PEAKOPS_CREATE_INCIDENT_SERVER_ID_V1 (PR 68)
+  // incidentId is now OPTIONAL. Original callers (Mission Control's
+  // inline /incidents Create form, admin/incidents/page.tsx) supply
+  // a client-generated id like inc_20260512_141803_ab12cd. The proof-
+  // workflow create flow (PR 69 /incidents/new) omits it and lets
+  // the server mint one. Either way, slug-safety is enforced before
+  // we write — defense against path traversal and accidental garbage.
+  //
+  // Server-generated ids use Firestore's auto-id (20-char [A-Za-z0-9]
+  // base62), so the slug check below accepts both forms.
+  const db = getFirestore();
+  let incidentId = String(body.incidentId || "").trim();
+  if (!incidentId) {
+    incidentId = db.collection("incidents").doc().id;
+  }
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(incidentId)) {
+    return j(res, 400, { ok: false, error: "incidentId must be slug-safe (alnum, _, -, ≤128 chars)" });
+  }
 
   // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
   // Phase 1 Slice 7: incident origination is field-or-above. Field
@@ -68,17 +85,57 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
     requiredRoles: ROLES_FIELD_WORK,
   });
 
+  // PEAKOPS_CREATE_INCIDENT_PROOF_WORKFLOW_V1 (PR 68)
+  // Title is now REQUIRED and length-bounded. Both existing callers
+  // (Mission Control inline /incidents Create form and admin/incidents)
+  // already send non-empty titles validated client-side; the new
+  // proof-workflow flow (/incidents/new in PR 69) will too. Tightening
+  // the server gate ensures we never write a "Untitled record" with
+  // no operational signal.
   const title = String(body.title || "").trim();
-  const status = String(body.status || "open").trim().toLowerCase();
+  if (!title) {
+    return j(res, 400, { ok: false, error: "title required" });
+  }
+  if (title.length < 5 || title.length > 120) {
+    return j(res, 400, { ok: false, error: "title must be 5–120 characters" });
+  }
+
+  // PEAKOPS_CREATE_INCIDENT_STATUS_ENUM_V1 (PR 68)
+  // Default status flips from "open" → "draft" so the proof-workflow
+  // create flow starts records in the draft lane (Capture proof is the
+  // next step). Legacy callers that send "open" / "active" continue
+  // to work; anything outside the enum is rejected. Closed/in_progress
+  // are not creation-time statuses and would corrupt the record
+  // lifecycle if accepted.
+  const STATUS_ENUM = ["draft", "open", "active"];
+  const statusRaw = String(body.status || "draft").trim().toLowerCase();
+  if (!STATUS_ENUM.includes(statusRaw)) {
+    return j(res, 400, {
+      ok: false,
+      error: `status must be one of ${STATUS_ENUM.join(", ")}`,
+    });
+  }
+  const status = statusRaw;
+
   const filingTypesRequired = Array.isArray(body.filingTypesRequired) ? body.filingTypesRequired : [];
 
   // PEAKOPS_CREATE_INCIDENT_FIELDS_V1 (2026-04-28)
   // Optional descriptors captured by the inline /incidents Create form.
   // All optional — empty/missing values are not persisted.
   const location = String(body.location || "").trim();
+
+  // PEAKOPS_CREATE_INCIDENT_PRIORITY_V1 (PR 68)
+  // 4-level priority. "high" added between normal and urgent so the
+  // proof-workflow form can offer the standard four-step priority
+  // ladder. Legacy callers using low/normal/urgent continue to work.
+  const PRIORITY_ENUM = ["low", "normal", "high", "urgent"];
   const priorityRaw = String(body.priority || "").trim().toLowerCase();
-  const priority = ["low", "normal", "urgent"].includes(priorityRaw) ? priorityRaw : "";
+  const priority = PRIORITY_ENUM.includes(priorityRaw) ? priorityRaw : "";
+
   const notes = String(body.notes || "").trim();
+  if (notes && notes.length > 280) {
+    return j(res, 400, { ok: false, error: "notes must be ≤280 characters" });
+  }
   const createdBy = String(actorUid || body.createdBy || "").trim();
 
   // PEAKOPS_CREATE_INCIDENT_JOBTYPE_V1 (2026-04-30)
@@ -94,7 +151,32 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
     ? jobTypeRaw
     : "";
 
-  const db = getFirestore();
+  // PEAKOPS_CREATE_INCIDENT_PROOF_WORKFLOW_V1 (PR 68)
+  // Proof-workflow descriptors. workType is the broad classification
+  // (what kind of work this record is for); archetype is the
+  // narrower operational template that will eventually drive the
+  // capture sequence. Both optional, both enum-checked. Unknown
+  // values are silently dropped (not persisted) so a tampered payload
+  // can't write garbage, and so existing callers that don't send
+  // these fields continue to work.
+  const WORK_TYPE_ENUM = [
+    "field_operation",
+    "field_maintenance",
+    "inspection",
+    "compliance_audit",
+    "other",
+  ];
+  const ARCHETYPE_ENUM = [
+    "pole_inspection",
+    "splice_work",
+    "cable_install",
+    "site_survey",
+    "custom",
+  ];
+  const workTypeRaw = String(body.workType || "").trim().toLowerCase();
+  const workType = WORK_TYPE_ENUM.includes(workTypeRaw) ? workTypeRaw : "";
+  const archetypeRaw = String(body.archetype || "").trim().toLowerCase();
+  const archetype = ARCHETYPE_ENUM.includes(archetypeRaw) ? archetypeRaw : "";
 
   // PEAKOPS_CREATE_INCIDENT_DUAL_WRITE_V1 (2026-04-29)
   // The codebase has TWO incident paths:
@@ -134,6 +216,8 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
     if (notes) doc.notes = notes;
     if (createdBy) doc.createdBy = createdBy;
     if (jobType) doc.jobType = jobType;
+    if (workType) doc.workType = workType;
+    if (archetype) doc.archetype = archetype;
 
     // Write both copies in parallel. If the org-scoped write fails
     // (e.g., because security rules diverge), the top-level write is
