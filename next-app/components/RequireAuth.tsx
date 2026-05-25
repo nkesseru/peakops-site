@@ -26,7 +26,7 @@
 // that gate is still authoritative for data; this is a UI-trust
 // affordance only.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -34,13 +34,38 @@ type Props = {
   children: React.ReactNode;
 };
 
+// PEAKOPS_AUTH_FAILFAST_V1 (Safari session-restore loop fix)
+// Belt-and-suspenders timer on RequireAuth's loading branch.
+// useAuth already fails fast at 7s, so this only fires if something
+// even more exotic stalls the hook itself (impossible in current
+// code, but defends against future regressions). Force-redirects to
+// /login + sets the same peakops_return_to so the user lands back
+// here after signing in.
+const REQUIRE_AUTH_BOOT_TIMEOUT_MS = 12000;
+
 export default function RequireAuth({ children }: Props) {
   const router = useRouter();
   const { user, loading } = useAuth();
+  const [bootTimedOut, setBootTimedOut] = useState(false);
 
   useEffect(() => {
-    if (loading) return;
-    if (user) return;
+    if (!loading) return;
+    const t = setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[RequireAuth] boot timeout — useAuth still loading after " +
+          REQUIRE_AUTH_BOOT_TIMEOUT_MS +
+          "ms. Force-routing to /login.",
+      );
+      setBootTimedOut(true);
+    }, REQUIRE_AUTH_BOOT_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [loading]);
+
+  useEffect(() => {
+    // Effective unauth condition includes the boot-timeout fallback.
+    const treatAsUnauth = (!loading && !user) || bootTimedOut;
+    if (!treatAsUnauth) return;
 
     // Persist returnTo so /login can bounce the user back here after
     // sign-in. Mirrors the same key (`peakops_return_to`) and
@@ -65,9 +90,9 @@ export default function RequireAuth({ children }: Props) {
       }
     }
     router.replace("/login");
-  }, [loading, user, router]);
+  }, [loading, user, bootTimedOut, router]);
 
-  if (loading || !user) {
+  if ((loading && !bootTimedOut) || !user) {
     return (
       <main
         style={{
@@ -95,7 +120,7 @@ export default function RequireAuth({ children }: Props) {
             PEAKOPS
           </div>
           <div style={{ fontSize: 13, color: "#b3b3b3", lineHeight: 1.55 }}>
-            {loading ? "Checking session…" : "Redirecting to sign in…"}
+            {loading && !bootTimedOut ? "Checking session…" : "Redirecting to sign in…"}
           </div>
         </div>
       </main>
