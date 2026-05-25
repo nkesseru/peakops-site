@@ -1,58 +1,71 @@
 "use client";
 
 /**
- * PEAKOPS_NEW_INCIDENT_STUB_V1 (PR 67)
+ * PEAKOPS_NEW_INCIDENT_FORM_V1 (PR 70)
  *
- * Replaces the previously broken /incidents/new route. The old
- * route fell through to the [incidentId] dynamic segment with
- * incidentId="new", triggering getIncidentV1?incidentId=new and
- * a noisy "refresh failed" console error. Worse, the front-door
- * + New incident CTA had nowhere to land, so the workflow spine
- * read as polished-but-incomplete.
+ * The proof-workflow draft-record creation form. Replaces the PR 67
+ * template-card stub.
  *
- * This stub gives the route a real destination — a template
- * picker placeholder — without committing to a template backend
- * or real record creation. Cards render disabled with a "Coming
- * soon" treatment so the surface communicates intent without
- * lying about capability.
+ * Flow:
+ *   1. User picks a work type, archetype, priority; fills title +
+ *      optional location / customer / external work order id / notes.
+ *   2. Submits → POST /api/fn/createIncidentV1 (proxied through
+ *      app/api/fn/[name]/route.ts, which enforces Firebase auth +
+ *      org membership server-side).
+ *   3. On 201, redirects to /incidents/{newId}?orgId=...&next=capture-proof
+ *      so the destination IncidentClient surfaces "Capture proof"
+ *      as the next step.
  *
- * No backend calls. No getIncidentV1. No incident creation.
- * Wrapped in RequireAuth (consistent with every other authed
- * surface) so anonymous visitors bounce to /login.
+ * Org isolation:
+ *   - orgId comes from ?orgId=... in the URL, falling back to the
+ *     user's first claimed orgId.
+ *   - If neither resolves, we render a calm "select an organization"
+ *     panel rather than letting the user submit against a missing
+ *     org. The server proxy would reject the call anyway; this is a
+ *     friendlier early exit.
+ *
+ * Validation:
+ *   - Inline on blur via lib/incidents/newIncidentDraft → validateDraft.
+ *   - Client mirrors the server contract from PR 68 + 68b so users
+ *     don't hit the round-trip for shape issues. Server stays
+ *     authoritative — server errors surface in the submit banner.
+ *
+ * What this file deliberately does NOT do:
+ *   - No localStorage drafts (no fake state).
+ *   - No optimistic create (we wait for the 201 response).
+ *   - No dispatch / scheduling / chat / CRM affordances.
+ *   - No template marketplace (the four templates from the PR 67
+ *     stub fold into the workflow archetype radios).
  */
 
+import { FormEvent, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import RequireAuth from "@/components/RequireAuth";
 import AppTopBar from "@/components/AppTopBar";
-import { useRouter } from "next/navigation";
-
-type Template = {
-  key: string;
-  title: string;
-  blurb: string;
-};
-
-const TEMPLATES: Template[] = [
-  {
-    key: "fiber_splice_verification",
-    title: "Fiber splice verification",
-    blurb: "Loss readings, splice tray photos, OTDR trace, supervisor sign-off.",
-  },
-  {
-    key: "pole_inspection",
-    title: "Pole inspection",
-    blurb: "Hardware, attachments, clearance, photo evidence.",
-  },
-  {
-    key: "splice_closure",
-    title: "Splice closure",
-    blurb: "Closure installation, seal verification, witness evidence.",
-  },
-  {
-    key: "custom_operational_record",
-    title: "Custom operational record",
-    blurb: "Free-form workflow with photo + note evidence.",
-  },
-];
+import { useAuth } from "@/hooks/useAuth";
+import { authedFetch } from "@/lib/apiClient";
+import {
+  ARCHETYPE_LABELS,
+  ARCHETYPE_VALUES,
+  type Archetype,
+  CUSTOMER_MAX,
+  EMPTY_DRAFT,
+  EXT_WO_MAX,
+  LOCATION_MAX,
+  NOTES_MAX,
+  type NewIncidentDraft,
+  PRIORITY_LABELS,
+  PRIORITY_VALUES,
+  type Priority,
+  TITLE_MAX,
+  TITLE_MIN,
+  WORK_TYPE_LABELS,
+  WORK_TYPE_VALUES,
+  type WorkType,
+  buildCreatePayload,
+  isDraftSubmittable,
+  validateDraft,
+} from "@/lib/incidents/newIncidentDraft";
 
 export default function NewIncidentClient() {
   return (
@@ -64,6 +77,123 @@ export default function NewIncidentClient() {
 
 function Body() {
   const router = useRouter();
+  const sp = useSearchParams();
+  const { claims } = useAuth();
+
+  // Org resolution: URL wins, then first claim'd orgId.
+  const urlOrgId = String(sp?.get("orgId") || "").trim();
+  const claimOrgId = (claims?.orgIds || [])[0] || "";
+  const orgId = urlOrgId || claimOrgId;
+
+  if (!orgId) {
+    return <MissingOrgPanel />;
+  }
+
+  return <Form orgId={orgId} />;
+}
+
+function MissingOrgPanel() {
+  const router = useRouter();
+  return (
+    <main className="min-h-screen bg-black text-white">
+      <AppTopBar />
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-10 space-y-5">
+        <div className="rounded-2xl border border-amber-300/25 bg-amber-500/[0.05] p-5 sm:p-6 space-y-3">
+          <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
+            Operational draft
+          </div>
+          <div className="text-xl font-semibold text-white">
+            Select an organization
+          </div>
+          <p className="text-[14px] text-gray-300 leading-relaxed">
+            Creating a new record requires an active organization. Open
+            this page from a workspace link or visit the Team page to
+            choose one.
+          </p>
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => router.push("/team")}
+              className="px-3 py-1.5 rounded-full text-[12px] font-medium border border-white/15 bg-white/[0.04] text-gray-200 hover:bg-white/[0.10] hover:text-white transition-colors"
+            >
+              Open Team
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard")}
+              className="px-3 py-1.5 rounded-full text-[12px] text-gray-400 hover:text-gray-100 transition-colors"
+            >
+              ← Back to dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function Form({ orgId }: { orgId: string }) {
+  const router = useRouter();
+  const [draft, setDraft] = useState<NewIncidentDraft>(EMPTY_DRAFT);
+  const [touched, setTouched] = useState<Partial<Record<keyof NewIncidentDraft, boolean>>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [serverError, setServerError] = useState<string>("");
+
+  const errors = useMemo(() => validateDraft(draft), [draft]);
+  const submittable = isDraftSubmittable(draft);
+
+  const update = <K extends keyof NewIncidentDraft>(key: K, value: NewIncidentDraft[K]) => {
+    setDraft((d) => ({ ...d, [key]: value }));
+  };
+  const blur = (key: keyof NewIncidentDraft) => () => setTouched((t) => ({ ...t, [key]: true }));
+  const showError = (key: keyof NewIncidentDraft): string =>
+    touched[key] && errors[key] ? errors[key]! : "";
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (submitting) return;
+    // Mark every field touched so any missed errors surface.
+    setTouched({
+      title: true,
+      workType: true,
+      archetype: true,
+      priority: true,
+      location: true,
+      customer: true,
+      externalWorkOrderId: true,
+      notes: true,
+    });
+    if (!submittable) return;
+
+    setSubmitting(true);
+    setServerError("");
+    try {
+      const res = await authedFetch("/api/fn/createIncidentV1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(buildCreatePayload(draft, orgId)),
+      });
+      const txt = await res.text().catch(() => "");
+      let out: { ok?: boolean; incidentId?: string; error?: string } = {};
+      try {
+        out = txt ? JSON.parse(txt) : {};
+      } catch {
+        out = {};
+      }
+      if (!res.ok || !out?.ok || !out?.incidentId) {
+        throw new Error(out?.error || `Create failed (HTTP ${res.status})`);
+      }
+      const id = encodeURIComponent(String(out.incidentId));
+      const qs = `?orgId=${encodeURIComponent(orgId)}&next=capture-proof`;
+      router.push(`/incidents/${id}${qs}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setServerError(msg);
+      setSubmitting(false);
+    }
+  }
+
+  const notesCount = draft.notes.length;
 
   return (
     <main className="min-h-screen bg-black text-white">
@@ -71,53 +201,247 @@ function Body() {
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 space-y-8">
         <header className="space-y-2">
           <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-            Operational Templates
+            Operational draft
           </div>
           <h1 className="text-2xl sm:text-3xl font-semibold leading-tight tracking-tight text-white">
-            Choose a template to start a new record
+            New operational record
           </h1>
           <p className="text-[14px] text-gray-400 leading-relaxed max-w-prose">
-            Select an operational workflow. Template creation is coming
-            soon — the picker below previews the field operations
-            PeakOps will support out of the box.
+            Define the work. Capture proof in the next step.
           </p>
         </header>
 
-        <section
-          aria-label="Operational templates"
-          className="grid grid-cols-1 sm:grid-cols-2 gap-3"
-        >
-          {TEMPLATES.map((t) => (
-            <div
-              key={t.key}
-              aria-disabled="true"
-              className="group rounded-xl border border-white/10 bg-white/[0.02] px-4 py-4 cursor-not-allowed select-none"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="text-[14px] font-semibold text-gray-300">
-                  {t.title}
-                </div>
-                <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] font-semibold text-gray-500 border border-white/10 rounded-full px-2 py-0.5">
-                  Coming soon
-                </span>
-              </div>
-              <p className="mt-2 text-[12px] text-gray-500 leading-relaxed">
-                {t.blurb}
-              </p>
-            </div>
-          ))}
-        </section>
+        <form onSubmit={onSubmit} className="space-y-6" noValidate>
+          <RadioSection
+            label="Work type"
+            required
+            error={showError("workType")}
+            name="workType"
+            value={draft.workType}
+            onChange={(v) => {
+              update("workType", v as WorkType | "");
+              setTouched((t) => ({ ...t, workType: true }));
+            }}
+            options={WORK_TYPE_VALUES.map((v) => ({ value: v, label: WORK_TYPE_LABELS[v] }))}
+          />
 
-        <div className="pt-2">
-          <button
-            type="button"
-            onClick={() => router.push("/dashboard")}
-            className="text-[12px] text-gray-400 hover:text-gray-100 transition-colors"
+          <RadioSection
+            label="Workflow archetype"
+            required
+            error={showError("archetype")}
+            name="archetype"
+            value={draft.archetype}
+            onChange={(v) => {
+              update("archetype", v as Archetype | "");
+              setTouched((t) => ({ ...t, archetype: true }));
+            }}
+            options={ARCHETYPE_VALUES.map((v) => ({ value: v, label: ARCHETYPE_LABELS[v] }))}
+          />
+
+          <Field
+            label="Record title"
+            required
+            hint={`${TITLE_MIN}–${TITLE_MAX} characters`}
+            error={showError("title")}
           >
-            ← Back to dashboard
-          </button>
-        </div>
+            <input
+              type="text"
+              value={draft.title}
+              onChange={(e) => update("title", e.target.value)}
+              onBlur={blur("title")}
+              maxLength={TITLE_MAX}
+              className="w-full bg-black/40 border border-white/15 rounded-lg px-3 py-2.5 text-[14px] text-gray-100 outline-none focus:border-white/30"
+              placeholder="Pole 14B — visual + load inspection"
+              autoFocus
+            />
+          </Field>
+
+          <Field
+            label="Location or site"
+            hint={`Optional · ≤${LOCATION_MAX} chars`}
+            error={showError("location")}
+          >
+            <input
+              type="text"
+              value={draft.location}
+              onChange={(e) => update("location", e.target.value)}
+              onBlur={blur("location")}
+              maxLength={LOCATION_MAX}
+              className="w-full bg-black/40 border border-white/15 rounded-lg px-3 py-2.5 text-[14px] text-gray-100 outline-none focus:border-white/30"
+              placeholder="Riverbend Substation, NW corner"
+            />
+          </Field>
+
+          <Field
+            label="Customer / agency / project"
+            hint={`Optional · ≤${CUSTOMER_MAX} chars`}
+            error={showError("customer")}
+          >
+            <input
+              type="text"
+              value={draft.customer}
+              onChange={(e) => update("customer", e.target.value)}
+              onBlur={blur("customer")}
+              maxLength={CUSTOMER_MAX}
+              className="w-full bg-black/40 border border-white/15 rounded-lg px-3 py-2.5 text-[14px] text-gray-100 outline-none focus:border-white/30"
+              placeholder="City of Riverbend — Stormwater Division"
+            />
+          </Field>
+
+          <Field
+            label="External work order ID"
+            hint={`Optional · letters, digits, _ and - · ≤${EXT_WO_MAX} chars`}
+            error={showError("externalWorkOrderId")}
+          >
+            <input
+              type="text"
+              value={draft.externalWorkOrderId}
+              onChange={(e) => update("externalWorkOrderId", e.target.value)}
+              onBlur={blur("externalWorkOrderId")}
+              maxLength={EXT_WO_MAX}
+              className="w-full bg-black/40 border border-white/15 rounded-lg px-3 py-2.5 text-[14px] text-gray-100 outline-none focus:border-white/30 font-mono"
+              placeholder="WO-2026-04812"
+            />
+          </Field>
+
+          <RadioSection
+            label="Priority"
+            name="priority"
+            value={draft.priority}
+            onChange={(v) => update("priority", v as Priority)}
+            options={PRIORITY_VALUES.map((v) => ({ value: v, label: PRIORITY_LABELS[v] }))}
+          />
+
+          <Field
+            label="Brief notes"
+            hint={`Optional · ${notesCount}/${NOTES_MAX}`}
+            error={showError("notes")}
+          >
+            <textarea
+              value={draft.notes}
+              onChange={(e) => update("notes", e.target.value)}
+              onBlur={blur("notes")}
+              maxLength={NOTES_MAX}
+              rows={3}
+              className="w-full bg-black/40 border border-white/15 rounded-lg px-3 py-2.5 text-[14px] text-gray-100 outline-none focus:border-white/30 resize-y"
+              placeholder="Routine annual inspection. Photograph all hardware, load attachments, clearances."
+            />
+          </Field>
+
+          <div className="border-t border-white/10 pt-5 space-y-4">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500">
+              Once created, your next step is Capture proof.
+            </div>
+
+            {serverError ? (
+              <div className="rounded-lg border border-red-400/30 bg-red-500/[0.06] px-3 py-2 text-[13px] text-red-100">
+                <div className="font-semibold">Could not create record</div>
+                <div className="mt-0.5 text-red-200/90 break-words">{serverError}</div>
+              </div>
+            ) : null}
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="submit"
+                disabled={submitting || !submittable}
+                className="px-4 py-2 rounded-full text-[13px] font-medium bg-white text-black hover:bg-white/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {submitting ? "Creating…" : "Create draft record"}
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push("/dashboard")}
+                disabled={submitting}
+                className="px-3 py-1.5 rounded-full text-[12px] text-gray-400 hover:text-gray-100 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </form>
       </div>
     </main>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  required,
+  error,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  required?: boolean;
+  error?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <label className="text-[11px] uppercase tracking-[0.14em] font-semibold text-gray-300">
+          {label}
+          {required ? <span className="text-amber-300/80 ml-1">*</span> : null}
+        </label>
+        {hint ? <span className="text-[11px] text-gray-500">{hint}</span> : null}
+      </div>
+      {children}
+      {error ? <div className="text-[12px] text-red-300">{error}</div> : null}
+    </div>
+  );
+}
+
+function RadioSection<T extends string>({
+  label,
+  name,
+  value,
+  onChange,
+  options,
+  required,
+  error,
+}: {
+  label: string;
+  name: string;
+  value: T | "";
+  onChange: (v: T | "") => void;
+  options: Array<{ value: T; label: string }>;
+  required?: boolean;
+  error?: string;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-[11px] uppercase tracking-[0.14em] font-semibold text-gray-300">
+        {label}
+        {required ? <span className="text-amber-300/80 ml-1">*</span> : null}
+      </legend>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+        {options.map((opt) => {
+          const checked = value === opt.value;
+          return (
+            <label
+              key={opt.value}
+              className={
+                "flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px] cursor-pointer transition-colors " +
+                (checked
+                  ? "border-white/30 bg-white/[0.06] text-gray-100"
+                  : "border-white/10 bg-white/[0.02] text-gray-400 hover:text-gray-100 hover:border-white/20")
+              }
+            >
+              <input
+                type="radio"
+                name={name}
+                value={opt.value}
+                checked={checked}
+                onChange={() => onChange(opt.value)}
+                className="accent-white"
+              />
+              {opt.label}
+            </label>
+          );
+        })}
+      </div>
+      {error ? <div className="text-[12px] text-red-300">{error}</div> : null}
+    </fieldset>
   );
 }

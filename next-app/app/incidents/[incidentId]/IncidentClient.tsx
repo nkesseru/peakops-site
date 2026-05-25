@@ -2747,6 +2747,60 @@ useEffect(() => {
         />
       </div>
 
+      {/* PEAKOPS_CAPTURE_PROOF_NEXT_STEP_V1 (PR 70)
+          Next-step banner that fires when the user has just landed
+          here from the /incidents/new create flow (PR 70). The
+          create handler appends `?next=capture-proof` to the
+          destination URL; this banner reads it and surfaces a single
+          calm CTA to the existing /add-evidence flow.
+
+          "Skip for now" strips the param via router.replace so the
+          banner dismisses without leaving the record. Open-state
+          only — sealed records have their own dossier panel and
+          don't need a "first step" affordance. */}
+      {!isClosed && sp?.get("next") === "capture-proof" ? (
+        <div className="px-4 pt-3">
+          <div className="rounded-2xl border border-amber-300/25 bg-amber-500/[0.05] px-4 py-4 sm:px-5 sm:py-5 space-y-3">
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
+              Next step
+            </div>
+            <div className="text-lg font-semibold text-white leading-snug">
+              Capture proof
+            </div>
+            <p className="text-[13px] text-gray-300 leading-relaxed max-w-prose">
+              Document the field conditions, evidence, and context that
+              prove this record&rsquo;s outcome. You can come back to
+              this record any time.
+            </p>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const id = String(incidentId || "");
+                  if (!id) return;
+                  const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+                  router.push(`/incidents/${encodeURIComponent(id)}/add-evidence${qs}`);
+                }}
+                className="px-4 py-2 rounded-full text-[12px] font-medium bg-white text-black hover:bg-white/90 transition-colors"
+              >
+                Capture proof →
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const id = String(incidentId || "");
+                  const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+                  router.replace(`/incidents/${encodeURIComponent(id)}${qs}`);
+                }}
+                className="px-3 py-1.5 rounded-full text-[12px] text-gray-400 hover:text-gray-100 transition-colors"
+              >
+                Skip for now
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* PEAKOPS_BREADCRUMB_PLACEMENT_V1 (PR 67)
           Sealed-record informational panel. Previously rendered inside
           the sticky masthead which placed it *above* the RecordNav
