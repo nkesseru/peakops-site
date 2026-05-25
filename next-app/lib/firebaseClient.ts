@@ -1,5 +1,12 @@
 import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
-import { getAuth, connectAuthEmulator, type Auth } from "firebase/auth";
+import {
+  browserLocalPersistence,
+  connectAuthEmulator,
+  getAuth,
+  inMemoryPersistence,
+  setPersistence,
+  type Auth,
+} from "firebase/auth";
 import { getFirestore, connectFirestoreEmulator, type Firestore } from "firebase/firestore";
 import { getStorage, connectStorageEmulator, type FirebaseStorage } from "firebase/storage";
 
@@ -59,6 +66,27 @@ if (!firebaseConfig.projectId) throw new Error("Missing environment variable: NE
 
 export const app: FirebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const auth: Auth = getAuth(app);
+
+// PEAKOPS_AUTH_FAILFAST_V1 (Safari session-restore loop fix)
+// Make the persistence choice explicit. Default is already
+// browserLocalPersistence (IndexedDB-backed), but setting it
+// explicitly documents the contract and gives us a clean fallback
+// path. In Safari private mode (and after certain ITP evictions)
+// IndexedDB can be unavailable; setPersistence rejects, we fall
+// back to inMemoryPersistence so the page at least renders. The
+// fallback means sessions don't survive a reload in private mode —
+// preferable to an infinite "Restoring your session…" loop.
+if (typeof window !== "undefined") {
+  setPersistence(auth, browserLocalPersistence).catch(() => {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[firebaseClient] browserLocalPersistence unavailable; falling back to inMemoryPersistence",
+    );
+    setPersistence(auth, inMemoryPersistence).catch(() => {
+      /* in-memory should never reject; swallow */
+    });
+  });
+}
 // PEAKOPS_USER_SETTINGS_V1 (2026-05-04)
 // Client-side Firestore handle. Used by the /settings page to read +
 // write users/{uid}/settings/profile.

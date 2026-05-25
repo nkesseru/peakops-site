@@ -555,26 +555,69 @@ export default function LoginPage() {
         ) : null}
 
         {phase === "boot" || phase === "completing" ? (
-          <div
-            role="status"
-            aria-live="polite"
-            style={{
-              marginTop: 22,
-              padding: "14px 14px",
-              borderRadius: 8,
-              border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(255,255,255,0.02)",
-              color: "rgba(255,255,255,0.7)",
-              fontSize: 13,
-              lineHeight: 1.5,
-              textAlign: "center",
-              letterSpacing: "0.01em",
-            }}
-          >
-            {phase === "completing"
-              ? "One moment — finishing sign-in."
-              : "Restoring your session…"}
-          </div>
+          <>
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                marginTop: 22,
+                padding: "14px 14px",
+                borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.02)",
+                color: "rgba(255,255,255,0.7)",
+                fontSize: 13,
+                lineHeight: 1.5,
+                textAlign: "center",
+                letterSpacing: "0.01em",
+              }}
+            >
+              {phase === "completing"
+                ? "One moment — finishing sign-in."
+                : "Restoring your session…"}
+            </div>
+            {/* PEAKOPS_AUTH_FAILFAST_V1 (Safari session-restore loop fix)
+                Manual escape hatch. If a user is stuck on the boot
+                panel (Safari IndexedDB stall, or any other reason
+                useAuth.loading hasn't resolved), this link signs them
+                out, clears the persisted session, and reloads to a
+                clean state. Surfaces only during boot/completing so
+                it doesn't add noise to the normal sign-in form. */}
+            {phase === "boot" ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await signOutUser();
+                  } catch {
+                    /* fall through to reload — useful even if signOut throws */
+                  }
+                  try {
+                    window.sessionStorage.removeItem("peakops_return_to");
+                  } catch {}
+                  try {
+                    window.location.replace("/login");
+                  } catch {
+                    window.location.href = "/login";
+                  }
+                }}
+                style={{
+                  marginTop: 12,
+                  width: "100%",
+                  padding: "9px 0",
+                  borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  background: "transparent",
+                  color: "rgba(255,255,255,0.55)",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                }}
+              >
+                Stuck? Sign me out and start over.
+              </button>
+            ) : null}
+          </>
         ) : null}
 
         {phase === "no-org" ? (
