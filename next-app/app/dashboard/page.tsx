@@ -609,47 +609,77 @@ export default function Dashboard() {
           <StatCard title="Approved" value={counts.approved} tone="border-emerald-400/20 bg-emerald-500/[0.05]" />
         </section>
 
-        <section className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4">
-          <div className="text-xs tracking-[0.16em] uppercase text-gray-500 mb-3">Operator Actions</div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              className="px-3 py-2 rounded-xl bg-blue-500/20 border border-blue-400/20 hover:bg-blue-500/30 disabled:opacity-50"
-              disabled={!nextReview}
-              onClick={() => {
-                if (!nextReview) return;
-                window.location.href = reviewHref(nextReview);
-              }}
-            >
-              Review Next
-            </button>
+        {/* PEAKOPS_DASHBOARD_SIGNED_IN_POLISH_V1
+            Hide the Operator Actions block entirely when all three
+            buttons would be disabled (no review-eligible incident,
+            no update-requested incident, no visible items to bulk-
+            export). On the empty production state this kills the
+            "three disabled buttons in a card" scaffold smell.
+            Reappears automatically the moment real data flows in. */}
+        {(nextReview || nextUpdate || visible.length > 0) ? (
+          <section className="mb-6 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4">
+            <div className="text-xs tracking-[0.16em] uppercase text-gray-500 mb-3">Operator Actions</div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="px-3 py-2 rounded-xl bg-blue-500/20 border border-blue-400/20 hover:bg-blue-500/30 disabled:opacity-50"
+                disabled={!nextReview}
+                onClick={() => {
+                  if (!nextReview) return;
+                  window.location.href = reviewHref(nextReview);
+                }}
+              >
+                Review Next
+              </button>
 
-            <button
-              className="px-3 py-2 rounded-xl bg-violet-500/20 border border-violet-400/20 hover:bg-violet-500/30 disabled:opacity-50"
-              disabled={!nextUpdate}
-              onClick={() => {
-                if (!nextUpdate) return;
-                window.location.href = incidentHref(nextUpdate);
-              }}
-            >
-              Open Waiting on Field
-            </button>
+              <button
+                className="px-3 py-2 rounded-xl bg-violet-500/20 border border-violet-400/20 hover:bg-violet-500/30 disabled:opacity-50"
+                disabled={!nextUpdate}
+                onClick={() => {
+                  if (!nextUpdate) return;
+                  window.location.href = incidentHref(nextUpdate);
+                }}
+              >
+                Open Waiting on Field
+              </button>
 
-            <button
-              className="px-3 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.12] disabled:opacity-50"
-              disabled={exportingVisible || visible.length === 0}
-              onClick={() => { void exportVisible(); }}
-            >
-              {exportingVisible ? "Exporting visible…" : "Export Visible"}
-            </button>
-          </div>
-        </section>
+              <button
+                className="px-3 py-2 rounded-xl bg-white/[0.06] border border-white/[0.1] hover:bg-white/[0.12] disabled:opacity-50"
+                disabled={exportingVisible || visible.length === 0}
+                onClick={() => { void exportVisible(); }}
+              >
+                {exportingVisible ? "Exporting visible…" : "Export Visible"}
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         {loading ? <div className="text-gray-500 text-sm mb-4">Refreshing dashboard…</div> : null}
 
-        <BucketSection title="Needs Review" items={grouped.needs_review} />
-        <BucketSection title="Update Requested" items={grouped.update_requested} />
-        <BucketSection title="Active" items={grouped.active} />
-        <BucketSection title="Approved" items={grouped.approved} />
+        {/* PEAKOPS_DASHBOARD_SIGNED_IN_POLISH_V1
+            Consolidate empty-state. When all four buckets are empty
+            (current production state until live data flows), render
+            a single calm line instead of four repeated bucket
+            sections each saying "No active incidents need attention
+            right now." When any bucket has items, the individual
+            sections render as before — a populated bucket carries
+            its own headline + items. */}
+        {visible.length === 0 ? (
+          <section className="mt-8 rounded-2xl border border-white/[0.05] bg-white/[0.02] px-5 py-6 text-center">
+            <div className="text-sm text-gray-300">
+              No active records in supervisor review.
+            </div>
+            <div className="mt-1 text-[12px] text-gray-500">
+              The polished demo record is in the hero above. New incidents will appear here as field crews open them.
+            </div>
+          </section>
+        ) : (
+          <>
+            <BucketSection title="Needs Review" items={grouped.needs_review} />
+            <BucketSection title="Update Requested" items={grouped.update_requested} />
+            <BucketSection title="Active" items={grouped.active} />
+            <BucketSection title="Approved" items={grouped.approved} />
+          </>
+        )}
       </div>
     </main>
     </RequireAuth>
