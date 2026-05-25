@@ -55,11 +55,30 @@ function bucketBlurb(bucket: string) {
   }
 }
 import { useEffect, useMemo, useState } from "react";
+import RequireAuth from "@/components/RequireAuth";
+import { incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
+
+// PEAKOPS_DASHBOARD_DEMO_SAFE_V1
+// Polished demo target. Hardcoded for now — when /api/dashboard
+// returns real per-org data, the hero card can lift to the first
+// sealed incident in the actor's claim instead.
+const DEMO_TARGET = {
+  incidentId: "inc_20260508_121451_acnew0",
+  orgId: "peakops-internal-alpha",
+  fallbackTitle: "Fiber splice verification — Internal Alpha Test",
+  fallbackLocation: "Internal Alpha Yard",
+};
 
 type Incident = {
   incidentId: string;
   orgId: string;
   status?: string;
+  // PEAKOPS_DASHBOARD_DEMO_SAFE_V1
+  // Server now plumbs the real incident.title; cards prefer this
+  // over the raw incidentId so the dashboard reads as operational
+  // record vs Firestore admin tool.
+  title?: string;
+  location?: string;
   evidenceCount?: number;
   reviewable?: number;
   approved?: number;
@@ -229,7 +248,13 @@ function IncidentCard({ i }: { i: Incident }) {
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="text-lg font-semibold">{i.incidentId}</div>
+            {/* PEAKOPS_DASHBOARD_DEMO_SAFE_V1
+                Prefer incident.title (plumbed through /api/dashboard
+                from getIncidentV1's doc shape). Fallback to "Untitled
+                incident" rather than the raw Firestore ID; the raw
+                reference is still available via the card's title
+                tooltip for audit lookups. */}
+            <div className="text-lg font-semibold">{i.title || "Untitled incident"}</div>
             <span className={`px-2 py-1 rounded-full border text-xs ${chip.tone}`}>{chip.label}</span>
             {stale ? (
               <span className={`px-2 py-1 rounded-full border text-xs ${stale.tone}`}>{stale.label}</span>
@@ -325,7 +350,7 @@ function BucketSection({ title, items }: { title: string; items: Incident[] }) {
 
       <div className="grid gap-4">
         {items.length ? items.map((i) => <IncidentCard key={`${i.orgId}:${i.incidentId}`} i={i} />) : (
-          <div className="text-gray-500 text-sm">Nothing here.</div>
+          <div className="text-gray-500 text-sm">No records in this state right now.</div>
         )}
       </div>
     </section>
@@ -436,7 +461,24 @@ export default function Dashboard() {
     }
   };
 
+  // PEAKOPS_DASHBOARD_DEMO_SAFE_V1
+  // Demo-target hero card data. Prefer the live item from /api/dashboard
+  // if it surfaces; fall back to hardcoded copy so the hero renders
+  // even in a cold/empty state.
+  const demoItem = visible.find(
+    (i) =>
+      i.incidentId === DEMO_TARGET.incidentId &&
+      i.orgId === DEMO_TARGET.orgId,
+  );
+  const demoTitle = demoItem?.title || DEMO_TARGET.fallbackTitle;
+  const demoLocation = demoItem?.location || DEMO_TARGET.fallbackLocation;
+  const demoStatus = demoItem?.status || "closed";
+  const demoEvidence = demoItem?.evidenceCount ?? 1;
+  const demoUpdatedAgo = demoItem?.updatedAgo;
+  const demoQs = `?orgId=${encodeURIComponent(DEMO_TARGET.orgId)}`;
+
   return (
+    <RequireAuth>
     <main className="min-h-screen bg-black text-white p-6">
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-6 gap-4">
@@ -449,28 +491,100 @@ export default function Dashboard() {
           <div className="flex items-center gap-2">
             <div className="hidden md:flex items-center gap-2 px-3 py-2 rounded-xl border border-emerald-400/20 bg-emerald-500/[0.06] text-xs text-emerald-200">
               <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-              Live · sync {syncLabel}
+              Auto-refresh · {syncLabel}
             </div>
 
-            <select
-              value={orgFilter}
-              onChange={(e) => setOrgFilter(e.target.value)}
-              className="px-3 py-2 rounded-xl bg-white/[0.05] border border-white/[0.1] text-sm"
-            >
-              <option value="all">All orgs</option>
-              {orgs.map((o) => (
-                <option key={o} value={o}>{o}</option>
-              ))}
-            </select>
+            {/* PEAKOPS_DASHBOARD_DEMO_SAFE_V1
+                Org filter renders only when ≥2 distinct orgs surface
+                actual data. In the single-org case it's just visual
+                noise. */}
+            {orgs.length >= 2 ? (
+              <select
+                value={orgFilter}
+                onChange={(e) => setOrgFilter(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-white/[0.05] border border-white/[0.1] text-sm"
+              >
+                <option value="all">All orgs</option>
+                {orgs.map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            ) : null}
 
-            <button
-              className="px-3 py-2 rounded-xl bg-white/[0.05] border border-white/[0.1]"
-              onClick={() => { window.location.href = "/incidents/inc_demo?orgId=riverbend-electric"; }}
-            >
-              Open Demo Incident
-            </button>
+            {/* PEAKOPS_DASHBOARD_DEMO_SAFE_V1
+                Removed the prior "Open Demo Incident" button that
+                routed to the broken inc_demo / riverbend-electric
+                fictional demo. The "Continue your demo" hero card
+                below points at the real polished sealed incident. */}
           </div>
         </div>
+
+        {/* PEAKOPS_DASHBOARD_DEMO_SAFE_V1
+            Continue-your-demo hero card. Always renders the polished
+            sealed-incident entry point regardless of whether the
+            bucket grid has data. First-click path: Summary (primary).
+            Review available as a secondary action. The card pulls
+            live title/location/status from /api/dashboard when the
+            request succeeds; otherwise falls back to hardcoded copy
+            so the card never renders as a broken placeholder. */}
+        <section className="mb-6 rounded-2xl border border-amber-300/20 bg-amber-500/[0.04] px-5 py-5 sm:px-6 sm:py-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
+                Continue your demo · INCIDENT RECORD · {DEMO_TARGET.orgId.toUpperCase()}
+              </div>
+              <h2 className="mt-1.5 text-xl sm:text-[22px] font-semibold leading-tight tracking-tight text-white truncate">
+                {demoTitle}
+              </h2>
+              {demoLocation ? (
+                <div className="mt-0.5 text-[12px] text-gray-300">
+                  {demoLocation}
+                </div>
+              ) : null}
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-gray-400">
+                <span
+                  className={
+                    "text-[11px] px-2 py-0.5 rounded-full border " +
+                    incidentStatusPill(demoStatus)
+                  }
+                >
+                  {incidentStatusLabel(demoStatus)}
+                </span>
+                <span className="text-white/20">·</span>
+                <span>
+                  {demoEvidence}{" "}
+                  {demoEvidence === 1 ? "piece of evidence" : "pieces of evidence"}
+                </span>
+                {demoUpdatedAgo && demoUpdatedAgo !== "—" ? (
+                  <>
+                    <span className="text-white/20">·</span>
+                    <span>last activity {demoUpdatedAgo}</span>
+                  </>
+                ) : null}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-xl bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 text-sm"
+                onClick={() => {
+                  window.location.href = `/incidents/${encodeURIComponent(DEMO_TARGET.incidentId)}/review${demoQs}`;
+                }}
+              >
+                Supervisor Review
+              </button>
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded-xl bg-white text-black border border-white/30 hover:bg-white/90 text-sm font-medium"
+                onClick={() => {
+                  window.location.href = `/incidents/${encodeURIComponent(DEMO_TARGET.incidentId)}/summary${demoQs}`;
+                }}
+              >
+                Open dossier (Summary) →
+              </button>
+            </div>
+          </div>
+        </section>
 
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           <StatCard title="Needs Review" value={counts.needs_review} tone="border-blue-400/20 bg-blue-500/[0.05]" />
@@ -522,5 +636,6 @@ export default function Dashboard() {
         <BucketSection title="Approved" items={grouped.approved} />
       </div>
     </main>
+    </RequireAuth>
   );
 }
