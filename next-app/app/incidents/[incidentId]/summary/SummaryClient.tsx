@@ -1443,8 +1443,11 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             its visual aggression is downgraded to an inline amber
             chip linked to an expandable detail block below. */}
         <header className="space-y-3">
+          {/* PEAKOPS_FRAMING_LAYER_V1 (PR 71) — eyebrow word swap.
+              "Incident Record" → "Field Record". Routes, RecordNav
+              labels, and status pipeline unchanged. */}
           <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
-            Incident Record{orgId ? ` · ${orgId}` : ""}
+            Field Record{orgId ? ` · ${orgId}` : ""}
           </div>
           <h1 className="text-2xl font-semibold leading-tight tracking-tight text-white">
             {incident?.title || incidentId}

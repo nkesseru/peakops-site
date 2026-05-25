@@ -54,6 +54,9 @@ import {
   LOCATION_MAX,
   NOTES_MAX,
   type NewIncidentDraft,
+  PACKET_PURPOSE_LABELS,
+  PACKET_PURPOSE_VALUES,
+  type PacketPurpose,
   PRIORITY_LABELS,
   PRIORITY_VALUES,
   type Priority,
@@ -135,6 +138,9 @@ function MissingOrgPanel() {
 function Form({ orgId }: { orgId: string }) {
   const router = useRouter();
   const [draft, setDraft] = useState<NewIncidentDraft>(EMPTY_DRAFT);
+  // PEAKOPS_PACKET_PURPOSE_V1 (PR 71) — client-only framing field.
+  // Not wired to the backend yet; see lib/incidents/newIncidentDraft.
+  const [packetPurpose, setPacketPurpose] = useState<PacketPurpose>("");
   const [touched, setTouched] = useState<Partial<Record<keyof NewIncidentDraft, boolean>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string>("");
@@ -201,13 +207,13 @@ function Form({ orgId }: { orgId: string }) {
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 space-y-8">
         <header className="space-y-2">
           <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-            Operational draft
+            Field record
           </div>
           <h1 className="text-2xl sm:text-3xl font-semibold leading-tight tracking-tight text-white">
-            New operational record
+            Open a new field record
           </h1>
           <p className="text-[14px] text-gray-400 leading-relaxed max-w-prose">
-            Define the work. Capture proof in the next step.
+            Define the work. Capture proof. Close out with an accepted packet.
           </p>
         </header>
 
@@ -236,6 +242,22 @@ function Form({ orgId }: { orgId: string }) {
               setTouched((t) => ({ ...t, archetype: true }));
             }}
             options={ARCHETYPE_VALUES.map((v) => ({ value: v, label: ARCHETYPE_LABELS[v] }))}
+          />
+
+          {/* PEAKOPS_PACKET_PURPOSE_V1 (PR 71)
+              Frames the record as an acceptance packet from the
+              moment of creation. Informational/client-only for now —
+              not persisted (see lib/incidents/newIncidentDraft). */}
+          <RadioSection
+            label="Packet purpose"
+            hint="What is this packet for?"
+            name="packetPurpose"
+            value={packetPurpose}
+            onChange={(v) => setPacketPurpose(v as PacketPurpose)}
+            options={PACKET_PURPOSE_VALUES.map((v) => ({
+              value: v,
+              label: PACKET_PURPOSE_LABELS[v],
+            }))}
           />
 
           <Field
@@ -328,9 +350,42 @@ function Form({ orgId }: { orgId: string }) {
             />
           </Field>
 
+          {/* PEAKOPS_REQUIRED_FOR_ACCEPTANCE_V1 (PR 71)
+              Static informational card that frames the record as an
+              acceptance packet that needs specific proof artifacts to
+              close out. No enforcement engine, no dynamic rules — just
+              calm framing so the operator opens the record knowing
+              what acceptance will look like. */}
+          <section
+            aria-label="Required for acceptance"
+            className="rounded-xl border border-amber-300/20 bg-amber-500/[0.04] px-4 py-4 sm:px-5 sm:py-5"
+          >
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70 mb-3">
+              Required for acceptance
+            </div>
+            <ul className="space-y-2 text-[13px] text-gray-200">
+              {[
+                { item: "Photos", note: "Field-captured evidence" },
+                { item: "Supervisor approval", note: "Final review before lockout" },
+                { item: "GPS capture", note: "Geo-tagged work location" },
+                { item: "Field notes", note: "Operator context per stop" },
+              ].map((row) => (
+                <li key={row.item} className="flex items-start gap-2.5">
+                  <span aria-hidden="true" className="text-emerald-300/80 mt-0.5">
+                    ✓
+                  </span>
+                  <span className="flex-1">
+                    <span className="font-medium">{row.item}</span>
+                    <span className="ml-2 text-gray-400">{row.note}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+
           <div className="border-t border-white/10 pt-5 space-y-4">
             <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500">
-              Once created, your next step is Capture proof.
+              Once opened, your next step is proof capture.
             </div>
 
             {serverError ? (
@@ -346,7 +401,7 @@ function Form({ orgId }: { orgId: string }) {
                 disabled={submitting || !submittable}
                 className="px-4 py-2 rounded-full text-[13px] font-medium bg-white text-black hover:bg-white/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {submitting ? "Creating…" : "Create draft record"}
+                {submitting ? "Creating…" : "Create field record"}
               </button>
               <button
                 type="button"
@@ -400,6 +455,7 @@ function RadioSection<T extends string>({
   options,
   required,
   error,
+  hint,
 }: {
   label: string;
   name: string;
@@ -408,12 +464,18 @@ function RadioSection<T extends string>({
   options: Array<{ value: T; label: string }>;
   required?: boolean;
   error?: string;
+  hint?: string;
 }) {
   return (
     <fieldset className="space-y-2">
       <legend className="text-[11px] uppercase tracking-[0.14em] font-semibold text-gray-300">
         {label}
         {required ? <span className="text-amber-300/80 ml-1">*</span> : null}
+        {hint ? (
+          <span className="ml-2 text-[11px] font-normal tracking-normal text-gray-500 normal-case">
+            {hint}
+          </span>
+        ) : null}
       </legend>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
         {options.map((opt) => {

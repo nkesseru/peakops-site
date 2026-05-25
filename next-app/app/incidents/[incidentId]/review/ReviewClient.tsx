@@ -1599,11 +1599,15 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       <div className="sticky top-0 z-20 bg-black/80 backdrop-blur border-b border-white/10 px-4 py-4">
         <div className="max-w-3xl mx-auto flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-1.5">
+            {/* PEAKOPS_FRAMING_LAYER_V1 (PR 71) — eyebrow word swap.
+                "Incident Record" → "Field Record" and
+                "Supervisor Review" → "Pending Approval".
+                Routes, RecordNav labels, and status pipeline unchanged. */}
             <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
-              Incident Record
+              Field Record
               {orgId ? ` · ${orgId}` : ""}
               <span className="text-amber-200/30"> · </span>
-              Supervisor Review
+              Pending Approval
             </div>
             <h1 className="text-xl sm:text-2xl font-semibold leading-tight tracking-tight text-white truncate">
               {incidentDoc?.title || incidentId}

@@ -58,6 +58,40 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
   urgent: "Urgent",
 };
 
+/**
+ * PEAKOPS_PACKET_PURPOSE_V1 (PR 71)
+ *
+ * Client-only framing field for the proof-workflow form. Captures
+ * what the operator intends this packet to support — customer
+ * acceptance, invoice support, QA, claim, internal docs, custom.
+ *
+ * NOT sent to createIncidentV1 in this PR. The backend doesn't yet
+ * accept this field; adding it would require a backend ext PR which
+ * is explicitly out of scope per the PR 71 spec ("commercialization
+ * alignment, NOT a backend/platform rewrite"). The selection lives
+ * in the form's useState and is dropped on submit. When the backend
+ * extends to support `packetPurpose`, only buildCreatePayload needs
+ * to learn the field.
+ */
+export const PACKET_PURPOSE_VALUES = [
+  "customer_acceptance",
+  "invoice_support",
+  "qa_inspection",
+  "claim_support",
+  "internal_documentation",
+  "custom",
+] as const;
+export type PacketPurpose = (typeof PACKET_PURPOSE_VALUES)[number] | "";
+
+export const PACKET_PURPOSE_LABELS: Record<Exclude<PacketPurpose, "">, string> = {
+  customer_acceptance: "Customer acceptance",
+  invoice_support: "Invoice support",
+  qa_inspection: "QA / inspection",
+  claim_support: "Claim support",
+  internal_documentation: "Internal documentation",
+  custom: "Custom",
+};
+
 export const TITLE_MIN = 5;
 export const TITLE_MAX = 120;
 export const LOCATION_MAX = 200;
