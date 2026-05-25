@@ -44,6 +44,9 @@ useEffect(() => {
   // sealedAfterMutation covers the reactive case where the record gets
   // sealed mid-edit while the user is on this page.
   const [incidentStatus, setIncidentStatus] = useState<string>("");
+  // PEAKOPS_PROOF_CAPTURE_TITLE_V1 (PR 72) — surface the real record
+  // title from getIncidentV1 instead of a truncated incidentId.
+  const [incidentTitle, setIncidentTitle] = useState<string>("");
   const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
 
   // Env / context
@@ -139,6 +142,8 @@ useEffect(() => {
         if (cancelled) return;
         const s = String(out?.doc?.status || "").toLowerCase();
         if (s) setIncidentStatus(s);
+        const t = String(out?.doc?.title || "").trim();
+        if (t) setIncidentTitle(t);
       } catch {
         // tolerate — fall back to reactive 409 handling
       }
@@ -410,9 +415,17 @@ useEffect(() => {
   return (
     <main className="min-h-screen bg-black text-white p-4">
       <div className="mb-4">
-        <div className="text-[11px] uppercase tracking-wider text-gray-400">Add Evidence</div>
+        {/* PEAKOPS_PROOF_CAPTURE_TITLE_V1 (PR 72) — eyebrow and title
+            aligned with the framing layer. The eyebrow that called
+            this surface "Add Evidence" now reads "Proof Capture" to
+            match the destination of the Capture-proof banner on the
+            record overview. Title prefers the record's actual title
+            (loaded in the existing getIncidentV1 effect above) and
+            falls back to the truncated incidentId only when the
+            fetch is still in-flight or the doc has no title. */}
+        <div className="text-[11px] uppercase tracking-wider text-gray-400">Proof Capture</div>
         <div className="text-lg font-semibold">
-          Incident {incidentId.slice(-6)}
+          {incidentTitle || `Field record ${incidentId.slice(-6)}`}
         </div>
         <div className="text-xs text-cyan-200/90 mt-1">
           My job: {mounted ? (selectedJobId || "(auto-selecting…)") : "…"}
