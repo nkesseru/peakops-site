@@ -27,6 +27,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import RequireAuth from "@/components/RequireAuth";
+import AppTopBar from "@/components/AppTopBar";
 import { useAuth } from "@/hooks/useAuth";
 import { authedFetch } from "@/lib/apiClient";
 
@@ -616,16 +617,17 @@ function Shell({
         minHeight: "100vh",
         background: colors.background,
         color: colors.fg,
-        padding: "32px 24px",
         fontFamily:
           'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       }}
     >
+      <AppTopBar />
       <div
         style={{
           width: "100%",
           maxWidth: wide ? 720 : 460,
           margin: "0 auto",
+          padding: "32px 24px",
         }}
       >
         {children}

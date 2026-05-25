@@ -24,6 +24,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authedFetch } from "@/lib/apiClient";
 import RecordNav from "@/components/RecordNav";
+import AppTopBar from "@/components/AppTopBar";
 
 type Reason = "clarification" | "customer_followup" | "audit_support" | "other";
 
@@ -185,9 +186,12 @@ export default function AddAddendumClient({
   // Loading skeleton (briefly visible while we fetch incident.status)
   if (loadingStatus) {
     return (
-      <main className="min-h-screen bg-black text-white py-12 px-4">
-        <div className="max-w-2xl mx-auto">
-          <div className="text-[12px] text-gray-500">Loading…</div>
+      <main className="min-h-screen bg-black text-white">
+        <AppTopBar />
+        <div className="py-12 px-4">
+          <div className="max-w-2xl mx-auto">
+            <div className="text-[12px] text-gray-500">Loading…</div>
+          </div>
         </div>
       </main>
     );
@@ -197,7 +201,9 @@ export default function AddAddendumClient({
   // explain here rather than let the user fill out the form.
   if (incidentStatus && incidentStatus !== "closed") {
     return (
-      <main className="min-h-screen bg-black text-white py-12 px-4">
+      <main className="min-h-screen bg-black text-white">
+        <AppTopBar />
+        <div className="py-12 px-4">
         <div className="max-w-2xl mx-auto">
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 sm:p-8 space-y-3">
             <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-gray-400">
@@ -225,12 +231,15 @@ export default function AddAddendumClient({
             </div>
           </div>
         </div>
+        </div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-black text-white py-12 px-4">
+    <main className="min-h-screen bg-black text-white">
+      <AppTopBar />
+      <div className="py-12 px-4">
       <div className="max-w-2xl mx-auto space-y-6">
         <div className="space-y-2">
           <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
@@ -350,6 +359,7 @@ export default function AddAddendumClient({
             Cancel
           </button>
         </div>
+      </div>
       </div>
     </main>
   );
