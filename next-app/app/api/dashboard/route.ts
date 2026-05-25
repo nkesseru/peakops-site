@@ -4,6 +4,11 @@ type IncidentLite = {
   incidentId: string;
   orgId: string;
   status?: string;
+  // PEAKOPS_DASHBOARD_DEMO_SAFE_V1 (Dashboard Demo Readiness)
+  // Plumbing incident.title so cards can render a human-readable
+  // headline instead of the raw 28-char Firestore ID.
+  title?: string;
+  location?: string;
   evidenceCount?: number;
   reviewable?: number;
   approved?: number;
@@ -14,6 +19,21 @@ type IncidentLite = {
   latestJobTitle?: string;
   thumbUrl?: string;
 };
+
+// PEAKOPS_DASHBOARD_DEMO_SAFE_V1 (Dashboard Demo Readiness)
+// In Vercel production the previous `http://127.0.0.1:3001` base
+// caused every internal fetch to fail silently, leaving the
+// dashboard with zero items. Same-origin construction via
+// VERCEL_URL (or NEXT_PUBLIC_APP_URL as override) works in both
+// preview and production deployments. Localhost dev falls back to
+// the same hard-coded 3001 the dev server uses.
+function getBaseUrl(): string {
+  const explicit = String(process.env.NEXT_PUBLIC_APP_URL || "").trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const vercel = String(process.env.VERCEL_URL || "").trim();
+  if (vercel) return `https://${vercel.replace(/\/+$/, "")}`;
+  return "http://127.0.0.1:3001";
+}
 
 function fmtAgo(sec?: number) {
   if (!sec) return "—";
@@ -47,9 +67,18 @@ function thumbUrlFromEvidence(ev: any): string {
 
 export async function GET() {
   try {
-    const base = "http://127.0.0.1:3001";
+    const base = getBaseUrl();
 
+    // PEAKOPS_DASHBOARD_DEMO_SAFE_V1 (Dashboard Demo Readiness)
+    // The real customer demo target gets seeded here. Pre-fix the
+    // seed list was scaffolding from earlier dev seeds (riverbend-
+    // electric / northwind-telecom / spokane-valley-utilities) that
+    // don't have real production data; with the localhost-base bug
+    // also fixed those would render as empty cards. peakops-internal-
+    // alpha's sealed demo incident is now the first surface a
+    // signed-in customer sees on /dashboard.
     const seeds = [
+      { incidentId: "inc_20260508_121451_acnew0", orgId: "peakops-internal-alpha" },
       { incidentId: "inc_demo", orgId: "riverbend-electric" },
       { incidentId: "inc_substation", orgId: "riverbend-electric" },
       { incidentId: "inc_celltower", orgId: "northwind-telecom" },
@@ -126,8 +155,12 @@ export async function GET() {
 
       const updateRequested = !!latestRequestUpdate && responseSec < requestSec;
 
+      // PEAKOPS_DASHBOARD_DEMO_SAFE_V1 (Dashboard Demo Readiness)
+      // getIncidentV1 wraps the doc; same bug as the status read.
       const updatedSec =
         Number(
+          inc?.doc?.updatedAt?._seconds ||
+          inc?.doc?.createdAt?._seconds ||
           inc?.updatedAt?._seconds ||
           inc?.createdAt?._seconds ||
           latestTl?.occurredAt?._seconds ||
@@ -136,10 +169,19 @@ export async function GET() {
           0
         );
 
+      // PEAKOPS_DASHBOARD_DEMO_SAFE_V1 (Dashboard Demo Readiness)
+      // getIncidentV1 wraps the response as { ok, doc: {...} }. The
+      // prior read used inc?.incidentStatus || inc?.status which
+      // missed the doc wrapper entirely, so every card defaulted to
+      // "open" regardless of the underlying state. Reading from
+      // inc?.doc?.status restores the lifecycle truth.
+      const incDoc: any = inc?.doc || {};
       items.push({
         incidentId: s.incidentId,
         orgId: s.orgId,
-        status: String(inc?.incidentStatus || inc?.status || "open"),
+        status: String(incDoc.status || inc?.incidentStatus || inc?.status || "open"),
+        title: String(incDoc.title || "").trim() || undefined,
+        location: String(incDoc.location || "").trim() || undefined,
         evidenceCount: evDocs.length,
         reviewable,
         approved,
