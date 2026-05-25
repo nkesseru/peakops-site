@@ -69,22 +69,18 @@ export async function GET() {
   try {
     const base = getBaseUrl();
 
-    // PEAKOPS_DASHBOARD_DEMO_SAFE_V1 (Dashboard Demo Readiness)
-    // The real customer demo target gets seeded here. Pre-fix the
-    // seed list was scaffolding from earlier dev seeds (riverbend-
-    // electric / northwind-telecom / spokane-valley-utilities) that
-    // don't have real production data; with the localhost-base bug
-    // also fixed those would render as empty cards. peakops-internal-
-    // alpha's sealed demo incident is now the first surface a
-    // signed-in customer sees on /dashboard.
+    // PEAKOPS_DASHBOARD_POLISH_V1
+    // Seed list narrowed to the real customer demo target. The prior
+    // fictional scaffolding (inc_demo / riverbend-electric,
+    // inc_substation, inc_celltower / northwind-telecom,
+    // inc_fiber_cut, inc_water_main / spokane-valley-utilities,
+    // inc_transformer) never had real production data; the
+    // server-to-server fetches all 401'd and got skipped. Removing
+    // them eliminates source-level leakage of fictional org slugs
+    // and stops the 24 silently-failing fetches on every dashboard
+    // load.
     const seeds = [
       { incidentId: "inc_20260508_121451_acnew0", orgId: "peakops-internal-alpha" },
-      { incidentId: "inc_demo", orgId: "riverbend-electric" },
-      { incidentId: "inc_substation", orgId: "riverbend-electric" },
-      { incidentId: "inc_celltower", orgId: "northwind-telecom" },
-      { incidentId: "inc_fiber_cut", orgId: "northwind-telecom" },
-      { incidentId: "inc_water_main", orgId: "spokane-valley-utilities" },
-      { incidentId: "inc_transformer", orgId: "spokane-valley-utilities" },
     ];
 
     const items: IncidentLite[] = [];

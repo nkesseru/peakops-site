@@ -349,8 +349,11 @@ function BucketSection({ title, items }: { title: string; items: Incident[] }) {
       </div>
 
       <div className="grid gap-4">
+        {/* PEAKOPS_DASHBOARD_POLISH_V1
+            Bucket empty-state copy below — calmer + more operational
+            than the prior "No records in this state right now." */}
         {items.length ? items.map((i) => <IncidentCard key={`${i.orgId}:${i.incidentId}`} i={i} />) : (
-          <div className="text-gray-500 text-sm">No records in this state right now.</div>
+          <div className="text-gray-500 text-sm">No active incidents need attention right now.</div>
         )}
       </div>
     </section>
@@ -530,10 +533,23 @@ export default function Dashboard() {
         <section className="mb-6 rounded-2xl border border-amber-300/20 bg-amber-500/[0.04] px-5 py-5 sm:px-6 sm:py-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
+              {/* PEAKOPS_DASHBOARD_POLISH_V1
+                  Two-line eyebrow. The all-caps "CONTINUE YOUR DEMO"
+                  label stays as the prompt; the quieter second line
+                  ("Open the sealed operational record") is the
+                  instruction that tells the user what the card is
+                  asking them to do — same voice as Summary's
+                  "Operational record closed" banner. The previous
+                  inline " · INCIDENT RECORD · {ORGID}" annotation
+                  is dropped; the title + location + chip below
+                  already carry the dossier identity. */}
               <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-                Continue your demo · INCIDENT RECORD · {DEMO_TARGET.orgId.toUpperCase()}
+                Continue your demo
               </div>
-              <h2 className="mt-1.5 text-xl sm:text-[22px] font-semibold leading-tight tracking-tight text-white truncate">
+              <div className="mt-1 text-[12px] text-gray-300">
+                Open the sealed operational record
+              </div>
+              <h2 className="mt-3 text-xl sm:text-[22px] font-semibold leading-tight tracking-tight text-white truncate">
                 {demoTitle}
               </h2>
               {demoLocation ? (
