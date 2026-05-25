@@ -23,6 +23,7 @@ import {
   incidentStatusPill,
   normalizeIncidentStatusShared,
 } from "@/lib/incidents/incidentStatus";
+import RecordNav from "@/components/RecordNav";
 
 // PEAKOPS_REVIEW_OPERATIONAL_LANGUAGE_V1 (PR 51)
 // Inline minimal translation helpers so Review reads as an
@@ -1670,6 +1671,13 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
       </div>
 
       <div className="max-w-3xl mx-auto p-4 space-y-4">
+        {/* PEAKOPS_RECORD_NAV_V1 */}
+        <RecordNav
+          incidentId={String(incidentId || "")}
+          orgId={orgId}
+          current="review"
+          isSealed={isIncidentClosed}
+        />
         {toastMsg ? (
           <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 text-amber-100 text-xs px-3 py-2">
             {toastMsg}

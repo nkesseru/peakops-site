@@ -23,6 +23,7 @@ import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/li
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
+import RecordNav from "@/components/RecordNav";
 import {
   incidentStatusLabel,
   incidentStatusPill,
@@ -2737,6 +2738,20 @@ useEffect(() => {
 })()}
 
 
+      </div>
+
+      {/* PEAKOPS_RECORD_NAV_V1
+          Quiet horizontal route bridge between Dashboard · Incident
+          · Summary · Review · File Addendum. Sits directly below
+          the identity-hero masthead, outside the sticky region, so
+          it scrolls with the rest of the body. */}
+      <div className="px-4 pt-3">
+        <RecordNav
+          incidentId={String(incidentId || "")}
+          orgId={String(orgId || "")}
+          current="incident"
+          isSealed={isClosed}
+        />
       </div>
 
       <div className={"p-4 space-y-4 " + (contextLockId ? "opacity-[0.94] transition-opacity" : "")}>

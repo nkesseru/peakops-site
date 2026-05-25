@@ -23,6 +23,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authedFetch } from "@/lib/apiClient";
+import RecordNav from "@/components/RecordNav";
 
 type Reason = "clarification" | "customer_followup" | "audit_support" | "other";
 
@@ -244,6 +245,14 @@ export default function AddAddendumClient({
             record.
           </p>
         </div>
+
+        {/* PEAKOPS_RECORD_NAV_V1 */}
+        <RecordNav
+          incidentId={String(incidentId || "")}
+          orgId={orgId}
+          current="addendum"
+          isSealed={true}
+        />
 
         <section className="rounded-xl border border-white/10 bg-white/[0.03] p-5 space-y-5">
           <div>
