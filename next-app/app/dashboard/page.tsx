@@ -488,9 +488,17 @@ export default function Dashboard() {
       <div className="max-w-6xl mx-auto p-6">
         <div className="flex items-center justify-between mb-6 gap-4">
           <div>
-            <div className="text-xs tracking-[0.2em] text-gray-400">SUPERVISOR DASHBOARD</div>
+            {/* PEAKOPS_FRAMING_LAYER_V1 (PR 71)
+                Eyebrow reframed from generic "SUPERVISOR DASHBOARD"
+                to "ACCEPTANCE QUEUE" so the surface reads as the
+                work-to-close-out queue, not a generic ops console.
+                Subtitle reframed from "Review incidents, chase
+                updates, approve records" to a proof/closeout-anchored
+                three-beat. Brand-anchored "PeakOps Control Tower"
+                title kept for muscle memory. */}
+            <div className="text-xs tracking-[0.2em] text-gray-400">ACCEPTANCE QUEUE</div>
             <div className="text-2xl font-semibold">PeakOps Control Tower</div>
-            <div className="text-sm text-gray-400">Review incidents, chase updates, approve records.</div>
+            <div className="text-sm text-gray-400">Build proof. Approve packets. Close out work.</div>
           </div>
 
           <div className="flex items-center gap-2">

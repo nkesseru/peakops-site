@@ -2458,8 +2458,11 @@ useEffect(() => {
       <div className="px-4 pt-4 pb-3 border-b border-white/10 sticky top-0 bg-black/80 backdrop-blur z-10">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
+            {/* PEAKOPS_FRAMING_LAYER_V1 (PR 71) — eyebrow word swap.
+                "Incident Record" → "Field Record". Routes, RecordNav
+                labels, and status pipeline unchanged. */}
             <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
-              Incident Record
+              Field Record
               {orgId ? ` · ${orgId.toUpperCase()}` : ""}
             </div>
             <h1 className="mt-1 text-xl sm:text-2xl font-semibold leading-tight tracking-tight text-white truncate">
