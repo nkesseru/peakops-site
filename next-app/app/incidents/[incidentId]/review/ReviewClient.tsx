@@ -24,6 +24,7 @@ import {
   normalizeIncidentStatusShared,
 } from "@/lib/incidents/incidentStatus";
 import RecordNav from "@/components/RecordNav";
+import AppTopBar from "@/components/AppTopBar";
 
 // PEAKOPS_REVIEW_OPERATIONAL_LANGUAGE_V1 (PR 51)
 // Inline minimal translation helpers so Review reads as an
@@ -1406,15 +1407,18 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   // firing while this panel is shown.
   if (!orgId && !activeOrgId) {
     return (
-      <main className="min-h-screen bg-black text-white p-6">
-        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
-          <div className="text-sm text-amber-100 font-semibold">Review unavailable</div>
-          <div className="mt-2 text-sm text-amber-50/90">
-            The supervisor review page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
-          </div>
-          <div className="mt-3 text-xs text-amber-100/80">
-            Open this review from the Incident page, or include{" "}
-            <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+      <main className="min-h-screen bg-black text-white">
+        <AppTopBar />
+        <div className="p-6">
+          <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+            <div className="text-sm text-amber-100 font-semibold">Review unavailable</div>
+            <div className="mt-2 text-sm text-amber-50/90">
+              The supervisor review page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
+            </div>
+            <div className="mt-3 text-xs text-amber-100/80">
+              Open this review from the Incident page, or include{" "}
+              <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+            </div>
           </div>
         </div>
       </main>
@@ -1582,6 +1586,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
 
   return (
     <main className="min-h-screen bg-black text-white">
+      <AppTopBar />
       {/* PEAKOPS_REVIEW_HEADER_SHELL_V1 (PR 51)
           Sticky top bar realigned to the Summary dossier voice. Eyebrow
           names the surface ("INCIDENT RECORD · {org} · SUPERVISOR

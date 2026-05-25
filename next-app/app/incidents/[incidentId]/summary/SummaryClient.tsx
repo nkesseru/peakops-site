@@ -20,6 +20,7 @@ import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec,
 import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
 import UpgradePrompt from "@/components/UpgradePrompt";
 import RecordNav from "@/components/RecordNav";
+import AppTopBar from "@/components/AppTopBar";
 import { authedFetch } from "@/lib/apiClient";
 
 type IncidentDoc = {
@@ -1398,15 +1399,18 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   // firing while this panel is shown.
   if (!orgId && !activeOrgId) {
     return (
-      <main className="min-h-screen bg-black text-white p-6">
-        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
-          <div className="text-sm text-amber-100 font-semibold">Summary unavailable</div>
-          <div className="mt-2 text-sm text-amber-50/90">
-            The incident summary page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
-          </div>
-          <div className="mt-3 text-xs text-amber-100/80">
-            Open this summary from the Incident page, or include{" "}
-            <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+      <main className="min-h-screen bg-black text-white">
+        <AppTopBar />
+        <div className="p-6">
+          <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+            <div className="text-sm text-amber-100 font-semibold">Summary unavailable</div>
+            <div className="mt-2 text-sm text-amber-50/90">
+              The incident summary page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
+            </div>
+            <div className="mt-3 text-xs text-amber-100/80">
+              Open this summary from the Incident page, or include{" "}
+              <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+            </div>
           </div>
         </div>
       </main>
@@ -1422,7 +1426,9 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         orgId={orgId}
         onClose={() => setUpgrade((s) => ({ ...s, open: false }))}
       />
-    <main className="min-h-screen bg-black text-white py-8 sm:py-12">
+    <main className="min-h-screen bg-black text-white">
+      <AppTopBar />
+      <div className="py-8 sm:py-12">
       {/* PEAKOPS_DOSSIER_CONTAINMENT_V1 (2026-05-18, PR 30c)
           Outer dossier shell. A single subtle bordered surface with
           a faint top-down gradient and ambient shadow makes the page
@@ -2901,6 +2907,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
         {loading ? <div className="text-xs text-gray-500">Refreshing summary…</div> : null}
         </div>
+      </div>
       </div>
     </main>
     </>

@@ -56,6 +56,7 @@ function bucketBlurb(bucket: string) {
 }
 import { useEffect, useMemo, useState } from "react";
 import RequireAuth from "@/components/RequireAuth";
+import AppTopBar from "@/components/AppTopBar";
 import { incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
 
 // PEAKOPS_DASHBOARD_DEMO_SAFE_V1
@@ -482,8 +483,9 @@ export default function Dashboard() {
 
   return (
     <RequireAuth>
-    <main className="min-h-screen bg-black text-white p-6">
-      <div className="max-w-6xl mx-auto">
+    <main className="min-h-screen bg-black text-white">
+      <AppTopBar />
+      <div className="max-w-6xl mx-auto p-6">
         <div className="flex items-center justify-between mb-6 gap-4">
           <div>
             <div className="text-xs tracking-[0.2em] text-gray-400">SUPERVISOR DASHBOARD</div>

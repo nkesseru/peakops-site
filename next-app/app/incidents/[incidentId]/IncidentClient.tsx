@@ -24,6 +24,7 @@ import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenc
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
 import RecordNav from "@/components/RecordNav";
+import AppTopBar from "@/components/AppTopBar";
 import {
   incidentStatusLabel,
   incidentStatusPill,
@@ -2382,14 +2383,17 @@ useEffect(() => {
 
   return (
     invalidIncidentRoute ? (
-      <main className="min-h-screen bg-black text-white p-6">
-        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
-          <div className="text-sm text-amber-100 font-semibold">Invalid incident URL</div>
-          <div className="mt-2 text-sm text-amber-50/90">
-            This page was opened with a placeholder incident id (`/incidents/&lt;incidentId&gt;`).
-          </div>
-          <div className="mt-3 text-xs text-amber-100/80">
-            Open `/incidents/inc_demo` or a real incident id instead.
+      <main className="min-h-screen bg-black text-white">
+        <AppTopBar />
+        <div className="p-6">
+          <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+            <div className="text-sm text-amber-100 font-semibold">Invalid incident URL</div>
+            <div className="mt-2 text-sm text-amber-50/90">
+              This page was opened with a placeholder incident id (`/incidents/&lt;incidentId&gt;`).
+            </div>
+            <div className="mt-3 text-xs text-amber-100/80">
+              Open `/incidents/inc_demo` or a real incident id instead.
+            </div>
           </div>
         </div>
       </main>
@@ -2399,15 +2403,18 @@ useEffect(() => {
          the URL has no `?orgId=...` query param. The mirror guard in
          refresh() above prevents any /api/fn/* network calls from
          firing while this panel is shown. */
-      <main className="min-h-screen bg-black text-white p-6">
-        <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
-          <div className="text-sm text-amber-100 font-semibold">Incident unavailable</div>
-          <div className="mt-2 text-sm text-amber-50/90">
-            This incident page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
-          </div>
-          <div className="mt-3 text-xs text-amber-100/80">
-            Open this incident from the Dashboard or Incidents list, or include{" "}
-            <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+      <main className="min-h-screen bg-black text-white">
+        <AppTopBar />
+        <div className="p-6">
+          <div className="max-w-2xl mx-auto rounded-2xl border border-amber-300/30 bg-amber-500/10 p-5">
+            <div className="text-sm text-amber-100 font-semibold">Incident unavailable</div>
+            <div className="mt-2 text-sm text-amber-50/90">
+              This incident page needs an <code className="px-1 py-0.5 rounded bg-white/10">orgId</code> in the URL to load.
+            </div>
+            <div className="mt-3 text-xs text-amber-100/80">
+              Open this incident from the Dashboard or Incidents list, or include{" "}
+              <code className="px-1 py-0.5 rounded bg-white/10">?orgId=&lt;your-org-id&gt;</code> in the URL.
+            </div>
           </div>
         </div>
       </main>
@@ -2435,7 +2442,8 @@ useEffect(() => {
         } catch {}
       }}
     >
-      
+      <AppTopBar />
+
       {/* PEAKOPS_INCIDENT_HERO_CONVERGENCE_V1 (PR 56)
           Identity hero. Replaces the prior "Field Incident /
           {incidentId} • {orgId} / status: closed / updated: Xd"
@@ -2612,25 +2620,10 @@ useEffect(() => {
         </div>
 
         {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
-            Sealed-state informational panel. Replaces the now-hidden
-            operational cockpit (Active Job card, NextBestAction,
-            Timers, Readiness, bottom dock) on the overview tab. Same
-            calm SealedRecordPanel pattern PR 53.5 uses on JobDetail
-            and PR 42 uses on Notes/AddEvidence — single source of
-            sealed-state voice. Routes "Create addendum" →
-            /incidents/{id}/add-addendum and "Back to summary" →
-            /incidents/{id}/summary. Renders only on the overview
-            tab so it doesn't double up with the evidence/timeline
-            informational content on those tabs. */}
-        {isClosed && activeTab === "overview" ? (
-          <SealedRecordPanel
-            variant="fullPage"
-            title="Operational record sealed"
-            body="This incident is closed. Field operations are complete and the record is immutable. Supplemental context attaches through addenda."
-            orgId={orgId}
-            incidentId={String(incidentId || "")}
-          />
-        ) : null}
+            (Panel moved out of the sticky masthead in PR 67 so the
+            RecordNav breadcrumb reads above the sealed card. The
+            actual <SealedRecordPanel> render now lives below the
+            RecordNav strip; see PEAKOPS_BREADCRUMB_PLACEMENT_V1. */}
 
 {/* PEAKOPS_ACTIVE_JOB_CARD_UI_V1 */}
 {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
@@ -2753,6 +2746,30 @@ useEffect(() => {
           isSealed={isClosed}
         />
       </div>
+
+      {/* PEAKOPS_BREADCRUMB_PLACEMENT_V1 (PR 67)
+          Sealed-record informational panel. Previously rendered inside
+          the sticky masthead which placed it *above* the RecordNav
+          breadcrumb on the Overview tab — the breadcrumb belongs
+          between the identity hero and the sealed card, not below it.
+          Moving the panel here keeps Overview's vertical rhythm in
+          step with Timeline / Evidence / Jobs (which never had a
+          sealed card competing with RecordNav). Renders only on the
+          overview tab so it doesn't double up with the
+          evidence/timeline informational content on those tabs.
+          Routes "Create addendum" → /incidents/{id}/add-addendum and
+          "Back to summary" → /incidents/{id}/summary. */}
+      {isClosed && activeTab === "overview" ? (
+        <div className="px-4 pt-3">
+          <SealedRecordPanel
+            variant="fullPage"
+            title="Operational record sealed"
+            body="This incident is closed. Field operations are complete and the record is immutable. Supplemental context attaches through addenda."
+            orgId={orgId}
+            incidentId={String(incidentId || "")}
+          />
+        </div>
+      ) : null}
 
       <div className={"p-4 space-y-4 " + (contextLockId ? "opacity-[0.94] transition-opacity" : "")}>
         {refreshError ? (
