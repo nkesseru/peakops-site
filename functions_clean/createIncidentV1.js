@@ -178,6 +178,27 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
   const archetypeRaw = String(body.archetype || "").trim().toLowerCase();
   const archetype = ARCHETYPE_ENUM.includes(archetypeRaw) ? archetypeRaw : "";
 
+  // PEAKOPS_CREATE_INCIDENT_PROOF_CONTEXT_V1 (PR 68b)
+  // Operational context descriptors captured by the proof-workflow
+  // form (PR 69 /incidents/new). Both optional, both length-bounded.
+  // customer is free text (could be a customer name, agency name, or
+  // project label depending on the user's industry); externalWorkOrderId
+  // is the upstream ticket id we cross-reference against — kept slug-ish
+  // so it can safely round-trip into URLs and filenames.
+  const customer = String(body.customer || "").trim();
+  if (customer && customer.length > 120) {
+    return j(res, 400, { ok: false, error: "customer must be ≤120 characters" });
+  }
+  const externalWorkOrderId = String(body.externalWorkOrderId || "").trim();
+  if (externalWorkOrderId) {
+    if (externalWorkOrderId.length > 64) {
+      return j(res, 400, { ok: false, error: "externalWorkOrderId must be ≤64 characters" });
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(externalWorkOrderId)) {
+      return j(res, 400, { ok: false, error: "externalWorkOrderId must contain only letters, digits, _ and -" });
+    }
+  }
+
   // PEAKOPS_CREATE_INCIDENT_DUAL_WRITE_V1 (2026-04-29)
   // The codebase has TWO incident paths:
   //   - top-level `incidents/{id}` (canonical — listJobsV1,
@@ -218,6 +239,8 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
     if (jobType) doc.jobType = jobType;
     if (workType) doc.workType = workType;
     if (archetype) doc.archetype = archetype;
+    if (customer) doc.customer = customer;
+    if (externalWorkOrderId) doc.externalWorkOrderId = externalWorkOrderId;
 
     // Write both copies in parallel. If the org-scoped write fails
     // (e.g., because security rules diverge), the top-level write is
