@@ -70,13 +70,16 @@ export default function AppTopBar() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* PEAKOPS_FRAMING_LAYER_V1 (PR 72) — button label aligned
+              with the new "Field record" vocabulary from PR 71. The
+              route still lives at /incidents/new for back-compat. */}
           <button
             type="button"
             onClick={() => router.push("/incidents/new")}
             className="px-3 py-1.5 rounded-full text-[11px] font-medium border border-white/15 bg-white/[0.04] text-gray-200 hover:bg-white/[0.10] hover:text-white transition-colors"
-            title="Start a new operational record"
+            title="Open a new field record"
           >
-            + New incident
+            + New field record
           </button>
         </div>
       </div>
