@@ -1512,6 +1512,73 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     };
   }, [heroEvidence, timeline]);
 
+  // PEAKOPS_REVIEW_HERO_SIGNED_URL_V1
+  // Direct-signed-URL state map for the Evidence Hero panel.
+  // Pre-fix: the hero used buildThumbProxyUrl(...) which routes through
+  // /api/media, which proxies through a hardcoded localhost
+  // FIREBASE_STORAGE_EMULATOR_HOST in production → 500
+  // "fetch failed" → image renders as a black box. Summary works
+  // because it uses mintEvidenceReadUrl → direct GCS V4 signed URL.
+  // Post-fix: Review's hero mints the same direct signed URL via the
+  // already-shipping getEvidenceReadUrl helper (the same path
+  // openEvidence uses for the modal, verified working). The image
+  // bytes come straight from GCS — no /api/media proxy in the
+  // hot path. DAMAGE chip, provenance strip, Open-full-evidence
+  // navigation all unchanged.
+  const [heroSignedUrlByKey, setHeroSignedUrlByKey] = useState<Record<string, string>>({});
+  const [heroSignedUrlErrByKey, setHeroSignedUrlErrByKey] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isIncidentClosed) return; // hero only renders on closed incidents
+    if (!evidence || evidence.length === 0) return;
+
+    async function mintForItem(ev: any) {
+      const id = String(ev?.id || ev?.evidenceId || "");
+      if (!id) return;
+      // Skip if already minted for this id.
+      if (heroSignedUrlByKey[id]) return;
+      const media = getTileMedia(ev);
+      if (media.mode !== "image") return;
+      try {
+        const url = await getEvidenceReadUrl(
+          media.ref.bucket,
+          media.ref.storagePath,
+          900,
+        );
+        if (cancelled) return;
+        setHeroSignedUrlByKey((m) => ({ ...m, [id]: String(url) }));
+        setHeroSignedUrlErrByKey((m) => {
+          if (!m[id]) return m;
+          const n = { ...m };
+          delete n[id];
+          return n;
+        });
+      } catch (e: any) {
+        if (cancelled) return;
+        setHeroSignedUrlErrByKey((m) => ({
+          ...m,
+          [id]: String(e?.message || e || "mint_failed"),
+        }));
+      }
+    }
+
+    // Mint for the hero piece first, then the secondary strip.
+    (async () => {
+      if (heroEvidence) await mintForItem(heroEvidence);
+      if (evidence.length > 1) {
+        for (const ev of evidence) {
+          if (cancelled) return;
+          await mintForItem(ev);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isIncidentClosed, evidence, heroEvidence]);
+
   return (
     <main className="min-h-screen bg-black text-white">
       {/* PEAKOPS_REVIEW_HEADER_SHELL_V1 (PR 51)
@@ -1782,7 +1849,19 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                 const ev: any = heroEvidence;
                 const id = String(ev?.id || ev?.evidenceId || "");
                 const media = getTileMedia(ev);
-                const u = media.mode === "image" ? buildThumbProxyUrl(media.ref, id) : "";
+                // PEAKOPS_REVIEW_HERO_SIGNED_URL_V1
+                // Direct GCS V4 signed URL minted by the effect above
+                // via getEvidenceReadUrl. Same pattern Summary uses.
+                // No /api/media proxy in the hot path → no localhost
+                // emulator URL → image renders correctly in prod.
+                const u =
+                  media.mode === "image"
+                    ? String(heroSignedUrlByKey[id] || "")
+                    : "";
+                const isMinting =
+                  media.mode === "image" && !u && !heroSignedUrlErrByKey[id];
+                const mintErr =
+                  media.mode === "image" ? heroSignedUrlErrByKey[id] || "" : "";
                 const name = String(getFileField(ev, "originalName") || id);
                 const labels = (ev?.labels || []).map((x: any) => String(x).toUpperCase());
                 return (
@@ -1798,9 +1877,17 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                         className="w-full h-full object-contain"
                         loading="lazy"
                       />
+                    ) : isMinting ? (
+                      <div className="w-full h-full flex items-center justify-center text-sm text-gray-500">
+                        Preparing preview…
+                      </div>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-sm text-gray-500">
-                        {media.mode === "placeholder" ? media.label : "Unavailable"}
+                        {mintErr
+                          ? "Preview unavailable"
+                          : media.mode === "placeholder"
+                          ? media.label
+                          : "Unavailable"}
                       </div>
                     )}
 
@@ -1834,8 +1921,13 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
                     const isHero =
                       id === String((heroEvidence as any)?.id || "");
                     const media = getTileMedia(ev);
+                    // PEAKOPS_REVIEW_HERO_SIGNED_URL_V1
+                    // Same signed-URL state map the hero preview reads;
+                    // secondary thumbnails get minted by the same effect.
                     const u =
-                      media.mode === "image" ? buildThumbProxyUrl(media.ref, id) : "";
+                      media.mode === "image"
+                        ? String(heroSignedUrlByKey[id] || "")
+                        : "";
                     return (
                       <button
                         key={id}
