@@ -81,6 +81,16 @@ function mapDoc(d, fallbackOrgId) {
   // "render only when present" rule applies cleanly.
   const customer = String(data.customer || data.customerName || "").trim();
   if (customer) out.customer = customer;
+  // PEAKOPS_LIST_INCIDENTS_ARCHETYPE_FIELD_V1 (PR 83a)
+  // Surface the proof-workflow archetype (PR 68b createIncidentV1
+  // + PR 81a enum extension) so the /records index (PR 83b) can
+  // render it as a small eyebrow above the card title. Identical
+  // shape to the customer field above — present when non-empty,
+  // omitted otherwise. The frontend handles legacy enum values
+  // (splice_work, site_survey, cable_install) by simply not
+  // rendering an eyebrow for keys outside the curated set.
+  const archetype = String(data.archetype || "").trim();
+  if (archetype) out.archetype = archetype;
   // PacketMeta-cached counts. No N+1 — if the supervisor hasn't yet
   // generated a report, these are simply absent and the frontend
   // hides them.
