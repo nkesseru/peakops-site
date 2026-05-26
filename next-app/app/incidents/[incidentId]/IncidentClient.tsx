@@ -2528,7 +2528,8 @@ useEffect(() => {
                       entries. */}
                   <span>
                     {_evidenceN}{" "}
-                    {_evidenceN === 1 ? "piece of evidence" : "pieces of evidence"}
+                    {/* PR 88 — proof vocabulary on the header meta. */}
+                    {_evidenceN === 1 ? "proof item" : "proof items"}
                   </span>
                   {incidentUpdatedAtSec ? (
                     <>
@@ -2635,7 +2636,9 @@ useEffect(() => {
               }
               onClick={() => setTab(tab)}
             >
-              {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Evidence" : "Jobs"}
+              {/* PR 88 — Evidence tab label flips to Proof. State key
+                  stays "evidence" (no logic change). */}
+              {tab === "overview" ? "Overview" : tab === "timeline" ? "Timeline" : tab === "evidence" ? "Proof" : "Jobs"}
             </button>
           ))}
         </div>
@@ -2699,14 +2702,26 @@ useEffect(() => {
         <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wide text-gray-400">My active job</div>
-              <div className="text-sm text-gray-200 mt-1 truncate">
-                {jobTitle ? jobTitle : (activeJobId ? `Job ${activeJobId}` : "No job selected")}
-              </div>
-              <div className="text-xs text-gray-400 mt-1">
-                status: <span className="text-gray-200">{jobStatus || "n/a"}</span>
-                {locked ? <span className="ml-2 text-emerald-200">• locked</span> : null}
-              </div>
+              {/* PR 88 — "My active job" → "Work package" + calmer
+                  empty state when no job is bound. The status:n/a
+                  line is suppressed in the empty branch so the card
+                  reads as a friendly prompt instead of a debug dump. */}
+              <div className="text-[11px] uppercase tracking-wide text-gray-400">Work package</div>
+              {activeJobId || jobTitle ? (
+                <>
+                  <div className="text-sm text-gray-200 mt-1 truncate">
+                    {jobTitle || `Job ${activeJobId}`}
+                  </div>
+                  <div className="text-xs text-gray-400 mt-1">
+                    status: <span className="text-gray-200">{jobStatus || "n/a"}</span>
+                    {locked ? <span className="ml-2 text-emerald-200">• locked</span> : null}
+                  </div>
+                </>
+              ) : (
+                <div className="text-sm text-gray-300 mt-1 leading-relaxed">
+                  No active job yet. Capture your first proof item to start the session.
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {activeJobId ? (
@@ -3037,7 +3052,9 @@ useEffect(() => {
         {activeTab === "evidence" ? (
         <section ref={myJobSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-2">
-    <div className="text-xs uppercase tracking-wide text-gray-400" id="evidence">Evidence</div>
+    {/* PR 88 — section header matches the tab label. Anchor id
+        stays "#evidence" so any deep links keep working. */}
+    <div className="text-xs uppercase tracking-wide text-gray-400" id="evidence">Proof</div>
     <div className="flex items-center gap-2">
       <span className="text-xs text-gray-500">Latest {Math.min(12, evidence.length)}</span>
       {process.env.NODE_ENV !== "production" ? (
@@ -3541,7 +3558,11 @@ useEffect(() => {
           <button
             type="button"
             className={
-              "w-full py-3 rounded-xl text-sm font-semibold border transition " +
+              // PR 88 — dock Submit button text reframed from "Submit"
+              // to "Submit for approval". text-[11px] sm:text-sm keeps
+              // the longer phrase on one line at 375px viewport (4-col
+              // grid gives ~80px per cell).
+              "w-full py-3 rounded-xl text-[11px] sm:text-sm font-semibold border transition " +
               ((arrived && _hasEvidence && _hasNotes && !submitting && !isClosed)
                 ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
                 : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
@@ -3558,7 +3579,7 @@ useEffect(() => {
               try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {}
               try { submitSession(); } catch {}
             }}>
-            Submit
+            Submit for approval
           </button>
         </div>
       </div>
