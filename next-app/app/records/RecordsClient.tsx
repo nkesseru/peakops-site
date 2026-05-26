@@ -58,6 +58,10 @@ type IncidentRow = {
   status?: string;
   location?: string;
   priority?: string;
+  // PR 77b: customer / agency / project surfaced by listIncidentsV1
+  // (PR 77a). Optional — absent on older records or when the
+  // operator didn't fill the field at create time.
+  customer?: string;
   createdAt?: string;
   updatedAt?: string;
   submittedAt?: string;
@@ -307,6 +311,7 @@ function RecordCard({ row, router }: { row: IncidentRow; router: ReturnType<type
   const cta = rowCTA(row);
   const title = String(row.title || "").trim() || "Untitled field record";
   const loc = String(row.location || "").trim();
+  const customer = String(row.customer || "").trim();
   const evCount = Number.isFinite(row.evidenceCount as number) ? Number(row.evidenceCount) : null;
   const age = lastActivityLabel(row);
 
@@ -327,6 +332,16 @@ function RecordCard({ row, router }: { row: IncidentRow; router: ReturnType<type
               {incidentStatusLabel(row.status)}
             </span>
           </div>
+          {/* PR 77b: customer / agency / project sits between the
+              title and the location. Slightly brighter weight than
+              location (text-gray-300 vs text-gray-400) so the
+              "who the packet is for" reads first when present, but
+              calm enough not to compete with the title. Omitted
+              when absent — listIncidentsV1 only sends it for
+              records that actually have a value. */}
+          {customer ? (
+            <div className="text-[12px] text-gray-300 truncate">{customer}</div>
+          ) : null}
           {loc ? (
             <div className="text-[12px] text-gray-400 truncate">{loc}</div>
           ) : null}
