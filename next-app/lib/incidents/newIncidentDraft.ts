@@ -1,51 +1,88 @@
 /**
- * PEAKOPS_NEW_INCIDENT_DRAFT_V1 (PR 70)
+ * PEAKOPS_NEW_INCIDENT_DRAFT_V2 (PR 82)
  *
  * Shared types + client-side validation for the proof-workflow
  * draft-record creation form (/incidents/new). Mirrors the server
- * contract in functions_clean/createIncidentV1.js (PR 68 + 68b)
- * so the UI catches bad input before the round-trip, but the
- * server remains authoritative — if these drift, the server's
- * 400 message surfaces in the form's error banner.
+ * contract in functions_clean/createIncidentV1.js (PR 68 + 68b
+ * + 81a) so the UI catches bad input before the round-trip; the
+ * server remains authoritative.
  *
- * Keep this file dependency-light. It is imported by:
- *   - app/incidents/new/NewIncidentClient.tsx (form)
- * and may later be imported by an incident detail page that
- * surfaces these labels for display.
+ * v2 changes (PR 82):
+ *   - ARCHETYPE_VALUES expanded to the curated proof-workflow set
+ *     (fiber_splice_verification, pole_inspection, site_acceptance,
+ *     storm_restoration_proof, custom). Backend ARCHETYPE_ENUM
+ *     accepts these via PR 81a.
+ *   - ARCHETYPE_DETAILS added — purpose, required-proof checklist,
+ *     and packet-use copy per archetype, surfaced by the new card
+ *     picker in NewIncidentClient.
+ *   - WORK_TYPE_* removed. Archetype now carries the operational
+ *     classification on its own. Backend still accepts workType
+ *     if sent — we just stop sending it.
+ *
+ * Legacy archetype values (splice_work, cable_install, site_survey)
+ * are NOT included here — the picker doesn't surface them. Existing
+ * records that carry those values continue to work because the
+ * backend still accepts them on read paths.
  */
 
-export const WORK_TYPE_VALUES = [
-  "field_operation",
-  "field_maintenance",
-  "inspection",
-  "compliance_audit",
-  "other",
-] as const;
-export type WorkType = (typeof WORK_TYPE_VALUES)[number];
-
-export const WORK_TYPE_LABELS: Record<WorkType, string> = {
-  field_operation: "Field operation",
-  field_maintenance: "Field maintenance",
-  inspection: "Inspection",
-  compliance_audit: "Compliance audit",
-  other: "Other",
-};
-
 export const ARCHETYPE_VALUES = [
+  "fiber_splice_verification",
   "pole_inspection",
-  "splice_work",
-  "cable_install",
-  "site_survey",
+  "site_acceptance",
+  "storm_restoration_proof",
   "custom",
 ] as const;
 export type Archetype = (typeof ARCHETYPE_VALUES)[number];
 
 export const ARCHETYPE_LABELS: Record<Archetype, string> = {
+  fiber_splice_verification: "Fiber splice verification",
   pole_inspection: "Pole inspection",
-  splice_work: "Splice work",
-  cable_install: "Cable install",
-  site_survey: "Site survey",
-  custom: "Custom",
+  site_acceptance: "Site acceptance",
+  storm_restoration_proof: "Storm restoration proof",
+  custom: "Custom field record",
+};
+
+/**
+ * Rich metadata for each archetype card on /incidents/new (PR 82).
+ *   - purpose: one-sentence framing of what the packet is for
+ *   - requiredProof: short checklist of evidence the proof package
+ *     will need to feel acceptance-ready
+ *   - packetUse: dossier-voice tag line describing how the assembled
+ *     packet will be consumed downstream
+ */
+export const ARCHETYPE_DETAILS: Record<
+  Archetype,
+  { purpose: string; requiredProof: readonly string[]; packetUse: string }
+> = {
+  fiber_splice_verification: {
+    purpose:
+      "Document splice completion for customer acceptance and invoice support.",
+    requiredProof: ["Completion photos", "GPS capture", "Supervisor approval"],
+    packetUse: "Customer acceptance · Invoice support",
+  },
+  pole_inspection: {
+    purpose:
+      "Capture inspection proof for maintenance, QA, or audit review.",
+    requiredProof: ["Inspection photos", "Field notes", "QA review"],
+    packetUse: "QA / inspection · Internal documentation",
+  },
+  site_acceptance: {
+    purpose: "Package final completion proof for customer sign-off.",
+    requiredProof: ["Completion photos", "Redlines", "Supervisor approval"],
+    packetUse: "Customer acceptance · Closeout packet",
+  },
+  storm_restoration_proof: {
+    purpose:
+      "Capture restoration proof for claims, reimbursement, and after-action review.",
+    requiredProof: ["Damage photos", "GPS capture", "Time-stamped notes"],
+    packetUse: "Claim support · Reimbursement support",
+  },
+  custom: {
+    purpose:
+      "Start a flexible proof package when no standard archetype fits.",
+    requiredProof: ["Photos", "Field notes", "Approval"],
+    packetUse: "Internal documentation · Custom",
+  },
 };
 
 export const PRIORITY_VALUES = ["low", "normal", "high", "urgent"] as const;
@@ -61,17 +98,9 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
 /**
  * PEAKOPS_PACKET_PURPOSE_V1 (PR 71)
  *
- * Client-only framing field for the proof-workflow form. Captures
- * what the operator intends this packet to support — customer
- * acceptance, invoice support, QA, claim, internal docs, custom.
- *
- * NOT sent to createIncidentV1 in this PR. The backend doesn't yet
- * accept this field; adding it would require a backend ext PR which
- * is explicitly out of scope per the PR 71 spec ("commercialization
- * alignment, NOT a backend/platform rewrite"). The selection lives
- * in the form's useState and is dropped on submit. When the backend
- * extends to support `packetPurpose`, only buildCreatePayload needs
- * to learn the field.
+ * Client-only framing field. NOT sent to createIncidentV1 yet
+ * (backend doesn't accept this field). Selection lives in the
+ * form's useState and drops on submit.
  */
 export const PACKET_PURPOSE_VALUES = [
   "customer_acceptance",
@@ -103,7 +132,6 @@ export const EXT_WO_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 export type NewIncidentDraft = {
   title: string;
-  workType: WorkType | "";
   archetype: Archetype | "";
   priority: Priority;
   location: string;
@@ -114,7 +142,6 @@ export type NewIncidentDraft = {
 
 export const EMPTY_DRAFT: NewIncidentDraft = {
   title: "",
-  workType: "",
   archetype: "",
   priority: "normal",
   location: "",
@@ -136,14 +163,8 @@ export function validateDraft(d: NewIncidentDraft): DraftErrors {
     e.title = `Must be ${TITLE_MAX} characters or fewer.`;
   }
 
-  if (!d.workType) {
-    e.workType = "Pick a work type.";
-  } else if (!WORK_TYPE_VALUES.includes(d.workType)) {
-    e.workType = "Unknown work type.";
-  }
-
   if (!d.archetype) {
-    e.archetype = "Pick a workflow archetype.";
+    e.archetype = "Pick a work package archetype.";
   } else if (!ARCHETYPE_VALUES.includes(d.archetype)) {
     e.archetype = "Unknown archetype.";
   }
@@ -179,7 +200,8 @@ export function isDraftSubmittable(d: NewIncidentDraft): boolean {
 /**
  * Build the request payload sent to /api/fn/createIncidentV1.
  * Empty optional fields are omitted so the server's "persist when
- * non-empty" rule applies cleanly.
+ * non-empty" rule applies cleanly. workType is no longer sent
+ * (PR 82); archetype now carries the operational classification.
  */
 export function buildCreatePayload(
   d: NewIncidentDraft,
@@ -189,7 +211,6 @@ export function buildCreatePayload(
     orgId,
     title: d.title.trim(),
     status: "draft",
-    workType: d.workType,
     archetype: d.archetype,
     priority: d.priority,
   };

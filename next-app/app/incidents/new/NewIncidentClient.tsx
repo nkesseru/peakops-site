@@ -1,41 +1,36 @@
 "use client";
 
 /**
- * PEAKOPS_NEW_INCIDENT_FORM_V1 (PR 70)
+ * PEAKOPS_NEW_INCIDENT_FORM_V2 (PR 82 — Work Package Archetypes)
  *
- * The proof-workflow draft-record creation form. Replaces the PR 67
- * template-card stub.
+ * Curated archetype-picker rewrite of the proof-workflow create
+ * surface. v1 (PR 70) was a 9-section radio-grid form. v2 leads
+ * with five rich archetype cards (purpose + required-proof
+ * checklist + packet-use tag), then keeps the remaining form
+ * fields below for title, location, customer, etc.
  *
- * Flow:
- *   1. User picks a work type, archetype, priority; fills title +
- *      optional location / customer / external work order id / notes.
- *   2. Submits → POST /api/fn/createIncidentV1 (proxied through
- *      app/api/fn/[name]/route.ts, which enforces Firebase auth +
- *      org membership server-side).
- *   3. On 201, redirects to /incidents/{newId}?orgId=...&next=capture-proof
- *      so the destination IncidentClient surfaces "Capture proof"
- *      as the next step.
+ * Voice direction (per PR 81 spec):
+ *   - "Start a field record" — operator-action wording rather than
+ *     "New operational record" (object-noun wording)
+ *   - "Choose the type of proof package you need to assemble" —
+ *     frames the act of creation as packet assembly, not data entry
+ *   - Cards lead with archetype identity; required-proof + packet-
+ *     use copy lives on the card so the static
+ *     "Required for Acceptance" panel from PR 71 retires (its
+ *     content is now per-archetype, contained on each card)
  *
- * Org isolation:
- *   - orgId comes from ?orgId=... in the URL, falling back to the
- *     user's first claimed orgId.
- *   - If neither resolves, we render a calm "select an organization"
- *     panel rather than letting the user submit against a missing
- *     org. The server proxy would reject the call anyway; this is a
- *     friendlier early exit.
+ * Flow unchanged from PR 70 onwards:
+ *   1. Pick an archetype, fill title (required) + optional details
+ *   2. POST /api/fn/createIncidentV1 (auth + org enforced by proxy)
+ *   3. On 201: router.push(`/incidents/{id}?orgId=...&next=capture-proof`)
  *
- * Validation:
- *   - Inline on blur via lib/incidents/newIncidentDraft → validateDraft.
- *   - Client mirrors the server contract from PR 68 + 68b so users
- *     don't hit the round-trip for shape issues. Server stays
- *     authoritative — server errors surface in the submit banner.
- *
- * What this file deliberately does NOT do:
- *   - No localStorage drafts (no fake state).
- *   - No optimistic create (we wait for the 201 response).
- *   - No dispatch / scheduling / chat / CRM affordances.
- *   - No template marketplace (the four templates from the PR 67
- *     stub fold into the workflow archetype radios).
+ * Removed in v2:
+ *   - Work type radio. Archetype now carries the operational
+ *     classification on its own. Backend still accepts workType
+ *     if sent, we just stop sending it. Existing records with
+ *     workType keep their values.
+ *   - Static "Required for Acceptance" amber card. Replaced by
+ *     the per-archetype required-proof line inside each card.
  */
 
 import { FormEvent, useMemo, useState } from "react";
@@ -45,6 +40,7 @@ import AppTopBar from "@/components/AppTopBar";
 import { useAuth } from "@/hooks/useAuth";
 import { authedFetch } from "@/lib/apiClient";
 import {
+  ARCHETYPE_DETAILS,
   ARCHETYPE_LABELS,
   ARCHETYPE_VALUES,
   type Archetype,
@@ -62,9 +58,6 @@ import {
   type Priority,
   TITLE_MAX,
   TITLE_MIN,
-  WORK_TYPE_LABELS,
-  WORK_TYPE_VALUES,
-  type WorkType,
   buildCreatePayload,
   isDraftSubmittable,
   validateDraft,
@@ -79,11 +72,9 @@ export default function NewIncidentClient() {
 }
 
 function Body() {
-  const router = useRouter();
   const sp = useSearchParams();
   const { claims } = useAuth();
 
-  // Org resolution: URL wins, then first claim'd orgId.
   const urlOrgId = String(sp?.get("orgId") || "").trim();
   const claimOrgId = (claims?.orgIds || [])[0] || "";
   const orgId = urlOrgId || claimOrgId;
@@ -91,7 +82,6 @@ function Body() {
   if (!orgId) {
     return <MissingOrgPanel />;
   }
-
   return <Form orgId={orgId} />;
 }
 
@@ -103,13 +93,13 @@ function MissingOrgPanel() {
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-10 space-y-5">
         <div className="rounded-2xl border border-amber-300/25 bg-amber-500/[0.05] p-5 sm:p-6 space-y-3">
           <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-            Operational draft
+            Field record
           </div>
           <div className="text-xl font-semibold text-white">
             Select an organization
           </div>
           <p className="text-[14px] text-gray-300 leading-relaxed">
-            Creating a new record requires an active organization. Open
+            Starting a field record requires an active organization. Open
             this page from a workspace link or visit the Team page to
             choose one.
           </p>
@@ -138,8 +128,6 @@ function MissingOrgPanel() {
 function Form({ orgId }: { orgId: string }) {
   const router = useRouter();
   const [draft, setDraft] = useState<NewIncidentDraft>(EMPTY_DRAFT);
-  // PEAKOPS_PACKET_PURPOSE_V1 (PR 71) — client-only framing field.
-  // Not wired to the backend yet; see lib/incidents/newIncidentDraft.
   const [packetPurpose, setPacketPurpose] = useState<PacketPurpose>("");
   const [touched, setTouched] = useState<Partial<Record<keyof NewIncidentDraft, boolean>>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -158,10 +146,8 @@ function Form({ orgId }: { orgId: string }) {
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     if (submitting) return;
-    // Mark every field touched so any missed errors surface.
     setTouched({
       title: true,
-      workType: true,
       archetype: true,
       priority: true,
       location: true,
@@ -204,61 +190,106 @@ function Form({ orgId }: { orgId: string }) {
   return (
     <main className="min-h-screen bg-black text-white">
       <AppTopBar />
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 space-y-8">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-10 space-y-8">
         <header className="space-y-2">
           <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
             Field record
           </div>
           <h1 className="text-2xl sm:text-3xl font-semibold leading-tight tracking-tight text-white">
-            Open a new field record
+            Start a field record
           </h1>
           <p className="text-[14px] text-gray-400 leading-relaxed max-w-prose">
-            Define the work. Capture proof. Close out with an accepted packet.
+            Choose the type of proof package you need to assemble.
           </p>
         </header>
 
-        <form onSubmit={onSubmit} className="space-y-6" noValidate>
-          <RadioSection
-            label="Work type"
-            required
-            error={showError("workType")}
-            name="workType"
-            value={draft.workType}
-            onChange={(v) => {
-              update("workType", v as WorkType | "");
-              setTouched((t) => ({ ...t, workType: true }));
-            }}
-            options={WORK_TYPE_VALUES.map((v) => ({ value: v, label: WORK_TYPE_LABELS[v] }))}
-          />
-
-          <RadioSection
-            label="Workflow archetype"
-            required
-            error={showError("archetype")}
-            name="archetype"
-            value={draft.archetype}
-            onChange={(v) => {
-              update("archetype", v as Archetype | "");
-              setTouched((t) => ({ ...t, archetype: true }));
-            }}
-            options={ARCHETYPE_VALUES.map((v) => ({ value: v, label: ARCHETYPE_LABELS[v] }))}
-          />
-
-          {/* PEAKOPS_PACKET_PURPOSE_V1 (PR 71)
-              Frames the record as an acceptance packet from the
-              moment of creation. Informational/client-only for now —
-              not persisted (see lib/incidents/newIncidentDraft). */}
-          <RadioSection
-            label="Packet purpose"
-            hint="What is this packet for?"
-            name="packetPurpose"
-            value={packetPurpose}
-            onChange={(v) => setPacketPurpose(v as PacketPurpose)}
-            options={PACKET_PURPOSE_VALUES.map((v) => ({
-              value: v,
-              label: PACKET_PURPOSE_LABELS[v],
-            }))}
-          />
+        <form onSubmit={onSubmit} className="space-y-8" noValidate>
+          {/* PEAKOPS_ARCHETYPE_CARD_GRID_V1 (PR 82)
+              Curated archetype picker. Cards are radio-equivalent —
+              clicking the card body selects the archetype. The hidden
+              <input type="radio"> keeps the form-control semantics
+              accessible. Selected card gets a brighter border + filled
+              indicator dot. */}
+          <fieldset className="space-y-3">
+            <legend className="text-[11px] uppercase tracking-[0.14em] font-semibold text-gray-300">
+              Work package archetype
+              <span className="text-amber-300/80 ml-1">*</span>
+            </legend>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {ARCHETYPE_VALUES.map((value) => {
+                const checked = draft.archetype === value;
+                const detail = ARCHETYPE_DETAILS[value];
+                return (
+                  <label
+                    key={value}
+                    className={
+                      "relative block rounded-xl border px-4 py-4 sm:px-5 sm:py-5 cursor-pointer transition-colors " +
+                      (checked
+                        ? "border-amber-300/40 bg-amber-500/[0.04]"
+                        : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]")
+                    }
+                  >
+                    <input
+                      type="radio"
+                      name="archetype"
+                      value={value}
+                      checked={checked}
+                      onChange={() => {
+                        update("archetype", value as Archetype);
+                        setTouched((t) => ({ ...t, archetype: true }));
+                      }}
+                      className="sr-only"
+                    />
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="text-[14px] font-semibold text-white leading-snug">
+                          {ARCHETYPE_LABELS[value]}
+                        </div>
+                        <span
+                          aria-hidden="true"
+                          className={
+                            "shrink-0 mt-0.5 w-3.5 h-3.5 rounded-full border " +
+                            (checked
+                              ? "border-amber-300/70 bg-amber-300/80"
+                              : "border-white/25 bg-transparent")
+                          }
+                        />
+                      </div>
+                      <p className="text-[12px] text-gray-300 leading-relaxed">
+                        {detail.purpose}
+                      </p>
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-gray-400">
+                          Required proof
+                        </div>
+                        <ul className="space-y-1 text-[12px] text-gray-200">
+                          {detail.requiredProof.map((item) => (
+                            <li key={item} className="flex items-start gap-2">
+                              <span aria-hidden="true" className="text-emerald-300/70 mt-0.5">
+                                ✓
+                              </span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-gray-400">
+                          Packet use
+                        </div>
+                        <div className="text-[12px] text-gray-300">
+                          {detail.packetUse}
+                        </div>
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            {showError("archetype") ? (
+              <div className="text-[12px] text-red-300">{showError("archetype")}</div>
+            ) : null}
+          </fieldset>
 
           <Field
             label="Record title"
@@ -274,7 +305,6 @@ function Form({ orgId }: { orgId: string }) {
               maxLength={TITLE_MAX}
               className="w-full bg-black/40 border border-white/15 rounded-lg px-3 py-2.5 text-[14px] text-gray-100 outline-none focus:border-white/30"
               placeholder="Pole 14B — visual + load inspection"
-              autoFocus
             />
           </Field>
 
@@ -327,6 +357,18 @@ function Form({ orgId }: { orgId: string }) {
           </Field>
 
           <RadioSection
+            label="Packet purpose"
+            hint="What is this packet for?"
+            name="packetPurpose"
+            value={packetPurpose}
+            onChange={(v) => setPacketPurpose(v as PacketPurpose)}
+            options={PACKET_PURPOSE_VALUES.map((v) => ({
+              value: v,
+              label: PACKET_PURPOSE_LABELS[v],
+            }))}
+          />
+
+          <RadioSection
             label="Priority"
             name="priority"
             value={draft.priority}
@@ -349,39 +391,6 @@ function Form({ orgId }: { orgId: string }) {
               placeholder="Routine annual inspection. Photograph all hardware, load attachments, clearances."
             />
           </Field>
-
-          {/* PEAKOPS_REQUIRED_FOR_ACCEPTANCE_V1 (PR 71)
-              Static informational card that frames the record as an
-              acceptance packet that needs specific proof artifacts to
-              close out. No enforcement engine, no dynamic rules — just
-              calm framing so the operator opens the record knowing
-              what acceptance will look like. */}
-          <section
-            aria-label="Required for acceptance"
-            className="rounded-xl border border-amber-300/20 bg-amber-500/[0.04] px-4 py-4 sm:px-5 sm:py-5"
-          >
-            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70 mb-3">
-              Required for acceptance
-            </div>
-            <ul className="space-y-2 text-[13px] text-gray-200">
-              {[
-                { item: "Photos", note: "Field-captured evidence" },
-                { item: "Supervisor approval", note: "Final review before lockout" },
-                { item: "GPS capture", note: "Geo-tagged work location" },
-                { item: "Field notes", note: "Operator context per stop" },
-              ].map((row) => (
-                <li key={row.item} className="flex items-start gap-2.5">
-                  <span aria-hidden="true" className="text-emerald-300/80 mt-0.5">
-                    ✓
-                  </span>
-                  <span className="flex-1">
-                    <span className="font-medium">{row.item}</span>
-                    <span className="ml-2 text-gray-400">{row.note}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
 
           <div className="border-t border-white/10 pt-5 space-y-4">
             <div className="text-[11px] uppercase tracking-[0.16em] text-gray-500">
