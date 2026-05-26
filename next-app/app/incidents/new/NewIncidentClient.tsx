@@ -62,6 +62,11 @@ import {
   isDraftSubmittable,
   validateDraft,
 } from "@/lib/incidents/newIncidentDraft";
+// PEAKOPS_TELECOM_MODE_V1 (PR 86) — industry-aware template grid.
+// When the active org is in TELECOM_ORGS, the picker replaces the
+// 5 generic archetypes with 4 telecom-specific closeout templates.
+import { isTelecomOrg, industryLabel, getOrgIndustry } from "@/lib/industries/orgIndustry";
+import { TELECOM_TEMPLATES, type TelecomTemplate } from "@/lib/industries/telecomTemplates";
 
 export default function NewIncidentClient() {
   return (
@@ -129,6 +134,15 @@ function Form({ orgId }: { orgId: string }) {
   const router = useRouter();
   const [draft, setDraft] = useState<NewIncidentDraft>(EMPTY_DRAFT);
   const [packetPurpose, setPacketPurpose] = useState<PacketPurpose>("");
+  // PEAKOPS_TELECOM_MODE_V1 (PR 86) — when the active org is telecom,
+  // we render telecom-specific templates instead of the generic
+  // archetypes. The selected template's key lives separately because
+  // two telecom templates currently collapse to archetype "custom"
+  // on the wire (bridge pending PR 87 backend ext); we need this
+  // separate state to drive the "Selected" UI on the right card.
+  const [selectedTelecomTemplateKey, setSelectedTelecomTemplateKey] = useState<string>("");
+  const industry = getOrgIndustry(orgId);
+  const isTelecom = industry === "telecom";
   const [touched, setTouched] = useState<Partial<Record<keyof NewIncidentDraft, boolean>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string>("");
@@ -192,112 +206,95 @@ function Form({ orgId }: { orgId: string }) {
       <AppTopBar />
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-10 space-y-8">
         <header className="space-y-2">
-          <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-            Field record
+          {/* PEAKOPS_TELECOM_MODE_V1 (PR 86) — telecom-mode badge.
+              Appears only when the active org is in TELECOM_ORGS;
+              default orgs see the existing eyebrow. */}
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] font-semibold">
+            <span className="text-amber-200/70">Field record</span>
+            {isTelecom ? (
+              <>
+                <span aria-hidden="true" className="text-white/20">·</span>
+                <span className="text-amber-100/90 bg-amber-500/15 border border-amber-300/30 rounded-full px-2 py-0.5">
+                  {industryLabel(industry)}
+                </span>
+              </>
+            ) : null}
           </div>
           <h1 className="text-2xl sm:text-3xl font-semibold leading-tight tracking-tight text-white">
-            Start a field record
+            {isTelecom ? "Start a work package" : "Start a field record"}
           </h1>
           <p className="text-[14px] text-gray-400 leading-relaxed max-w-prose">
-            Choose the type of proof package you need to assemble.
+            {isTelecom
+              ? "Choose the closeout template you need to assemble."
+              : "Choose the type of proof package you need to assemble."}
           </p>
         </header>
 
         <form onSubmit={onSubmit} className="space-y-8" noValidate>
-          {/* PEAKOPS_ARCHETYPE_CARD_GRID_V1 (PR 82)
-              Curated archetype picker. Cards are radio-equivalent —
-              clicking the card body selects the archetype. The hidden
-              <input type="radio"> keeps the form-control semantics
-              accessible. Selected card gets a brighter border + filled
-              indicator dot. */}
+          {/* PEAKOPS_ARCHETYPE_CARD_GRID_V1 (PR 82) + TELECOM_MODE_V1 (PR 86)
+              Two branches:
+                - DEFAULT mode → generic archetype grid (5 cards)
+                - TELECOM mode → telecom closeout-template grid (4 cards)
+              Both grids use the same card shell; only the data source
+              differs. The selected-card treatment (deeper amber +
+              "Selected" tag, PR 84) is shared. */}
           <fieldset className="space-y-3">
             <legend className="text-[11px] uppercase tracking-[0.14em] font-semibold text-gray-300">
-              Work package archetype
+              {isTelecom ? "Closeout template" : "Work package archetype"}
               <span className="text-amber-300/80 ml-1">*</span>
             </legend>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {ARCHETYPE_VALUES.map((value) => {
-                const checked = draft.archetype === value;
-                const detail = ARCHETYPE_DETAILS[value];
-                return (
-                  <label
-                    key={value}
-                    className={
-                      // PEAKOPS_SELECTED_ARCHETYPE_POLISH_V1 (PR 84)
-                      // Deeper amber tone on the chosen card so the
-                      // "this is the workflow you're assembling"
-                      // signal lands. Unselected cards stay calm.
-                      "relative block rounded-xl border px-4 py-4 sm:px-5 sm:py-5 cursor-pointer transition-colors " +
-                      (checked
-                        ? "border-amber-300/60 bg-amber-500/[0.08]"
-                        : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]")
-                    }
-                  >
-                    <input
-                      type="radio"
-                      name="archetype"
-                      value={value}
-                      checked={checked}
-                      onChange={() => {
-                        update("archetype", value as Archetype);
-                        setTouched((t) => ({ ...t, archetype: true }));
-                      }}
-                      className="sr-only"
-                    />
-                    <div className="space-y-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="text-[14px] font-semibold text-white leading-snug">
-                          {ARCHETYPE_LABELS[value]}
-                        </div>
-                        {checked ? (
-                          // PEAKOPS_SELECTED_ARCHETYPE_POLISH_V1 (PR 84)
-                          // "Selected" tag replaces the bare dot on
-                          // the chosen card so the chosen workflow
-                          // reads clearly without animation or
-                          // wizard-UI energy.
-                          <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-100 bg-amber-500/20 border border-amber-300/40 rounded-full px-2 py-0.5">
-                            Selected
-                          </span>
-                        ) : (
-                          <span
-                            aria-hidden="true"
-                            className="shrink-0 mt-0.5 w-3.5 h-3.5 rounded-full border border-white/25 bg-transparent"
-                          />
-                        )}
-                      </div>
-                      <p className="text-[12px] text-gray-300 leading-relaxed">
-                        {detail.purpose}
-                      </p>
-                      <div className="space-y-1.5">
-                        <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-gray-400">
-                          Required proof
-                        </div>
-                        <ul className="space-y-1 text-[12px] text-gray-200">
-                          {detail.requiredProof.map((item) => (
-                            <li key={item} className="flex items-start gap-2">
-                              <span aria-hidden="true" className="text-emerald-300/70 mt-0.5">
-                                ✓
-                              </span>
-                              <span>{item}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-gray-400">
-                          Packet use
-                        </div>
-                        <div className="text-[12px] text-gray-300">
-                          {detail.packetUse}
-                        </div>
-                      </div>
-                    </div>
-                  </label>
-                );
-              })}
+              {isTelecom
+                ? TELECOM_TEMPLATES.map((tmpl) => {
+                    const checked = selectedTelecomTemplateKey === tmpl.key;
+                    return (
+                      <TemplateCard
+                        key={tmpl.key}
+                        checked={checked}
+                        title={tmpl.label}
+                        purpose={tmpl.purpose}
+                        requiredProof={tmpl.requiredProof}
+                        packetUse={tmpl.acceptanceCriteria.join(" · ")}
+                        guidance={tmpl.operatorGuidance}
+                        radioName="archetype"
+                        radioValue={tmpl.key}
+                        onSelect={() => {
+                          setSelectedTelecomTemplateKey(tmpl.key);
+                          update("archetype", tmpl.archetype);
+                          setTouched((t) => ({ ...t, archetype: true }));
+                        }}
+                      />
+                    );
+                  })
+                : ARCHETYPE_VALUES.map((value) => {
+                    const checked = draft.archetype === value;
+                    const detail = ARCHETYPE_DETAILS[value];
+                    return (
+                      <TemplateCard
+                        key={value}
+                        checked={checked}
+                        title={ARCHETYPE_LABELS[value]}
+                        purpose={detail.purpose}
+                        requiredProof={detail.requiredProof}
+                        packetUse={detail.packetUse}
+                        radioName="archetype"
+                        radioValue={value}
+                        onSelect={() => {
+                          setSelectedTelecomTemplateKey("");
+                          update("archetype", value as Archetype);
+                          setTouched((t) => ({ ...t, archetype: true }));
+                        }}
+                      />
+                    );
+                  })}
             </div>
             {showError("archetype") ? (
               <div className="text-[12px] text-red-300">{showError("archetype")}</div>
+            ) : null}
+            {isTelecom ? (
+              <p className="text-[11px] text-gray-500 leading-relaxed">
+                Required proof is based on the selected telecom work package template.
+              </p>
             ) : null}
           </fieldset>
 
@@ -435,6 +432,100 @@ function Form({ orgId }: { orgId: string }) {
         </form>
       </div>
     </main>
+  );
+}
+
+/**
+ * PEAKOPS_TEMPLATE_CARD_V1 (PR 86)
+ *
+ * Shared shell for both the default archetype cards (PR 82/84)
+ * and the telecom-mode template cards. Same visual treatment
+ * keeps the picker grid consistent across industries; only the
+ * data source differs.
+ */
+function TemplateCard({
+  checked,
+  title,
+  purpose,
+  requiredProof,
+  packetUse,
+  guidance,
+  radioName,
+  radioValue,
+  onSelect,
+}: {
+  checked: boolean;
+  title: string;
+  purpose: string;
+  requiredProof: readonly string[];
+  packetUse: string;
+  guidance?: string;
+  radioName: string;
+  radioValue: string;
+  onSelect: () => void;
+}) {
+  return (
+    <label
+      className={
+        "relative block rounded-xl border px-4 py-4 sm:px-5 sm:py-5 cursor-pointer transition-colors " +
+        (checked
+          ? "border-amber-300/60 bg-amber-500/[0.08]"
+          : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]")
+      }
+    >
+      <input
+        type="radio"
+        name={radioName}
+        value={radioValue}
+        checked={checked}
+        onChange={onSelect}
+        className="sr-only"
+      />
+      <div className="space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="text-[14px] font-semibold text-white leading-snug">
+            {title}
+          </div>
+          {checked ? (
+            <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-100 bg-amber-500/20 border border-amber-300/40 rounded-full px-2 py-0.5">
+              Selected
+            </span>
+          ) : (
+            <span
+              aria-hidden="true"
+              className="shrink-0 mt-0.5 w-3.5 h-3.5 rounded-full border border-white/25 bg-transparent"
+            />
+          )}
+        </div>
+        <p className="text-[12px] text-gray-300 leading-relaxed">{purpose}</p>
+        <div className="space-y-1.5">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-gray-400">
+            Required proof
+          </div>
+          <ul className="space-y-1 text-[12px] text-gray-200">
+            {requiredProof.map((item) => (
+              <li key={item} className="flex items-start gap-2">
+                <span aria-hidden="true" className="text-emerald-300/70 mt-0.5">
+                  ✓
+                </span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="space-y-1">
+          <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-gray-400">
+            Packet use
+          </div>
+          <div className="text-[12px] text-gray-300">{packetUse}</div>
+        </div>
+        {guidance ? (
+          <div className="text-[11px] text-gray-500 leading-relaxed italic">
+            {guidance}
+          </div>
+        ) : null}
+      </div>
+    </label>
   );
 }
 
