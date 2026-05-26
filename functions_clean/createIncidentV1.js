@@ -166,12 +166,29 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
     "compliance_audit",
     "other",
   ];
+  // PEAKOPS_ARCHETYPE_ENUM_V2 (PR 81a) — additive extension.
+  // The original 5 values (pole_inspection, splice_work, cable_install,
+  // site_survey, custom) stay so existing records and any legacy
+  // callers keep validating. The 3 new values are the
+  // commercialization-aligned archetypes the proof-workflow picker
+  // (PR 81b) surfaces in the UI:
+  //   - fiber_splice_verification : completion-proof for customer
+  //     acceptance + invoice support (semantic narrowing of splice_work)
+  //   - site_acceptance : closeout-proof for customer sign-off
+  //     (semantic narrowing of site_survey)
+  //   - storm_restoration_proof : after-action proof for claim +
+  //     reimbursement workflows (new archetype, no prior key)
+  // Backend stays additive on the enum so we never break a write
+  // that worked yesterday.
   const ARCHETYPE_ENUM = [
     "pole_inspection",
     "splice_work",
     "cable_install",
     "site_survey",
     "custom",
+    "fiber_splice_verification",
+    "site_acceptance",
+    "storm_restoration_proof",
   ];
   const workTypeRaw = String(body.workType || "").trim().toLowerCase();
   const workType = WORK_TYPE_ENUM.includes(workTypeRaw) ? workTypeRaw : "";
