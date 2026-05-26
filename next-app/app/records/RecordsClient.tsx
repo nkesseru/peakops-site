@@ -40,6 +40,7 @@ import {
   incidentStatusPill,
   normalizeIncidentStatusShared,
 } from "@/lib/incidents/incidentStatus";
+import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
 
 const FILTER_VALUES = ["all", "pending", "active", "accepted"] as const;
 type FilterKey = (typeof FILTER_VALUES)[number];
@@ -62,6 +63,10 @@ type IncidentRow = {
   // (PR 77a). Optional — absent on older records or when the
   // operator didn't fill the field at create time.
   customer?: string;
+  // PR 84: archetype surfaced by listIncidentsV1 (PR 83a) so the
+  // card can render the proof-package archetype as a small eyebrow
+  // above the title. Optional — absent on older records.
+  archetype?: string;
   createdAt?: string;
   updatedAt?: string;
   submittedAt?: string;
@@ -312,6 +317,11 @@ function RecordCard({ row, router }: { row: IncidentRow; router: ReturnType<type
   const title = String(row.title || "").trim() || "Untitled field record";
   const loc = String(row.location || "").trim();
   const customer = String(row.customer || "").trim();
+  // PR 84: archetype eyebrow. getArchetypeDetails returns null for
+  // empty / unknown / legacy enum values so the eyebrow simply
+  // doesn't render for older records — calmer than showing a raw
+  // snake_case key.
+  const archetypeDetails = getArchetypeDetails(row.archetype);
   const evCount = Number.isFinite(row.evidenceCount as number) ? Number(row.evidenceCount) : null;
   const age = lastActivityLabel(row);
 
@@ -319,6 +329,15 @@ function RecordCard({ row, router }: { row: IncidentRow; router: ReturnType<type
     <article className="rounded-xl border border-white/10 bg-white/[0.02] hover:bg-white/[0.04] transition-colors">
       <div className="px-4 py-4 sm:px-5 sm:py-5 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-2">
+          {/* PR 84: archetype eyebrow sits above the title so the
+              card reads as "this kind of proof package" before the
+              specific title. Same dossier voice as "FIELD RECORD"
+              eyebrows elsewhere in the app. */}
+          {archetypeDetails ? (
+            <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
+              {archetypeDetails.label}
+            </div>
+          ) : null}
           <div className="flex items-start gap-3">
             <h2 className="text-[15px] font-semibold text-white leading-snug truncate flex-1">
               {title}

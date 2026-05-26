@@ -29,6 +29,7 @@ import {
   incidentStatusLabel,
   incidentStatusPill,
 } from "@/lib/incidents/incidentStatus";
+import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
 
 
 
@@ -425,6 +426,12 @@ useEffect(() => {
   // optional on the wire; the hero renders fallbacks when missing.
   const [incidentTitle, setIncidentTitle] = useState<string>("");
   const [incidentLocation, setIncidentLocation] = useState<string>("");
+  // PEAKOPS_ARCHETYPE_AWARE_BANNER_V1 (PR 84) — plumbed so the
+  // capture-proof banner can surface per-archetype required-proof
+  // expectations. Empty string when the doc has no archetype or
+  // when the value is a legacy enum key the curated UI doesn't
+  // know how to render.
+  const [incidentArchetype, setIncidentArchetype] = useState<string>("");
 
   // PEAKOPS_INCIDENT_HERO_HYDRATION_V1 (tiny PR)
   // First-load gate. Without it, the meta line briefly renders
@@ -1618,6 +1625,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         // are read-only here; the wire doc shape is unchanged.
         setIncidentTitle(String(inc?.doc?.title || "").trim());
         setIncidentLocation(String(inc?.doc?.location || "").trim());
+        setIncidentArchetype(String(inc?.doc?.archetype || "").trim());
         const nextOrg = String(inc?.doc?.orgId || "").trim();
         if (nextOrg) requestOrgId = nextOrg;
       }
@@ -2779,11 +2787,42 @@ useEffect(() => {
             <div className="text-lg font-semibold text-white leading-snug">
               Capture proof
             </div>
+            {/* PEAKOPS_ACCEPTANCE_LIFECYCLE_FRAMING_V1 (PR 84) — banner
+                copy reframed from the generic "document the field
+                conditions" line to the acceptance-lifecycle sentence,
+                so the operator reads the draft → approval → accepted
+                arc at the moment of first arrival. */}
             <p className="text-[13px] text-gray-300 leading-relaxed max-w-prose">
-              Document the field conditions, evidence, and context that
-              prove this record&rsquo;s outcome. You can come back to
-              this record any time.
+              This field record is in draft until required proof is
+              captured and submitted for approval.
             </p>
+            {/* PEAKOPS_ARCHETYPE_AWARE_BANNER_V1 (PR 84) — per-archetype
+                required-proof checklist surfaces when the doc carries
+                a known archetype value. Legacy archetype keys
+                (splice_work, site_survey, cable_install) return null
+                from getArchetypeDetails and the section is omitted —
+                the banner still lands cleanly without it. */}
+            {(() => {
+              const details = getArchetypeDetails(incidentArchetype);
+              if (!details) return null;
+              return (
+                <div className="rounded-lg border border-amber-300/15 bg-black/[0.25] px-3 py-3 space-y-1.5">
+                  <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-200/60">
+                    Required proof · {details.label}
+                  </div>
+                  <ul className="space-y-1 text-[12px] text-gray-200">
+                    {details.requiredProof.map((item) => (
+                      <li key={item} className="flex items-start gap-2">
+                        <span aria-hidden="true" className="text-emerald-300/70 mt-0.5">
+                          ✓
+                        </span>
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
             <div className="flex items-center gap-2 pt-1">
               <button
                 type="button"

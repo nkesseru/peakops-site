@@ -85,6 +85,29 @@ export const ARCHETYPE_DETAILS: Record<
   },
 };
 
+/**
+ * PEAKOPS_ARCHETYPE_LOOKUP_V1 (PR 84)
+ *
+ * Graceful lookup for archetype display metadata. Returns null when
+ * the value is empty, unknown, or one of the legacy enum keys
+ * (splice_work, site_survey, cable_install) that aren't part of
+ * the curated PR 81/82 set. Callers (RecordsClient eyebrow,
+ * IncidentClient banner checklist) use the null fallback to
+ * simply not render archetype-specific UI for legacy records.
+ */
+export function getArchetypeDetails(
+  value: unknown,
+): { label: string; purpose: string; requiredProof: readonly string[]; packetUse: string } | null {
+  const key = String(value || "").trim();
+  if (!key) return null;
+  if (!(ARCHETYPE_VALUES as readonly string[]).includes(key)) return null;
+  const typed = key as Archetype;
+  return {
+    label: ARCHETYPE_LABELS[typed],
+    ...ARCHETYPE_DETAILS[typed],
+  };
+}
+
 export const PRIORITY_VALUES = ["low", "normal", "high", "urgent"] as const;
 export type Priority = (typeof PRIORITY_VALUES)[number];
 

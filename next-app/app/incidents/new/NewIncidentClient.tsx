@@ -223,9 +223,13 @@ function Form({ orgId }: { orgId: string }) {
                   <label
                     key={value}
                     className={
+                      // PEAKOPS_SELECTED_ARCHETYPE_POLISH_V1 (PR 84)
+                      // Deeper amber tone on the chosen card so the
+                      // "this is the workflow you're assembling"
+                      // signal lands. Unselected cards stay calm.
                       "relative block rounded-xl border px-4 py-4 sm:px-5 sm:py-5 cursor-pointer transition-colors " +
                       (checked
-                        ? "border-amber-300/40 bg-amber-500/[0.04]"
+                        ? "border-amber-300/60 bg-amber-500/[0.08]"
                         : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]")
                     }
                   >
@@ -245,15 +249,21 @@ function Form({ orgId }: { orgId: string }) {
                         <div className="text-[14px] font-semibold text-white leading-snug">
                           {ARCHETYPE_LABELS[value]}
                         </div>
-                        <span
-                          aria-hidden="true"
-                          className={
-                            "shrink-0 mt-0.5 w-3.5 h-3.5 rounded-full border " +
-                            (checked
-                              ? "border-amber-300/70 bg-amber-300/80"
-                              : "border-white/25 bg-transparent")
-                          }
-                        />
+                        {checked ? (
+                          // PEAKOPS_SELECTED_ARCHETYPE_POLISH_V1 (PR 84)
+                          // "Selected" tag replaces the bare dot on
+                          // the chosen card so the chosen workflow
+                          // reads clearly without animation or
+                          // wizard-UI energy.
+                          <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-100 bg-amber-500/20 border border-amber-300/40 rounded-full px-2 py-0.5">
+                            Selected
+                          </span>
+                        ) : (
+                          <span
+                            aria-hidden="true"
+                            className="shrink-0 mt-0.5 w-3.5 h-3.5 rounded-full border border-white/25 bg-transparent"
+                          />
+                        )}
                       </div>
                       <p className="text-[12px] text-gray-300 leading-relaxed">
                         {detail.purpose}
