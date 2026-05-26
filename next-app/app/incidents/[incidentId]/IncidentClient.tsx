@@ -311,6 +311,15 @@ function normalizeIncidentStatus(status: any) {
     .replace(/\s+/g, "_");
   if (raw === "in-progress" || raw === "inprogress" || raw === "submitted") return "in_progress";
   if (raw === "closed") return "closed";
+  // PEAKOPS_DRAFT_STATUS_PASSTHROUGH_V1 (PR 73 follow-up)
+  // The proof-workflow create flow (PR 70) writes status: "draft" via
+  // createIncidentV1 (PR 68). Without this passthrough, the page's
+  // local normalizer collapsed every unknown value to "open", which
+  // is why the destination right after Create field record rendered
+  // an Open pill instead of the Draft pill PR 73 added to
+  // incidentStatusLabel/Pill. Lifecycle unchanged — this just
+  // surfaces an already-stored status string.
+  if (raw === "draft") return "draft";
   return "open";
 }
 
