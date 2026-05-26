@@ -460,20 +460,53 @@ useEffect(() => {
           ) : null}
         </header>
 
-        {/* PR 88 — archetype-aware required-proof checklist. Same
-            data the Capture-proof banner uses; surfaced here so the
-            operator can see what the packet needs without leaving
-            this page. Renders only when archetype is in the curated
-            set (legacy / unknown keys fall through cleanly). */}
+        {/* PR 88 — Required-proof panel.
+            Surfaces the per-archetype proof checklist (same data
+            the Capture-proof banner uses) plus a live count
+            "{queued} / {total} captured" so the operator can see
+            assembly progress without leaving the page.
+            Rules:
+              - informational only — does NOT block upload
+              - no AI analysis, no rules engine, no per-item match
+              - counter tracks items queued for capture in this
+                session; after a successful upload, the page
+                redirects back to /incidents/{id} so the counter
+                resetting on revisit is acceptable
+              - legacy / unknown archetype keys fall through (the
+                panel renders nothing) */}
         {(() => {
           const details = getArchetypeDetails(incidentArchetype);
           if (!details) return null;
+          const total = details.requiredProof.length;
+          const captured = items.length;
+          const complete = total > 0 && captured >= total;
           return (
-            <section className="rounded-xl border border-amber-300/20 bg-amber-500/[0.04] px-4 py-4">
-              <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-200/70">
-                Required proof · {details.label}
+            <section
+              aria-label="Required proof for this work package"
+              className="rounded-xl border border-amber-300/20 bg-amber-500/[0.04] px-4 py-4"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-200/70">
+                    Required proof for this work package
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-0.5">
+                    {details.label}
+                  </div>
+                </div>
+                <div
+                  className={
+                    "shrink-0 text-[11px] font-semibold uppercase tracking-[0.10em] rounded-full border px-2 py-0.5 " +
+                    (complete
+                      ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100"
+                      : "border-white/15 bg-white/[0.04] text-gray-200")
+                  }
+                  title="Items queued for capture this session"
+                >
+                  {captured} / {total} captured
+                </div>
               </div>
-              <ul className="mt-2 space-y-1 text-[12px] text-gray-200">
+              <ul className="mt-3 space-y-1 text-[12px] text-gray-200">
                 {details.requiredProof.map((item) => (
                   <li key={item} className="flex items-start gap-2">
                     <span aria-hidden="true" className="text-emerald-300/70 mt-0.5">
