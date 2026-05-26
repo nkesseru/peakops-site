@@ -1,14 +1,52 @@
 name: ci
+
+# PEAKOPS_CI_TYPECHECK_V1 (PR 79)
+#
+# Replaces the prior `node --check functions/server.mjs` step, which
+# pointed at a path that no longer exists on this branch
+# (functions/server.mjs was archived to archive/legacy/functions_legacy/
+# during an earlier directory reshuffle). Every push to main since
+# then failed CI.
+#
+# This workflow runs the same typecheck I'd run locally before
+# pushing a PR. Vercel still runs the full `next build` for
+# deployment, so this is purely the static-typing gate; we skip
+# `pnpm build` here because it needs NEXT_PUBLIC_FIREBASE_* env
+# vars during prerender that we don't want to ship to CI.
+#
+# Triggers on both push-to-main (post-merge sanity) and
+# pull_request → main (pre-merge gate).
+
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+  pull_request:
+    branches: [main]
+
 jobs:
-  build:
+  typecheck:
+    name: next-app typecheck
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: next-app
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
-        with: { node-version: '22' }
-      - run: npm ci || npm i
-      - run: node --check functions/server.mjs
-      - run: echo "✅ syntax ok"
+        with:
+          node-version: '22'
+
+      - name: Enable Corepack + pin pnpm@9
+        # pnpm-lock.yaml on this branch is lockfileVersion 9.0, which
+        # pnpm@9 reads natively. We pin via corepack so the runner
+        # doesn't fall back to whatever ambient pnpm setup-node ships.
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
