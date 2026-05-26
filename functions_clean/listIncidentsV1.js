@@ -71,6 +71,16 @@ function mapDoc(d, fallbackOrgId) {
   if (location) out.location = location;
   const priority = String(data.priority || "").trim().toLowerCase();
   if (priority) out.priority = priority;
+  // PEAKOPS_LIST_INCIDENTS_CUSTOMER_FIELD_V1 (PR 77a)
+  // Surface the customer / agency / project label so the /records
+  // index can render it on each card. customer is the canonical
+  // field name (PR 68b createIncidentV1 + PR 70 proof-workflow
+  // form). customerName is accepted as a legacy fallback for older
+  // records that may have stored the value under that name.
+  // Omitted from the response when empty so the frontend's
+  // "render only when present" rule applies cleanly.
+  const customer = String(data.customer || data.customerName || "").trim();
+  if (customer) out.customer = customer;
   // PacketMeta-cached counts. No N+1 — if the supervisor hasn't yet
   // generated a report, these are simply absent and the frontend
   // hides them.
