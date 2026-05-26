@@ -25,8 +25,15 @@ export function incidentStatusLabel(status: unknown): string {
       return "Approved";
     case "rejected":
       return "Rejected";
+    // PEAKOPS_ACCEPTED_LABEL_V1 (PR 80)
+    // Display-only label flip for the commercialization-aligned
+    // "Accepted" framing. Backend status string stays "closed" —
+    // normalizeIncidentStatusShared continues to return "closed",
+    // sealed-record logic still keys off "closed", and every
+    // backend mutation contract is untouched. This change is
+    // strictly the visible word the user sees on the status pill.
     case "closed":
-      return "Closed";
+      return "Accepted";
     default:
       return s
         .split("_")
