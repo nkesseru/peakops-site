@@ -222,7 +222,8 @@ function fmtAgo(sec?: number) {
 function prettyType(t: string) {
   const m: Record<string, string> = {
     NOTES_SAVED: "Notes saved",
-    EVIDENCE_ADDED: "Evidence secured",
+    // PR 85 — proof vocabulary on the open-state timeline event.
+    EVIDENCE_ADDED: "Proof secured",
     FIELD_ARRIVED: "Arrived on site",
     FIELD_APPROVED: "Supervisor approved",
     MATERIAL_ADDED: "Material logged",
@@ -534,7 +535,7 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
       }
       router.push(url);
     } catch (e) {
-      toast("Add evidence navigation failed.", 2800);
+      toast("Add proof navigation failed.", 2800);
       console.error("[AddEvidence] navigation failed", e);
     }
   };
@@ -2735,10 +2736,10 @@ useEffect(() => {
                 title={
                   isClosed
                     ? "Incident is closed (read-only)"
-                    : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : "Add evidence")
+                    : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : "Add proof")
                 }
               >
-                Add evidence
+                Add proof
               </button>
             </div>
           </div>
@@ -2926,6 +2927,7 @@ useEffect(() => {
 	  hasEvidence={_hasEvidence}
 	  hasNotes={_hasNotes}
 	  hasApproved={_hasApproved}
+	  archetypeLabel={getArchetypeDetails(incidentArchetype)?.label || ""}
 	  onOpenNotes={() => {
     const o = String(sp?.get("orgId") || "").trim();
     const qs = o ? `?orgId=${encodeURIComponent(o)}` : "";
@@ -2961,12 +2963,13 @@ useEffect(() => {
 
   <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
     <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-1">
-      <div className="text-[10px] uppercase tracking-wide text-gray-400">Arrival</div>
+      {/* PR 85 — timer labels reframed as proof-capture milestones. */}
+      <div className="text-[10px] uppercase tracking-wide text-gray-400">Site arrival</div>
       <div className="mt-1 text-base font-semibold text-gray-100">{_arrivalAgo}</div>
     </div>
 
     <div className="rounded-xl bg-black/30 border border-white/10 px-3 py-2 sm:col-span-2">
-      <div className="text-[10px] uppercase tracking-wide text-gray-400">Evidence</div>
+      <div className="text-[10px] uppercase tracking-wide text-gray-400">Proof captured</div>
       <div className="mt-1 text-base font-semibold text-gray-100">{_evidenceAgo}</div>
     </div>
 
@@ -2978,7 +2981,7 @@ useEffect(() => {
           : "bg-black/30 border-white/10")
       }>
       <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-amber-200/80" : "text-gray-400")}>
-        Notes
+        Field notes
       </div>
       <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-amber-50" : "text-gray-100")}>
         {_notesAgo}
@@ -3419,7 +3422,10 @@ useEffect(() => {
         {activeTab === "overview" && !isClosed ? (
         <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between">
-            <div className="text-xs uppercase tracking-wide text-gray-400">Readiness</div>
+            {/* PR 85 — readiness reframed as acceptance-readiness so
+                the checklist reads as "what's needed before the
+                packet can be accepted" rather than generic ops status. */}
+            <div className="text-xs uppercase tracking-wide text-gray-400">Acceptance readiness</div>
             <span className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300">
               Live
             </span>
@@ -3433,9 +3439,10 @@ useEffect(() => {
 
             const items = [
               ["Field session started", hasSession],
-              ["Evidence captured (4+)", hasEvidence],
+              // PR 85 — proof vocabulary on the readiness checklist.
+              ["Proof captured (4+)", hasEvidence],
               ["Notes saved", hasNotes],
-              ["Supervisor approved", hasApproved],
+              ["Supervisor approval", hasApproved],
             ];
 
             const ready = hasSession && hasEvidence && hasNotes;
@@ -3443,8 +3450,8 @@ useEffect(() => {
             return (
               <div className="mt-3 space-y-2 text-sm">
                 <div className={"rounded-xl p-3 border " + (ready ? "bg-green-700/15 border-green-400/20" : "bg-amber-700/10 border-amber-400/20")}>
-                  <div className="font-semibold">{ready ? "Ready for supervisor review" : "Not ready yet"}</div>
-                  <div className="text-xs text-gray-400 mt-1">This is computed from live events + evidence.</div>
+                  <div className="font-semibold">{ready ? "Ready for approval" : "Proof package incomplete"}</div>
+                  <div className="text-xs text-gray-400 mt-1">Based on required proof and approval status.</div>
                 </div>
 
                 <div className="grid gap-2">
@@ -3506,9 +3513,10 @@ useEffect(() => {
             title={
               isClosed
                 ? "Incident is closed (read-only)"
-                : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : (_hasEvidence ? "Evidence captured (done)" : "Go to Evidence"))
+                : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : (_hasEvidence ? "Proof captured (done)" : "Go to proof capture"))
             }>
-            Evidence
+            {/* PR 85 — dock button reframed to proof vocabulary. */}
+            Proof
           </button>
 
           {/* Notes */}
@@ -3543,8 +3551,8 @@ useEffect(() => {
               isClosed
                 ? "Incident is closed (read-only)"
                 : (arrived && _hasEvidence && _hasNotes)
-                ? "Submit session for supervisor review"
-                : "Complete Arrive + Evidence + Notes first"
+                ? "Submit for approval"
+                : "Complete Arrive + Proof + Notes first"
             }
             onClick={(e) => {
               try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {}
