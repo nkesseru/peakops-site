@@ -10,6 +10,10 @@ import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
 // required-proof checklist driven by getArchetypeDetails.
 import AppTopBar from "@/components/AppTopBar";
 import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
+// PR 90 — snapshot-first requirements resolver. Reads
+// incident.requirements (PR 89a backend) when present, falls back
+// to the archetype catalog for legacy records.
+import { effectiveRequirements } from "@/lib/incidents/requirementsSnapshot";
 type Item = { id: string; file: File; url: string };
 type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string; status?: string };
 
@@ -56,6 +60,11 @@ useEffect(() => {
   const [incidentArchetype, setIncidentArchetype] = useState<string>("");
   // PR 88 — capture location too so the meta line has real content.
   const [incidentLocation, setIncidentLocation] = useState<string>("");
+  // PR 90 — snapshot field plumbed from getIncidentV1. When present,
+  // effectiveRequirements() prefers it over the archetype catalog
+  // so historical records stay frozen on their creation-time
+  // requirements contract.
+  const [incidentRequirements, setIncidentRequirements] = useState<any>(null);
   const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
 
   // Env / context
@@ -156,6 +165,13 @@ useEffect(() => {
         // PR 88 — archetype + location plumbed from the same call.
         setIncidentArchetype(String(out?.doc?.archetype || "").trim());
         setIncidentLocation(String(out?.doc?.location || "").trim());
+        // PR 90 — snapshot requirements plumbed from the same call.
+        // Stored opaque; effectiveRequirements() validates the shape.
+        if (out?.doc?.requirements && typeof out.doc.requirements === "object") {
+          setIncidentRequirements(out.doc.requirements);
+        } else {
+          setIncidentRequirements(null);
+        }
       } catch {
         // tolerate — fall back to reactive 409 handling
       }
@@ -460,24 +476,29 @@ useEffect(() => {
           ) : null}
         </header>
 
-        {/* PR 88 — Required-proof panel.
-            Surfaces the per-archetype proof checklist (same data
-            the Capture-proof banner uses) plus a live count
-            "{queued} / {total} captured" so the operator can see
-            assembly progress without leaving the page.
-            Rules:
-              - informational only — does NOT block upload
-              - no AI analysis, no rules engine, no per-item match
-              - counter tracks items queued for capture in this
-                session; after a successful upload, the page
-                redirects back to /incidents/{id} so the counter
-                resetting on revisit is acceptable
-              - legacy / unknown archetype keys fall through (the
-                panel renders nothing) */}
+        {/* PR 88 + PR 90 — Required-proof panel.
+            Data source resolved by effectiveRequirements():
+              1. incident.requirements snapshot (PR 89a, frozen at
+                 creation) — wins when present, even if the static
+                 catalog has drifted since then.
+              2. Static archetype catalog — fallback for legacy
+                 records created before PR 89a or for archetypes
+                 the backend mirror doesn't know about yet.
+              3. Nothing — panel doesn't render.
+            The archetype label still reads from the static catalog
+            for the subtitle (legacy records keep their friendly
+            label even when snapshot wins). */}
         {(() => {
+          const requirements = effectiveRequirements({
+            archetype: incidentArchetype,
+            requirements: incidentRequirements,
+          });
+          if (requirements.source === "none" || requirements.requiredProof.length === 0) {
+            return null;
+          }
           const details = getArchetypeDetails(incidentArchetype);
-          if (!details) return null;
-          const total = details.requiredProof.length;
+          const archetypeLabel = details?.label || "";
+          const total = requirements.requiredProof.length;
           const captured = items.length;
           const complete = total > 0 && captured >= total;
           return (
@@ -490,9 +511,11 @@ useEffect(() => {
                   <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-200/70">
                     Required proof for this work package
                   </div>
-                  <div className="text-[11px] text-gray-400 mt-0.5">
-                    {details.label}
-                  </div>
+                  {archetypeLabel ? (
+                    <div className="text-[11px] text-gray-400 mt-0.5">
+                      {archetypeLabel}
+                    </div>
+                  ) : null}
                 </div>
                 <div
                   className={
@@ -507,7 +530,7 @@ useEffect(() => {
                 </div>
               </div>
               <ul className="mt-3 space-y-1 text-[12px] text-gray-200">
-                {details.requiredProof.map((item) => (
+                {requirements.requiredProof.map((item) => (
                   <li key={item} className="flex items-start gap-2">
                     <span aria-hidden="true" className="text-emerald-300/70 mt-0.5">
                       ✓
