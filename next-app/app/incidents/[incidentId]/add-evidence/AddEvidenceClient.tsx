@@ -6,6 +6,10 @@ import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
 import { getFunctionsBase } from "@/lib/functionsBase";
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
+// PR 88 — AppTopBar shell consistency on /add-evidence + archetype-aware
+// required-proof checklist driven by getArchetypeDetails.
+import AppTopBar from "@/components/AppTopBar";
+import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
 type Item = { id: string; file: File; url: string };
 type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string; status?: string };
 
@@ -47,6 +51,11 @@ useEffect(() => {
   // PEAKOPS_PROOF_CAPTURE_TITLE_V1 (PR 72) — surface the real record
   // title from getIncidentV1 instead of a truncated incidentId.
   const [incidentTitle, setIncidentTitle] = useState<string>("");
+  // PR 88 — capture archetype from the same getIncidentV1 round-trip so
+  // the required-proof checklist below the header can read it.
+  const [incidentArchetype, setIncidentArchetype] = useState<string>("");
+  // PR 88 — capture location too so the meta line has real content.
+  const [incidentLocation, setIncidentLocation] = useState<string>("");
   const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
 
   // Env / context
@@ -144,6 +153,9 @@ useEffect(() => {
         if (s) setIncidentStatus(s);
         const t = String(out?.doc?.title || "").trim();
         if (t) setIncidentTitle(t);
+        // PR 88 — archetype + location plumbed from the same call.
+        setIncidentArchetype(String(out?.doc?.archetype || "").trim());
+        setIncidentLocation(String(out?.doc?.location || "").trim());
       } catch {
         // tolerate — fall back to reactive 409 handling
       }
@@ -413,32 +425,100 @@ useEffect(() => {
   }
 
   return (
-    <main className="min-h-screen bg-black text-white p-4">
-      <div className="mb-4">
-        {/* PEAKOPS_PROOF_CAPTURE_TITLE_V1 (PR 72) — eyebrow and title
-            aligned with the framing layer. The eyebrow that called
-            this surface "Add Evidence" now reads "Proof Capture" to
-            match the destination of the Capture-proof banner on the
-            record overview. Title prefers the record's actual title
-            (loaded in the existing getIncidentV1 effect above) and
-            falls back to the truncated incidentId only when the
-            fetch is still in-flight or the doc has no title. */}
-        <div className="text-[11px] uppercase tracking-wider text-gray-400">Proof Capture</div>
-        <div className="text-lg font-semibold">
-          {incidentTitle || `Field record ${incidentId.slice(-6)}`}
-        </div>
-        <div className="text-xs text-cyan-200/90 mt-1">
-          My job: {mounted ? (selectedJobId || "(auto-selecting…)") : "…"}
-        </div>
-        <div className="text-xs text-cyan-200/90 mt-1">
-          Session: {sessionId ? `ready (${sessionId.slice(0, 8)}…)` : (sessionBusy ? "Starting session…" : "not ready")}
-        </div>
-        {!selectedJobId ? (
-          <div className="text-xs text-amber-200 mt-1">No job bound yet. Attempting auto-select from incident jobs…</div>
-        ) : null}
-        <div className="text-xs text-gray-500 mt-1">Audit-safe capture • Auto-tagged • Time-locked</div>
-        <div className="text-xs text-gray-500 mt-1">Jobs detected: {Array.isArray(jobs) ? jobs.length : 0}</div>
-      </div>
+    <main className="min-h-screen bg-black text-white">
+      {/* PR 88 — AppTopBar shell consistency. Was missing on this
+          surface, leaving the page floating in a sea of black. */}
+      <AppTopBar />
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+        {/* PR 88 — calmer header. Title and PROOF CAPTURE eyebrow
+            kept; the four debug-y meta lines (My job / Session /
+            "No job bound yet" / Audit-safe capture / Jobs detected)
+            collapsed into one quiet meta row that surfaces location
+            + the audit-safe trust signal. The session / job state
+            still drives the disable conditions below; we just don't
+            need to spam those internals on the surface. */}
+        <header className="space-y-2">
+          <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
+            Proof capture
+          </div>
+          <h1 className="text-xl sm:text-2xl font-semibold leading-tight tracking-tight text-white">
+            {incidentTitle || `Field record ${incidentId.slice(-6)}`}
+          </h1>
+          <div className="text-[12px] text-gray-400">
+            {incidentLocation ? (
+              <>
+                {incidentLocation}
+                <span aria-hidden="true" className="text-white/20 mx-2">·</span>
+              </>
+            ) : null}
+            <span>Audit-safe capture · auto-tagged · time-locked</span>
+          </div>
+          {!selectedJobId && mounted ? (
+            <div className="text-[11px] text-amber-200/80">
+              {sessionBusy ? "Starting session…" : "Binding to an active job…"}
+            </div>
+          ) : null}
+        </header>
+
+        {/* PR 88 — Required-proof panel.
+            Surfaces the per-archetype proof checklist (same data
+            the Capture-proof banner uses) plus a live count
+            "{queued} / {total} captured" so the operator can see
+            assembly progress without leaving the page.
+            Rules:
+              - informational only — does NOT block upload
+              - no AI analysis, no rules engine, no per-item match
+              - counter tracks items queued for capture in this
+                session; after a successful upload, the page
+                redirects back to /incidents/{id} so the counter
+                resetting on revisit is acceptable
+              - legacy / unknown archetype keys fall through (the
+                panel renders nothing) */}
+        {(() => {
+          const details = getArchetypeDetails(incidentArchetype);
+          if (!details) return null;
+          const total = details.requiredProof.length;
+          const captured = items.length;
+          const complete = total > 0 && captured >= total;
+          return (
+            <section
+              aria-label="Required proof for this work package"
+              className="rounded-xl border border-amber-300/20 bg-amber-500/[0.04] px-4 py-4"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-200/70">
+                    Required proof for this work package
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-0.5">
+                    {details.label}
+                  </div>
+                </div>
+                <div
+                  className={
+                    "shrink-0 text-[11px] font-semibold uppercase tracking-[0.10em] rounded-full border px-2 py-0.5 " +
+                    (complete
+                      ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100"
+                      : "border-white/15 bg-white/[0.04] text-gray-200")
+                  }
+                  title="Items queued for capture this session"
+                >
+                  {captured} / {total} captured
+                </div>
+              </div>
+              <ul className="mt-3 space-y-1 text-[12px] text-gray-200">
+                {details.requiredProof.map((item) => (
+                  <li key={item} className="flex items-start gap-2">
+                    <span aria-hidden="true" className="text-emerald-300/70 mt-0.5">
+                      ✓
+                    </span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          );
+        })()}
 
       {/* CAMERA MODE */}
       {cameraOpen && (
@@ -473,12 +553,23 @@ useEffect(() => {
       {/* PICK / QUEUE */}
       {!cameraOpen && (
         <div className="space-y-3">
+          {/* PR 88 — replaced the orange-to-slate gradient with the
+              calm white-on-dark primary used elsewhere in PeakOps
+              (Capture proof, Create field record). The disabled
+              state mutes to a quieter neutral so the button reads
+              as "the primary action" without screaming at the
+              operator. */}
           <button
-            className="w-full py-4 rounded-xl bg-gradient-to-r from-amber-500 to-slate-400 font-semibold active:from-amber-600 active:to-slate-500"
+            className={
+              "w-full py-4 rounded-xl text-[14px] font-semibold transition " +
+              (busy || sessionBusy || !sessionId
+                ? "bg-white/10 text-gray-400 cursor-not-allowed"
+                : "bg-white text-black hover:bg-white/90")
+            }
             onClick={openCamera}
             disabled={busy || sessionBusy || !sessionId}
           >
-            Open Camera
+            Open camera
           </button>
 
           <input
@@ -561,9 +652,9 @@ useEffect(() => {
                 className="mt-3 w-full py-4 rounded-xl bg-green-600/90 border border-green-300/20 text-white font-semibold hover:bg-green-600 active:translate-y-[1px] transition"
                 onClick={uploadAll}
                 disabled={busy || sessionBusy || !sessionId || !items.length || !selectedJobId}
-                title={!selectedJobId ? "Return and select My job first" : (items.length ? "Upload all queued evidence" : "Add photos first")}
+                title={!selectedJobId ? "Return to the record and pick a work package first" : (items.length ? "Upload all queued proof items" : "Add proof items first")}
               >
-                {busy ? (status || "Working…") : "Upload & Secure Evidence"}
+                {busy ? (status || "Working…") : "Upload & secure proof"}
               </button>
 
               {status ? <div className="mt-2 text-sm text-gray-300">{status}</div> : null}
@@ -571,11 +662,12 @@ useEffect(() => {
             </div>
           ) : (
             <p className="text-xs text-gray-500">
-              Tip: Open Camera → tap Capture repeatedly → Done → Upload All.
+              Tip: Open camera → capture proof items → Done → Upload &amp; secure proof.
             </p>
           )}
         </div>
       )}
+      </div>
     </main>
   );
 }

@@ -367,7 +367,7 @@ function RecordCard({ row, router }: { row: IncidentRow; router: ReturnType<type
           <div className="text-[11px] text-gray-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
             {evCount !== null ? (
               <span>
-                {evCount} {evCount === 1 ? "piece of evidence" : "pieces of evidence"}
+                {evCount} {evCount === 1 ? "proof item" : "proof items"}
               </span>
             ) : (
               <span>— evidence</span>
