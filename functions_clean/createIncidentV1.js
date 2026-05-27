@@ -7,6 +7,7 @@ const {
   ROLES_FIELD_WORK,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+const { toCustomerSlug } = require("./_customerSlug");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -272,10 +273,12 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
       acceptanceCriteria: ["Site photos uploaded", "Field notes present", "Supervisor signoff present"],
     },
   };
-  // Compute the snapshot if we have a known archetype. Empty
-  // (unknown / missing) archetype → no snapshot written; the UI
-  // falls back to its catalog reader for that record.
-  const requirementsTemplate = archetype ? ARCHETYPE_REQUIREMENTS[archetype] : null;
+  // PR 91 — snapshot resolution moved AFTER the customer field is
+  // parsed so the layered resolver (below) can look up customer-
+  // specific templates. The original PR 89a inline resolver is
+  // replaced by resolveRequirementsSnapshot() which checks (in
+  // order): customer-specific Firestore template → org-wide
+  // Firestore template → code archetype catalog.
 
   // PEAKOPS_CREATE_INCIDENT_PROOF_CONTEXT_V1 (PR 68b)
   // Operational context descriptors captured by the proof-workflow
@@ -295,6 +298,95 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
     }
     if (!/^[A-Za-z0-9_-]+$/.test(externalWorkOrderId)) {
       return j(res, 400, { ok: false, error: "externalWorkOrderId must contain only letters, digits, _ and -" });
+    }
+  }
+
+  // PEAKOPS_REQUIREMENTS_SNAPSHOT_V2 (PR 91) — layered resolver
+  //
+  // Precedence at create time:
+  //   1. orgs/{orgId}/templates/{archetype}__{customerSlug}
+  //        → source: "customer_template"
+  //   2. orgs/{orgId}/templates/{archetype}
+  //        → source: "org_template"
+  //   3. ARCHETYPE_REQUIREMENTS code catalog
+  //        → source: "archetype" (PR 89a fallback, unchanged)
+  //
+  // At most 2 Firestore reads per call (skipped entirely when
+  // archetype is unknown / missing). Templates are validated to
+  // have a non-empty requiredProof[] before being accepted;
+  // malformed docs fall through to the next layer.
+  //
+  // Snapshot output shape:
+  //   {
+  //     requiredProof, optionalProof, acceptanceCriteria,  // arrays of strings
+  //     source: "customer_template" | "org_template" | "archetype",
+  //     snapshottedAt: serverTimestamp,
+  //     templateKey?:     present when source != "archetype"
+  //     templateVersion?: present when source != "archetype"
+  //   }
+  let resolvedSnapshot = null;
+  if (archetype) {
+    const customerSlug = customer ? toCustomerSlug(customer) : "";
+    const lookups = [];
+    if (customerSlug) {
+      lookups.push({
+        key: `${archetype}__${customerSlug}`,
+        source: "customer_template",
+      });
+    }
+    lookups.push({ key: archetype, source: "org_template" });
+
+    for (const candidate of lookups) {
+      try {
+        const snap = await db.doc(`orgs/${orgId}/templates/${candidate.key}`).get();
+        if (snap.exists) {
+          const data = snap.data() || {};
+          const required = Array.isArray(data.requiredProof) ? data.requiredProof : null;
+          // Validate that the doc carries the canonical shape AND the
+          // archetype field matches what the record is being created
+          // for. The doc-id check + archetype-field check together
+          // prevent a stale / mis-keyed template from leaking onto a
+          // record of a different archetype.
+          if (required && required.length > 0 && String(data.archetype || "") === archetype) {
+            resolvedSnapshot = {
+              source: candidate.source,
+              templateKey: candidate.key,
+              templateVersion: Number.isFinite(Number(data.version)) ? Number(data.version) : 0,
+              requirements: {
+                requiredProof: required.map((s) => String(s)),
+                optionalProof: Array.isArray(data.optionalProof)
+                  ? data.optionalProof.map((s) => String(s))
+                  : [],
+                acceptanceCriteria: Array.isArray(data.acceptanceCriteria)
+                  ? data.acceptanceCriteria.map((s) => String(s))
+                  : [],
+              },
+            };
+            break;
+          }
+        }
+      } catch (e) {
+        // Template read failures should never block create.
+        // Log + fall through to the next candidate / code catalog.
+        console.warn(
+          "[createIncidentV1] template read failed (non-fatal)",
+          { templateKey: candidate.key, error: String(e?.message || e) },
+        );
+      }
+    }
+    // 3. Code catalog fallback (PR 89a behavior unchanged).
+    if (!resolvedSnapshot) {
+      const tpl = ARCHETYPE_REQUIREMENTS[archetype];
+      if (tpl) {
+        resolvedSnapshot = {
+          source: "archetype",
+          requirements: {
+            requiredProof: tpl.requiredProof.slice(),
+            optionalProof: tpl.optionalProof.slice(),
+            acceptanceCriteria: tpl.acceptanceCriteria.slice(),
+          },
+        };
+      }
     }
   }
 
@@ -340,18 +432,27 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
     if (archetype) doc.archetype = archetype;
     if (customer) doc.customer = customer;
     if (externalWorkOrderId) doc.externalWorkOrderId = externalWorkOrderId;
-    // PEAKOPS_REQUIREMENTS_SNAPSHOT_V1 (PR 89a) — write-once on
-    // create. See the catalog header above for the full design
-    // notes. Omitted when archetype is unknown so the UI's
-    // fallback path stays clean.
-    if (requirementsTemplate) {
-      doc.requirements = {
-        requiredProof: requirementsTemplate.requiredProof.slice(),
-        optionalProof: requirementsTemplate.optionalProof.slice(),
-        acceptanceCriteria: requirementsTemplate.acceptanceCriteria.slice(),
-        source: "archetype",
+    // PEAKOPS_REQUIREMENTS_SNAPSHOT_V2 (PR 91) — write-once on
+    // create. resolvedSnapshot carries one of three sources
+    // (customer_template, org_template, archetype); templateKey
+    // and templateVersion are only emitted for template-sourced
+    // snapshots so the doc shape stays minimal for the common
+    // fallback path. Omitted entirely when archetype is unknown.
+    if (resolvedSnapshot) {
+      const reqDoc = {
+        requiredProof: resolvedSnapshot.requirements.requiredProof.slice(),
+        optionalProof: resolvedSnapshot.requirements.optionalProof.slice(),
+        acceptanceCriteria: resolvedSnapshot.requirements.acceptanceCriteria.slice(),
+        source: resolvedSnapshot.source,
         snapshottedAt: FieldValue.serverTimestamp(),
       };
+      if (resolvedSnapshot.templateKey) {
+        reqDoc.templateKey = resolvedSnapshot.templateKey;
+      }
+      if (resolvedSnapshot.templateVersion !== undefined) {
+        reqDoc.templateVersion = resolvedSnapshot.templateVersion;
+      }
+      doc.requirements = reqDoc;
     }
 
     // Write both copies in parallel. If the org-scoped write fails
