@@ -195,6 +195,88 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
   const archetypeRaw = String(body.archetype || "").trim().toLowerCase();
   const archetype = ARCHETYPE_ENUM.includes(archetypeRaw) ? archetypeRaw : "";
 
+  // PEAKOPS_REQUIREMENTS_SNAPSHOT_V1 (PR 89a)
+  //
+  // Acceptance Requirements Source Model — snapshot at creation.
+  //
+  // The single load-bearing primitive: when a field record is
+  // created, we write a write-once `requirements` object on the
+  // incident doc capturing the proof checklist that applies to
+  // this record. The /add-evidence Proof Capture surface, the
+  // Capture-proof banner, /records cards, and (later) AI proof-
+  // quality review all read from this snapshot. Template edits
+  // in code or in Firestore (future PRs) NEVER rewrite this
+  // snapshot — historical records stay frozen on their creation-
+  // time contract.
+  //
+  // For PR 89a MVP, the catalog mirrors the next-app source-of-
+  // truth in next-app/lib/incidents/newIncidentDraft.ts
+  // (ARCHETYPE_DETAILS). Each catalog change requires updating
+  // BOTH files. A future PR consolidates to a Firestore
+  // collection so customer-template overrides + per-job
+  // overrides can layer cleanly on top.
+  //
+  // Snapshot shape:
+  //   requirements: {
+  //     requiredProof: string[],
+  //     optionalProof: string[],
+  //     acceptanceCriteria: string[],
+  //     source: "archetype",            // future: "customer_template" | "work_package_override"
+  //     snapshottedAt: Timestamp,
+  //   }
+  //
+  // Written by this function ONLY. No other backend code path
+  // touches `requirements`. Sealed-state writes do not modify
+  // it. Addenda append to separate doc paths.
+  const ARCHETYPE_REQUIREMENTS = {
+    fiber_splice_verification: {
+      requiredProof: ["Completion photos", "GPS capture", "Supervisor approval"],
+      optionalProof: [],
+      acceptanceCriteria: ["Required photos uploaded", "Supervisor signoff present"],
+    },
+    pole_inspection: {
+      requiredProof: ["Inspection photos", "Field notes", "QA review"],
+      optionalProof: [],
+      acceptanceCriteria: ["Inspection photos uploaded", "Field notes present", "QA review captured"],
+    },
+    site_acceptance: {
+      requiredProof: ["Completion photos", "Redlines", "Supervisor approval"],
+      optionalProof: [],
+      acceptanceCriteria: ["Completion photos uploaded", "Redlines attached", "Supervisor signoff present"],
+    },
+    storm_restoration_proof: {
+      requiredProof: ["Damage photos", "GPS capture", "Time-stamped notes"],
+      optionalProof: [],
+      acceptanceCriteria: ["Damage photos uploaded", "GPS captured", "Time-stamped notes present"],
+    },
+    custom: {
+      requiredProof: ["Photos", "Field notes", "Approval"],
+      optionalProof: [],
+      acceptanceCriteria: ["Photos uploaded", "Field notes present", "Approval captured"],
+    },
+    // Legacy archetype values from before PR 81/82's curated set.
+    // Kept so existing callers continue to land a snapshot too.
+    splice_work: {
+      requiredProof: ["Completion photos", "GPS capture", "Supervisor approval"],
+      optionalProof: [],
+      acceptanceCriteria: ["Required photos uploaded", "Supervisor signoff present"],
+    },
+    cable_install: {
+      requiredProof: ["Completion photos", "Field notes", "Approval"],
+      optionalProof: [],
+      acceptanceCriteria: ["Photos uploaded", "Field notes present", "Approval captured"],
+    },
+    site_survey: {
+      requiredProof: ["Site photos", "Field notes", "Supervisor approval"],
+      optionalProof: [],
+      acceptanceCriteria: ["Site photos uploaded", "Field notes present", "Supervisor signoff present"],
+    },
+  };
+  // Compute the snapshot if we have a known archetype. Empty
+  // (unknown / missing) archetype → no snapshot written; the UI
+  // falls back to its catalog reader for that record.
+  const requirementsTemplate = archetype ? ARCHETYPE_REQUIREMENTS[archetype] : null;
+
   // PEAKOPS_CREATE_INCIDENT_PROOF_CONTEXT_V1 (PR 68b)
   // Operational context descriptors captured by the proof-workflow
   // form (PR 69 /incidents/new). Both optional, both length-bounded.
@@ -258,6 +340,19 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
     if (archetype) doc.archetype = archetype;
     if (customer) doc.customer = customer;
     if (externalWorkOrderId) doc.externalWorkOrderId = externalWorkOrderId;
+    // PEAKOPS_REQUIREMENTS_SNAPSHOT_V1 (PR 89a) — write-once on
+    // create. See the catalog header above for the full design
+    // notes. Omitted when archetype is unknown so the UI's
+    // fallback path stays clean.
+    if (requirementsTemplate) {
+      doc.requirements = {
+        requiredProof: requirementsTemplate.requiredProof.slice(),
+        optionalProof: requirementsTemplate.optionalProof.slice(),
+        acceptanceCriteria: requirementsTemplate.acceptanceCriteria.slice(),
+        source: "archetype",
+        snapshottedAt: FieldValue.serverTimestamp(),
+      };
+    }
 
     // Write both copies in parallel. If the org-scoped write fails
     // (e.g., because security rules diverge), the top-level write is
