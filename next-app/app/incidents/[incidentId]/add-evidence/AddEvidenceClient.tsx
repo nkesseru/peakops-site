@@ -446,6 +446,36 @@ useEffect(() => {
     );
   }
 
+  // PR 93 — Hoisted from the panel IIFE so both the required-proof
+  // panel AND the primary capture button can derive their text from
+  // the same resolved requirements. Computing once also avoids the
+  // helper running twice per render.
+  const resolvedRequirements = effectiveRequirements({
+    archetype: incidentArchetype,
+    requirements: incidentRequirements,
+  });
+
+  // PR 93 — Adaptive primary-button label.
+  //   No requirements             → "Open camera"   (fallback)
+  //   Requirements + 0 captured   → "Capture: {requiredProof[0]}"
+  //   Requirements + N captured   → "Capture next required proof"
+  //                                  (we DON'T do per-item match —
+  //                                  position-based inference is
+  //                                  unsafe because the operator
+  //                                  could upload 3 photos of the
+  //                                  same enclosure. PR 95+ AI
+  //                                  proof-quality review is the
+  //                                  natural home for per-item
+  //                                  satisfaction tracking.)
+  let captureButtonLabel = "Open camera";
+  if (resolvedRequirements.requiredProof.length > 0) {
+    if (items.length === 0) {
+      captureButtonLabel = `Capture: ${resolvedRequirements.requiredProof[0]}`;
+    } else {
+      captureButtonLabel = "Capture next required proof";
+    }
+  }
+
   return (
     <main className="min-h-screen bg-black text-white">
       {/* PR 88 — AppTopBar shell consistency. Was missing on this
@@ -495,10 +525,10 @@ useEffect(() => {
             for the subtitle (legacy records keep their friendly
             label even when snapshot wins). */}
         {(() => {
-          const requirements = effectiveRequirements({
-            archetype: incidentArchetype,
-            requirements: incidentRequirements,
-          });
+          // PR 93 — read from the hoisted const so both panel and
+          // primary button stay in sync. (PR 88/90 originally
+          // computed this inside the IIFE.)
+          const requirements = resolvedRequirements;
           if (requirements.source === "none" || requirements.requiredProof.length === 0) {
             return null;
           }
@@ -625,12 +655,11 @@ useEffect(() => {
       {/* PICK / QUEUE */}
       {!cameraOpen && (
         <div className="space-y-3">
-          {/* PR 88 — replaced the orange-to-slate gradient with the
-              calm white-on-dark primary used elsewhere in PeakOps
-              (Capture proof, Create field record). The disabled
-              state mutes to a quieter neutral so the button reads
-              as "the primary action" without screaming at the
-              operator. */}
+          {/* PR 88 — calm white-on-dark primary (replaced the orange-
+              to-slate gradient). PR 93 — adaptive label that names
+              the next-needed proof item when there is one. Click
+              behavior unchanged: opens the camera. The label is a
+              hint, not a constraint. */}
           <button
             className={
               "w-full py-4 rounded-xl text-[14px] font-semibold transition " +
@@ -641,7 +670,7 @@ useEffect(() => {
             onClick={openCamera}
             disabled={busy || sessionBusy || !sessionId}
           >
-            Open camera
+            {captureButtonLabel}
           </button>
 
           <input
@@ -734,7 +763,7 @@ useEffect(() => {
             </div>
           ) : (
             <p className="text-xs text-gray-500">
-              Tip: Open camera → capture proof items → Done → Upload &amp; secure proof.
+              Capture each required item, then upload and secure the proof package.
             </p>
           )}
         </div>
