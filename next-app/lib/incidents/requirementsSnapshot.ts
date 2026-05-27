@@ -43,8 +43,22 @@ export type RequirementsSnapshot = {
   requiredProof: string[];
   optionalProof: string[];
   acceptanceCriteria: string[];
-  /** Where the resolved requirements came from. */
+  /** Resolver path that produced these requirements. */
   source: "snapshot" | "archetype_fallback" | "none";
+  /**
+   * PR 92 — When source === "snapshot", the underlying source the
+   * backend recorded at create time (PR 89a/91). Lets the UI
+   * surface a small audit affordance showing which layer fed the
+   * snapshot ("customer template · v3", "org template · v1",
+   * "archetype defaults"). For source === "archetype_fallback",
+   * this is "archetype" since the static catalog is conceptually
+   * the same source. Undefined for source === "none".
+   */
+  snapshotSource?: "customer_template" | "org_template" | "archetype";
+  /** Doc id under orgs/{org}/templates/ when sourced from a template. */
+  templateKey?: string;
+  /** Monotonic template version captured at snapshot write time. */
+  templateVersion?: number;
 };
 
 /**
@@ -82,11 +96,32 @@ export function effectiveRequirements(input: RequirementsInput | null | undefine
   if (snap && Array.isArray((snap as { requiredProof?: unknown }).requiredProof)) {
     const requiredProof = toStringArray((snap as { requiredProof?: unknown }).requiredProof);
     if (requiredProof.length > 0) {
+      // PR 92 — preserve the underlying snapshot source + templateKey
+      // + templateVersion so the UI can surface a small audit
+      // affordance ("Customer template · v3", etc.).
+      const rawSource = String((snap as { source?: unknown }).source || "").trim();
+      const validSnapshotSources = new Set(["customer_template", "org_template", "archetype"]);
+      const snapshotSource = validSnapshotSources.has(rawSource)
+        ? (rawSource as "customer_template" | "org_template" | "archetype")
+        : undefined;
+      const templateKeyRaw = (snap as { templateKey?: unknown }).templateKey;
+      const templateKey =
+        typeof templateKeyRaw === "string" && templateKeyRaw.length > 0
+          ? templateKeyRaw
+          : undefined;
+      const versionRaw = (snap as { templateVersion?: unknown }).templateVersion;
+      const templateVersion = typeof versionRaw === "number" && Number.isFinite(versionRaw)
+        ? versionRaw
+        : undefined;
+
       return {
         requiredProof,
         optionalProof: toStringArray((snap as { optionalProof?: unknown }).optionalProof),
         acceptanceCriteria: toStringArray((snap as { acceptanceCriteria?: unknown }).acceptanceCriteria),
         source: "snapshot",
+        snapshotSource,
+        templateKey,
+        templateVersion,
       };
     }
   }
@@ -108,6 +143,10 @@ export function effectiveRequirements(input: RequirementsInput | null | undefine
         optionalProof: [],
         acceptanceCriteria: [],
         source: "archetype_fallback",
+        // PR 92 — surface as "archetype" to the UI; legacy records
+        // and snapshot-archetype records render the same audit
+        // label ("Archetype defaults").
+        snapshotSource: "archetype",
       };
     }
   }

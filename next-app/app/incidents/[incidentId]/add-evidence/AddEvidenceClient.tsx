@@ -65,6 +65,10 @@ useEffect(() => {
   // so historical records stay frozen on their creation-time
   // requirements contract.
   const [incidentRequirements, setIncidentRequirements] = useState<any>(null);
+  // PR 92 — customer field plumbed for the requirements-source
+  // audit footer. When the snapshot source is "customer_template",
+  // we display the human-readable customer name (not the slug).
+  const [incidentCustomer, setIncidentCustomer] = useState<string>("");
   const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
 
   // Env / context
@@ -172,6 +176,8 @@ useEffect(() => {
         } else {
           setIncidentRequirements(null);
         }
+        // PR 92 — customer plumbed for the requirements-source label.
+        setIncidentCustomer(String(out?.doc?.customer || "").trim());
       } catch {
         // tolerate — fall back to reactive 409 handling
       }
@@ -539,6 +545,49 @@ useEffect(() => {
                   </li>
                 ))}
               </ul>
+              {/* PR 92 — quiet audit footer surfacing where the
+                  requirements came from. Renders only when we have
+                  a snapshotSource (i.e., panel is being rendered
+                  from real data — either snapshot or archetype
+                  fallback). Format:
+                    customer_template → "Customer template · <name> · v<N>"
+                    org_template      → "Org template · v<N>"
+                    archetype         → "Archetype defaults"
+                  Customer name is read from incident.customer when
+                  available; if absent the label falls back to the
+                  templateKey slug fragment. */}
+              {(() => {
+                const src = requirements.snapshotSource;
+                if (!src) return null;
+                let label;
+                if (src === "customer_template") {
+                  const customerLabel = incidentCustomer || (
+                    requirements.templateKey
+                      ? requirements.templateKey.split("__")[1] || ""
+                      : ""
+                  );
+                  const parts = ["Customer template"];
+                  if (customerLabel) parts.push(customerLabel);
+                  if (typeof requirements.templateVersion === "number") {
+                    parts.push(`v${requirements.templateVersion}`);
+                  }
+                  label = parts.join(" · ");
+                } else if (src === "org_template") {
+                  const parts = ["Org template"];
+                  if (typeof requirements.templateVersion === "number") {
+                    parts.push(`v${requirements.templateVersion}`);
+                  }
+                  label = parts.join(" · ");
+                } else {
+                  label = "Archetype defaults";
+                }
+                return (
+                  <div className="mt-3 pt-2 border-t border-amber-300/10 text-[11px] text-gray-500">
+                    <span className="text-gray-400">Requirements source: </span>
+                    <span>{label}</span>
+                  </div>
+                );
+              })()}
             </section>
           );
         })()}
