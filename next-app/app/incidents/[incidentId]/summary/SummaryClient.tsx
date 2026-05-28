@@ -191,6 +191,7 @@ function prettyTimelineEvent(t?: string, ctx?: TimelineEventContext): string {
 // Small helpers for deriving operational interpretation from real
 // timeline data. Each returns undefined when the relevant event is
 // absent — UI must handle the missing case gracefully.
+// (PR 103c kept: used by Operational Facts + Field Work sections.)
 function findEarliestEventSeconds(timeline: Array<{ type?: string; occurredAt?: { _seconds?: number } }>, typeKey: string): number | undefined {
   const norm = typeKey.toLowerCase();
   let earliest: number | undefined;
@@ -233,6 +234,8 @@ function eventIcon(t?: string): string {
   return map[norm] || "•";
 }
 
+// (PR 103c kept: used by Operational Facts section's narrative
+// fact synthesis — "Field work completed in 4h 22m", etc.)
 function formatDuration(secs?: number): string {
   if (!secs || secs < 0) return "—";
   if (secs < 60) return `${Math.floor(secs)}s`;
@@ -426,8 +429,10 @@ function prettyIntegrityReason(raw: string): string {
   // Replaces the prior "expected at least N job_approved events" hard
   // threshold with a job-derived check. The approval is recorded on
   // the job itself; the gap is that the audit timeline lacks the
-  // corresponding event. Copy reflects that nuance so it doesn't
-  // contradict the readiness strip's ✓ "Supervisor approval complete".
+  // corresponding event. Copy reflects that nuance.
+  // (PR 103c: dropped the "contradict the readiness strip" reference
+  // since the legacy strip no longer exists; Acceptance Readiness
+  // is now the single source of readiness truth.)
   m = s.match(/^(\d+)\s+approved\s+jobs?\s+missing\s+approval\s+timeline\s+events?$/i);
   if (m) {
     const n = Number(m[1]);
@@ -511,7 +516,11 @@ function composeOperationalSummary(args: {
   }
 
   if (attentionCount > 0) {
-    parts.push(`${attentionCount} readiness ${attentionCount === 1 ? "item needs" : "items need"} review before delivery.`);
+    // PR 103c — Rewrote "readiness items" → "attention items" so the
+    // word "readiness" only ever refers to the Acceptance Readiness
+    // panel. The attention banner already uses "Attention needed";
+    // this matches.
+    parts.push(`${attentionCount} attention ${attentionCount === 1 ? "item needs" : "items need"} review before delivery.`);
   } else if (packetStatus === "ready") {
     parts.push("Export packet is ready.");
   } else if (packetStatus === "building") {
@@ -1433,10 +1442,9 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     // Replaces the prior hard-coded "expected at least 2 job_approved
     // events" threshold. The new rule is derived from real jobs: if
     // there are more approved jobs than approval events in the audit
-    // timeline, surface the gap. This eliminates the contradiction
-    // PR #33's audit found (readiness ✓ "Supervisor approval complete"
-    // alongside ⚠ "fewer approvals than expected") when a single
-    // approved job has no `job_approved` timeline event.
+    // timeline, surface the gap.
+    // (PR 103c: dropped the "PR #33's audit found readiness ✓"
+    // example since the legacy operational-readiness strip is gone.)
     const jobApprovedEventCount = timelineCounts["job_approved"] || 0;
     if (approvedJobs.length > 0 && jobApprovedEventCount < approvedJobs.length) {
       const missing = approvedJobs.length - jobApprovedEventCount;
@@ -1759,138 +1767,17 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           }
         />
 
-        {/* PEAKOPS_OPERATIONAL_READINESS_V1 (2026-05-17)
-            Compact operational readiness strip. Only deterministic
-            truths from real data — no AI scores, no percentages, no
-            fake confidence. Each row reflects an audit-defensible
-            signal a supervisor would check before approving the
-            record.
-            NOTE (PR 103b): Older client-side readiness strip; left in
-            place for now. The new Acceptance Readiness panel above
-            is the authoritative server-backed signal. A future
-            cleanup PR can consolidate / retire this section once
-            the new panel has shipped in production for a release. */}
-        {(() => {
-          // PEAKOPS_OPERATIONAL_INTERPRETATION_V1 (2026-05-18, PR 30c)
-          // Each readiness signal now carries synthesized operational
-          // context derived from real timestamps and events — no fake
-          // AI scores, no percentages, no opaque "confidence" — every
-          // number on this strip is traceable to a Firestore fact.
-          const sessionStart = findEarliestEventSeconds(timeline as any, "session_started");
-          const sessionEnd =
-            findLatestEventSeconds(timeline as any, "session_completed") ||
-            findLatestEventSeconds(timeline as any, "field_submitted");
-          const fieldWorkSecs =
-            sessionStart && sessionEnd && sessionEnd > sessionStart
-              ? sessionEnd - sessionStart
-              : 0;
-          const hasFieldSubmitted = !!(sessionEnd || timeline.some((t) => {
-            const k = String(t.type || "").toLowerCase();
-            return k === "field_submitted" || k === "session_completed";
-          }));
-
-          const evidenceInWindow =
-            sessionStart && sessionEnd
-              ? evidence.filter((e) => {
-                  const s = Number((e as any).storedAt?._seconds || (e as any).createdAt?._seconds || 0);
-                  return s >= sessionStart && s <= sessionEnd;
-                }).length
-              : 0;
-
-          const approvedJobs = jobs.filter((j) => String(j.status || "").toLowerCase() === "approved").length;
-          const hasApproval = approvedJobs > 0;
-          const latestApprovalSec = findLatestEventSeconds(timeline as any, "job_approved");
-
-          const integrityClean = truthMismatchReasons.length === 0;
-          const packetStatus = String(incident?.packetMeta?.status || "").toLowerCase();
-          const packetReady = packetStatus === "ready";
-
-          // PEAKOPS_PACKET_FRESHNESS_V1 (2026-05-18, PR 35)
-          // Differentiate "synchronized" (ready + fresh) from "stale"
-          // (ready but operational activity occurred more than the
-          // 1-hour grace after export). Both states matter for audit
-          // confidence; the page now names them explicitly.
-          const exportedAtMsStrip = incident?.packetMeta?.exportedAt
-            ? Date.parse(incident.packetMeta.exportedAt)
-            : NaN;
-          const stripUpdatedAtSec = Number(incident?.updatedAt?._seconds || 0);
-          const stripLatestEventSec = Number(timeline[0]?.occurredAt?._seconds || 0);
-          const stripActivityMs = Math.max(stripUpdatedAtSec, stripLatestEventSec) * 1000;
-          const packetStaleStrip =
-            packetReady &&
-            Number.isFinite(exportedAtMsStrip) &&
-            stripActivityMs > 0 &&
-            stripActivityMs - exportedAtMsStrip > 60 * 60 * 1000;
-
-          // Build operational-language labels with synthesized context.
-          const fieldLabel = hasFieldSubmitted
-            ? fieldWorkSecs > 0
-              ? `Field work completed in ${formatDuration(fieldWorkSecs)}`
-              : "Field crew submitted completion package"
-            : "Field crew completion pending";
-
-          const evidenceLabel =
-            evidence.length > 0
-              ? evidenceInWindow > 0 && evidenceInWindow < evidence.length
-                ? `${evidence.length} ${evidence.length === 1 ? "piece" : "pieces"} of evidence captured — ${evidenceInWindow} during active work window`
-                : evidenceInWindow > 0 && evidenceInWindow === evidence.length
-                  ? `${evidence.length} ${evidence.length === 1 ? "piece" : "pieces"} of evidence captured during active work window`
-                  : `${evidence.length} ${evidence.length === 1 ? "piece" : "pieces"} of evidence captured`
-              : "Evidence not yet captured";
-
-          const approvalLabel = hasApproval
-            ? latestApprovalSec
-              ? `Supervisor approval logged ${fmtAgo(latestApprovalSec)} ago (${approvedJobs} ${approvedJobs === 1 ? "job" : "jobs"})`
-              : `Supervisor approval complete (${approvedJobs} ${approvedJobs === 1 ? "job" : "jobs"})`
-            : "Supervisor approval pending";
-
-          const integrityLabel = integrityClean
-            ? "Operational record consistent"
-            : `Attention needed: ${truthMismatchReasons.length} item${truthMismatchReasons.length === 1 ? "" : "s"} to review`;
-
-          // PEAKOPS_PACKET_FRESHNESS_V1 (2026-05-18, PR 35)
-          // Explicit "synchronized" / "stale" wording — the page now
-          // names packet freshness instead of just "ready".
-          const packetLabel = !packetReady
-            ? "Export packet pending"
-            : packetStaleStrip
-            ? `Packet stale — operational activity occurred after export${incident?.packetMeta?.exportedAt ? ` (generated ${fmtAgoIso(incident.packetMeta.exportedAt)} ago)` : ""}`
-            : incident?.packetMeta?.exportedAt
-            ? `Packet synchronized with current operational state (generated ${fmtAgoIso(incident.packetMeta.exportedAt)} ago)`
-            : "Packet synchronized with current operational state";
-
-          const items: Array<{ ok: boolean | "warn"; label: string }> = [
-            { ok: hasFieldSubmitted, label: fieldLabel },
-            { ok: evidence.length > 0, label: evidenceLabel },
-            { ok: hasApproval, label: approvalLabel },
-            { ok: integrityClean ? true : "warn", label: integrityLabel },
-            { ok: packetReady && integrityClean && !packetStaleStrip ? true : packetStaleStrip ? "warn" : false, label: packetLabel },
-          ];
-          return (
-            <section aria-label="Operational readiness" className="space-y-3">
-              <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/60">
-                Operational readiness
-              </div>
-              <ul className="space-y-1.5">
-                {items.map((it, i) => {
-                  const sym = it.ok === true ? "✓" : it.ok === "warn" ? "⚠" : "○";
-                  const tone =
-                    it.ok === true
-                      ? "text-emerald-300/90"
-                      : it.ok === "warn"
-                      ? "text-amber-200/90"
-                      : "text-gray-400";
-                  return (
-                    <li key={i} className="flex items-start gap-3 text-[13px] leading-relaxed">
-                      <span className={`mt-[2px] inline-block w-3 text-center font-semibold ${tone}`}>{sym}</span>
-                      <span className={it.ok === true ? "text-gray-100" : it.ok === "warn" ? "text-amber-100/90" : "text-gray-400"}>{it.label}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          );
-        })()}
+        {/* PR 103c — Legacy "Operational readiness" client-computed
+            strip removed. The Acceptance Readiness panel above is
+            the single source of readiness truth (server-backed via
+            getAcceptanceReadinessV1, snapshot-frozen via
+            incident.requirements.acceptanceChecks, identical to
+            what the exported packet carries). Packet-freshness
+            signals that used to live on the old strip ("Packet
+            synchronized" / "Packet stale") survive in the Chain
+            of Accountability + Export Packet sections downstream;
+            field-work durations + evidence counts survive in
+            Operational Facts below. */}
 
         {/* PEAKOPS_OPERATIONAL_FACTS_V1 (2026-05-18, PR 35)
             Deterministic operational facts synthesized from real
