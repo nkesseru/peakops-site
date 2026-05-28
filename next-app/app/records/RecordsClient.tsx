@@ -41,6 +41,11 @@ import {
   normalizeIncidentStatusShared,
 } from "@/lib/incidents/incidentStatus";
 import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
+// PR 103b — Cache-only readiness pill. Renders only when the row
+// carries readinessCache.state from listIncidentsV1 (today: never;
+// forward-compatible for when backend plumbs it through). Omits on
+// "not_available" per ReadinessPill internal rule.
+import { ReadinessPill } from "@/components/ReadinessPill";
 
 const FILTER_VALUES = ["all", "pending", "active", "accepted"] as const;
 type FilterKey = (typeof FILTER_VALUES)[number];
@@ -75,6 +80,17 @@ type IncidentRow = {
   taskCount?: number;
   approvedTaskCount?: number;
   packetReady?: boolean;
+  // PR 103b — Optional cached readiness state from
+  // incident.readinessCache (PR 103a write path). Per approved
+  // scope: prefer this cache only; never recompute client-side.
+  // Today, listIncidentsV1 does NOT plumb this field through — the
+  // pill is forward-compatible and renders only when a future
+  // backend PR adds it to the response. Until then, no pill is
+  // rendered on any card. This is intentional: scope rules forbid
+  // both client-side compute AND a per-card secondary fetch.
+  readinessCache?: {
+    state?: "ready_for_submission" | "requirements_missing" | "not_available";
+  };
 };
 
 type ListResp = {
@@ -382,6 +398,17 @@ function RecordCard({ row, router }: { row: IncidentRow; router: ReturnType<type
               <>
                 <span aria-hidden="true" className="text-white/15">·</span>
                 <span className="text-emerald-200/80">packet ready</span>
+              </>
+            ) : null}
+            {/* PR 103b — Cache-only readiness pill. Renders only
+                when readinessCache.state is "ready_for_submission"
+                or "requirements_missing". "not_available" + missing
+                cache both omit (handled inside ReadinessPill). */}
+            {row.readinessCache?.state &&
+             row.readinessCache.state !== "not_available" ? (
+              <>
+                <span aria-hidden="true" className="text-white/15">·</span>
+                <ReadinessPill state={row.readinessCache.state} size="sm" />
               </>
             ) : null}
           </div>
