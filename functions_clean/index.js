@@ -105,6 +105,8 @@ safeExport("rejectJobV1", "./rejectJobV1");
 // Exports
 safeExport("exportIncidentPacketV1", "./exportIncidentPacketV1");
 safeExport("getIncidentPacketMetaV1", "./getIncidentPacketMetaV1");
+// PR 103a — Acceptance Readiness Engine
+safeExport("getAcceptanceReadinessV1", "./getAcceptanceReadinessV1");
 
 // Supervisor Requests
 safeExport("createSupervisorRequestV1", "./createSupervisorRequestV1");

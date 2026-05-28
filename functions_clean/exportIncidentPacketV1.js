@@ -9,6 +9,11 @@ const {
   ROLES_GENERATE_REPORT,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+// PR 103a — Shared acceptance-readiness compute. Same helper used by
+// getAcceptanceReadinessV1 and by the export pipeline below, so the
+// readiness state embedded in the packet matches what the operator
+// saw on the Summary page seconds earlier.
+const { computeAcceptanceReadiness } = require("./_readiness");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -482,6 +487,10 @@ function buildCoverHtml(ctx) {
     //    satisfied, evidenceCount, directoryInPacket,
     //    photos:[{ name, label, index, relPath|unavailable, taskTitle }] }]
     slotsWithPhotos,
+    // PR 103a — Acceptance Readiness projection. Drives the new
+    // Acceptance Readiness section in this audit doc. Schema in
+    // functions_clean/_readiness.js.
+    acceptanceReadiness,
     humanTimeline,
     generatedAt,
     // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
@@ -679,6 +688,58 @@ Supervisor approval was recorded and the record has been locked.`;
       </li>
     `).join("");
 
+  // PR 103a — Acceptance Readiness section. Always rendered on the
+  // audit doc (in contrast to the customer doc, which only surfaces
+  // a positive line when state is ready). Required-tier checks
+  // listed with ✓/✗ ticks; encouraged-tier (currently empty in MVP)
+  // listed below. State label uses the operational vocabulary —
+  // "Ready for submission" / "Requirements missing" / "Not available."
+  const readinessSection = (() => {
+    const r = acceptanceReadiness;
+    if (!r || !Array.isArray(r.checks)) return "";
+    const stateLabel = {
+      ready_for_submission: "Ready for submission",
+      requirements_missing: "Requirements missing",
+      not_available: "Not available",
+    }[r.state] || r.state;
+    const stateTone = {
+      ready_for_submission: "approved",
+      requirements_missing: "warn",
+      not_available: "neutral",
+    }[r.state] || "neutral";
+    const requiredChecks = r.checks.filter((c) => c.tier === "required");
+    const encouragedChecks = r.checks.filter((c) => c.tier === "encouraged");
+    const renderRow = (c) => {
+      const tick = c.satisfied
+        ? `<span class="readiness-tick readiness-tick-ok">✓</span>`
+        : `<span class="readiness-tick readiness-tick-missing">✗</span>`;
+      const detail = c.detail
+        ? `<span class="readiness-detail muted">${escapeHtml(c.detail)}</span>`
+        : "";
+      return `<li class="readiness-row">${tick}<span class="readiness-label">${escapeHtml(c.label)}</span>${detail}</li>`;
+    };
+    const counts = r.summary;
+    const countLine = `${counts.requiredSatisfied} / ${counts.requiredTotal} required satisfied${
+      counts.encouragedTotal > 0
+        ? ` · ${counts.encouragedSatisfied} / ${counts.encouragedTotal} encouraged`
+        : ""
+    }`;
+    return `
+      <div class="readiness-header readiness-tone-${stateTone}">
+        <span class="readiness-state">${escapeHtml(stateLabel)}</span>
+        <span class="readiness-counts">${escapeHtml(countLine)}</span>
+      </div>
+      ${requiredChecks.length === 0 ? "" : `
+        <h3 class="readiness-tier">Required</h3>
+        <ul class="readiness-list">${requiredChecks.map(renderRow).join("")}</ul>
+      `}
+      ${encouragedChecks.length === 0 ? "" : `
+        <h3 class="readiness-tier">Encouraged</h3>
+        <ul class="readiness-list">${encouragedChecks.map(renderRow).join("")}</ul>
+      `}
+    `;
+  })();
+
   const bannerColor = {
     approved: { bg: "#e8f5ee", border: "#a8d5b8", fg: "#1f6d3a" },
     warn:     { bg: "#fff8e1", border: "#e6cf83", fg: "#7a5a00" },
@@ -805,6 +866,27 @@ Supervisor approval was recorded and the record has been locked.`;
   }
   .task-photo-line { margin-top: 6px; font-size: 12px; }
   .evidence-block { margin: 0 0 18px; }
+  /* PR 103a — Acceptance Readiness section. State header reads as
+     a single horizontal strip: state label + counts. Checks render
+     as a tight list with ✓ / ✗ ticks. Tones use the existing
+     banner palette (approved/warn/neutral) for visual coherence. */
+  .readiness-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 8px 12px; border-radius: 6px; margin-bottom: 12px;
+    font-size: 13px;
+  }
+  .readiness-tone-approved { background: #e8f5ee; border: 1px solid #a8d5b8; color: #1f6d3a; }
+  .readiness-tone-warn { background: #fff8e1; border: 1px solid #e6cf83; color: #7a5a00; }
+  .readiness-tone-neutral { background: #f1f3f5; border: 1px solid #d0d7de; color: #3a3f44; }
+  .readiness-state { font-weight: 600; }
+  .readiness-counts { font-size: 12px; opacity: 0.85; }
+  .readiness-tier { margin: 14px 0 6px; font-size: 12px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.04em; }
+  .readiness-list { list-style: none; padding: 0; margin: 0; }
+  .readiness-row { display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; padding: 4px 0; font-size: 13px; align-items: baseline; }
+  .readiness-tick-ok { color: #1f6d3a; }
+  .readiness-tick-missing { color: #c14545; }
+  .readiness-label { color: #1c1c1c; }
+  .readiness-detail { font-size: 11px; }
   .task-photo-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 8px; margin-top: 8px;
@@ -896,6 +978,9 @@ Supervisor approval was recorded and the record has been locked.`;
   <div class="stamp"><div class="label">Closed</div><div class="value">${escapeHtml(formatDateTime(timestamps?.closed))}</div></div>
   <div class="stamp"><div class="label">Organization</div><div class="value">${escapeHtml(orgId)}</div></div>
 </div>
+
+<h2>Acceptance Readiness</h2>
+${readinessSection}
 
 <h2>Field Note</h2>
 ${noteSection}
@@ -1005,6 +1090,11 @@ function buildCustomerHtml(ctx) {
     tasksWithEvidence,
     // PR 99 — slot-grouped photo data for the Photos section.
     slotsWithPhotos,
+    // PR 103a — Acceptance Readiness. On the customer doc we ONLY
+    // surface a positive line when the state is
+    // "ready_for_submission" (per approved scope: customer-facing
+    // never displays a missing-items checklist).
+    acceptanceReadiness,
     generatedAt,
     // PEAKOPS_REPORT_LINEAGE_V1 (2026-05-04)
     reportRevision,
@@ -1150,6 +1240,20 @@ function buildCustomerHtml(ctx) {
     return `<p>Work completed and approved.</p>${detailLine}`;
   })();
 
+  // PR 103a — Customer-facing readiness line. Renders ONLY when
+  // every required check is satisfied. Pre-positive states are
+  // omitted entirely from the customer doc (per approved scope:
+  // customer-facing never surfaces a missing-items checklist —
+  // would undermine the closeout claim).
+  const readinessReadyLine = (() => {
+    if (!acceptanceReadiness || acceptanceReadiness.state !== "ready_for_submission") return "";
+    return `
+      <div class="cust-readiness">
+        <p>All required acceptance signals satisfied at the time this packet was generated.</p>
+      </div>
+    `;
+  })();
+
   const headerDate = formatDateShort(
     timestamps?.closed || timestamps?.approved || timestamps?.submitted || timestamps?.created,
   );
@@ -1186,6 +1290,15 @@ function buildCustomerHtml(ctx) {
   .work-list li { margin: 4px 0; }
 
   .cust-approver { margin-top: 4px; font-size: 13px; color: #555; }
+  /* PR 103a — Customer-facing readiness positive-line styling. Calm
+     green tone, never alarmist. Renders only when state is
+     ready_for_submission. */
+  .cust-readiness {
+    margin-top: 10px; padding: 8px 12px; border-radius: 6px;
+    background: #f0f7f2; border: 1px solid #c9e4d3; color: #1f6d3a;
+    font-size: 13px;
+  }
+  .cust-readiness p { margin: 0; font-size: 13px; }
 
   .cust-photo-block { margin: 14px 0 20px; }
   /* PEAKOPS_VENDOR_ASSIGNMENT_V1 (2026-05-04) */
@@ -1275,6 +1388,7 @@ ${photosHtml}
 
 <h2>Completed and Approved</h2>
 ${approvalLine}
+${readinessReadyLine}
 
 <footer>
   <div class="footer-line">Generated by PeakOps · ${escapeHtml(formatDateTime(generatedAt))}</div>
@@ -1967,6 +2081,18 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       snapshotPresent: reqLabels.length > 0,
     };
 
+    // PR 103a — Acceptance Readiness. Deterministic projection of
+    // the same inputs we just read (incident + evidence + jobs).
+    // Embedded in the packet manifest + README + audit HTML; also
+    // surfaced on the customer doc ONLY when state is
+    // "ready_for_submission" (per approved scope — customer-facing
+    // never surfaces a missing-items checklist).
+    const acceptanceReadiness = computeAcceptanceReadiness({
+      incident,
+      evidence,
+      jobs,
+    });
+
     // PR 99 — Cover-doc data structures.
     //
     // tasksWithEvidence: kept for the TASKS section, but its `photos`
@@ -2284,6 +2410,11 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       tasksWithEvidence,
       // PR 99 — required-proof slot grouping for the EVIDENCE section.
       slotsWithPhotos,
+      // PR 103a — Acceptance Readiness projection for the new
+      // Acceptance Readiness audit-doc section. Audit doc always
+      // shows the checklist (✓/✗ per check); customer doc only
+      // surfaces a positive line when state is ready (see below).
+      acceptanceReadiness,
       humanTimeline,
       generatedAt: new Date().toISOString(),
       // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
@@ -2327,6 +2458,10 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       tasksWithEvidence,
       // PR 99 — required-proof slot grouping for the customer Photos section.
       slotsWithPhotos,
+      // PR 103a — Acceptance Readiness, surfaced ONLY when state is
+      // "ready_for_submission" (per approved scope: customer-facing
+      // doc never displays a missing-items checklist).
+      acceptanceReadiness,
       generatedAt: new Date().toISOString(),
       // PEAKOPS_REPORT_LINEAGE_V1 (2026-05-04)
       reportRevision,
@@ -2687,16 +2822,16 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     const packetManifest = {
       schemaVersion: 1,
-      // PR 99 — formatVersion bump from 3 → 4 signals the physical
-      // file-layout migration. Photo bytes now live under
-      // original-record/required-proof/{NN}__{slot-slug}/ and
-      // original-record/unassigned/ instead of the prior
-      // original-record/evidence/{task-slug}/ task grouping. The
-      // requiredProof manifest block (introduced at v3) keeps its
-      // shape; pathInPacket strings update to the new locations.
-      // Already-emitted v2/v3 packets stay valid at their stored
-      // version; future re-exports of the same incident produce v4.
-      formatVersion: 4,
+      // PR 99 — formatVersion bump 3 → 4 (physical layout migration).
+      // PR 103a — formatVersion bump 4 → 5 signals the new
+      // acceptanceReadiness top-level block. File layout from PR 99
+      // is unchanged at v5; only the manifest schema gains a field.
+      // Already-emitted v4 packets stay valid at their stored
+      // version; future re-exports of the same incident produce v5.
+      // (Note: PR 101 + PR 102 planning had claimed versions 5 and 6
+      // respectively, but neither shipped — v5 is the next available
+      // and PR 103a claims it.)
+      formatVersion: 5,
       incidentId,
       orgId,
       packetVersion: reportRevision,
@@ -2718,6 +2853,14 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       // grouping logic earlier in this function. Pointers into the
       // existing evidence/{task-slug}/ layout — no byte duplication.
       requiredProof: requiredProofBlock,
+      // PR 103a — Acceptance Readiness projection at export time.
+      // Frozen at this revision's bytes; readers can detect drift
+      // by re-computing against current incident state. Same shape
+      // returned by getAcceptanceReadinessV1.
+      acceptanceReadiness: {
+        ...acceptanceReadiness,
+        packetRevisionAtComputation: reportRevision,
+      },
       topLevelHash: _topLevelHash,
       history: reportHistory,
     };
@@ -2821,6 +2964,69 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     readmeLines.push("sourceTaskTitle in the manifest); see original-record/tasks.json for");
     readmeLines.push("the per-task decision and approval state.");
     readmeLines.push("");
+
+    // PR 103a — Acceptance Readiness section. Deterministic
+    // projection of the same inputs that drove the required-proof
+    // structure above. Three possible states:
+    //   - "ready_for_submission" : every required check satisfied
+    //   - "requirements_missing" : at least one required unsatisfied
+    //   - "not_available"        : no snapshot AND no evidence
+    //                              (legacy fallback)
+    // When the state is "requirements_missing" we list the missing
+    // checks explicitly so the auditor (or the operator reviewing
+    // their own packet) can see exactly what is not yet satisfied.
+    // The packet was exported regardless — gating is the caller's
+    // call, not the readiness engine's.
+    readmeLines.push("ACCEPTANCE READINESS AT EXPORT");
+    readmeLines.push("──────────────────────────────");
+    const _stateLabel = {
+      ready_for_submission: "Ready for submission",
+      requirements_missing: "Requirements missing",
+      not_available: "Not available (no snapshot or evidence)",
+    }[acceptanceReadiness.state] || acceptanceReadiness.state;
+    readmeLines.push(`State:      ${_stateLabel}`);
+    readmeLines.push(`Required:   ${acceptanceReadiness.summary.requiredSatisfied} / ${acceptanceReadiness.summary.requiredTotal} satisfied`);
+    if (acceptanceReadiness.summary.encouragedTotal > 0) {
+      readmeLines.push(`Encouraged: ${acceptanceReadiness.summary.encouragedSatisfied} / ${acceptanceReadiness.summary.encouragedTotal} satisfied`);
+    }
+    readmeLines.push("");
+    if (acceptanceReadiness.state === "requirements_missing") {
+      const missingRequired = acceptanceReadiness.checks.filter(
+        (c) => c.tier === "required" && !c.satisfied,
+      );
+      const satisfiedRequired = acceptanceReadiness.checks.filter(
+        (c) => c.tier === "required" && c.satisfied,
+      );
+      readmeLines.push("Missing (required):");
+      for (const c of missingRequired) {
+        readmeLines.push(`  ✗ ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
+      }
+      readmeLines.push("");
+      if (satisfiedRequired.length > 0) {
+        readmeLines.push("Satisfied (required):");
+        for (const c of satisfiedRequired) {
+          readmeLines.push(`  ✓ ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
+        }
+        readmeLines.push("");
+      }
+      readmeLines.push("This packet was exported with REQUIRED acceptance signals");
+      readmeLines.push("unsatisfied. The missing signals are listed above. The operator");
+      readmeLines.push("chose to export despite the readiness gap; the audit trail");
+      readmeLines.push("records this decision via the export timeline event.");
+      readmeLines.push("");
+    } else if (acceptanceReadiness.state === "ready_for_submission") {
+      readmeLines.push("Satisfied (required):");
+      for (const c of acceptanceReadiness.checks.filter((c) => c.tier === "required")) {
+        readmeLines.push(`  ✓ ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
+      }
+      readmeLines.push("");
+    } else {
+      readmeLines.push("Readiness could not be evaluated for this packet — no");
+      readmeLines.push("required-proof snapshot existed and no evidence was captured.");
+      readmeLines.push("Legacy / pre-snapshot incidents fall into this state.");
+      readmeLines.push("");
+    }
+
     readmeLines.push("This packet was generated by PeakOps.");
     readmeLines.push("");
 
@@ -2911,7 +3117,8 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         // PR 98a — bumped 2 → 3 to track requiredProof index in packet-manifest.
         // PR 99 — bumped 3 → 4 for the physical layout migration to
         // required-proof/{slot}/ + unassigned/.
-        formatVersion: 4,
+        // PR 103a — bumped 4 → 5 to track the acceptanceReadiness block.
+        formatVersion: 5,
         packetVersion: reportRevision,
         originalRecordHash: _originalRecordHash,
         topLevelHash: _topLevelHash,
@@ -2929,6 +3136,15 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         // entry now carries its own storagePath so PR 47's Export
         // History UI can resolve each version's GCS object.
         history: reportHistoryWithPath,
+      },
+      // PR 103a — Persist the readiness state on the incident doc
+      // so Records-page reads can render the pill without a full
+      // recompute. cachedAt is the moment of THIS export's compute;
+      // getAcceptanceReadinessV1 refreshes it whenever called.
+      readinessCache: {
+        ...acceptanceReadiness,
+        packetRevisionAtComputation: reportRevision,
+        cachedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       updatedAt: exportedAt,
     }, { merge: true });
