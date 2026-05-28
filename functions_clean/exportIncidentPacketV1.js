@@ -230,6 +230,21 @@ function escapeHtml(s) {
     .replace(/'/g, "&#39;");
 }
 
+// PR 98a — Deterministic label → slug. Mirrors the next-app helper
+// (slugRequirement in AddEvidenceClient.tsx) byte-for-byte so the
+// client-side slot key on each evidence doc matches the export-time
+// slot key derived from the snapshot label. Backend regex
+// ^[a-z0-9-]{1,120}$ stays satisfied.
+function slugRequirement(label) {
+  return String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 120);
+}
+
 // PEAKOPS_REPORT_LABELS_V1 (2026-05-01)
 // Resolve Firebase UIDs → human display labels for any actor field
 // (approvedBy / rejectedBy) the cover doc and bundled JSONs render.
@@ -1756,11 +1771,130 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       try {
         const buf = await fetchEvidenceBytes(b, sp);
         await fs.promises.writeFile(path.join(fullDir, outName), buf);
-        downloaded.push({ task: taskTitle, name: outName, label, index: idx });
+        // PR 98a — Carry evidenceId + dirSlug + ev.requirementKey
+        // through to the required-proof index builder below. The
+        // existing task/name/label/index fields keep their prior
+        // contract (cover doc + photosByTask still read them).
+        downloaded.push({
+          task: taskTitle,
+          name: outName,
+          label,
+          index: idx,
+          evidenceId: ev.id,
+          dirSlug,
+          requirementKey: String(ev.requirementKey || "").trim() || null,
+          contentType: String(f.contentType || ev.contentType || "application/octet-stream"),
+          sizeBytes: buf.length,
+        });
       } catch (e) {
-        skipped.push({ name: outName, task: taskTitle, label, index: idx, reason: String(e?.message || e) });
+        skipped.push({
+          name: outName,
+          task: taskTitle,
+          label,
+          index: idx,
+          reason: String(e?.message || e),
+          evidenceId: ev.id,
+          dirSlug,
+          requirementKey: String(ev.requirementKey || "").trim() || null,
+        });
       }
     }
+
+    // PR 98a — Required-Proof Index Layer.
+    //
+    // Manifest + README only. File bytes stay in their existing
+    // evidence/{task-slug}/ canonical layout (the cover doc and
+    // audit reports still reference those paths). This block builds
+    // a parallel index that organizes the SAME files under the
+    // required-proof slots declared by the incident's snapshot
+    // (incident.requirements, PR 89a/91). The index makes required-
+    // proof structure visible and auditable without moving bytes
+    // or duplicating files. PR 99 will migrate the physical layout.
+    //
+    // Empty slots STILL emit (satisfied: false, attachedFiles: []) so
+    // missing required proof is explicit, not invisible.
+    //
+    // Pre-PR-89a incidents with no snapshot degrade gracefully:
+    // requiredProof.slots is []; ALL evidence lands in unassigned.
+    // README acknowledges this.
+
+    const reqSnapshot =
+      incident && incident.requirements && typeof incident.requirements === "object"
+        ? incident.requirements
+        : null;
+    const reqLabels = (reqSnapshot && Array.isArray(reqSnapshot.requiredProof))
+      ? reqSnapshot.requiredProof.map((x) => String(x || "").trim()).filter((x) => x.length > 0)
+      : [];
+    const reqSource = String(reqSnapshot?.source || "").trim() || null;
+    const reqTemplateKey = String(reqSnapshot?.templateKey || "").trim() || null;
+    const reqTemplateVersion =
+      typeof reqSnapshot?.templateVersion === "number" ? reqSnapshot.templateVersion : null;
+
+    // Derive canonical slot list with collision-safe naming.
+    const _slugSeen = new Map();
+    const declaredSlots = reqLabels.map((label, index) => {
+      let slug = slugRequirement(label);
+      if (!slug) slug = `slot-${index + 1}`;
+      const seenCount = _slugSeen.get(slug) || 0;
+      _slugSeen.set(slug, seenCount + 1);
+      const folderSlug = seenCount === 0 ? slug : `${slug}__${index + 1}`;
+      return {
+        index,
+        label,
+        slug,                // canonical (matches client requirementKey)
+        folderSlug,          // disambiguated for human-readable display
+        displayName: `${String(index + 1).padStart(2, "0")}__${folderSlug}`,
+        source: reqSource || "archetype",
+        files: [],
+      };
+    });
+    const slotByCanonicalSlug = new Map();
+    for (const s of declaredSlots) {
+      if (!slotByCanonicalSlug.has(s.slug)) slotByCanonicalSlug.set(s.slug, s);
+    }
+
+    // Map each downloaded file into its slot (or unassigned). A
+    // requirementKey is trusted only if it matches one of the
+    // declared snapshot slugs. Stale / tampered / unknown keys fall
+    // to unassigned — slot tags are operator intent, not enforcement.
+    const unassignedFiles = [];
+    for (const d of downloaded) {
+      const key = String(d.requirementKey || "").trim();
+      const slot = key && /^[a-z0-9-]{1,120}$/.test(key) ? slotByCanonicalSlug.get(key) : null;
+      const fileEntry = {
+        evidenceId: d.evidenceId,
+        filenameInPacket: d.name,
+        pathInPacket: `original-record/evidence/${d.dirSlug}/${d.name}`,
+        taskFolder: d.dirSlug,
+        contentType: d.contentType,
+        sizeBytes: d.sizeBytes,
+      };
+      if (slot) slot.files.push(fileEntry);
+      else unassignedFiles.push(fileEntry);
+    }
+
+    const slotManifestEntries = declaredSlots.map((s) => ({
+      key: s.slug,
+      label: s.label,
+      index: s.index,
+      source: s.source,
+      satisfied: s.files.length > 0,
+      evidenceCount: s.files.length,
+      attachedFiles: s.files,
+    }));
+
+    const requiredProofBlock = {
+      source: reqSource,
+      templateKey: reqTemplateKey,
+      templateVersion: reqTemplateVersion,
+      totalCount: declaredSlots.length,
+      satisfiedCount: slotManifestEntries.filter((s) => s.satisfied).length,
+      missingCount: slotManifestEntries.filter((s) => !s.satisfied).length,
+      slots: slotManifestEntries,
+      unassignedEvidenceCount: unassignedFiles.length,
+      unassignedFiles,
+      snapshotPresent: reqLabels.length > 0,
+    };
 
     // PEAKOPS_REPORT_ENGINE_V1 (2026-04-30)
     // Re-shape jobs into the cover-doc-friendly tasksWithEvidence
@@ -2362,7 +2496,13 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     const packetManifest = {
       schemaVersion: 1,
-      formatVersion: 2,
+      // PR 98a — formatVersion bump from 2 → 3 signals the
+      // requiredProof index block now present in the manifest.
+      // File byte layout is UNCHANGED at v3 (files still live at
+      // original-record/evidence/{task-slug}/...). PR 99 will
+      // migrate the physical layout to required-proof/{slot}/
+      // and bump formatVersion again.
+      formatVersion: 3,
       incidentId,
       orgId,
       packetVersion: reportRevision,
@@ -2379,6 +2519,11 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         hash: supplementalSectionHash,
         addenda: addendaEmitted,
       },
+      // PR 98a — Required-proof index. See requirementsSnapshot
+      // (PR 89a/91) + addEvidenceV1 slot fields (PR 94a) + the
+      // grouping logic earlier in this function. Pointers into the
+      // existing evidence/{task-slug}/ layout — no byte duplication.
+      requiredProof: requiredProofBlock,
       topLevelHash: _topLevelHash,
       history: reportHistory,
     };
@@ -2417,9 +2562,71 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       "Customer + audit reports live under REPORTS/.",
       "Combined chain-of-custody record: chain-of-custody.json.",
       "",
-      "This packet was generated by PeakOps.",
-      "",
     ];
+
+    // PR 98a — Required-Proof section. Renders as a human-readable
+    // checklist mirroring the requiredProof block in packet-manifest.
+    // Slot order = declared snapshot order (immutable at incident
+    // creation). Captured/missing status is explicit and reviewable.
+    // Pre-PR-89a incidents (no snapshot) get a one-line acknowledgement.
+    readmeLines.push("REQUIRED PROOF");
+    readmeLines.push("──────────────");
+    if (!requiredProofBlock.snapshotPresent) {
+      readmeLines.push("No required-proof snapshot existed for this field record.");
+      readmeLines.push("All captured proof is listed under GENERAL / UNASSIGNED PROOF below.");
+    } else {
+      // Source header line
+      const _srcDisplay = (() => {
+        if (requiredProofBlock.source === "customer_template") {
+          const parts = ["Customer template"];
+          if (requiredProofBlock.templateKey) parts.push(requiredProofBlock.templateKey);
+          if (typeof requiredProofBlock.templateVersion === "number") {
+            parts.push(`v${requiredProofBlock.templateVersion}`);
+          }
+          return parts.join(" — ");
+        }
+        if (requiredProofBlock.source === "org_template") {
+          return typeof requiredProofBlock.templateVersion === "number"
+            ? `Org template — v${requiredProofBlock.templateVersion}`
+            : "Org template";
+        }
+        return "Archetype defaults";
+      })();
+      readmeLines.push(`Source:    ${_srcDisplay}`);
+      readmeLines.push(`Satisfied: ${requiredProofBlock.satisfiedCount} / ${requiredProofBlock.totalCount}`);
+      readmeLines.push("");
+      for (const slot of requiredProofBlock.slots) {
+        const tick = slot.satisfied ? "✓" : "✗";
+        const countSuffix = slot.satisfied
+          ? ` — ${slot.evidenceCount} ${slot.evidenceCount === 1 ? "file" : "files"}`
+          : " — no proof captured";
+        readmeLines.push(`  ${tick} ${slot.label}${countSuffix}`);
+        for (const f of slot.attachedFiles) {
+          readmeLines.push(`        → ${f.pathInPacket}`);
+        }
+      }
+    }
+    readmeLines.push("");
+    readmeLines.push("GENERAL / UNASSIGNED PROOF");
+    readmeLines.push("──────────────────────────");
+    if (requiredProofBlock.unassignedEvidenceCount === 0) {
+      readmeLines.push("(none — every captured proof item is bound to a required-proof slot)");
+    } else {
+      const n = requiredProofBlock.unassignedEvidenceCount;
+      readmeLines.push(`${n} ${n === 1 ? "file" : "files"} not bound to any required-proof slot:`);
+      for (const f of requiredProofBlock.unassignedFiles) {
+        readmeLines.push(`  → ${f.pathInPacket}`);
+      }
+    }
+    readmeLines.push("");
+    readmeLines.push("Files referenced above live at their canonical evidence/{task-slug}/");
+    readmeLines.push("paths. This section is an index into the operational record, not a");
+    readmeLines.push("re-organization of the bytes. A future packet version will migrate the");
+    readmeLines.push("physical file layout to mirror this required-proof structure directly.");
+    readmeLines.push("");
+    readmeLines.push("This packet was generated by PeakOps.");
+    readmeLines.push("");
+
     await fs.promises.writeFile(path.join(workDir, "README_FIRST.txt"), readmeLines.join("\n"), "utf8");
 
     // PEAKOPS_REPORT_ENGINE_V1 (2026-04-30)
@@ -2504,7 +2711,8 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         // fields with deterministic byte-stable values; for now they
         // mirror what was emitted into the zip (placeholder
         // original-record hash + real supplemental section hash).
-        formatVersion: 2,
+        // PR 98a — bumped 2 → 3 to track requiredProof index in packet-manifest.
+        formatVersion: 3,
         packetVersion: reportRevision,
         originalRecordHash: _originalRecordHash,
         topLevelHash: _topLevelHash,
