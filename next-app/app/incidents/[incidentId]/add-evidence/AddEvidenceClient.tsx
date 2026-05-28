@@ -131,7 +131,15 @@ useEffect(() => {
           localJobId = String(localStorage.getItem(`peakops_current_job_${String(incidentId || "").trim()}`) || "").trim();
         } catch {}
 
-        const res = await fetch(
+        // PEAKOPS_AUTH_RACE_FIX_V1 (2026-05-01)
+        // listJobsV1 + startFieldSessionV1 used to fire with a bare
+        // fetch() before Firebase had hydrated the auth state, so the
+        // first attempt 401'd ("Missing Authorization header") and a
+        // retry was needed. authedFetch awaits getIdToken() — which
+        // itself waits for onAuthStateChanged when currentUser is
+        // briefly null after navigation — guaranteeing every call
+        // carries a valid Bearer token. Ported from the deploy branch.
+        const res = await authedFetch(
           `/api/fn/listJobsV1?orgId=${encodeURIComponent(String(orgId || "").trim())}&incidentId=${encodeURIComponent(String(incidentId || "").trim())}&limit=50&actorUid=dev-admin&actorRole=admin`,
           { cache: "no-store" }
         );
@@ -255,7 +263,13 @@ useEffect(() => {
         setStatus("Starting session…");
       }
       try {
-        const res = await fetch(`${fnProxyBase}/startFieldSessionV1`, {
+        // PEAKOPS_AUTH_RACE_FIX_V1 (2026-05-01)
+        // authedFetch ensures the Firebase ID token is loaded
+        // (waiting for onAuthStateChanged if currentUser is briefly
+        // null after navigation) before this request fires. Stops the
+        // first-photo "Missing Authorization header 401" race that
+        // forced a retry on the second click. Ported from deploy.
+        const res = await authedFetch(`${fnProxyBase}/startFieldSessionV1`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
