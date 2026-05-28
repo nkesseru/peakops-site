@@ -476,7 +476,12 @@ function buildCoverHtml(ctx) {
     location,
     priority,
     notesBlock,
-    tasksWithEvidence,   // [{ title, decision, approvedBy, approvedAt, locked, photos:[{name,relPath}] }]
+    tasksWithEvidence,   // [{ title, decision, approvedBy, approvedAt, locked, photos:[{bundled|unavailable}], photoCount, bundledCount }]
+    // PR 99 — slot-grouped photo data driving the EVIDENCE section.
+    // [{ kind:"required"|"unassigned", slug, label, index, source,
+    //    satisfied, evidenceCount, directoryInPacket,
+    //    photos:[{ name, label, index, relPath|unavailable, taskTitle }] }]
+    slotsWithPhotos,
     humanTimeline,
     generatedAt,
     // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
@@ -593,35 +598,41 @@ Supervisor approval was recorded and the record has been locked.`;
     }).join("");
   })();
 
-  // PEAKOPS_REPORT_HEADINGS_V1 (2026-05-01)
-  // EVIDENCE section — photos grouped by task title (h3 sub-heading
-  // per task). Tasks with zero photos are omitted from this section
-  // entirely; their absence is already noted in the matching TASKS
-  // entry. Photos still render as bundled relative paths
-  // (../evidence/<slug>/<file>); skipped photos render as "Image
-  // unavailable" tiles. Never emits a broken <img>.
+  // PR 99 — EVIDENCE section now groups photos by required-proof
+  // slot (the snapshot-declared structure), not by task. Each
+  // declared slot gets an h3 sub-heading with the requirement
+  // label + ✓/✗ satisfaction status. Empty slots render as a
+  // calm "no proof captured for this requirement yet" line — the
+  // missing-proof state stays visible in the customer/audit doc,
+  // not just in the on-disk folder + manifest. A trailing
+  // "General / Unassigned proof" section renders only when there
+  // are docs without a matching slot tag. Bytes live at
+  // ../original-record/required-proof/{slot}/{file} or
+  // ../original-record/unassigned/{file}; image src paths point
+  // there. Never emits a broken <img>.
   const evidenceSection = (() => {
-    const list = (Array.isArray(tasksWithEvidence) ? tasksWithEvidence : [])
-      .filter((t) => Array.isArray(t.photos) && t.photos.length > 0);
+    const list = Array.isArray(slotsWithPhotos) ? slotsWithPhotos.filter((s) => !!s) : [];
     if (list.length === 0) {
       return `<p class="muted">No evidence captured for this incident.</p>`;
     }
-    return list.map((t) => {
-      // PEAKOPS_REPORT_DEFENSIVE_V1 (2026-05-05)
-      // Filter null/undefined entries before mapping. Bad photo
-      // shapes (legacy evidence docs missing required keys) should
-      // render as a skipped tile, not crash the report.
-      const photos = (Array.isArray(t.photos) ? t.photos : []).filter((p) => !!p);
+    return list.map((slot) => {
+      const photos = (Array.isArray(slot.photos) ? slot.photos : []).filter((p) => !!p);
+      if (photos.length === 0) {
+        return `
+          <section class="evidence-block evidence-block-empty">
+            <h3 class="evidence-task"><span class="slot-tick slot-tick-missing">✗</span> ${escapeHtml(slot.label)}</h3>
+            <p class="muted">No proof captured for this requirement yet.</p>
+          </section>
+        `;
+      }
       const grid = `<div class="task-photo-grid">${photos.map((p) => {
-        // PEAKOPS_REPORT_POLISH_V1 (2026-05-01)
-        // Captions: "Photo N" primary, optional " — Label" suffix
-        // when the field operator labelled the photo, filename
-        // smaller/secondary on its own line. Never invent a
-        // description; absent label means just "Photo N".
         const safeName = escapeHtml(String((p && p.name) || ""));
         const idxLabel = (p && p.index) ? `Photo ${p.index}` : "Photo";
-        const primary = (p && p.label)
-          ? `${idxLabel} — ${escapeHtml(String(p.label))}`
+        const labelExtras = [];
+        if (p && p.label) labelExtras.push(escapeHtml(String(p.label)));
+        if (p && p.taskTitle) labelExtras.push(`from ${escapeHtml(String(p.taskTitle))}`);
+        const primary = labelExtras.length > 0
+          ? `${idxLabel} — ${labelExtras.join(" · ")}`
           : idxLabel;
         if (!p || p.unavailable || !p.relPath) {
           return `<figure class="task-photo task-photo-unavailable">
@@ -630,9 +641,6 @@ Supervisor approval was recorded and the record has been locked.`;
             <div class="caption-filename">${safeName}</div>
           </figure>`;
         }
-        // URL-encode each path segment defensively so spaces /
-        // ampersands / parens / quotes in a slug or filename can't
-        // produce a malformed file:// src.
         const encodedSrc = encodeRelPath(p.relPath);
         const altText = p.label ? `${idxLabel} — ${p.label}` : idxLabel;
         return `<figure class="task-photo">
@@ -641,12 +649,12 @@ Supervisor approval was recorded and the record has been locked.`;
           <div class="caption-filename">${safeName}</div>
         </figure>`;
       }).join("")}</div>`;
-      // PEAKOPS_REPORT_AUDIT_HUMANIZE_V1 (2026-05-01)
-      // Match the audit Tasks-section heading rule.
-      const evidenceTaskTitle = humanizeSlug(String(t.title || "").trim()) || "Untitled task";
+      const tick = slot.kind === "required"
+        ? `<span class="slot-tick ${slot.satisfied ? "slot-tick-ok" : "slot-tick-missing"}">${slot.satisfied ? "✓" : "✗"}</span>`
+        : `<span class="slot-tick slot-tick-unassigned">⊘</span>`;
       return `
         <section class="evidence-block">
-          <h3 class="evidence-task">${escapeHtml(evidenceTaskTitle)}</h3>
+          <h3 class="evidence-task">${tick} ${escapeHtml(slot.label)}</h3>
           ${grid}
         </section>
       `;
@@ -995,6 +1003,8 @@ function buildCustomerHtml(ctx) {
     location,
     notesBlock,
     tasksWithEvidence,
+    // PR 99 — slot-grouped photo data for the Photos section.
+    slotsWithPhotos,
     generatedAt,
     // PEAKOPS_REPORT_LINEAGE_V1 (2026-05-04)
     reportRevision,
@@ -1057,14 +1067,29 @@ function buildCustomerHtml(ctx) {
     return html;
   })();
 
+  // PR 99 — Customer Photos section now groups by required-proof
+  // slot (matches audit doc + on-disk layout). Each declared slot
+  // shows the requirement label as a heading, with captured photos
+  // beneath. Empty slots render a calm "no photos captured for this
+  // requirement yet" line so the customer can see what was asked
+  // for vs. what was delivered. A trailing "General / Unassigned
+  // photos" section appears only when applicable.
   const photosHtml = (() => {
-    const groups = list.filter((t) => Array.isArray(t.photos) && t.photos.length > 0);
+    const groups = Array.isArray(slotsWithPhotos) ? slotsWithPhotos.filter((s) => !!s) : [];
     if (groups.length === 0) {
       return `<p class="muted">No photos were captured.</p>`;
     }
-    return groups.map((t) => {
-      // PEAKOPS_REPORT_DEFENSIVE_V1 (2026-05-05) — filter nulls, see audit doc.
-      const photos = (Array.isArray(t.photos) ? t.photos : []).filter((p) => !!p);
+    return groups.map((slot) => {
+      const photos = (Array.isArray(slot.photos) ? slot.photos : []).filter((p) => !!p);
+      const heading = escapeHtml(slot.label);
+      if (photos.length === 0) {
+        return `
+          <section class="cust-photo-block cust-photo-block-empty">
+            <h3>${heading}</h3>
+            <p class="muted">No photos captured for this requirement yet.</p>
+          </section>
+        `;
+      }
       const grid = photos.map((p) => {
         const safeName = escapeHtml(String((p && p.name) || ""));
         const idxLabel = (p && p.index) ? `Photo ${p.index}` : "Photo";
@@ -1085,21 +1110,9 @@ function buildCustomerHtml(ctx) {
           <div class="cust-photo-filename">${safeName}</div>
         </figure>`;
       }).join("");
-      // PEAKOPS_REPORT_CUSTOMER_POLISH_V2 (2026-05-01)
-      // Humanize per-task heading so the photo group doesn't show
-      // the raw slug as a section title.
-      const taskHeading = humanizeSlug(String(t.title || "").trim()) || "Untitled task";
-      // PEAKOPS_VENDOR_ASSIGNMENT_V1 (2026-05-04)
-      // Customer doc uses "Service provider" rather than "Vendor" —
-      // friendlier wording for the customer-facing audience. Only
-      // renders when a vendor was actually assigned.
-      const providerLine = t.vendorName
-        ? `<div class="cust-provider">Service provider: <span>${escapeHtml(t.vendorName)}</span></div>`
-        : "";
       return `
         <section class="cust-photo-block">
-          <h3>${escapeHtml(taskHeading)}</h3>
-          ${providerLine}
+          <h3>${heading}</h3>
           <div class="cust-photo-grid">${grid}</div>
         </section>
       `;
@@ -1528,16 +1541,23 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     const workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `peakops_packet_${incidentId}_`));
     // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45)
-    // The operational record's sealed contents (JSON + evidence
-    // photos) move into original-record/ so an unzipper sees the
-    // two-section split immediately. The customer/audit HTML reports
-    // in REPORTS/ stay at the zip root; their image src paths shift
-    // from ../evidence/<slug>/<file> to ../original-record/evidence/...
-    // (handled in the relPath construction below).
+    // The operational record's sealed contents move into
+    // original-record/.
+    // PR 99 — Physical layout migration. Photo bytes now live in
+    // required-proof/{slot-folder}/{NN}__{stem}.{ext} (declared
+    // snapshot slots — always emitted, even if empty) and
+    // unassigned/{NN}__{stem}.{ext} (only emitted when at least
+    // one evidence doc lacks a matching requirementKey). The
+    // legacy evidence/{task-slug}/ layout is REMOVED — bytes live
+    // exactly once under their required-proof slot. The cover/audit
+    // HTMLs in REPORTS/ render image src paths into the new
+    // locations (../original-record/required-proof/{slot}/ or
+    // ../original-record/unassigned/{file}). formatVersion bumps
+    // 3 → 4 to signal the byte-layout change.
     const originalRecordDir = path.join(workDir, "original-record");
     await fs.promises.mkdir(originalRecordDir, { recursive: true });
-    const evidenceDir = path.join(originalRecordDir, "evidence");
-    await fs.promises.mkdir(evidenceDir, { recursive: true });
+    const requiredProofDir = path.join(originalRecordDir, "required-proof");
+    const unassignedDir = path.join(originalRecordDir, "unassigned");
 
     // Read field-note + bypass state for the cover doc + notes.txt.
     const notesBlock = await loadNotes(db, incidentId);
@@ -1709,115 +1729,29 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     await writeStableJson(path.join(originalRecordDir, "approvals.json"), approvalsOut);
     await writeStableJson(path.join(originalRecordDir, "timeline_events.json"), humanTimeline);
 
-    // Evidence: group by task. Each task gets a slugged subdirectory
-    // under evidence/. Unassigned photos go to evidence/unassigned/.
-    const taskTitleById = new Map();
-    for (const j of jobs) {
-      const id = String(j?.id || j?.jobId || "").trim();
-      if (id) taskTitleById.set(id, String(j?.title || "").trim() || `Task ${id.slice(-6)}`);
-    }
-    const downloaded = [];
-    const skipped = [];
-
-    // Pre-create needed task subdirs (idempotent).
-    const dirCounters = new Map(); // dirName → next-index
-    async function ensureDir(rel) {
-      const full = path.join(evidenceDir, rel);
-      await fs.promises.mkdir(full, { recursive: true });
-      return full;
-    }
-
-    for (let i = 0; i < evidence.length; i++) {
-      const ev = evidence[i] || {};
-      const f = ev.file || {};
-      const b = String(f.bucket || ev.bucket || bucket).trim();
-      const sp = String(f.storagePath || ev.storagePath || "").trim();
-
-      // PEAKOPS_REPORT_IMG_BUNDLED_V1 (2026-05-01)
-      // Resolve task context up front so EVERY skipped item carries
-      // its task slug. The cover doc renders an "Image unavailable"
-      // tile for skipped items grouped under the right task — never
-      // a broken <img>.
-      const linkedJobId = getEvidenceJobId(ev);
-      const taskTitle = linkedJobId ? (taskTitleById.get(linkedJobId) || `Task ${linkedJobId.slice(-6)}`) : "Unassigned";
-      const dirSlug = slugify(taskTitle);
-      const orig = String(f.originalName || f.fileName || "").trim();
-      const label = String(ev.label || (Array.isArray(ev.labels) ? ev.labels[0] : "") || "").trim();
-
-      // PEAKOPS_REPORT_POLISH_V1 (2026-05-01)
-      // Per-task photo index assigned BEFORE the storagePath check
-      // so skipped photos still carry a stable position. The on-disk
-      // filename uses the same idx, which means the sequence in the
-      // ZIP matches the captioned "Photo N" — including gaps when a
-      // photo couldn't be fetched.
-      const idx = (dirCounters.get(dirSlug) || 0) + 1;
-      dirCounters.set(dirSlug, idx);
-
-      if (!sp) {
-        skipped.push({
-          name: orig || label || "(unknown)",
-          task: taskTitle,
-          label,
-          index: idx,
-          reason: "missing_storage_path",
-        });
-        continue;
-      }
-
-      const fullDir = await ensureDir(dirSlug);
-      const stem = (label || orig || `photo_${idx}`).replace(/[^\w.\-]+/g, "_").slice(0, 80);
-      const ext = (orig.match(/\.[A-Za-z0-9]{1,8}$/) || [""])[0] || "";
-      const outName = `${String(idx).padStart(2, "0")}__${stem}${ext}`;
-      try {
-        const buf = await fetchEvidenceBytes(b, sp);
-        await fs.promises.writeFile(path.join(fullDir, outName), buf);
-        // PR 98a — Carry evidenceId + dirSlug + ev.requirementKey
-        // through to the required-proof index builder below. The
-        // existing task/name/label/index fields keep their prior
-        // contract (cover doc + photosByTask still read them).
-        downloaded.push({
-          task: taskTitle,
-          name: outName,
-          label,
-          index: idx,
-          evidenceId: ev.id,
-          dirSlug,
-          requirementKey: String(ev.requirementKey || "").trim() || null,
-          contentType: String(f.contentType || ev.contentType || "application/octet-stream"),
-          sizeBytes: buf.length,
-        });
-      } catch (e) {
-        skipped.push({
-          name: outName,
-          task: taskTitle,
-          label,
-          index: idx,
-          reason: String(e?.message || e),
-          evidenceId: ev.id,
-          dirSlug,
-          requirementKey: String(ev.requirementKey || "").trim() || null,
-        });
-      }
-    }
-
-    // PR 98a — Required-Proof Index Layer.
+    // PR 99 — Physical Layout Migration.
     //
-    // Manifest + README only. File bytes stay in their existing
-    // evidence/{task-slug}/ canonical layout (the cover doc and
-    // audit reports still reference those paths). This block builds
-    // a parallel index that organizes the SAME files under the
-    // required-proof slots declared by the incident's snapshot
-    // (incident.requirements, PR 89a/91). The index makes required-
-    // proof structure visible and auditable without moving bytes
-    // or duplicating files. PR 99 will migrate the physical layout.
+    // Photo bytes are routed by requirementKey to either:
+    //   required-proof/{NN}__{slot-slug}/{NN}__{stem}.{ext}
+    //     - one folder per declared snapshot slot (always emitted,
+    //       even when empty — missing required proof stays visible
+    //       on the filesystem too, not just in the manifest)
+    //     - per-slot file index (resets to 01 in each folder)
+    //   unassigned/{NN}__{stem}.{ext}
+    //     - only emitted when at least one evidence doc lacks a
+    //       matching requirementKey
     //
-    // Empty slots STILL emit (satisfied: false, attachedFiles: []) so
-    // missing required proof is explicit, not invisible.
+    // Task linkage stays in the manifest (each file entry carries
+    // jobId + taskTitle) so the audit chain isn't lost — but the
+    // task is no longer the byte-grouping axis. Photos that the
+    // operator captured but never bound to a required slot land in
+    // unassigned/ regardless of which job they belong to.
     //
-    // Pre-PR-89a incidents with no snapshot degrade gracefully:
-    // requiredProof.slots is []; ALL evidence lands in unassigned.
-    // README acknowledges this.
+    // Pre-PR-89a incidents with no snapshot: declaredSlots is [];
+    // ALL evidence lands in unassigned/. README acknowledges this.
 
+    // Build declaredSlots BEFORE the write loop so we can route by
+    // slot during the loop itself.
     const reqSnapshot =
       incident && incident.requirements && typeof incident.requirements === "object"
         ? incident.requirements
@@ -1830,7 +1764,6 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     const reqTemplateVersion =
       typeof reqSnapshot?.templateVersion === "number" ? reqSnapshot.templateVersion : null;
 
-    // Derive canonical slot list with collision-safe naming.
     const _slugSeen = new Map();
     const declaredSlots = reqLabels.map((label, index) => {
       let slug = slugRequirement(label);
@@ -1838,14 +1771,16 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       const seenCount = _slugSeen.get(slug) || 0;
       _slugSeen.set(slug, seenCount + 1);
       const folderSlug = seenCount === 0 ? slug : `${slug}__${index + 1}`;
+      const folderName = `${String(index + 1).padStart(2, "0")}__${folderSlug}`;
       return {
         index,
         label,
         slug,                // canonical (matches client requirementKey)
-        folderSlug,          // disambiguated for human-readable display
-        displayName: `${String(index + 1).padStart(2, "0")}__${folderSlug}`,
+        folderSlug,          // disambiguated for cross-collision uniqueness
+        folderName,          // {NN}__{folderSlug} — physical directory name
+        directoryInPacket: `original-record/required-proof/${folderName}`,
         source: reqSource || "archetype",
-        files: [],
+        files: [],           // populated by the write loop below
       };
     });
     const slotByCanonicalSlug = new Map();
@@ -1853,26 +1788,155 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       if (!slotByCanonicalSlug.has(s.slug)) slotByCanonicalSlug.set(s.slug, s);
     }
 
-    // Map each downloaded file into its slot (or unassigned). A
-    // requirementKey is trusted only if it matches one of the
-    // declared snapshot slugs. Stale / tampered / unknown keys fall
-    // to unassigned — slot tags are operator intent, not enforcement.
-    const unassignedFiles = [];
-    for (const d of downloaded) {
-      const key = String(d.requirementKey || "").trim();
-      const slot = key && /^[a-z0-9-]{1,120}$/.test(key) ? slotByCanonicalSlug.get(key) : null;
-      const fileEntry = {
-        evidenceId: d.evidenceId,
-        filenameInPacket: d.name,
-        pathInPacket: `original-record/evidence/${d.dirSlug}/${d.name}`,
-        taskFolder: d.dirSlug,
-        contentType: d.contentType,
-        sizeBytes: d.sizeBytes,
-      };
-      if (slot) slot.files.push(fileEntry);
-      else unassignedFiles.push(fileEntry);
+    // Resolve task context for each evidence doc — kept for manifest
+    // traceability (each file entry carries its source jobId +
+    // taskTitle) even though bytes no longer group by task.
+    const taskTitleById = new Map();
+    for (const j of jobs) {
+      const id = String(j?.id || j?.jobId || "").trim();
+      if (id) taskTitleById.set(id, String(j?.title || "").trim() || `Task ${id.slice(-6)}`);
     }
 
+    const downloaded = [];
+    const skipped = [];
+    const unassignedFiles = [];
+
+    // Per-folder file counters so each slot folder + unassigned folder
+    // numbers its own files starting at 01__. Determinism preserved:
+    // evidence array is already sorted by doc.id (line ~1366) so
+    // assignment order is stable across re-exports.
+    const slotFileCounters = new Map(); // canonical slug → next index
+    let unassignedCounter = 0;
+    if (declaredSlots.length > 0) {
+      await fs.promises.mkdir(requiredProofDir, { recursive: true });
+    }
+
+    async function writeEvidenceToFolder(ev, targetSlot /* null = unassigned */) {
+      const f = ev.file || {};
+      const b = String(f.bucket || ev.bucket || bucket).trim();
+      const sp = String(f.storagePath || ev.storagePath || "").trim();
+      const orig = String(f.originalName || f.fileName || "").trim();
+      const label = String(ev.label || (Array.isArray(ev.labels) ? ev.labels[0] : "") || "").trim();
+      const linkedJobId = getEvidenceJobId(ev);
+      const taskTitle = linkedJobId
+        ? (taskTitleById.get(linkedJobId) || `Task ${linkedJobId.slice(-6)}`)
+        : "Unassigned";
+
+      const groupKey = targetSlot ? `slot:${targetSlot.slug}` : "unassigned";
+      const idx = targetSlot
+        ? ((slotFileCounters.get(targetSlot.slug) || 0) + 1)
+        : (unassignedCounter + 1);
+      if (targetSlot) slotFileCounters.set(targetSlot.slug, idx);
+      else unassignedCounter = idx;
+
+      const stem = (label || orig || `photo_${idx}`).replace(/[^\w.\-]+/g, "_").slice(0, 80);
+      const ext = (orig.match(/\.[A-Za-z0-9]{1,8}$/) || [""])[0] || "";
+      const outName = `${String(idx).padStart(2, "0")}__${stem}${ext}`;
+
+      if (!sp) {
+        skipped.push({
+          name: orig || label || "(unknown)",
+          group: groupKey,
+          task: taskTitle,
+          label,
+          index: idx,
+          reason: "missing_storage_path",
+          evidenceId: ev.id,
+          requirementKey: targetSlot ? targetSlot.slug : null,
+        });
+        return;
+      }
+
+      // Lazy-create the folder only when we actually have a file to
+      // write into it. (Empty slot folders get created later in the
+      // empty-slot pass — keeps the write path narrow.)
+      const targetDir = targetSlot
+        ? path.join(requiredProofDir, targetSlot.folderName)
+        : unassignedDir;
+      await fs.promises.mkdir(targetDir, { recursive: true });
+
+      try {
+        const buf = await fetchEvidenceBytes(b, sp);
+        await fs.promises.writeFile(path.join(targetDir, outName), buf);
+        const contentType = String(f.contentType || ev.contentType || "application/octet-stream");
+        const fileEntry = {
+          evidenceId: ev.id,
+          filenameInPacket: outName,
+          // Path relative to the packet root — used by manifest and
+          // by the cover/audit HTMLs (via ../ when rendered from
+          // REPORTS/).
+          pathInPacket: targetSlot
+            ? `original-record/required-proof/${targetSlot.folderName}/${outName}`
+            : `original-record/unassigned/${outName}`,
+          contentType,
+          sizeBytes: buf.length,
+          // Audit traceability — record which job the operator
+          // attached the photo to AT capture time, even though the
+          // file no longer lives under that task's folder.
+          sourceJobId: linkedJobId || null,
+          sourceTaskTitle: taskTitle,
+          operatorLabel: label || null,
+        };
+        if (targetSlot) targetSlot.files.push(fileEntry);
+        else unassignedFiles.push(fileEntry);
+        downloaded.push({
+          name: outName,
+          label,
+          index: idx,
+          task: taskTitle,
+          group: groupKey,
+          evidenceId: ev.id,
+          requirementKey: targetSlot ? targetSlot.slug : null,
+        });
+      } catch (e) {
+        skipped.push({
+          name: outName,
+          group: groupKey,
+          task: taskTitle,
+          label,
+          index: idx,
+          reason: String(e?.message || e),
+          evidenceId: ev.id,
+          requirementKey: targetSlot ? targetSlot.slug : null,
+        });
+      }
+    }
+
+    // Drive each evidence doc through the router. A doc's
+    // requirementKey is trusted only when it matches a declared
+    // snapshot slug — stale / tampered / unknown keys (and docs with
+    // no key at all) land in unassigned/. Slot tags are operator
+    // intent, not enforcement.
+    for (const ev of evidence) {
+      const key = String(ev?.requirementKey || "").trim();
+      const target = key && /^[a-z0-9-]{1,120}$/.test(key)
+        ? slotByCanonicalSlug.get(key)
+        : null;
+      await writeEvidenceToFolder(ev, target || null);
+    }
+
+    // Emit empty required-proof slot folders + their _slot.json. A
+    // satisfied slot's folder was already created during the write
+    // loop above; an unsatisfied slot still needs its folder so the
+    // "missing required proof" state is visible at the filesystem
+    // level (not only in the manifest).
+    for (const slot of declaredSlots) {
+      const slotDir = path.join(requiredProofDir, slot.folderName);
+      await fs.promises.mkdir(slotDir, { recursive: true });
+      const slotJson = {
+        requirementKey: slot.slug,
+        requirementLabel: slot.label,
+        requirementIndex: slot.index,
+        source: slot.source,
+        satisfied: slot.files.length > 0,
+        evidenceCount: slot.files.length,
+        attachedFiles: slot.files,
+      };
+      await writeStableJson(path.join(slotDir, "_slot.json"), slotJson);
+    }
+
+    // Build the manifest block — same shape as PR 98a but with
+    // pathInPacket strings now pointing at the new physical layout.
     const slotManifestEntries = declaredSlots.map((s) => ({
       key: s.slug,
       label: s.label,
@@ -1880,6 +1944,7 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       source: s.source,
       satisfied: s.files.length > 0,
       evidenceCount: s.files.length,
+      directoryInPacket: s.directoryInPacket,
       attachedFiles: s.files,
     }));
 
@@ -1892,70 +1957,83 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       missingCount: slotManifestEntries.filter((s) => !s.satisfied).length,
       slots: slotManifestEntries,
       unassignedEvidenceCount: unassignedFiles.length,
+      unassignedDirectoryInPacket: unassignedFiles.length > 0
+        ? "original-record/unassigned"
+        : null,
       unassignedFiles,
       snapshotPresent: reqLabels.length > 0,
     };
 
-    // PEAKOPS_REPORT_ENGINE_V1 (2026-04-30)
-    // Re-shape jobs into the cover-doc-friendly tasksWithEvidence
-    // form. Each task carries its decision, the supervisor who
-    // signed off, the lock state, and the relative paths to its
-    // photos in the ZIP — so the cover HTML can render real
-    // images via <img src="../evidence/<task-slug>/<file>">.
-    // PEAKOPS_REPORT_IMG_BUNDLED_V1 (2026-05-01)
-    // photosByTask carries two kinds of entries:
-    //   { name, relPath }            → real bundled image (renders as <img>)
-    //   { name, unavailable: true }  → skipped (renders as "Image unavailable" tile)
-    // Both grouped by the same slug used to write the on-disk
-    // evidence directory, so a slug change here MUST also change in
-    // the iteration above.
-    const photosByTask = new Map();
+    // PR 99 — Cover-doc data structures.
+    //
+    // tasksWithEvidence: kept for the TASKS section, but its `photos`
+    // array no longer carries image paths — just lightweight summary
+    // entries so the per-task "X of Y photos bundled" line still
+    // works. The EVIDENCE section reads from slotsWithPhotos
+    // instead, which groups photos by required-proof slot to match
+    // the new on-disk layout.
+    //
+    // slotsWithPhotos: one entry per declared required-proof slot
+    // (always emitted, even when empty) plus a synthetic
+    // "unassigned" entry when applicable. Each carries the photo
+    // array with relPath pointers into the new physical location
+    // (../original-record/required-proof/{folder}/ or
+    // ../original-record/unassigned/{file}).
+
+    // Per-job photo COUNTS only — no paths.
+    const photoCountsByJobId = new Map();
+    const photoBundledByJobId = new Map();
+    const photoSkippedByJobId = new Map();
     for (const d of downloaded) {
-      const slug = slugify(d.task);
-      if (!photosByTask.has(slug)) photosByTask.set(slug, []);
-      photosByTask.get(slug).push({
-        name: d.name,
-        label: d.label || "",
-        index: d.index,
-        // PEAKOPS_SEALED_PACKET_V2 (2026-05-19, PR 45)
-        // REPORTS/REPORT_SUMMARY.html is one level deep, evidence/
-        // now lives under original-record/ → relative path is
-        // "../original-record/evidence/<slug>/<name>".
-        relPath: `../original-record/evidence/${slug}/${d.name}`,
-      });
+      const jid = String(d.evidenceId ? (taskTitleById.has(d.task) ? d.task : "") : "");
+      // We use the resolved task title as the key into job lookup
+      // below (the task title is denormalized from the job doc).
+    }
+    // Re-walk downloaded + skipped keyed by jobId for accurate counts.
+    for (const ev of evidence) {
+      const jid = getEvidenceJobId(ev) || "__unassigned_job__";
+      photoCountsByJobId.set(jid, (photoCountsByJobId.get(jid) || 0) + 1);
+    }
+    for (const d of downloaded) {
+      const jid = (() => {
+        // downloaded.task is the resolved task title, not the jobId.
+        // Look up jobId by reverse map: find the job whose title
+        // matches d.task. This mirrors the earlier task-resolution.
+        for (const [id, title] of taskTitleById.entries()) {
+          if (title === d.task) return id;
+        }
+        return "__unassigned_job__";
+      })();
+      photoBundledByJobId.set(jid, (photoBundledByJobId.get(jid) || 0) + 1);
     }
     for (const s of skipped) {
-      if (!s || !s.task) continue;
-      const slug = slugify(s.task);
-      if (!photosByTask.has(slug)) photosByTask.set(slug, []);
-      photosByTask.get(slug).push({
-        name: String(s.name || "photo"),
-        label: s.label || "",
-        index: s.index,
-        unavailable: true,
-      });
+      const jid = (() => {
+        for (const [id, title] of taskTitleById.entries()) {
+          if (title === s.task) return id;
+        }
+        return "__unassigned_job__";
+      })();
+      photoSkippedByJobId.set(jid, (photoSkippedByJobId.get(jid) || 0) + 1);
     }
-    // PEAKOPS_REPORT_POLISH_V1 (2026-05-01)
-    // Stable display order within a task — sort by the per-task
-    // index so bundled and skipped photos interleave by capture
-    // position, not by success/failure.
-    for (const arr of photosByTask.values()) {
-      arr.sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
-    }
+
     const tasksWithEvidence = jobs.map((j) => {
-      // Mirror the fallback used during the evidence write loop so
-      // an untitled job's photos resolve to the same slug both
-      // places. Mismatching fallbacks ("Untitled task" vs
-      // "Task abc123") was the slug-drift bug that produced broken
-      // <img> tags for jobs without an explicit title.
       const id = String(j.id || j.jobId || "").trim();
       const taskTitle = String(j.title || "").trim() || (id ? `Task ${id.slice(-6)}` : "Untitled task");
-      const slug = slugify(taskTitle);
       const decision = humanizeJobDecision(j);
       const isApproved = decision === "Approved";
       const who = isApproved ? j.approvedBy : (j.rejectedBy || j.approvedBy);
       const when = isApproved ? j.approvedAt : (j.rejectedAt || j.approvedAt);
       const whenIso = when?.toDate?.().toISOString?.() || when || null;
+      const totalCount = photoCountsByJobId.get(id) || 0;
+      const bundledCount = photoBundledByJobId.get(id) || 0;
+      // Build a placeholder photos array sized to totalCount so the
+      // existing TASKS-section counters in buildAuditHtml continue
+      // to work without refactoring. Each entry has `bundled: true`
+      // for successful uploads and `unavailable: true` for skipped.
+      const photos = [];
+      for (let i = 0; i < bundledCount; i++) photos.push({ bundled: true });
+      const skippedCount = photoSkippedByJobId.get(id) || 0;
+      for (let i = 0; i < skippedCount; i++) photos.push({ unavailable: true });
       return {
         title: taskTitle,
         decision,
@@ -1966,7 +2044,14 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         approvedAt: whenIso,
         locked: !!j.locked,
         notes: String(j.rejectedReason || j.notes || "").trim(),
-        photos: photosByTask.get(slug) || [],
+        // PR 99 — count-only photo summary. The TASKS section
+        // reads photos.length and photos.filter(p => p.bundled
+        // && !p.unavailable).length to render "X of Y photos
+        // bundled — see Evidence." Paths now live exclusively in
+        // slotsWithPhotos below.
+        photos,
+        photoCount: totalCount,
+        bundledCount,
         // PEAKOPS_VENDOR_ASSIGNMENT_V1 (2026-05-04)
         // Vendor name is denormalized onto the job doc at assignment
         // time, so the report carries the value the operator saw —
@@ -1980,6 +2065,105 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         vendorArchived: isVendorArchived(j.vendorId),
       };
     });
+
+    // PR 99 — slotsWithPhotos drives the EVIDENCE section in the
+    // cover doc. One entry per declared required-proof slot (always
+    // emitted, even when empty), plus a synthetic "unassigned" entry
+    // when at least one evidence doc lacks a matching requirementKey.
+    // Each photo carries a relPath into the new physical location.
+    // REPORTS/REPORT_SUMMARY.html sits one level deep at workDir/REPORTS/
+    // so paths into original-record/ resolve via "../original-record/...".
+    const slotsWithPhotos = [];
+    // Track the per-job index ordering so we can attach a stable
+    // "Photo N" caption. For each evidence doc, position within the
+    // operator's own capture session — we re-derive from the
+    // evidence array ordering since the per-task counter no longer
+    // applies after the layout flip.
+    const evPositionById = new Map();
+    {
+      const counters = new Map(); // jobId → next position
+      for (const ev of evidence) {
+        const jid = getEvidenceJobId(ev) || "__unassigned_job__";
+        const p = (counters.get(jid) || 0) + 1;
+        counters.set(jid, p);
+        evPositionById.set(ev.id, p);
+      }
+    }
+    for (const slot of declaredSlots) {
+      const photoEntries = [];
+      // Successful files (sorted by per-slot file index for stable
+      // display).
+      for (const f of slot.files) {
+        const ev = evidence.find((e) => e.id === f.evidenceId);
+        photoEntries.push({
+          name: f.filenameInPacket,
+          label: ev?.label || (Array.isArray(ev?.labels) ? ev.labels[0] : "") || "",
+          index: evPositionById.get(f.evidenceId) || 0,
+          relPath: `../${f.pathInPacket}`,
+          taskTitle: f.sourceTaskTitle || "",
+        });
+      }
+      // Skipped files that targeted this slot — render as
+      // "Image unavailable" tile so missing-but-attempted proof
+      // stays visible.
+      for (const s of skipped) {
+        if (s.requirementKey !== slot.slug) continue;
+        photoEntries.push({
+          name: String(s.name || "photo"),
+          label: s.label || "",
+          index: s.index,
+          unavailable: true,
+          taskTitle: s.task || "",
+        });
+      }
+      photoEntries.sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
+      slotsWithPhotos.push({
+        kind: "required",
+        slug: slot.slug,
+        label: slot.label,
+        index: slot.index,
+        source: slot.source,
+        satisfied: slot.files.length > 0,
+        evidenceCount: slot.files.length,
+        directoryInPacket: slot.directoryInPacket,
+        photos: photoEntries,
+      });
+    }
+    if (unassignedFiles.length > 0 || skipped.some((s) => !s.requirementKey)) {
+      const unassignedPhotos = [];
+      for (const f of unassignedFiles) {
+        const ev = evidence.find((e) => e.id === f.evidenceId);
+        unassignedPhotos.push({
+          name: f.filenameInPacket,
+          label: ev?.label || (Array.isArray(ev?.labels) ? ev.labels[0] : "") || "",
+          index: evPositionById.get(f.evidenceId) || 0,
+          relPath: `../${f.pathInPacket}`,
+          taskTitle: f.sourceTaskTitle || "",
+        });
+      }
+      for (const s of skipped) {
+        if (s.requirementKey) continue;
+        unassignedPhotos.push({
+          name: String(s.name || "photo"),
+          label: s.label || "",
+          index: s.index,
+          unavailable: true,
+          taskTitle: s.task || "",
+        });
+      }
+      unassignedPhotos.sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
+      slotsWithPhotos.push({
+        kind: "unassigned",
+        slug: "unassigned",
+        label: "General / Unassigned proof",
+        index: declaredSlots.length,
+        source: null,
+        satisfied: unassignedPhotos.length > 0,
+        evidenceCount: unassignedFiles.length,
+        directoryInPacket: "original-record/unassigned",
+        photos: unassignedPhotos,
+      });
+    }
 
     // Build the cover document with all the resolved values.
     const incidentStatus = String(incident.status || "").trim() || "—";
@@ -2095,6 +2279,8 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       priority: String(incident.priority || "").trim(),
       notesBlock,
       tasksWithEvidence,
+      // PR 99 — required-proof slot grouping for the EVIDENCE section.
+      slotsWithPhotos,
       humanTimeline,
       generatedAt: new Date().toISOString(),
       // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
@@ -2136,6 +2322,8 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       location: String(incident.location || incident.site || "").trim(),
       notesBlock,
       tasksWithEvidence,
+      // PR 99 — required-proof slot grouping for the customer Photos section.
+      slotsWithPhotos,
       generatedAt: new Date().toISOString(),
       // PEAKOPS_REPORT_LINEAGE_V1 (2026-05-04)
       reportRevision,
@@ -2289,7 +2477,7 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         evidenceSkipped: skipped.length,
         timelineEvents: humanTimeline.length,
       },
-      reportImagePath: "../original-record/evidence/<task-slug>/<filename>",
+      reportImagePath: "../original-record/required-proof/<NN__slot-slug>/<filename> or ../original-record/unassigned/<filename>",
       evidenceSkipped: skipped,
     });
 
@@ -2496,13 +2684,16 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
 
     const packetManifest = {
       schemaVersion: 1,
-      // PR 98a — formatVersion bump from 2 → 3 signals the
-      // requiredProof index block now present in the manifest.
-      // File byte layout is UNCHANGED at v3 (files still live at
-      // original-record/evidence/{task-slug}/...). PR 99 will
-      // migrate the physical layout to required-proof/{slot}/
-      // and bump formatVersion again.
-      formatVersion: 3,
+      // PR 99 — formatVersion bump from 3 → 4 signals the physical
+      // file-layout migration. Photo bytes now live under
+      // original-record/required-proof/{NN}__{slot-slug}/ and
+      // original-record/unassigned/ instead of the prior
+      // original-record/evidence/{task-slug}/ task grouping. The
+      // requiredProof manifest block (introduced at v3) keeps its
+      // shape; pathInPacket strings update to the new locations.
+      // Already-emitted v2/v3 packets stay valid at their stored
+      // version; future re-exports of the same incident produce v4.
+      formatVersion: 4,
       incidentId,
       orgId,
       packetVersion: reportRevision,
@@ -2619,10 +2810,13 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       }
     }
     readmeLines.push("");
-    readmeLines.push("Files referenced above live at their canonical evidence/{task-slug}/");
-    readmeLines.push("paths. This section is an index into the operational record, not a");
-    readmeLines.push("re-organization of the bytes. A future packet version will migrate the");
-    readmeLines.push("physical file layout to mirror this required-proof structure directly.");
+    readmeLines.push("Files referenced above live at original-record/required-proof/{slot}/");
+    readmeLines.push("and (when present) original-record/unassigned/. Each slot folder also");
+    readmeLines.push("contains a _slot.json descriptor with the requirement label, source,");
+    readmeLines.push("satisfaction state, and attached-file list. Each evidence doc records");
+    readmeLines.push("the source task it was attached to at capture time (sourceJobId +");
+    readmeLines.push("sourceTaskTitle in the manifest); see original-record/tasks.json for");
+    readmeLines.push("the per-task decision and approval state.");
     readmeLines.push("");
     readmeLines.push("This packet was generated by PeakOps.");
     readmeLines.push("");
@@ -2712,7 +2906,9 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         // mirror what was emitted into the zip (placeholder
         // original-record hash + real supplemental section hash).
         // PR 98a — bumped 2 → 3 to track requiredProof index in packet-manifest.
-        formatVersion: 3,
+        // PR 99 — bumped 3 → 4 for the physical layout migration to
+        // required-proof/{slot}/ + unassigned/.
+        formatVersion: 4,
         packetVersion: reportRevision,
         originalRecordHash: _originalRecordHash,
         topLevelHash: _topLevelHash,
