@@ -112,7 +112,22 @@ const CUSTOMER_TEMPLATE = {
       "QA signoff present",
       "Packet ready for customer acceptance review",
     ],
-    version: 1,
+    // PR 104 — Customer-template acceptance checks. Drives the
+    // deterministic readiness checks defined in
+    // functions_clean/_readiness.js. Tier is author-controlled
+    // per check. Snapshot-frozen at incident creation; template
+    // edits never rewrite history.
+    acceptanceChecks: [
+      { type: "requires_minimum_proof_count", tier: "required", params: { minCount: 3 } },
+      { type: "requires_supervisor_approval", tier: "required" },
+      { type: "requires_at_least_one_gps_proof", tier: "required" },
+      { type: "requires_field_notes", tier: "encouraged" },
+      { type: "requires_incident_closure", tier: "required" },
+    ],
+    // PR 91 version was 1; bumped to 2 by PR 104 to signal the
+    // new acceptanceChecks field. Existing snapshots stay frozen
+    // at whatever version they captured at incident creation.
+    version: 2,
     updatedBy: "seedCustomerTemplate",
   },
 };
