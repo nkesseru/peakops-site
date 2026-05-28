@@ -140,6 +140,57 @@ const orgId = mustStr(body.orgId, "orgId");
     const notes = String(body.notes || "").trim().slice(0, 500);
     const jobId = String(body.jobId || "").trim();
 
+    // PEAKOPS_REQUIREMENT_SLOT_FIELDS_V1 (PR 94a)
+    //
+    // Optional explicit-intent fields the client passes when the
+    // operator clicks an adaptive "Capture: <required item>" button
+    // (PR 94b UI). Validates cheaply and persists on the evidence
+    // doc only when non-empty so legacy / general-proof uploads
+    // continue to land with the existing doc shape unchanged.
+    //
+    //   requirementKey    : slug derived from requirementLabel
+    //                       (e.g., "splice-enclosure-photo").
+    //                       Stable for the lifetime of a record
+    //                       (labels are snapshotted at create time
+    //                       per PR 89a; client-side slugger is
+    //                       deterministic).
+    //   requirementLabel  : human-readable label verbatim from the
+    //                       record's snapshotted requirements list.
+    //   requirementSource : which template layer fed the snapshot
+    //                       on the parent incident doc — one of
+    //                       customer_template | org_template |
+    //                       archetype. Anything else is ignored.
+    //   requirementIndex  : ordinal in the snapshot's
+    //                       requiredProof[] array (≥0). Useful for
+    //                       stable ordering when labels collide.
+    //
+    // NOT enforced. NOT validated against the parent incident's
+    // requirements snapshot. The slot tag is operator intent —
+    // a hint for future audit / per-slot satisfaction views, not
+    // a gate. Tampered or stale slot values just sit on the doc
+    // without doing anything.
+    const REQUIREMENT_KEY_MAX = 120;
+    const REQUIREMENT_LABEL_MAX = 200;
+    const REQUIREMENT_SOURCE_ENUM = ["customer_template", "org_template", "archetype"];
+    const reqKeyRaw = String(body.requirementKey || "").trim();
+    const reqLabelRaw = String(body.requirementLabel || "").trim();
+    const reqSrcRaw = String(body.requirementSource || "").trim();
+    const reqIdxRaw = body.requirementIndex;
+    const requirementKey = reqKeyRaw && /^[a-z0-9-]{1,120}$/.test(reqKeyRaw)
+      ? reqKeyRaw.slice(0, REQUIREMENT_KEY_MAX)
+      : "";
+    const requirementLabel = reqLabelRaw
+      ? reqLabelRaw.slice(0, REQUIREMENT_LABEL_MAX)
+      : "";
+    const requirementSource = REQUIREMENT_SOURCE_ENUM.includes(reqSrcRaw) ? reqSrcRaw : "";
+    const requirementIndex =
+      reqIdxRaw !== undefined &&
+      reqIdxRaw !== null &&
+      Number.isFinite(Number(reqIdxRaw)) &&
+      Number(reqIdxRaw) >= 0
+        ? Math.trunc(Number(reqIdxRaw))
+        : null;
+
     // In MVP we store metadata; actual upload can be separate.
     const storagePath = String(body.storagePath || "").trim(); // optional for now
 
@@ -309,6 +360,16 @@ const orgId = mustStr(body.orgId, "orgId");
     const platform = userAgent ? derivePlatform(userAgent) : "";
     const deviceMeta = userAgent ? { userAgent, platform } : null;
 
+    // PEAKOPS_REQUIREMENT_SLOT_FIELDS_V1 (PR 94a) — only land the
+    // 4 fields when at least one resolved to a usable value. Spread
+    // pattern keeps the doc shape minimal for the common general-
+    // proof upload (no slot intent).
+    const requirementSlotFields = {};
+    if (requirementKey)      requirementSlotFields.requirementKey      = requirementKey;
+    if (requirementLabel)    requirementSlotFields.requirementLabel    = requirementLabel;
+    if (requirementSource)   requirementSlotFields.requirementSource   = requirementSource;
+    if (requirementIndex !== null) requirementSlotFields.requirementIndex = requirementIndex;
+
     await evidenceRef.set(
       {
         orgId,
@@ -334,6 +395,7 @@ const orgId = mustStr(body.orgId, "orgId");
           exportName,
         },
         ...assignmentFields,
+        ...requirementSlotFields,
         version: 1,
       },
       { merge: true }
