@@ -1233,9 +1233,12 @@ function buildCustomerHtml(ctx) {
   }
   footer .footer-line { margin-bottom: 0; }
   /* PEAKOPS_REPORT_LINEAGE_V1_1 (2026-05-04)
-     Same shape as the audit doc's `.footer-revision` so both reports
-     render the revision line identically — small dim caption below
-     the Report ID. */
+     Same shape as the audit doc's .footer-revision class so both
+     reports render the revision line identically — small dim caption
+     below the Report ID. (Backticks intentionally avoided here: this
+     comment sits inside a JS template literal and a bare backtick
+     would prematurely terminate the literal, causing
+     buildCustomerHtml to throw at runtime — see PR 100 fix.) */
   footer .footer-revision { margin-top: 4px; font-size: 10px; color: #888; }
   footer .footer-id-line {
     margin-top: 10px; font-size: 9px; color: #aaa;
