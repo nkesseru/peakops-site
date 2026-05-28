@@ -491,6 +491,10 @@ function buildCoverHtml(ctx) {
     // Acceptance Readiness section in this audit doc. Schema in
     // functions_clean/_readiness.js.
     acceptanceReadiness,
+    // PR 104 — Customer Acceptance Criteria prose (string[]).
+    // Informational only, never machine-evaluated. Rendered as a
+    // muted bordered card below the Acceptance Readiness section.
+    acceptanceCriteria,
     humanTimeline,
     generatedAt,
     // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
@@ -707,12 +711,26 @@ Supervisor approval was recorded and the record has been locked.`;
       requirements_missing: "warn",
       not_available: "neutral",
     }[r.state] || "neutral";
-    const requiredChecks = r.checks.filter((c) => c.tier === "required");
-    const encouragedChecks = r.checks.filter((c) => c.tier === "encouraged");
+    // PR 104 — explicit filters. "unknown" satisfaction (template_check_unknown
+    // rows) routes into its own subsection, not required/encouraged.
+    const requiredChecks = r.checks.filter(
+      (c) => c.tier === "required" && (c.satisfied === true || c.satisfied === false),
+    );
+    const encouragedChecks = r.checks.filter(
+      (c) => c.tier === "encouraged" && (c.satisfied === true || c.satisfied === false),
+    );
+    const unknownChecks = r.checks.filter((c) => c.satisfied === "unknown");
     const renderRow = (c) => {
-      const tick = c.satisfied
-        ? `<span class="readiness-tick readiness-tick-ok">✓</span>`
-        : `<span class="readiness-tick readiness-tick-missing">✗</span>`;
+      // PR 104 — three-way tick. Truthy check would render "unknown"
+      // (a string) as ✓ — wrong. Explicit comparison required.
+      let tick;
+      if (c.satisfied === true) {
+        tick = `<span class="readiness-tick readiness-tick-ok">✓</span>`;
+      } else if (c.satisfied === false) {
+        tick = `<span class="readiness-tick readiness-tick-missing">✗</span>`;
+      } else {
+        tick = `<span class="readiness-tick readiness-tick-unknown">⚠</span>`;
+      }
       const detail = c.detail
         ? `<span class="readiness-detail muted">${escapeHtml(c.detail)}</span>`
         : "";
@@ -722,6 +740,13 @@ Supervisor approval was recorded and the record has been locked.`;
     const countLine = `${counts.requiredSatisfied} / ${counts.requiredTotal} required satisfied${
       counts.encouragedTotal > 0
         ? ` · ${counts.encouragedSatisfied} / ${counts.encouragedTotal} encouraged`
+        : ""
+    }${
+      // PR 104 — surface unknown count in the header strip so the
+      // auditor sees at a glance whether the runtime evaluated
+      // everything the template declared.
+      unknownChecks.length > 0
+        ? ` · ${unknownChecks.length} unknown`
         : ""
     }`;
     return `
@@ -737,6 +762,29 @@ Supervisor approval was recorded and the record has been locked.`;
         <h3 class="readiness-tier">Encouraged</h3>
         <ul class="readiness-list">${encouragedChecks.map(renderRow).join("")}</ul>
       `}
+      ${unknownChecks.length === 0 ? "" : `
+        <h3 class="readiness-tier">Unknown</h3>
+        <ul class="readiness-list">${unknownChecks.map(renderRow).join("")}</ul>
+      `}
+    `;
+  })();
+
+  // PR 104 — Customer Acceptance Criteria prose block. Renders ONLY
+  // when the snapshot carries non-empty acceptanceCriteria.
+  // Approved decision §7. Informational, never machine-evaluated.
+  const criteriaSection = (() => {
+    const list = Array.isArray(acceptanceCriteria)
+      ? acceptanceCriteria.map((s) => String(s || "").trim()).filter((s) => s.length > 0)
+      : [];
+    if (list.length === 0) return "";
+    return `
+      <div class="acceptance-criteria-block">
+        <h3>Customer Acceptance Criteria</h3>
+        <p class="criteria-note">Stated by the customer template — not machine-evaluated.</p>
+        <ul>
+          ${list.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}
+        </ul>
+      </div>
     `;
   })();
 
@@ -885,6 +933,36 @@ Supervisor approval was recorded and the record has been locked.`;
   .readiness-row { display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; padding: 4px 0; font-size: 13px; align-items: baseline; }
   .readiness-tick-ok { color: #1f6d3a; }
   .readiness-tick-missing { color: #c14545; }
+  /* PR 104 — Unknown acceptance check (template referenced a type
+     the current backend doesn't recognize). Renders neutral amber
+     ⚠ glyph; does NOT influence state. */
+  .readiness-tick-unknown { color: #7a5a00; }
+  /* PR 104 — Customer Acceptance Criteria prose block (informational
+     only, never machine-evaluated). Muted bordered card so it reads
+     as context, not a checklist. */
+  .acceptance-criteria-block {
+    margin: 16px 0 24px;
+    padding: 12px 14px;
+    background: #fafafa;
+    border: 1px solid #e5e5e5;
+    border-radius: 6px;
+  }
+  .acceptance-criteria-block h3 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .acceptance-criteria-block .criteria-note {
+    margin: 0 0 8px;
+    font-size: 11px;
+    color: #777;
+    font-style: italic;
+  }
+  .acceptance-criteria-block ul { margin: 0; padding-left: 18px; font-size: 13px; }
+  .acceptance-criteria-block li { margin: 2px 0; color: #1c1c1c; }
   .readiness-label { color: #1c1c1c; }
   .readiness-detail { font-size: 11px; }
   .task-photo-grid {
@@ -981,6 +1059,7 @@ Supervisor approval was recorded and the record has been locked.`;
 
 <h2>Acceptance Readiness</h2>
 ${readinessSection}
+${criteriaSection}
 
 <h2>Field Note</h2>
 ${noteSection}
@@ -2415,6 +2494,13 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       // shows the checklist (✓/✗ per check); customer doc only
       // surfaces a positive line when state is ready (see below).
       acceptanceReadiness,
+      // PR 104 — Customer Acceptance Criteria prose (from the
+      // snapshot). Rendered as informational block in the audit
+      // doc only — customer doc never echoes the customer's own
+      // criteria back to them.
+      acceptanceCriteria: Array.isArray(incident?.requirements?.acceptanceCriteria)
+        ? incident.requirements.acceptanceCriteria
+        : null,
       humanTimeline,
       generatedAt: new Date().toISOString(),
       // PEAKOPS_REGENERATE_GATE_V1 (2026-05-04)
@@ -2823,15 +2909,22 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     const packetManifest = {
       schemaVersion: 1,
       // PR 99 — formatVersion bump 3 → 4 (physical layout migration).
-      // PR 103a — formatVersion bump 4 → 5 signals the new
-      // acceptanceReadiness top-level block. File layout from PR 99
-      // is unchanged at v5; only the manifest schema gains a field.
-      // Already-emitted v4 packets stay valid at their stored
-      // version; future re-exports of the same incident produce v5.
-      // (Note: PR 101 + PR 102 planning had claimed versions 5 and 6
-      // respectively, but neither shipped — v5 is the next available
-      // and PR 103a claims it.)
-      formatVersion: 5,
+      // PR 103a — formatVersion bump 4 → 5 (acceptanceReadiness block).
+      // PR 104 — formatVersion bump 5 → 6 signals two manifest-shape
+      // changes that strict consumers might notice:
+      //   1. acceptanceReadiness.checks[] entries can now carry
+      //      satisfied: "unknown" (string), not just true/false (bool).
+      //      Comes from template-referenced check types the current
+      //      backend doesn't recognize (forward-compat per §5).
+      //   2. acceptanceReadiness.checks[] can include two new
+      //      categories: "template_check" and "template_check_unknown".
+      //   3. acceptanceReadiness.summary now has requiredUnknown and
+      //      encouragedUnknown count fields.
+      //   4. incident.requirements snapshot (inside the original-record/
+      //      JSON dumps) can carry acceptanceChecks[] and
+      //      acceptanceCriteria[] arrays. Already-emitted v5 packets
+      //      stay valid; future re-exports produce v6.
+      formatVersion: 6,
       incidentId,
       orgId,
       packetVersion: reportRevision,
@@ -2990,40 +3083,102 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       readmeLines.push(`Encouraged: ${acceptanceReadiness.summary.encouragedSatisfied} / ${acceptanceReadiness.summary.encouragedTotal} satisfied`);
     }
     readmeLines.push("");
+
+    // PR 104 — Explicit satisfied / missing / unknown filters.
+    // Critical: "unknown" satisfaction (template_check_unknown
+    // category) must NOT count as missing — those rows render in a
+    // dedicated subsection. State has already been computed by the
+    // engine ignoring unknowns per approved decision §5.
+    const _checks = acceptanceReadiness.checks || [];
+    const _requiredMissing = _checks.filter((c) => c.tier === "required" && c.satisfied === false);
+    const _requiredSatisfied = _checks.filter((c) => c.tier === "required" && c.satisfied === true);
+    const _encouragedMissing = _checks.filter((c) => c.tier === "encouraged" && c.satisfied === false);
+    const _encouragedSatisfied = _checks.filter((c) => c.tier === "encouraged" && c.satisfied === true);
+    const _unknownChecks = _checks.filter((c) => c.satisfied === "unknown");
+
+    function _writeCheckRow(c, glyph) {
+      readmeLines.push(`  ${glyph} ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
+    }
+
     if (acceptanceReadiness.state === "requirements_missing") {
-      const missingRequired = acceptanceReadiness.checks.filter(
-        (c) => c.tier === "required" && !c.satisfied,
-      );
-      const satisfiedRequired = acceptanceReadiness.checks.filter(
-        (c) => c.tier === "required" && c.satisfied,
-      );
       readmeLines.push("Missing (required):");
-      for (const c of missingRequired) {
-        readmeLines.push(`  ✗ ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
-      }
+      for (const c of _requiredMissing) _writeCheckRow(c, "✗");
       readmeLines.push("");
-      if (satisfiedRequired.length > 0) {
+      if (_requiredSatisfied.length > 0) {
         readmeLines.push("Satisfied (required):");
-        for (const c of satisfiedRequired) {
-          readmeLines.push(`  ✓ ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
-        }
+        for (const c of _requiredSatisfied) _writeCheckRow(c, "✓");
         readmeLines.push("");
       }
-      readmeLines.push("This packet was exported with REQUIRED acceptance signals");
-      readmeLines.push("unsatisfied. The missing signals are listed above. The operator");
-      readmeLines.push("chose to export despite the readiness gap; the audit trail");
-      readmeLines.push("records this decision via the export timeline event.");
-      readmeLines.push("");
     } else if (acceptanceReadiness.state === "ready_for_submission") {
       readmeLines.push("Satisfied (required):");
-      for (const c of acceptanceReadiness.checks.filter((c) => c.tier === "required")) {
-        readmeLines.push(`  ✓ ${c.label}${c.detail ? ` — ${c.detail}` : ""}`);
-      }
+      for (const c of _requiredSatisfied) _writeCheckRow(c, "✓");
       readmeLines.push("");
     } else {
       readmeLines.push("Readiness could not be evaluated for this packet — no");
       readmeLines.push("required-proof snapshot existed and no evidence was captured.");
       readmeLines.push("Legacy / pre-snapshot incidents fall into this state.");
+      readmeLines.push("");
+    }
+
+    // PR 104 — Encouraged-tier rendering (only when there are
+    // encouraged checks declared — MVP universal checks don't add
+    // any; template-driven checks may).
+    if (_encouragedMissing.length > 0 || _encouragedSatisfied.length > 0) {
+      if (_encouragedMissing.length > 0) {
+        readmeLines.push("Missing (encouraged — not blocking):");
+        for (const c of _encouragedMissing) _writeCheckRow(c, "✗");
+        readmeLines.push("");
+      }
+      if (_encouragedSatisfied.length > 0) {
+        readmeLines.push("Satisfied (encouraged):");
+        for (const c of _encouragedSatisfied) _writeCheckRow(c, "✓");
+        readmeLines.push("");
+      }
+    }
+
+    // PR 104 — Unknown checks subsection (template referenced a
+    // check type the current backend doesn't recognize). Renders
+    // as neutral ⚠ rows so the audit trail records what was
+    // declared and what the backend evaluated. Does NOT influence
+    // state. Approved decision §5.
+    if (_unknownChecks.length > 0) {
+      readmeLines.push("Unknown (acceptance checks):");
+      for (const c of _unknownChecks) {
+        readmeLines.push(`  ⚠ ${c.label}`);
+        if (c.detail) readmeLines.push(`     ${c.detail}`);
+      }
+      readmeLines.push("");
+    }
+
+    // The "exported despite the readiness gap" honesty paragraph —
+    // moved out of the missing branch above so it renders any time
+    // state is requirements_missing (regardless of encouraged/unknown
+    // structure above).
+    if (acceptanceReadiness.state === "requirements_missing") {
+      readmeLines.push("This packet was exported with REQUIRED acceptance signals");
+      readmeLines.push("unsatisfied. The missing signals are listed above. The operator");
+      readmeLines.push("chose to export despite the readiness gap; the audit trail");
+      readmeLines.push("records this decision via the export timeline event.");
+      readmeLines.push("");
+    }
+
+    // PR 104 — Customer Acceptance Criteria section. Prose, NOT
+    // machine-evaluated. Rendered only when the snapshot carries
+    // acceptanceCriteria (from customer_template or org_template).
+    // Approved decision §7. Customer-facing doc never renders this
+    // section (don't echo the customer's own words back to them).
+    const _criteria = Array.isArray(incident?.requirements?.acceptanceCriteria)
+      ? incident.requirements.acceptanceCriteria.map((s) => String(s || "").trim()).filter((s) => s.length > 0)
+      : [];
+    if (_criteria.length > 0) {
+      readmeLines.push("CUSTOMER ACCEPTANCE CRITERIA");
+      readmeLines.push("────────────────────────────");
+      readmeLines.push("These criteria are stated by the customer template and are");
+      readmeLines.push("not machine-evaluated. They are reproduced here for context.");
+      readmeLines.push("");
+      for (const item of _criteria) {
+        readmeLines.push(`  • ${item}`);
+      }
       readmeLines.push("");
     }
 
@@ -3118,7 +3273,10 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
         // PR 99 — bumped 3 → 4 for the physical layout migration to
         // required-proof/{slot}/ + unassigned/.
         // PR 103a — bumped 4 → 5 to track the acceptanceReadiness block.
-        formatVersion: 5,
+        // PR 104 — bumped 5 → 6 for template-driven acceptance checks
+        // (new check categories, satisfied: "unknown" possible value,
+        // and snapshotted acceptanceChecks/acceptanceCriteria arrays).
+        formatVersion: 6,
         packetVersion: reportRevision,
         originalRecordHash: _originalRecordHash,
         topLevelHash: _topLevelHash,

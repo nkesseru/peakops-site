@@ -323,7 +323,24 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
   //     snapshottedAt: serverTimestamp,
   //     templateKey?:     present when source != "archetype"
   //     templateVersion?: present when source != "archetype"
+  //     // PR 104 — additive, optional. Snapshot-frozen at creation.
+  //     // Template edits never rewrite history.
+  //     acceptanceChecks?: AcceptanceCheck[]  // drives readiness checks
   //   }
+  //
+  // PR 104 — acceptanceChecks vs acceptanceCriteria distinction:
+  //   - acceptanceCriteria: prose strings, INFORMATIONAL ONLY,
+  //     printed in the packet audit doc as customer-stated context.
+  //     Never machine-evaluated.
+  //   - acceptanceChecks: structured enum-driven checks, drive
+  //     readiness state via _readiness.js evaluators. Author picks
+  //     `tier` (required | encouraged) per check. Unknown check
+  //     types render as neutral "satisfied: unknown" rows; never
+  //     block state.
+  //
+  // Archetype fallback path does NOT contribute acceptanceChecks
+  // (approved decision §6: customer templates are the value layer;
+  // archetype catalog stays minimal).
   let resolvedSnapshot = null;
   if (archetype) {
     const customerSlug = customer ? toCustomerSlug(customer) : "";
@@ -348,19 +365,43 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
           // prevent a stale / mis-keyed template from leaking onto a
           // record of a different archetype.
           if (required && required.length > 0 && String(data.archetype || "") === archetype) {
+            // PR 104 — Sanitize acceptanceChecks at snapshot write.
+            // Drop entries lacking a type. Coerce tier to the enum.
+            // Pass through params verbatim (evaluators handle their
+            // own param shape; future check types can take new
+            // params without schema changes here).
+            const rawChecks = Array.isArray(data.acceptanceChecks) ? data.acceptanceChecks : null;
+            const snapshottedChecks = rawChecks
+              ? rawChecks
+                  .filter((c) => c && typeof c === "object" && String(c.type || "").trim())
+                  .map((c) => ({
+                    type: String(c.type).trim(),
+                    tier: c.tier === "required" ? "required" : "encouraged",
+                    ...(c.params && typeof c.params === "object" ? { params: c.params } : {}),
+                  }))
+              : null;
+
+            const requirementsOut = {
+              requiredProof: required.map((s) => String(s)),
+              optionalProof: Array.isArray(data.optionalProof)
+                ? data.optionalProof.map((s) => String(s))
+                : [],
+              acceptanceCriteria: Array.isArray(data.acceptanceCriteria)
+                ? data.acceptanceCriteria.map((s) => String(s))
+                : [],
+            };
+            // Only include acceptanceChecks when the template
+            // declares them — keeps the snapshot lean for templates
+            // that don't use this layer.
+            if (snapshottedChecks && snapshottedChecks.length > 0) {
+              requirementsOut.acceptanceChecks = snapshottedChecks;
+            }
+
             resolvedSnapshot = {
               source: candidate.source,
               templateKey: candidate.key,
               templateVersion: Number.isFinite(Number(data.version)) ? Number(data.version) : 0,
-              requirements: {
-                requiredProof: required.map((s) => String(s)),
-                optionalProof: Array.isArray(data.optionalProof)
-                  ? data.optionalProof.map((s) => String(s))
-                  : [],
-                acceptanceCriteria: Array.isArray(data.acceptanceCriteria)
-                  ? data.acceptanceCriteria.map((s) => String(s))
-                  : [],
-              },
+              requirements: requirementsOut,
             };
             break;
           }
