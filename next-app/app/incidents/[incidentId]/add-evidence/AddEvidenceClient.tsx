@@ -100,6 +100,16 @@ useEffect(() => {
   // audit footer. When the snapshot source is "customer_template",
   // we display the human-readable customer name (not the slug).
   const [incidentCustomer, setIncidentCustomer] = useState<string>("");
+  // PR 96 — Set of requirementKey slugs that have at least one
+  // matching persisted evidence doc. Drives server-backed
+  // satisfaction so the checklist survives queue clears + page
+  // reloads. Merged with queue-local slot assignments in
+  // requirementCaptureMap below.
+  const [serverCapturedKeys, setServerCapturedKeys] = useState<Set<string>>(new Set());
+  // PR 96 — Bumped after uploadAll success so the listEvidenceLocker
+  // fetch re-runs and the panel reflects what we just persisted
+  // before the redirect fires.
+  const [refetchTick, setRefetchTick] = useState(0);
   const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
 
   // Env / context
@@ -226,6 +236,46 @@ useEffect(() => {
       cancelled = true;
     };
   }, [incidentId, orgId]);
+
+  // PR 96 — Server-backed required-proof satisfaction. Reads
+  // persisted evidence docs once on mount and again after each
+  // successful uploadAll (refetchTick), projecting requirementKey
+  // values into a Set. The checklist merges this with queue-local
+  // slot assignments below. Tolerant on failure: an empty Set just
+  // means the panel falls back to PR 94b queue-local behavior, no
+  // broken state. Uses the same /api/fn/listEvidenceLocker path
+  // IncidentClient / SummaryClient / ReviewClient already rely on;
+  // limit=200 matches Summary's pattern (PR 96 plan §4 risk 1 — if
+  // incidents grow past 200 evidence docs we add server-side
+  // projection in PR 96b).
+  useEffect(() => {
+    if (!incidentId || !orgId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authedFetch(
+          `/api/fn/listEvidenceLocker?orgId=${encodeURIComponent(orgId)}&incidentId=${encodeURIComponent(incidentId)}&limit=200`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) return;
+        const out = await res.json().catch(() => ({}));
+        const docs = Array.isArray(out?.docs) ? out.docs : [];
+        const keys = new Set<string>();
+        for (const d of docs) {
+          const k = String(d?.requirementKey || "").trim();
+          // Match the backend's own validation regex (PR 94a) so we
+          // never project a malformed key into satisfaction state.
+          if (/^[a-z0-9-]{1,120}$/.test(k)) keys.add(k);
+        }
+        if (!cancelled) setServerCapturedKeys(keys);
+      } catch {
+        // tolerate — checklist falls back to queue-local
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [incidentId, orgId, refetchTick]);
 
   useEffect(() => {
     const jid = String(selectedJobId || "").trim();
@@ -459,6 +509,13 @@ useEffect(() => {
         try { prev.forEach((x) => URL.revokeObjectURL(x.url)); } catch {}
         return [];
       });
+      // PR 96 — Bump refetchTick so the listEvidenceLocker effect
+      // re-runs and the checklist reflects the proofs we just
+      // persisted. Fires before the redirect timeout so the brief
+      // "Secured ✔️" moment shows the updated counter, and so the
+      // satisfaction state is correct if the redirect is interrupted
+      // (user taps back, etc.).
+      setRefetchTick((t) => t + 1);
       // Back to incident
       setTimeout(() => router.push(`/incidents/${incidentId}`), 350);
     } catch (e: any) {
@@ -513,18 +570,21 @@ useEffect(() => {
     requirements: incidentRequirements,
   });
 
-  // PR 94b — Per-requirement queue-local satisfaction. A requirement
-  // is "captured" only when an item in the queue carries a slot with
-  // the matching slug. Generic photos (no slot) DON'T count — that's
-  // the whole point of explicit operator intent.
+  // PR 94b — Per-requirement satisfaction.
+  // PR 96 — A requirement is "captured" when EITHER an item in the
+  // queue carries a matching slot OR a persisted evidence doc
+  // carries the matching requirementKey. Either source counts; both
+  // require explicit operator intent (queue-local via the "Capture:
+  // X" button, persisted via addEvidenceV1's requirementKey). Generic
+  // unassigned photos still don't count.
   const captureSource = resolvedRequirements.snapshotSource;
   const requirementCaptureMap: Record<string, boolean> = {};
   for (const label of resolvedRequirements.requiredProof) {
     const key = slugRequirement(label);
     if (!key) continue;
-    requirementCaptureMap[key] = items.some(
-      (it) => it.slot?.requirementKey === key
-    );
+    requirementCaptureMap[key] =
+      items.some((it) => it.slot?.requirementKey === key) ||
+      serverCapturedKeys.has(key);
   }
 
   // PR 94b — "Next" target for the primary capture button: first
