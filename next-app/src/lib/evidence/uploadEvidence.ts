@@ -26,6 +26,17 @@ export type AddEvidenceResp = {
   error?: string;
 };
 
+// PR 94b — Optional explicit operator-intent metadata. Mirrors the
+// addEvidenceV1 (PR 94a) body schema; backend silently drops fields
+// that don't pass its light validation, so empty/invalid slugs land
+// as unassigned uploads.
+export type EvidenceProofSlot = {
+  requirementKey: string;     // ^[a-z0-9-]{1,120}$
+  requirementLabel: string;
+  requirementSource: "customer_template" | "org_template" | "archetype";
+  requirementIndex: number;
+};
+
 export type UploadEvidenceArgs = {
   functionsBase: string; // e.g. http://127.0.0.1:5004/peakops-pilot/us-central1
   techUserId: string;
@@ -42,6 +53,12 @@ export type UploadEvidenceArgs = {
   file: File;
   sessionId?: string;
   jobId?: string;
+
+  // PR 94b — Optional guided-proof slot. When set, the four fields
+  // land on the evidence doc via addEvidenceV1 (PR 94a backend).
+  // Backend treats them as additive metadata; slot tagging never
+  // gates the upload itself.
+  slot?: EvidenceProofSlot;
 
   onStatus?: (s: string) => void;
 
@@ -163,6 +180,7 @@ export async function uploadEvidence(args: UploadEvidenceArgs): Promise<AddEvide
     file,
     onStatus,
     jobId,
+    slot,
   } = args;
 
   // PEAKOPS_UPLOAD_ACTOR_FROM_CLAIMS_V1 (PR 53)
@@ -285,6 +303,11 @@ onStatus?.("Starting field session…");
   });
 
   // 4) Register evidence (retry once if session went stale between upload + register)
+  // PR 94b — Spread optional slot fields into the addEvidenceV1
+  // body only when present. Sending undefined would leak as `null`
+  // through JSON.stringify and the backend (PR 94a) would still
+  // persist nothing, but explicit absence keeps the payload audit-
+  // clean.
   const postAddEvidence = async (sidToUse: string): Promise<AddEvidenceResp> => {
     return await postJson<AddEvidenceResp>(`/api/fn/addEvidenceV1`, {
       orgId,
@@ -301,6 +324,14 @@ onStatus?.("Starting field session…");
       jobId: String(jobId || "").trim() || null,
       actorUid,
       actorRole,
+      ...(slot
+        ? {
+            requirementKey: slot.requirementKey,
+            requirementLabel: slot.requirementLabel,
+            requirementSource: slot.requirementSource,
+            requirementIndex: slot.requirementIndex,
+          }
+        : {}),
     });
   };
 

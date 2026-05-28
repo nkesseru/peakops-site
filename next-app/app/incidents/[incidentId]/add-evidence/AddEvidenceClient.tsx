@@ -14,11 +14,37 @@ import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
 // incident.requirements (PR 89a backend) when present, falls back
 // to the archetype catalog for legacy records.
 import { effectiveRequirements } from "@/lib/incidents/requirementsSnapshot";
-type Item = { id: string; file: File; url: string };
+
+// PR 94b — Guided proof-slot assignment. A ProofSlot binds a queued
+// photo to one specific entry in the incident's snapshotted
+// requiredProof[]. Slot fields ride through uploadEvidence() to
+// addEvidenceV1 (PR 94a backend). All four fields are optional on
+// the backend; we either send all four or send none.
+type ProofSlot = {
+  requirementKey: string;     // slug(label), ^[a-z0-9-]{1,120}$
+  requirementLabel: string;   // exact label from resolvedRequirements
+  requirementSource: "customer_template" | "org_template" | "archetype";
+  requirementIndex: number;   // position in resolvedRequirements.requiredProof
+};
+type Item = { id: string; file: File; url: string; slot?: ProofSlot };
 type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string; status?: string };
 
 function makeId() {
   return "ev_" + Date.now() + "_" + Math.random().toString(16).slice(2);
+}
+
+// PR 94b — Deterministic label → key slug. Backend (PR 94a) validates
+// requirementKey against ^[a-z0-9-]{1,120}$ and silently drops
+// anything else; if this returns "", callers must NOT send slot
+// fields (per approved plan, point 8.6).
+function slugRequirement(label: string): string {
+  return String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 120);
 }
 
 export default function AddEvidenceClient({ incidentId }: { incidentId: string }) {
@@ -44,6 +70,11 @@ useEffect(() => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  // PR 94b — Active proof-slot the operator clicked into. Session-
+  // bound: stays set while the camera is open so multi-angle captures
+  // of the same required item all carry the same slot. Cleared on
+  // closeCamera() (Done). File-picker path never touches this state.
+  const [currentSlot, setCurrentSlot] = useState<ProofSlot | null>(null);
   const [jobs, setJobs] = useState<JobLite[]>([]);
   // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
   // Pre-emptive incident.status fetch so we render the sealed-record
@@ -314,6 +345,10 @@ useEffect(() => {
     try { streamRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
     streamRef.current = null;
     setCameraOpen(false);
+    // PR 94b — Done/Close clears the active slot so the next camera
+    // open starts unassigned unless the operator explicitly picks a
+    // requirement again.
+    setCurrentSlot(null);
   }
 
   function capturePhoto() {
@@ -338,7 +373,12 @@ useEffect(() => {
         const f = new File([blob], `capture_${Date.now()}.jpg`, { type: "image/jpeg" });
         const url = URL.createObjectURL(f);
         const id = makeId();
-        setItems((prev) => [{ id, file: f, url }, ...prev]);
+        // PR 94b — Camera-captured items inherit the current slot
+        // (set by selectSlotAndOpen below). Bound at capture time so
+        // the queued Item carries the slot even if the operator
+        // closes the camera and the live currentSlot resets.
+        const slot = currentSlot || undefined;
+        setItems((prev) => [{ id, file: f, url, slot }, ...prev]);
         // keep camera open for rapid multi-capture
       },
       "image/jpeg",
@@ -379,6 +419,10 @@ useEffect(() => {
       jobId: selectedJobId,
       sessionId,
       file: it.file,
+      // PR 94b — Carry the per-item slot through to addEvidenceV1.
+      // Camera-captured items inherit the active slot at capture
+      // time; file-picker items always land unassigned.
+      slot: it.slot,
       onStatus: setStatus,
     });
   }
@@ -455,25 +499,69 @@ useEffect(() => {
     requirements: incidentRequirements,
   });
 
-  // PR 93 — Adaptive primary-button label.
-  //   No requirements             → "Open camera"   (fallback)
-  //   Requirements + 0 captured   → "Capture: {requiredProof[0]}"
-  //   Requirements + N captured   → "Capture next required proof"
-  //                                  (we DON'T do per-item match —
-  //                                  position-based inference is
-  //                                  unsafe because the operator
-  //                                  could upload 3 photos of the
-  //                                  same enclosure. PR 95+ AI
-  //                                  proof-quality review is the
-  //                                  natural home for per-item
-  //                                  satisfaction tracking.)
+  // PR 94b — Per-requirement queue-local satisfaction. A requirement
+  // is "captured" only when an item in the queue carries a slot with
+  // the matching slug. Generic photos (no slot) DON'T count — that's
+  // the whole point of explicit operator intent.
+  const captureSource = resolvedRequirements.snapshotSource;
+  const requirementCaptureMap: Record<string, boolean> = {};
+  for (const label of resolvedRequirements.requiredProof) {
+    const key = slugRequirement(label);
+    if (!key) continue;
+    requirementCaptureMap[key] = items.some(
+      (it) => it.slot?.requirementKey === key
+    );
+  }
+
+  // PR 94b — "Next" target for the primary capture button: first
+  // requirement in declared order that isn't queue-satisfied yet.
+  // Replaces PR 93's position-based heuristic with deterministic
+  // per-slot matching — safe because slot assignment is explicit.
+  const nextTargetIndex = (() => {
+    if (!captureSource) return -1;
+    for (let i = 0; i < resolvedRequirements.requiredProof.length; i++) {
+      const key = slugRequirement(resolvedRequirements.requiredProof[i]);
+      if (!key) continue;
+      if (!requirementCaptureMap[key]) return i;
+    }
+    return -1;
+  })();
+
+  const nextTargetLabel =
+    nextTargetIndex >= 0
+      ? resolvedRequirements.requiredProof[nextTargetIndex]
+      : "";
+  const nextTargetKey = nextTargetLabel ? slugRequirement(nextTargetLabel) : "";
+
+  // PR 94b — Capture button slot. Built only when we have a valid
+  // source AND the slug is non-empty (per plan point 8.6: empty slug
+  // means we can't bind, so leave the click unassigned).
+  const nextTargetSlot: ProofSlot | null =
+    nextTargetIndex >= 0 && nextTargetKey && captureSource
+      ? {
+          requirementKey: nextTargetKey,
+          requirementLabel: nextTargetLabel,
+          requirementSource: captureSource,
+          requirementIndex: nextTargetIndex,
+        }
+      : null;
+
+  // Adaptive label:
+  //   No requirements                 → "Open camera"
+  //   All requirements queue-captured → "Capture more proof"
+  //   Otherwise                       → "Capture: {next requirement label}"
   let captureButtonLabel = "Open camera";
   if (resolvedRequirements.requiredProof.length > 0) {
-    if (items.length === 0) {
-      captureButtonLabel = `Capture: ${resolvedRequirements.requiredProof[0]}`;
+    if (nextTargetLabel) {
+      captureButtonLabel = `Capture: ${nextTargetLabel}`;
     } else {
-      captureButtonLabel = "Capture next required proof";
+      captureButtonLabel = "Capture more proof";
     }
+  }
+
+  function selectSlotAndOpen() {
+    setCurrentSlot(nextTargetSlot);
+    void openCamera();
   }
 
   return (
@@ -535,7 +623,12 @@ useEffect(() => {
           const details = getArchetypeDetails(incidentArchetype);
           const archetypeLabel = details?.label || "";
           const total = requirements.requiredProof.length;
-          const captured = items.length;
+          // PR 94b — Per-slot counter. Only items the operator
+          // explicitly assigned via a "Capture: X" click count. A
+          // queue full of unassigned gallery picks reads "0 / N" —
+          // which is correct: those photos haven't been bound to
+          // any requirement yet.
+          const captured = Object.values(requirementCaptureMap).filter(Boolean).length;
           const complete = total > 0 && captured >= total;
           return (
             <section
@@ -565,15 +658,31 @@ useEffect(() => {
                   {captured} / {total} captured
                 </div>
               </div>
-              <ul className="mt-3 space-y-1 text-[12px] text-gray-200">
-                {requirements.requiredProof.map((item) => (
-                  <li key={item} className="flex items-start gap-2">
-                    <span aria-hidden="true" className="text-emerald-300/70 mt-0.5">
-                      ✓
-                    </span>
-                    <span>{item}</span>
-                  </li>
-                ))}
+              <ul className="mt-3 space-y-1 text-[12px]">
+                {requirements.requiredProof.map((item) => {
+                  // PR 94b — Per-slot satisfaction. Captured rows
+                  // brighten to solid emerald; pending rows keep the
+                  // dim treatment. Only explicit slot assignment
+                  // marks a row captured (queue-local).
+                  const key = slugRequirement(item);
+                  const itemCaptured = key ? !!requirementCaptureMap[key] : false;
+                  return (
+                    <li key={item} className="flex items-start gap-2">
+                      <span
+                        aria-hidden="true"
+                        className={
+                          (itemCaptured ? "text-emerald-300" : "text-emerald-300/40") +
+                          " mt-0.5"
+                        }
+                      >
+                        ✓
+                      </span>
+                      <span className={itemCaptured ? "text-emerald-100" : "text-gray-200"}>
+                        {item}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
               {/* PR 92 — quiet audit footer surfacing where the
                   requirements came from. Renders only when we have
@@ -625,6 +734,23 @@ useEffect(() => {
       {/* CAMERA MODE */}
       {cameraOpen && (
         <div className="space-y-3">
+          {/* PR 94b — Active proof-slot banner. Renders only when the
+              operator entered the camera via a "Capture: X" button.
+              Communicates that the next photo(s) will be attached to
+              this specific requirement. */}
+          {currentSlot ? (
+            <div className="rounded-xl border border-amber-300/25 bg-amber-500/[0.06] px-4 py-3">
+              <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-200/70">
+                Capturing for
+              </div>
+              <div className="text-[14px] font-semibold text-amber-50 mt-0.5">
+                {currentSlot.requirementLabel}
+              </div>
+              <div className="text-[11px] text-gray-400 mt-1">
+                Multiple photos in this session will be attached to this requirement.
+              </div>
+            </div>
+          ) : null}
           <video
             ref={videoRef}
             playsInline
@@ -667,7 +793,7 @@ useEffect(() => {
                 ? "bg-white/10 text-gray-400 cursor-not-allowed"
                 : "bg-white text-black hover:bg-white/90")
             }
-            onClick={openCamera}
+            onClick={selectSlotAndOpen}
             disabled={busy || sessionBusy || !sessionId}
           >
             {captureButtonLabel}
@@ -734,7 +860,7 @@ useEffect(() => {
                     type="button"
                     className="relative aspect-square rounded-lg overflow-hidden border border-white/10 bg-black"
                     onClick={() => removeItem(it.id)}
-                    title="Remove"
+                    title={it.slot ? `Assigned: ${it.slot.requirementLabel} — tap to remove` : "Remove"}
                     disabled={busy}
                   >
                     {it.file.type.startsWith("video/") ? (
@@ -742,6 +868,18 @@ useEffect(() => {
                     ) : (
                       <img src={it.url} className="w-full h-full object-cover" />
                     )}
+                    {/* PR 94b — Slot badge. Renders only when the
+                        item is explicitly assigned to a required-
+                        proof slot. Unassigned thumbnails carry no
+                        badge (per approved plan, point 3). */}
+                    {it.slot ? (
+                      <div
+                        className="absolute top-1 left-1 right-1 text-[9px] leading-tight font-semibold uppercase tracking-[0.05em] rounded bg-amber-500/85 text-black px-1.5 py-0.5 truncate"
+                        title={it.slot.requirementLabel}
+                      >
+                        {it.slot.requirementLabel}
+                      </div>
+                    ) : null}
                     <div className="absolute bottom-0 left-0 right-0 text-[10px] bg-black/60 text-gray-100 px-1 py-0.5 truncate">
                       {it.file.name}
                     </div>
