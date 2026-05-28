@@ -22,6 +22,11 @@ import UpgradePrompt from "@/components/UpgradePrompt";
 import RecordNav from "@/components/RecordNav";
 import AppTopBar from "@/components/AppTopBar";
 import { authedFetch } from "@/lib/apiClient";
+// PR 103b — Acceptance Readiness operator surface. Single fetch
+// driven here; both the panel + the export-warning line read from
+// the same `readinessData` state (no duplicate requests).
+import { AcceptanceReadinessPanel, type PanelData } from "@/components/AcceptanceReadinessPanel";
+import type { AcceptanceReadiness } from "@/lib/incidents/acceptanceReadinessTypes";
 
 type IncidentDoc = {
   id: string;
@@ -609,6 +614,13 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   const thumbRefreshInflightRef = useRef<Record<string, boolean>>({});
   const thumbRefreshDebounceRef = useRef<any>(null);
   const [artifactBusy, setArtifactBusy] = useState(false);
+  // PR 103b — Single readiness fetch driven from SummaryClient.
+  // Panel + export warning both read from this state, so we never
+  // make duplicate getAcceptanceReadinessV1 requests for the same
+  // page render. `readinessRefetchTick` bumps after each successful
+  // packet export so the panel reflects the freshly-cached state.
+  const [readinessData, setReadinessData] = useState<PanelData>({ kind: "loading" });
+  const [readinessRefetchTick, setReadinessRefetchTick] = useState(0);
   const [upgrade, setUpgrade] = useState<{
     open: boolean;
     reason: string;
@@ -944,6 +956,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         throw new Error(out?.error || `exportIncidentPacketV1 failed (${exportRes.status})`);
       }
 
+      // PR 103b — Bump readiness refetch tick on successful export.
+      // The packet's readiness state is what just got snapshotted; a
+      // refresh keeps the Summary panel in sync without making the
+      // operator reload the page.
+      setReadinessRefetchTick((t) => t + 1);
+
       const bucket = String(
         out?.bucket ||
         out?.packetBucket ||
@@ -1225,6 +1243,46 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   // When /add-addendum redirects here with addendumFiled=1, flash a
   // quiet confirmation chip for 4s and clean the URL so refreshing
   // / back-button doesn't re-trigger it.
+  // PR 103b — Single fetch for Acceptance Readiness. Drives both the
+  // panel (component below) AND the export-section warning text.
+  // - Loading state shown during fetch
+  // - Errors hide the panel entirely (don't burden the operator)
+  // - readinessRefetchTick bumps after a successful packet export
+  //   so the panel reflects the freshly cached state
+  useEffect(() => {
+    if (!orgId || !incidentId) return;
+    let cancelled = false;
+    setReadinessData({ kind: "loading" });
+    (async () => {
+      try {
+        const url =
+          `/api/fn/getAcceptanceReadinessV1?orgId=${encodeURIComponent(orgId)}` +
+          `&incidentId=${encodeURIComponent(incidentId)}`;
+        const res = await authedFetch(url, { cache: "no-store" });
+        if (!res.ok) {
+          if (!cancelled) setReadinessData({ kind: "error" });
+          return;
+        }
+        const body = await res.json().catch(() => null);
+        if (!body || body.ok !== true || !body.readiness) {
+          if (!cancelled) setReadinessData({ kind: "error" });
+          return;
+        }
+        if (!cancelled) {
+          setReadinessData({
+            kind: "ok",
+            readiness: body.readiness as AcceptanceReadiness,
+          });
+        }
+      } catch {
+        if (!cancelled) setReadinessData({ kind: "error" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, incidentId, readinessRefetchTick]);
+
   useEffect(() => {
     const v = String(sp?.get("addendumFiled") || "").trim();
     if (v !== "1") return;
@@ -1683,12 +1741,35 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           );
         })()}
 
+        {/* PR 103b — Acceptance Readiness panel. Authoritative
+            readiness signal, computed server-side by
+            getAcceptanceReadinessV1 (PR 103a) and extended with
+            per-customer-template checks (PR 104). Same checks the
+            packet itself uses, so the panel + the packet always
+            agree. State pill, per-check ✓/✗/⚠ rows, encouraged-
+            tier rows when present, neutral unknown-check rows,
+            and (when snapshot carries them) a calm bulleted list
+            of customer acceptance criteria prose. */}
+        <AcceptanceReadinessPanel
+          data={readinessData}
+          acceptanceCriteria={
+            Array.isArray((incident as any)?.requirements?.acceptanceCriteria)
+              ? (incident as any).requirements.acceptanceCriteria
+              : null
+          }
+        />
+
         {/* PEAKOPS_OPERATIONAL_READINESS_V1 (2026-05-17)
             Compact operational readiness strip. Only deterministic
             truths from real data — no AI scores, no percentages, no
             fake confidence. Each row reflects an audit-defensible
             signal a supervisor would check before approving the
-            record. */}
+            record.
+            NOTE (PR 103b): Older client-side readiness strip; left in
+            place for now. The new Acceptance Readiness panel above
+            is the authoritative server-backed signal. A future
+            cleanup PR can consolidate / retire this section once
+            the new panel has shipped in production for a release. */}
         {(() => {
           // PEAKOPS_OPERATIONAL_INTERPRETATION_V1 (2026-05-18, PR 30c)
           // Each readiness signal now carries synthesized operational
@@ -2810,22 +2891,37 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             const styleDisabled =
               "bg-white/[0.03] border-white/10 text-gray-500 cursor-not-allowed";
             return (
-              <div className="flex items-center gap-3 flex-wrap">
-                <button
-                  type="button"
-                  className={
-                    "px-4 py-2.5 rounded-lg text-[13px] font-medium border transition " +
-                    (isDisabled ? styleDisabled : isAttention ? styleAttention : stylePrimary)
-                  }
-                  disabled={isDisabled}
-                  onClick={onClick}
-                  title={artifactHint}
-                >
-                  {cta.label}
-                </button>
-                {artifactHint ? (
-                  <div className="text-[12px] text-gray-500">{artifactHint}</div>
+              <div className="space-y-2">
+                {/* PR 103b — Calm pre-export warning. Renders only
+                    when readiness state is requirements_missing.
+                    Informational — does NOT disable the button. The
+                    operator stays in control; the packet README
+                    already records "exported despite the readiness
+                    gap" via the audit trail. */}
+                {readinessData.kind === "ok" &&
+                 readinessData.readiness.state === "requirements_missing" ? (
+                  <div className="text-[12px] text-amber-200/90 leading-relaxed">
+                    This packet can still be exported, but required items are
+                    missing. See Acceptance Readiness above.
+                  </div>
                 ) : null}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    type="button"
+                    className={
+                      "px-4 py-2.5 rounded-lg text-[13px] font-medium border transition " +
+                      (isDisabled ? styleDisabled : isAttention ? styleAttention : stylePrimary)
+                    }
+                    disabled={isDisabled}
+                    onClick={onClick}
+                    title={artifactHint}
+                  >
+                    {cta.label}
+                  </button>
+                  {artifactHint ? (
+                    <div className="text-[12px] text-gray-500">{artifactHint}</div>
+                  ) : null}
+                </div>
               </div>
             );
           })()}
