@@ -116,6 +116,43 @@ function mapDoc(d, fallbackOrgId) {
       out.reportReady = true;
     }
   }
+
+  // PEAKOPS_LIST_INCIDENTS_READINESS_CACHE_V1 (PR 105)
+  // Pass through the cached acceptance-readiness state so /records
+  // cards can render a small pill without recomputing client-side.
+  //
+  // The cache (incident.readinessCache) is written by:
+  //   - getAcceptanceReadinessV1 (PR 103a) on every call
+  //   - exportIncidentPacketV1 (PR 103a) on every packet export
+  // Either function writes the full readiness projection to whichever
+  // incident path it resolves (org-scoped preferred, legacy fallback).
+  //
+  // What we project here is intentionally minimal — only `state`, the
+  // single field the Records pill consumes (PR 103b). The full cache
+  // (checks[], summary, generatedAt, etc.) stays in Firestore for
+  // Summary's own getAcceptanceReadinessV1 fetch. This keeps the list
+  // payload tight (~30 bytes per record vs ~500–2000 for the full
+  // cache). Future surfaces that need more fields can opt in here
+  // by adding to the projection — no schema break.
+  //
+  // State enum is validated strictly. Unknown values (forward-compat
+  // for future check states, or a malformed write) are silently
+  // omitted — the client renders no pill rather than an unknown one.
+  // "not_available" is kept on the wire so downstream consumers can
+  // render "—" or similar treatments; the Records pill itself omits
+  // on "not_available" per PR 103b.
+  const rc = data.readinessCache;
+  if (rc && typeof rc === "object") {
+    const rawState = String(rc.state || "").trim();
+    if (
+      rawState === "ready_for_submission" ||
+      rawState === "requirements_missing" ||
+      rawState === "not_available"
+    ) {
+      out.readinessCache = { state: rawState };
+    }
+  }
+
   return out;
 }
 
