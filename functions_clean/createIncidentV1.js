@@ -493,6 +493,17 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
       if (resolvedSnapshot.templateVersion !== undefined) {
         reqDoc.templateVersion = resolvedSnapshot.templateVersion;
       }
+      // PR 104 — Carry the snapshotted acceptanceChecks through to
+      // the persisted incident.requirements doc. The inner resolver
+      // attaches this field on resolvedSnapshot.requirements only
+      // when the source template declared it (customer_template /
+      // org_template paths); archetype fallback never includes it.
+      // Without this explicit carry-through, the field was silently
+      // dropped by the picklist construction above.
+      if (Array.isArray(resolvedSnapshot.requirements.acceptanceChecks)
+          && resolvedSnapshot.requirements.acceptanceChecks.length > 0) {
+        reqDoc.acceptanceChecks = resolvedSnapshot.requirements.acceptanceChecks.slice();
+      }
       doc.requirements = reqDoc;
     }
 
