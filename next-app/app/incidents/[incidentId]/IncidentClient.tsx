@@ -517,7 +517,13 @@ const [debuggingHeic, setDebuggingHeic] = useState(false);
 
   const goAddEvidence = () => {
     if (isClosed) return toast("Incident is closed (read-only).", 2600);
-    if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
+    // PEAKOPS_NO_JOB_PROOF_V1 (PR 112)
+    // Removed the !hasActiveFieldJobs toast gate. Jobs are optional —
+    // PR 111's AddEvidenceClient now handles no-job records (proof
+    // attaches at record level). The previous toast contradicted the
+    // calm "Capture your first proof item to start the session." hint
+    // rendered when there's no active job (line ~2722) and bounced
+    // operators back to a page that wanted them to proceed.
     try {
       // PEAKOPS_ADD_EVIDENCE_NAV_V1: Keep MVP behavior dead-simple + reliable.
       const url =
@@ -2751,7 +2757,7 @@ useEffect(() => {
                 title={
                   isClosed
                     ? "Incident is closed (read-only)"
-                    : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : "Add proof")
+                    : "Add proof"
                 }
               >
                 Add proof
@@ -2950,7 +2956,8 @@ useEffect(() => {
   }}
 	  onAddEvidence={() => {
       if (isClosed) return toast("Incident is closed (read-only).", 2600);
-      if (!hasActiveFieldJobs) return toast("No active field jobs. Reset demo or create/open a job first.", 3000);
+      // PR 112 — removed duplicate !hasActiveFieldJobs toast gate.
+      // goAddEvidence() already handles isClosed; jobs are optional.
       goAddEvidence();
     }}
   onMarkArrived={() => { if (!isClosed) { try { markArrived(); } catch {} } else toast("Incident is closed (read-only).", 2600); }}
@@ -3530,7 +3537,7 @@ useEffect(() => {
             title={
               isClosed
                 ? "Incident is closed (read-only)"
-                : (!hasActiveFieldJobs ? "No active field jobs (open/in_progress)" : (_hasEvidence ? "Proof captured (done)" : "Go to proof capture"))
+                : (_hasEvidence ? "Proof captured (done)" : "Go to proof capture")
             }>
             {/* PR 85 — dock button reframed to proof vocabulary. */}
             Proof
