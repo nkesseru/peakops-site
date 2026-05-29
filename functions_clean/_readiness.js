@@ -93,6 +93,25 @@ function _normTier(t) {
   return t === "required" ? "required" : "encouraged";
 }
 
+// PEAKOPS_SUPERVISOR_APPROVAL_SIGNAL_V1 (PR 115)
+// Mirrors exportIncidentPacketV1.isApprovedJob (line 152) — the
+// production-canonical "is this job approved" signal. Aligning the
+// readiness evaluator closes the long-standing gap where approveJobV1
+// (writes status: "approved" only) satisfied the export pipeline,
+// setEvidenceLabelV1, and updateJobStatusV1 — but NOT the readiness
+// supervisor_approval check. Three accept signals OR'd together:
+//   - status === "approved"      : written by approveJobV1 +
+//                                  approveAndLockJobV1
+//   - reviewStatus === "approved": written by approveAndLockJobV1
+//   - decision === "approved"    : legacy field, kept as a read
+//                                  fallback for older job docs
+function _isJobApproved(j) {
+  const st  = String(j?.status       || "").trim().toLowerCase();
+  const rs  = String(j?.reviewStatus || "").trim().toLowerCase();
+  const dec = String(j?.decision     || "").trim().toLowerCase();
+  return st === "approved" || rs === "approved" || dec === "approved";
+}
+
 function evaluateRequiresMinimumProofCount(check, { evidence }) {
   const minRaw = Number(check?.params?.minCount);
   const min = Number.isFinite(minRaw) && minRaw >= 1 ? Math.floor(minRaw) : 1;
@@ -109,11 +128,10 @@ function evaluateRequiresMinimumProofCount(check, { evidence }) {
 
 function evaluateRequiresSupervisorApproval(check, { jobs }) {
   const jobList = Array.isArray(jobs) ? jobs : [];
-  const approved = jobList.filter((j) => {
-    const rs = String(j?.reviewStatus || "").trim().toLowerCase();
-    const dec = String(j?.decision || "").trim().toLowerCase();
-    return rs === "approved" || dec === "approved";
-  }).length;
+  // PR 115 — uses _isJobApproved so status:"approved" (the value
+  // approveJobV1 writes) counts as supervisor approval, matching
+  // exportIncidentPacketV1.isApprovedJob.
+  const approved = jobList.filter(_isJobApproved).length;
   return {
     key: "template_check__supervisor_approval",
     label: "Supervisor approval",
@@ -281,15 +299,12 @@ function computeAcceptanceReadiness({ incident, evidence, jobs, notes }) {
   }
 
   // ─── SUPERVISOR APPROVAL CHECK ────────────────────────────────
-  // Satisfied when at least one job decision === "approved".
-  // approvedJob normalization mirrors exportIncidentPacketV1's
-  // isApprovedJob — same set of accept signals.
+  // PR 115 — Satisfied when ≥1 job passes _isJobApproved, which
+  // mirrors exportIncidentPacketV1.isApprovedJob exactly. status,
+  // reviewStatus, and decision are OR'd; matches the rule used by
+  // setEvidenceLabelV1 and updateJobStatusV1 elsewhere in the system.
   const jobList = Array.isArray(jobs) ? jobs : [];
-  const approvedJobs = jobList.filter((j) => {
-    const rs = String(j?.reviewStatus || "").trim().toLowerCase();
-    const dec = String(j?.decision || "").trim().toLowerCase();
-    return rs === "approved" || dec === "approved";
-  });
+  const approvedJobs = jobList.filter(_isJobApproved);
   checks.push({
     key: "supervisor_approval",
     label: "Supervisor approval",
