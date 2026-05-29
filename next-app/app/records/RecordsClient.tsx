@@ -81,15 +81,20 @@ type IncidentRow = {
   approvedTaskCount?: number;
   packetReady?: boolean;
   // PR 103b — Optional cached readiness state from
-  // incident.readinessCache (PR 103a write path). Per approved
-  // scope: prefer this cache only; never recompute client-side.
-  // Today, listIncidentsV1 does NOT plumb this field through — the
-  // pill is forward-compatible and renders only when a future
-  // backend PR adds it to the response. Until then, no pill is
-  // rendered on any card. This is intentional: scope rules forbid
-  // both client-side compute AND a per-card secondary fetch.
+  // incident.readinessCache (PR 103a write path). PR 105 lit up
+  // the pill by plumbing this field through listIncidentsV1.
+  // PR 107a extends the projection with missingCount +
+  // missingItemsPreview when state === "requirements_missing"
+  // so cards can show a one-line explanation of WHAT is missing
+  // (PR 107b — this UI).
   readinessCache?: {
     state?: "ready_for_submission" | "requirements_missing" | "not_available";
+    // PR 107a — present only when state === "requirements_missing"
+    // AND the cache had a populated checks[] array. Backend caps
+    // the preview at 3 labels in declared snapshot order and
+    // truncates each at 80 chars.
+    missingCount?: number;
+    missingItemsPreview?: string[];
   };
 };
 
@@ -412,6 +417,38 @@ function RecordCard({ row, router }: { row: IncidentRow; router: ReturnType<type
               </>
             ) : null}
           </div>
+
+          {/* PR 107b — Missing-items explanation subline. Renders
+              ONLY on requirements_missing cards when the backend
+              projected a non-empty missingItemsPreview. Format:
+                Missing: A · B · +N more
+              Tone is amber-tinted muted text so it reads as
+              context, not as an error or warning. CTA below is
+              unaffected; this is informational only. */}
+          {row.readinessCache?.state === "requirements_missing" &&
+           Array.isArray(row.readinessCache.missingItemsPreview) &&
+           row.readinessCache.missingItemsPreview.length > 0 ? (
+            <div className="text-[11px] text-gray-400 truncate">
+              <span className="text-amber-200/70 font-medium">Missing:</span>{" "}
+              {row.readinessCache.missingItemsPreview.map((label, i) => (
+                <span key={i}>
+                  {i > 0 ? (
+                    <span aria-hidden="true" className="text-white/15"> · </span>
+                  ) : null}
+                  <span>{label}</span>
+                </span>
+              ))}
+              {typeof row.readinessCache.missingCount === "number" &&
+               row.readinessCache.missingCount > row.readinessCache.missingItemsPreview.length ? (
+                <>
+                  <span aria-hidden="true" className="text-white/15"> · </span>
+                  <span className="text-gray-500 italic">
+                    +{row.readinessCache.missingCount - row.readinessCache.missingItemsPreview.length} more
+                  </span>
+                </>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="shrink-0">
