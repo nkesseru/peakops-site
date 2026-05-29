@@ -13,6 +13,7 @@
 
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
+const { FieldValue } = require("firebase-admin/firestore");
 const {
   assertActorCanReadOrg,
   httpStatusFromAuthzError,
@@ -100,7 +101,7 @@ exports.getAcceptanceReadinessV1 = onRequest({ cors: true }, async (req, res) =>
     // decide their own staleness tolerance.
     const cachePayload = {
       ...readiness,
-      cachedAt: admin.firestore.FieldValue.serverTimestamp(),
+      cachedAt: FieldValue.serverTimestamp(),
     };
     try {
       await incRef.set({ readinessCache: cachePayload }, { merge: true });

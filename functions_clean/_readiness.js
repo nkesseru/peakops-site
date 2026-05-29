@@ -424,8 +424,13 @@ async function refreshReadinessCache({ orgId, incidentId }) {
     // Lazy-require admin so this module remains importable in
     // contexts that don't have firebase-admin available (e.g.,
     // future unit tests of the pure compute path).
-    const admin = require("firebase-admin");
-    const db = admin.firestore();
+    // Use the modular `firebase-admin/firestore` entrypoint to match
+    // the four wired mutation callables. The legacy
+    // `admin.firestore.FieldValue` namespace access works in the
+    // deployed runtime but is unreliable in the functions emulator —
+    // the modular form works in both.
+    const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+    const db = getFirestore();
 
     // Resolve incident ref — same pattern as getAcceptanceReadinessV1.
     let incRef = db.doc(`orgs/${orgId}/incidents/${incidentId}`);
@@ -455,7 +460,7 @@ async function refreshReadinessCache({ orgId, incidentId }) {
 
     const cachePayload = {
       ...readiness,
-      cachedAt: admin.firestore.FieldValue.serverTimestamp(),
+      cachedAt: FieldValue.serverTimestamp(),
     };
     await incRef.set({ readinessCache: cachePayload }, { merge: true });
     return readiness;
