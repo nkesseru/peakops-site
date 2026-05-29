@@ -78,7 +78,17 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     if (curStatus === "closed") {
       return j(res, 409, { ok: false, error: "incident_closed", detail: "Incident is read-only" });
     }
-    if (curStatus && curStatus !== "open" && curStatus !== "in_progress") {
+    // PEAKOPS_DRAFT_SESSION_START_V1 (PR 110)
+    // createIncidentV1 (PR 68) defaults new records to status="draft".
+    // The pre-PR-110 guard only accepted "open" / "in_progress" and so
+    // 409'd on the very first proof-capture attempt. Allow-list extended
+    // to {draft, open, active, in_progress}. "active" is written by
+    // bootstrapPilotOrgV1 (legacy seed). "closed" is still rejected
+    // explicitly above; any other status (submitted, exported, locked,
+    // etc.) is rejected by the allow-list below — preserves sealed
+    // record semantics.
+    const ALLOWED_START_STATUSES = ["draft", "open", "active", "in_progress"];
+    if (curStatus && !ALLOWED_START_STATUSES.includes(curStatus)) {
       return j(res, 409, { ok: false, error: "invalid_transition", detail: `unsupported incident.status=${curStatus}` });
     }
 
@@ -90,7 +100,11 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
       { merge: true }
     );
 
-    if (!curStatus || curStatus === "open") {
+    // Flip pre-session statuses (draft / open / active) → in_progress
+    // when starting the first session. Already-in_progress incidents
+    // are not overwritten — re-calling startFieldSession is idempotent
+    // on status.
+    if (!curStatus || curStatus === "open" || curStatus === "draft" || curStatus === "active") {
       await incRef.set(
         {
           orgId,
