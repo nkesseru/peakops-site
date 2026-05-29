@@ -8,6 +8,10 @@ const {
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
 const { toCustomerSlug } = require("./_customerSlug");
+// PR 106 — Compute an initial acceptance-readiness projection at
+// creation so /records can render a pill immediately (no need to
+// wait for the first Summary visit or packet export).
+const { computeAcceptanceReadiness } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -506,6 +510,35 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
       }
       doc.requirements = reqDoc;
     }
+
+    // PR 106 — Compute an initial acceptance-readiness projection
+    // and attach it to the doc before the dual-write. Subcollections
+    // (jobs, evidence_locker) are empty at creation, so every brand-
+    // new incident lands with one of:
+    //   - "requirements_missing" — has a snapshot but proof/approval/
+    //     closure are all unsatisfied (the normal expected state)
+    //   - "not_available" — no snapshot AND no evidence (legacy /
+    //     unknown-archetype path)
+    // Either value lets /records render its pill (or omit, in the
+    // case of not_available) the moment the record exists; no need
+    // to wait for the first Summary visit or packet export. The
+    // cache stays fresh through the same write paths PR 103a set up:
+    // getAcceptanceReadinessV1 and exportIncidentPacketV1 both
+    // overwrite it.
+    //
+    // We compute using the doc shape that's about to be written —
+    // status (the just-derived value), and the requirements snapshot
+    // attached above when applicable. No subcollection reads (none
+    // exist yet).
+    const initialReadiness = computeAcceptanceReadiness({
+      incident: doc,
+      evidence: [],
+      jobs: [],
+    });
+    doc.readinessCache = {
+      ...initialReadiness,
+      cachedAt: FieldValue.serverTimestamp(),
+    };
 
     // Write both copies in parallel. If the org-scoped write fails
     // (e.g., because security rules diverge), the top-level write is
