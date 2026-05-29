@@ -8,6 +8,7 @@ const {
   ROLES_FIELD_WORK,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+const { refreshReadinessCache } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 const db = getFirestore();
@@ -123,6 +124,13 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
     } catch (e) {
       console.error("NOTES_SAVED emit failed", e);
     }
+
+    // PEAKOPS_READINESS_FRESHNESS_V1 (PR 108) — refresh readinessCache
+    // so the field-notes check flips on the next list/read without
+    // waiting for a Summary view. Helper swallows errors. Note: the
+    // helper loads incidents/{id}/notes/main so the evaluator sees the
+    // value we just wrote.
+    await refreshReadinessCache({ orgId, incidentId });
 
 return j(res, 200, { ok: true, orgId, incidentId });
   } catch (e) {

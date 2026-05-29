@@ -8,6 +8,7 @@ const {
   ROLES_APPROVE,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+const { refreshReadinessCache } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -124,6 +125,12 @@ exports.approveJobV1 = onRequest({ cors: true }, async (req, res) => {
       actor: approvedBy,
       meta: { from: prev, to: "approved" },
     });
+
+    // PEAKOPS_READINESS_FRESHNESS_V1 (PR 108) — refresh readinessCache
+    // so the supervisor-approval check flips on the next list/read
+    // without waiting for a Summary view. Helper swallows errors.
+    await refreshReadinessCache({ orgId, incidentId });
+
     return j(res, 200, { ok: true, orgId, incidentId, jobId, status: "approved" });
   } catch (e) {
     return j(res, 400, { ok: false, error: String(e?.message || e) });
