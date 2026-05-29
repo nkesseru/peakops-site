@@ -228,9 +228,14 @@ function evaluateTemplateCheck(check, context) {
  *                                   may include requirements snapshot)
  * @param {Array}  args.evidence   — array of evidence_locker docs
  * @param {Array}  args.jobs       — array of job docs
+ * @param {object} [args.notes]    — optional notes subdoc
+ *                                   (incidents/{id}/notes/main) used by
+ *                                   the field-notes evaluator when the
+ *                                   notes don't live on the incident doc
+ *                                   itself
  * @returns {object} readiness projection (see shape below)
  */
-function computeAcceptanceReadiness({ incident, evidence, jobs }) {
+function computeAcceptanceReadiness({ incident, evidence, jobs, notes }) {
   const checks = [];
 
   // ─── REQUIRED PROOF CHECKS ────────────────────────────────────
@@ -342,7 +347,7 @@ function computeAcceptanceReadiness({ incident, evidence, jobs }) {
     ? reqSnapshot.acceptanceChecks
     : [];
   for (const tc of templateChecksRaw) {
-    const row = evaluateTemplateCheck(tc, { incident, evidence: evList, jobs: jobList });
+    const row = evaluateTemplateCheck(tc, { incident, evidence: evList, jobs: jobList, notes });
     if (row) checks.push(row);
   }
 
@@ -391,7 +396,79 @@ function computeAcceptanceReadiness({ incident, evidence, jobs }) {
   };
 }
 
+// PEAKOPS_READINESS_FRESHNESS_V1 (PR 108)
+//
+// Recompute + persist readinessCache for a single incident. Mutation
+// callables (addEvidenceV1, approveJobV1, closeIncidentV1,
+// saveIncidentNotesV1) await this AFTER their primary write so the
+// next list/read sees the new state without waiting on a Summary view
+// or an explicit getAcceptanceReadinessV1 call.
+//
+// Resolution mirrors getAcceptanceReadinessV1: prefer the org-scoped
+// incident doc, fall back to legacy top-level. Subcollections are
+// always read from the legacy path (jobs / evidence_locker / notes
+// all live there). The cache is written to whichever ref the incident
+// doc actually exists at so reads stay aligned.
+//
+// Bulletproof contract: this function NEVER throws. All errors are
+// logged as warnings and swallowed; the caller's mutation is never
+// affected by cache-refresh failure. Returns the freshly computed
+// readiness object on success, or null on any failure path.
+async function refreshReadinessCache({ orgId, incidentId }) {
+  try {
+    if (!orgId || !incidentId) {
+      console.warn("[refreshReadinessCache] missing_ids", { orgId, incidentId });
+      return null;
+    }
+
+    // Lazy-require admin so this module remains importable in
+    // contexts that don't have firebase-admin available (e.g.,
+    // future unit tests of the pure compute path).
+    const admin = require("firebase-admin");
+    const db = admin.firestore();
+
+    // Resolve incident ref — same pattern as getAcceptanceReadinessV1.
+    let incRef = db.doc(`orgs/${orgId}/incidents/${incidentId}`);
+    let incSnap = await incRef.get();
+    if (!incSnap.exists) {
+      incRef = db.collection("incidents").doc(incidentId);
+      incSnap = await incRef.get();
+    }
+    if (!incSnap.exists) {
+      console.warn("[refreshReadinessCache] incident_not_found", { orgId, incidentId });
+      return null;
+    }
+    const incident = { id: incSnap.id, ...incSnap.data() };
+
+    // Subcollections live on legacy top-level path.
+    const legacyIncRef = db.collection("incidents").doc(incidentId);
+    const [jobsSnap, evSnap, notesSnap] = await Promise.all([
+      legacyIncRef.collection("jobs").get(),
+      legacyIncRef.collection("evidence_locker").get(),
+      legacyIncRef.collection("notes").doc("main").get(),
+    ]);
+    const jobs = jobsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const evidence = evSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const notes = notesSnap.exists ? (notesSnap.data() || null) : null;
+
+    const readiness = computeAcceptanceReadiness({ incident, evidence, jobs, notes });
+
+    const cachePayload = {
+      ...readiness,
+      cachedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    await incRef.set({ readinessCache: cachePayload }, { merge: true });
+    return readiness;
+  } catch (e) {
+    console.warn("[refreshReadinessCache] failed", {
+      orgId, incidentId, error: String(e?.message || e),
+    });
+    return null;
+  }
+}
+
 module.exports = {
   computeAcceptanceReadiness,
+  refreshReadinessCache,
   slugRequirement,  // exported so tests can verify shared logic
 };

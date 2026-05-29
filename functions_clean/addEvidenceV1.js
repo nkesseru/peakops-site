@@ -10,6 +10,7 @@ const {
   ROLES_FIELD_WORK,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+const { refreshReadinessCache } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -415,6 +416,12 @@ const orgId = mustStr(body.orgId, "orgId");
       actor: "field",
       actorUid: actorUid || null,
     });
+
+    // PEAKOPS_READINESS_FRESHNESS_V1 (PR 108) — refresh readinessCache
+    // so Records / Summary reflect the new evidence without waiting for
+    // a Summary view. Awaited so the cache lands before we return; the
+    // helper never throws, so cache failure cannot fail this mutation.
+    await refreshReadinessCache({ orgId, incidentId });
 
     // Queue HEIC conversion job for deterministic processing by runConversionJobsV1.
     if (heicCandidate && storagePath) {

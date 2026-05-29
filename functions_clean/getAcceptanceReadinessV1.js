@@ -79,15 +79,21 @@ exports.getAcceptanceReadinessV1 = onRequest({ cors: true }, async (req, res) =>
 
     // Subcollections live on the legacy top-level path. (Same path
     // alignment as exportIncidentPacketV1 — see comment block there.)
+    // PR 108 — also load notes/main so the field-notes evaluator can
+    // observe notes written by saveIncidentNotesV1 (which writes to the
+    // subdoc, not to incident.incidentNotes). Mirrored in
+    // refreshReadinessCache so both writers compute the same cache.
     const legacyIncRef = db.collection("incidents").doc(incidentId);
-    const [jobsSnap, evSnap] = await Promise.all([
+    const [jobsSnap, evSnap, notesSnap] = await Promise.all([
       legacyIncRef.collection("jobs").get(),
       legacyIncRef.collection("evidence_locker").get(),
+      legacyIncRef.collection("notes").doc("main").get(),
     ]);
     const jobs = jobsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     const evidence = evSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const notes = notesSnap.exists ? (notesSnap.data() || null) : null;
 
-    const readiness = computeAcceptanceReadiness({ incident, evidence, jobs });
+    const readiness = computeAcceptanceReadiness({ incident, evidence, jobs, notes });
 
     // Persist a cache copy on the incident doc for fast Records-page
     // reads. cachedAt is the moment of THIS compute; readers can
