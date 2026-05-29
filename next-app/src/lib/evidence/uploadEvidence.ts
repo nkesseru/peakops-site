@@ -1,6 +1,7 @@
 "use client";
 
 import { isHeicEvidence } from "./isHeicEvidence";
+import { authedFetch } from "@/lib/apiClient";
 
 export type StartFieldSessionResp = {
   ok: boolean;
@@ -84,8 +85,15 @@ function isLocalDev(): boolean {
   }
 }
 
+// PEAKOPS_UPLOAD_AUTH_PROPAGATION_V1 (PR 113)
+// authedFetch attaches the Firebase ID token as `Authorization: Bearer`.
+// Switching from bare fetch fixes the 401 on createEvidenceUploadUrlV1
+// (which strictly requires a Bearer-derived uid for assertActorRole)
+// and brings startFieldSessionV1 + addEvidenceV1 callers in this file
+// onto the same audit-grade Bearer auth path as AddEvidenceClient's
+// direct authedFetch calls.
 async function postJson<T>(url: string, body: any): Promise<T> {
-  const res = await fetch(url, {
+  const res = await authedFetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
