@@ -462,10 +462,23 @@ useEffect(() => {
 
   function addPickedFiles(fileList: FileList | null | undefined) {
     if (!fileList || !fileList.length) return;
+    // PEAKOPS_FILE_PICKER_SLOT_INHERIT_V1 (PR 114)
+    // File-picker items now inherit the active capture slot so gallery
+    // uploads satisfy required-proof slots the same way camera captures
+    // do. Pre-PR-114 picker items landed without a slot, so the
+    // readiness evaluator (which keys on evidence.requirementKey) could
+    // never see them as satisfying a required slot. Resolution order:
+    //   1. currentSlot — explicit, set by selectSlotAndOpen for the
+    //      camera path; rarely lingers, but prefer it if present
+    //   2. nextTargetSlot — derived from the unsatisfied-slot checklist
+    //      (matches the adaptive button label "Capture: <slot>")
+    //   3. undefined — no unsatisfied slots, picker items stay
+    //      unassigned (same as pre-PR-114 behavior for that case)
+    const slot = currentSlot || nextTargetSlot || undefined;
     const next: Item[] = [];
     for (const f of Array.from(fileList)) {
       const url = URL.createObjectURL(f);
-      next.push({ id: makeId(), file: f, url });
+      next.push({ id: makeId(), file: f, url, slot });
     }
     setItems((prev) => [...next, ...prev]);
   }
