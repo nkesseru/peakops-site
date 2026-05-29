@@ -118,22 +118,36 @@ function mapDoc(d, fallbackOrgId) {
   }
 
   // PEAKOPS_LIST_INCIDENTS_READINESS_CACHE_V1 (PR 105)
+  // PEAKOPS_LIST_INCIDENTS_READINESS_EXPLANATIONS_V1 (PR 107a)
+  //
   // Pass through the cached acceptance-readiness state so /records
   // cards can render a small pill without recomputing client-side.
   //
   // The cache (incident.readinessCache) is written by:
   //   - getAcceptanceReadinessV1 (PR 103a) on every call
   //   - exportIncidentPacketV1 (PR 103a) on every packet export
+  //   - createIncidentV1 (PR 106) on creation, so brand-new records
+  //     get a pill immediately
   // Either function writes the full readiness projection to whichever
   // incident path it resolves (org-scoped preferred, legacy fallback).
   //
-  // What we project here is intentionally minimal — only `state`, the
-  // single field the Records pill consumes (PR 103b). The full cache
-  // (checks[], summary, generatedAt, etc.) stays in Firestore for
-  // Summary's own getAcceptanceReadinessV1 fetch. This keeps the list
-  // payload tight (~30 bytes per record vs ~500–2000 for the full
-  // cache). Future surfaces that need more fields can opt in here
-  // by adding to the projection — no schema break.
+  // PR 105 projected only `state`. PR 107a extends the projection to
+  // include `missingCount` + `missingItemsPreview` (first 3 missing
+  // required-tier labels) so the Records card can render a one-line
+  // explanation under the pill — operator sees WHAT is missing without
+  // clicking through to Summary. Pure projection at list time; the
+  // cache schema is unchanged, no compute helper changes needed.
+  //
+  // What's projected (intentionally minimal):
+  //   {
+  //     state,
+  //     missingCount?,            // only when state === "requirements_missing"
+  //     missingItemsPreview?,     // ditto; up to 3 labels in declared order
+  //   }
+  // The full cache (full checks[], summary counters, generatedAt, etc.)
+  // stays in Firestore for Summary's own getAcceptanceReadinessV1 fetch.
+  // This keeps the list payload tight (~150 bytes per record vs
+  // ~500–2000 for the full cache).
   //
   // State enum is validated strictly. Unknown values (forward-compat
   // for future check states, or a malformed write) are silently
@@ -149,7 +163,35 @@ function mapDoc(d, fallbackOrgId) {
       rawState === "requirements_missing" ||
       rawState === "not_available"
     ) {
-      out.readinessCache = { state: rawState };
+      const cacheOut = { state: rawState };
+
+      // PR 107a — Project missing-required-check explanations when
+      // the state is requirements_missing AND the cache carries a
+      // checks[] array. Filter to required-tier rows with
+      // satisfied === false (skip unknowns per PR 104 — they don't
+      // block state and aren't operator-actionable). Take the first
+      // N labels in declared snapshot order (the order
+      // computeAcceptanceReadiness emits them).
+      if (rawState === "requirements_missing" && Array.isArray(rc.checks)) {
+        const PREVIEW_CAP = 3;          // approved decision §10.2
+        const LABEL_MAX = 80;           // approved decision §10.3
+        const missingRequired = rc.checks.filter(
+          (c) => c && c.tier === "required" && c.satisfied === false,
+        );
+        const missingItemsPreview = missingRequired
+          .slice(0, PREVIEW_CAP)
+          .map((c) => String(c.label || "").trim().slice(0, LABEL_MAX))
+          .filter((s) => s.length > 0);
+        // Defensive: only emit preview when we actually have labels.
+        // (Cache vintages without populated `label` fields fall through
+        // to "pill only, no subline" gracefully.)
+        if (missingItemsPreview.length > 0) {
+          cacheOut.missingCount = missingRequired.length;
+          cacheOut.missingItemsPreview = missingItemsPreview;
+        }
+      }
+
+      out.readinessCache = cacheOut;
     }
   }
 
