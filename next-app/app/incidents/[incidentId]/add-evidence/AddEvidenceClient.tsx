@@ -76,6 +76,12 @@ useEffect(() => {
   // closeCamera() (Done). File-picker path never touches this state.
   const [currentSlot, setCurrentSlot] = useState<ProofSlot | null>(null);
   const [jobs, setJobs] = useState<JobLite[]>([]);
+  // PEAKOPS_NO_JOB_PROOF_V1 (PR 111)
+  // True ONLY after listJobsV1 successfully returns. Distinguishes
+  // "jobs loaded, none exist → allow record-level proof capture" from
+  // "still loading / load failed → stay locked, do not assume no jobs."
+  // Used by the Upload gate + the "Binding to an active job…" banner.
+  const [jobsLoaded, setJobsLoaded] = useState(false);
   // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
   // Pre-emptive incident.status fetch so we render the sealed-record
   // panel from the first paint when the record is closed, instead of
@@ -159,6 +165,10 @@ useEffect(() => {
 
         if (cancelled) return;
         setJobs(docs);
+        // PR 111 — only flip jobsLoaded on the success path so a
+        // listJobsV1 failure preserves today's pessimistic gate
+        // behavior (Upload stays disabled, banner stays).
+        setJobsLoaded(true);
 
         const normalized = docs
           .map((j: any) => ({
@@ -471,7 +481,12 @@ useEffect(() => {
   }
 
   async function uploadOne(it: Item) {
-    if (!selectedJobId) throw new Error("No job selected. Return to incident page and pick My job first.");
+    // PR 111 — Job binding is only required when the record actually
+    // has jobs. Records with no jobs allow record-level proof (the
+    // backend already accepts evidence docs with empty jobId — readers
+    // render those as "Unassigned"). Empty `selectedJobId` is passed
+    // through to the backend, which normalizes it as a no-op.
+    if (jobs.length > 0 && !selectedJobId) throw new Error("Multiple jobs exist — pick one before uploading.");
     if (!sessionId) throw new Error("Session not ready yet. Please wait for 'Starting session…' to finish.");
     await uploadEvidence({
       functionsBase: fnProxyBase,
@@ -667,7 +682,11 @@ useEffect(() => {
             ) : null}
             <span>Audit-safe capture · auto-tagged · time-locked</span>
           </div>
-          {!selectedJobId && mounted ? (
+          {/* PR 111 — Banner renders only while we're genuinely waiting:
+              session in flight, OR jobs still loading, OR jobs loaded
+              with at least one to bind. Records that loaded with zero
+              jobs render no banner (record-level proof is valid). */}
+          {!selectedJobId && mounted && (!jobsLoaded || jobs.length > 0) ? (
             <div className="text-[11px] text-amber-200/80">
               {sessionBusy ? "Starting session…" : "Binding to an active job…"}
             </div>
@@ -964,8 +983,10 @@ useEffect(() => {
               <button
                 className="mt-3 w-full py-4 rounded-xl bg-green-600/90 border border-green-300/20 text-white font-semibold hover:bg-green-600 active:translate-y-[1px] transition"
                 onClick={uploadAll}
-                disabled={busy || sessionBusy || !sessionId || !items.length || !selectedJobId}
-                title={!selectedJobId ? "Return to the record and pick a work package first" : (items.length ? "Upload all queued proof items" : "Add proof items first")}
+                // PR 111 — Job binding required only when the record has jobs;
+                // record-level proof is allowed when jobs.length === 0.
+                disabled={busy || sessionBusy || !sessionId || !items.length || (jobs.length > 0 && !selectedJobId)}
+                title={(jobs.length > 0 && !selectedJobId) ? "Return to the record and pick a work package first" : (items.length ? "Upload all queued proof items" : "Add proof items first")}
               >
                 {busy ? (status || "Working…") : "Upload & secure proof"}
               </button>
