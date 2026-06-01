@@ -82,6 +82,13 @@ safeExport("convertHeicOnFinalize", "./convertHeicOnFinalize");
 
 // --- Debug / org tools ---
 safeExport("listOrgsV1", "./listOrgsV1");
+// PEAKOPS_TEMPLATES_EDITOR_V1 (PR 119a)
+// Admin-only template authoring callables. Pair powers the
+// /admin/templates editor UI (PR 119b). saveOrgTemplateV1 bumps
+// version on each save and appends to admin_audit; existing incidents
+// keep their frozen requirements snapshot (PR 104/118 audit contract).
+safeExport("listOrgTemplatesV1", "./listOrgTemplatesV1");
+safeExport("saveOrgTemplateV1", "./saveOrgTemplateV1");
 // PEAKOPS_LIST_ORG_MEMBERS_V1 (2026-05-18, PR 36)
 // Read-only member directory endpoint. Returns minimal whitelisted
 // identity fields to power the Summary page's actor resolver.
