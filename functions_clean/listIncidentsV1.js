@@ -35,8 +35,19 @@ function tsIso(v) {
 // displayIncidentTitle's frontend chain in Firestore so an empty
 // title field doesn't cause every row to display "Untitled
 // incident": title → name → displayName → summary → description.
-// Counts come from packetMeta when cached (no N+1 subcollection
-// reads per row).
+//
+// PR 116 — evidenceCount is now a LIVE Firestore aggregation per row
+// (Promise.all over the merged list), NOT a packetMeta projection.
+// The original "no N+1" stance was correct for full-doc subcollection
+// reads, but it made Records and Summary disagree on draft records
+// (Records showed "— evidence", Summary showed live count). Firestore
+// count() aggregation is a single integer round-trip per row, billed
+// as 1 read per 1000 docs counted — cheap, parallelizable, and the
+// only way to make every operational surface (Records, Summary,
+// IncidentClient, getJobV1, workflowV1) agree on one evidence count.
+// Task-state counts (taskCount, approvedTaskCount, completedTaskCount)
+// still come from packetMeta; revisit if a similar divergence is
+// reported.
 function mapDoc(d, fallbackOrgId) {
   const data = d.data() || {};
   const out = {
@@ -91,16 +102,19 @@ function mapDoc(d, fallbackOrgId) {
   // rendering an eyebrow for keys outside the curated set.
   const archetype = String(data.archetype || "").trim();
   if (archetype) out.archetype = archetype;
-  // PacketMeta-cached counts. No N+1 — if the supervisor hasn't yet
-  // generated a report, these are simply absent and the frontend
-  // hides them.
+  // PEAKOPS_LIST_INCIDENTS_LIVE_EVIDENCE_COUNT_V1 (PR 116)
+  // PacketMeta-cached counts for task/approval state. evidenceCount
+  // was removed from this projection in PR 116 — Records cards
+  // diverged from Summary on pre-packet records because packetMeta
+  // is only written at packet-generation time. The live count via
+  // Firestore aggregation now backs Records (see post-mapping block
+  // below). Task-state counts stay here for now; revisit if a
+  // similar divergence is reported.
   const pm = data.packetMeta || null;
   if (pm && typeof pm === "object") {
-    const evCount = Number(pm.evidenceCount);
     const taskCount = Number(pm.jobCount);
     const approvedCount = Number(pm.approvedJobCount);
     const completedCount = Number(pm.completedJobCount);
-    if (Number.isFinite(evCount) && evCount >= 0) out.evidenceCount = evCount;
     if (Number.isFinite(taskCount) && taskCount >= 0) out.taskCount = taskCount;
     if (Number.isFinite(approvedCount) && approvedCount >= 0) out.approvedTaskCount = approvedCount;
     if (Number.isFinite(completedCount) && completedCount >= 0) out.completedTaskCount = completedCount;
@@ -431,6 +445,47 @@ exports.listIncidentsV1 = onRequest({ cors: true, invoker: "public" }, async (re
       return loadTaskTitles(db, entry.out.id);
     }),
   );
+
+  // PEAKOPS_LIST_INCIDENTS_LIVE_EVIDENCE_COUNT_V1 (PR 116)
+  // Live evidence count via Firestore aggregation, parallelized over
+  // the sliced rows. Replaces the prior packetMeta.evidenceCount
+  // projection which was absent on pre-packet records (Records cards
+  // rendered "— evidence" while Summary correctly rendered the live
+  // count). evidence_locker lives on the legacy top-level path
+  // (incidents/{id}/evidence_locker) per addEvidenceV1, getJobV1,
+  // exportIncidentPacketV1, et al. — same path here.
+  //
+  // Cost: 1 aggregation read per row; billed as 1 read per 1000
+  // docs counted. For limit=50 that's ~50 extra reads per /records
+  // load. Negligible at current scale.
+  //
+  // Graceful degradation: any per-row aggregation failure logs a
+  // warning, omits the field, and RecordsClient.tsx falls back to
+  // "— evidence" (line 394). No broken cards on Firestore errors.
+  const evidenceCountResults = await Promise.all(
+    sliced.map(async (entry) => {
+      try {
+        const snap = await db
+          .collection("incidents")
+          .doc(entry.out.id)
+          .collection("evidence_locker")
+          .count()
+          .get();
+        return { id: entry.out.id, count: snap.data().count };
+      } catch (e) {
+        console.warn("[listIncidentsV1] evidence_locker count failed", {
+          incidentId: entry.out.id,
+          error: String(e?.message || e),
+        });
+        return { id: entry.out.id, count: null };
+      }
+    }),
+  );
+  const evCountById = new Map(evidenceCountResults.map((r) => [r.id, r.count]));
+  for (const entry of sliced) {
+    const c = evCountById.get(entry.out.id);
+    if (typeof c === "number" && c >= 0) entry.out.evidenceCount = c;
+  }
 
   const incidents = sliced.map((entry, i) => {
     const taskTitles = taskTitleResults[i] || { activeTaskTitle: "", firstTaskTitle: "" };
