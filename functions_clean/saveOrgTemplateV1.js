@@ -177,40 +177,105 @@ exports.saveOrgTemplateV1 = onRequest({ cors: true }, async (req, res) => {
       });
     }
 
-    // customerSlug: either empty (org-wide template) or a valid slug.
-    // We accept body.customerLabel (human-readable) and derive the
-    // slug server-side via toCustomerSlug so the doc id always matches
-    // createIncidentV1's lookup convention.
+    // PEAKOPS_TEMPLATE_IDENTITY_V1 (PR 125a)
+    // Two save paths, distinguished by whether body.templateKey is
+    // present:
+    //
+    //   1. Edit path (explicit templateKey in body):
+    //      Trust the explicit key. Anchor save to that exact doc.
+    //      Skip derivation entirely. 404 if the doc doesn't exist —
+    //      prevents accidental create-via-edit when the target was
+    //      deleted between load and save.
+    //      Preserve the existing doc's customerSlug / customerLabel
+    //      when the body omits them, so the editor can't accidentally
+    //      null out identity fields. This is what fixes the PR #125
+    //      identity-drift bug: editor sends templateKey from the URL;
+    //      server uses it directly; no re-derivation possible.
+    //
+    //   2. Create path (no templateKey in body):
+    //      Original behavior — derive templateKey from archetype +
+    //      customerLabel (via toCustomerSlug) or accept explicit
+    //      customerSlug. Unchanged.
+    const explicitTemplateKey = trimStr(body.templateKey);
     const customerLabel = trimStr(body.customerLabel);
     const customerSlugRaw = trimStr(body.customerSlug);
+
+    let templateKey;
     let customerSlug = "";
-    if (customerLabel) {
-      // Prefer label-derived slug — keeps consistency with what
-      // createIncidentV1 sees (it also derives via toCustomerSlug).
-      customerSlug = toCustomerSlug(customerLabel);
-      if (!customerSlug) {
-        return j(res, 400, {
+    let priorSnap;
+    let priorData = null;
+    const db = getFirestore();
+
+    if (explicitTemplateKey) {
+      // Edit path — anchor on the explicit key.
+      templateKey = explicitTemplateKey;
+      const docRef = db.doc(`orgs/${orgId}/templates/${templateKey}`);
+      priorSnap = await docRef.get();
+      if (!priorSnap.exists) {
+        return j(res, 404, {
           ok: false,
-          error: "invalid_customer_label",
-          detail: "customerLabel produced an empty slug after sanitization",
+          error: "template_not_found",
+          detail: "explicit templateKey does not exist; use the create flow (omit templateKey) to create a new template",
+          orgId,
+          templateKey,
         });
       }
-    } else if (customerSlugRaw) {
-      // Caller provided an explicit slug without a label — accept it
-      // verbatim if shape-valid. This path supports raw API usage.
-      if (!/^[a-z0-9-]{1,80}$/.test(customerSlugRaw)) {
+      priorData = priorSnap.data() || {};
+
+      // archetype on the doc must match the body's archetype — this
+      // catches a mismatched URL routing to the wrong editor surface.
+      const priorArchetype = String(priorData.archetype || "").trim().toLowerCase();
+      if (priorArchetype && priorArchetype !== archetype) {
         return j(res, 400, {
           ok: false,
-          error: "invalid_customer_slug",
-          detail: "customerSlug must match ^[a-z0-9-]{1,80}$",
+          error: "archetype_mismatch",
+          detail: `body.archetype (${archetype}) does not match the stored template archetype (${priorArchetype}) for ${templateKey}`,
         });
       }
-      customerSlug = customerSlugRaw;
+
+      // Identity preservation: if the body omits customerLabel /
+      // customerSlug, inherit from the existing doc. This means an
+      // editor that sends customerLabel="" (e.g., disabled input,
+      // legacy doc without a label) cannot accidentally drop the
+      // identity fields on save.
+      customerSlug = customerSlugRaw || String(priorData.customerSlug || "").trim();
+    } else {
+      // Create path — derive templateKey from archetype + customerLabel
+      // (via toCustomerSlug) or accept explicit customerSlug.
+      // customerSlug: either empty (org-wide template) or a valid slug.
+      if (customerLabel) {
+        // Prefer label-derived slug — keeps consistency with what
+        // createIncidentV1 sees (it also derives via toCustomerSlug).
+        customerSlug = toCustomerSlug(customerLabel);
+        if (!customerSlug) {
+          return j(res, 400, {
+            ok: false,
+            error: "invalid_customer_label",
+            detail: "customerLabel produced an empty slug after sanitization",
+          });
+        }
+      } else if (customerSlugRaw) {
+        // Caller provided an explicit slug without a label — accept it
+        // verbatim if shape-valid. This path supports raw API usage.
+        if (!/^[a-z0-9-]{1,80}$/.test(customerSlugRaw)) {
+          return j(res, 400, {
+            ok: false,
+            error: "invalid_customer_slug",
+            detail: "customerSlug must match ^[a-z0-9-]{1,80}$",
+          });
+        }
+        customerSlug = customerSlugRaw;
+      }
+
+      // Compose templateKey identically to createIncidentV1's lookup
+      // (line 354).
+      templateKey = customerSlug ? `${archetype}__${customerSlug}` : archetype;
     }
 
-    // Compose templateKey identically to createIncidentV1's lookup
-    // (line 354).
-    const templateKey = customerSlug ? `${archetype}__${customerSlug}` : archetype;
+    // Resolved customerLabel: edit path inherits when body omits, create
+    // path uses body value (may be empty for org-wide templates).
+    const resolvedCustomerLabel = customerLabel
+      || (priorData ? String(priorData.customerLabel || "").trim() : "");
 
     // Field sanitization (same caps as PR 107a / PR 118 truncation
     // limits — keeps downstream missing-items previews and PDF
@@ -241,10 +306,13 @@ exports.saveOrgTemplateV1 = onRequest({ cors: true }, async (req, res) => {
     const changeNote = sanitizeProse(body.changeNote, 500);
 
     // ── version + write ─────────────────────────────────────────
-    const db = getFirestore();
     const docRef = db.doc(`orgs/${orgId}/templates/${templateKey}`);
-    const priorSnap = await docRef.get();
-    const priorData = priorSnap.exists ? (priorSnap.data() || {}) : null;
+    // Edit path already fetched priorSnap above. Create path fetches
+    // here — the targeted templateKey may or may not exist.
+    if (!priorSnap) {
+      priorSnap = await docRef.get();
+      priorData = priorSnap.exists ? (priorSnap.data() || {}) : null;
+    }
     const priorVersion = priorData && Number.isFinite(Number(priorData.version)) && Number(priorData.version) > 0
       ? Number(priorData.version)
       : 0;
@@ -253,7 +321,7 @@ exports.saveOrgTemplateV1 = onRequest({ cors: true }, async (req, res) => {
     const payload = {
       archetype,
       customerSlug,
-      customerLabel,
+      customerLabel: resolvedCustomerLabel,
       requiredProof,
       // PR 120a — parallel array; same length as requiredProof.
       // Persisted only when at least one entry carries non-empty
@@ -284,9 +352,13 @@ exports.saveOrgTemplateV1 = onRequest({ cors: true }, async (req, res) => {
       templateKey,
       archetype,
       customerSlug,
-      customerLabel,
+      customerLabel: resolvedCustomerLabel,
       version: nextVersion,
       changeNote,
+      // PR 125a — record whether this save used the edit path
+      // (explicit templateKey) so audit trail distinguishes
+      // identity-anchored saves from derive-path saves.
+      explicitTemplateKey: explicitTemplateKey ? true : false,
     });
 
     console.log("[saveOrgTemplateV1] template_saved", {
