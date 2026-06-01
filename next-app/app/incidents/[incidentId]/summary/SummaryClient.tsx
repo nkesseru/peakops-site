@@ -17,6 +17,10 @@ import {
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
 import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
+// PR 117 — shared slug helper, mirrors functions_clean/_readiness.js's
+// slugRequirement. Used to match evidence.requirementKey to declared
+// required-proof labels for the slot-grouped dossier render.
+import { slugRequirement } from "@/lib/evidence/slugRequirement";
 import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
 import UpgradePrompt from "@/components/UpgradePrompt";
 import RecordNav from "@/components/RecordNav";
@@ -684,6 +688,42 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
     }
     return map;
   }, [evidence]);
+
+  // PEAKOPS_PROOF_SLOT_DOSSIER_V1 (PR 117)
+  // Group evidence by required-proof slot so the operator sees the
+  // same organization the customer receives in the export packet.
+  // Required slots come from incident.requirements.requiredProof
+  // (frozen at incident creation per PR 89a). slugRequirement is
+  // byte-identical to the server-side helper in _readiness.js —
+  // keys match what readinessCache.checks emits.
+  //
+  // "Additional proof" = evidence with no requirementKey OR with a
+  // requirementKey that doesn't map to any current required slot
+  // (e.g., stale snapshot, captured before PR 94b). Surfaced as a
+  // separate section so the operator can see EVERYTHING on the
+  // record without it pretending to satisfy a slot it doesn't.
+  const proofDossier = useMemo(() => {
+    const reqList = (incident as any)?.requirements?.requiredProof;
+    const requiredLabels: string[] = Array.isArray(reqList)
+      ? (reqList as unknown[])
+          .map((s) => String(s || "").trim())
+          .filter((s) => s.length > 0)
+      : [];
+    type Group = { key: string; label: string; satisfied: boolean; attached: EvidenceDoc[] };
+    const groups: Group[] = requiredLabels.map((label) => {
+      const key = slugRequirement(label);
+      const attached = (evidence || []).filter(
+        (ev) => String((ev as any)?.requirementKey || "").trim() === key,
+      );
+      return { key, label, satisfied: attached.length > 0, attached };
+    });
+    const requiredKeys = new Set(groups.map((g) => g.key));
+    const additional = (evidence || []).filter((ev) => {
+      const k = String((ev as any)?.requirementKey || "").trim();
+      return !k || !requiredKeys.has(k);
+    });
+    return { groups, additional };
+  }, [incident, evidence]);
   const unassignedEvidenceCount = useMemo(
     () => (evidence || []).filter((ev) => !getEvidenceJobId(ev)).length,
     [evidence]
@@ -2056,17 +2096,62 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             })()}
           </div>
 
-          {Object.keys(evidenceByJob).length === 0 ? (
+          {/* PEAKOPS_PROOF_SLOT_DOSSIER_V1 (PR 117) — proof grouped by
+              required-proof slot (mirrors the export packet's
+              organization). Each required slot renders a ✓/✗ header;
+              satisfied slots and the trailing "Additional proof"
+              section expand to the full thumbnail strip + integrity
+              strip + per-evidence integrity disclosure (preserved
+              from the prior by-job render). Empty required slots
+              render a compact one-line ✗ row. The prior by-job
+              grouping lives in git history if a future PR needs to
+              compare; jobs are optional per architecture (PR 111/112). */}
+          {proofDossier.groups.length === 0 && proofDossier.additional.length === 0 ? (
             <div className="text-[12px] text-gray-500 italic">
               No evidence captured yet — field photos and inspections will appear here as the operational record.
             </div>
           ) : (
             <div className="space-y-5">
-              {Object.entries(evidenceByJob).map(([jobId, list]) => {
-                const job = jobs.find((j) => String(j?.id || j?.jobId || "") === jobId);
-                const label = job ? String(job.title || jobId) : (jobId === "unassigned" ? "Unassigned" : jobId);
-                const jobStatus = job ? String(job.status || "").toLowerCase() : "";
-                return (
+              {(() => {
+                type DossierItem = { key: string; label: string; isEmpty: boolean; list: EvidenceDoc[] };
+                const items: DossierItem[] = proofDossier.groups.map((slot) => ({
+                  key: slot.key,
+                  label: (slot.satisfied ? "✓ " : "✗ ") + slot.label,
+                  isEmpty: !slot.satisfied,
+                  list: slot.attached,
+                }));
+                if (proofDossier.additional.length > 0) {
+                  items.push({
+                    key: "__additional__",
+                    label: "Additional proof",
+                    isEmpty: false,
+                    list: proofDossier.additional,
+                  });
+                }
+                return items.map((item) => {
+                  // Compact empty state for unsatisfied required slots
+                  // — no thumbnail strip, no integrity rows. The gap is
+                  // the signal; keeps the page scannable on records
+                  // with many incomplete slots.
+                  if (item.isEmpty) {
+                    return (
+                      <div key={item.key} className="flex items-baseline justify-between gap-3 py-0.5">
+                        <div className="text-[13px] font-medium text-gray-400 truncate">{item.label}</div>
+                        <div className="text-[11px] text-gray-500 shrink-0">No proof captured</div>
+                      </div>
+                    );
+                  }
+                  // Satisfied required slot OR Additional Proof — both
+                  // reuse the rich body below (thumbnail strip +
+                  // integrity strip + per-evidence integrity
+                  // disclosure). `jobId` / `label` / `jobStatus` /
+                  // `list` keep their prior names so the existing body
+                  // JSX (untouched in PR 117) reads naturally.
+                  const jobId = item.key;
+                  const label = item.label;
+                  const list = item.list;
+                  const jobStatus = "";
+                  return (
                   <div key={jobId} className="space-y-2.5">
                     <div className="flex items-baseline justify-between gap-3">
                       <div className="text-[13px] font-medium text-gray-100 truncate">{label}</div>
@@ -2356,7 +2441,8 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                     </details>
                   </div>
                 );
-              })}
+                });
+              })()}
             </div>
           )}
 

@@ -14,6 +14,10 @@ import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
 // incident.requirements (PR 89a backend) when present, falls back
 // to the archetype catalog for legacy records.
 import { effectiveRequirements } from "@/lib/incidents/requirementsSnapshot";
+// PR 117 — shared slug helper, mirrored from functions_clean/_readiness.js.
+// Was previously a local copy in this file; extracted so the Summary
+// proof-slot dossier can use the same algorithm.
+import { slugRequirement } from "@/lib/evidence/slugRequirement";
 
 // PR 94b — Guided proof-slot assignment. A ProofSlot binds a queued
 // photo to one specific entry in the incident's snapshotted
@@ -31,20 +35,6 @@ type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string;
 
 function makeId() {
   return "ev_" + Date.now() + "_" + Math.random().toString(16).slice(2);
-}
-
-// PR 94b — Deterministic label → key slug. Backend (PR 94a) validates
-// requirementKey against ^[a-z0-9-]{1,120}$ and silently drops
-// anything else; if this returns "", callers must NOT send slot
-// fields (per approved plan, point 8.6).
-function slugRequirement(label: string): string {
-  return String(label || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 120);
 }
 
 export default function AddEvidenceClient({ incidentId }: { incidentId: string }) {
