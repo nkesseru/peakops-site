@@ -52,6 +52,11 @@ function tickFor(s: ReadinessSatisfaction): { glyph: string; toneClass: string; 
 
 function CheckRow({ c }: { c: ReadinessCheck }) {
   const t = tickFor(c.satisfied);
+  // PR 120b — customer-authored rationale rendered as a "Reason:"
+  // line below the check's detail. Persisted on the snapshot per
+  // PR 118 (template_check) + PR 120a (required_proof). When absent,
+  // the row renders today's visual unchanged.
+  const reason = String(c.description || "").trim();
   return (
     <li className="flex items-start gap-3 text-[13px] leading-relaxed py-0.5">
       <span aria-hidden="true" className={`mt-[2px] inline-block w-3 text-center font-semibold ${t.toneClass}`}>
@@ -61,6 +66,12 @@ function CheckRow({ c }: { c: ReadinessCheck }) {
         <div className="text-gray-100">{c.label}</div>
         {c.detail ? (
           <div className="text-[11px] text-gray-400 mt-0.5">{c.detail}</div>
+        ) : null}
+        {reason ? (
+          <div className="text-[11px] text-gray-400 mt-0.5">
+            <span className="text-gray-500">Reason: </span>
+            {reason}
+          </div>
         ) : null}
       </div>
     </li>

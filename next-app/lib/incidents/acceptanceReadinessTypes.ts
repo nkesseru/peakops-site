@@ -43,6 +43,12 @@ export type ReadinessCheck = {
   tier: ReadinessTier;
   satisfied: ReadinessSatisfaction;
   detail?: string;
+  // PR 120b — customer-authored rationale rendered as a "Reason:" line
+  // under the check row. Persisted on the incident snapshot per PR 120a
+  // (required_proof) and PR 118 (template_check). Optional — legacy
+  // records and PR-118-only templates land without a description and
+  // render today's visual unchanged.
+  description?: string;
 };
 
 export type AcceptanceReadiness = {

@@ -18,6 +18,11 @@ import { effectiveRequirements } from "@/lib/incidents/requirementsSnapshot";
 // Was previously a local copy in this file; extracted so the Summary
 // proof-slot dossier can use the same algorithm.
 import { slugRequirement } from "@/lib/evidence/slugRequirement";
+// PR 120b — provenance block ("Requirements source · <Customer> · <Archetype> · v<N>")
+// rendered above the required-proof checklist so operators see where
+// the requirements came from before they start capturing. Subsumes the
+// PR 92 audit footer that previously sat below the checklist.
+import { ProvenanceBlock } from "@/components/incident/ProvenanceBlock";
 
 // PR 94b — Guided proof-slot assignment. A ProofSlot binds a queued
 // photo to one specific entry in the incident's snapshotted
@@ -696,6 +701,24 @@ useEffect(() => {
           ) : null}
         </header>
 
+        {/* PEAKOPS_TEMPLATE_PROVENANCE_V1 (PR 120b) — provenance
+            block above the required-proof checklist. Reads
+            incident.requirements snapshot (PR 89a/120a) and renders
+            "Requirements source · <Customer> · <Archetype> · v<N>"
+            in compact form. Hides on archetype fallback / no-template
+            records. Subsumes the PR 92 audit footer that previously
+            sat below the checklist. */}
+        <ProvenanceBlock
+          variant="compact"
+          provenance={{
+            source: (incidentRequirements as any)?.source,
+            templateKey: (incidentRequirements as any)?.templateKey,
+            templateVersion: (incidentRequirements as any)?.templateVersion,
+            customerLabel: (incidentRequirements as any)?.customerLabel,
+            archetype: incidentArchetype,
+          }}
+        />
+
         {/* PR 88 + PR 90 — Required-proof panel.
             Data source resolved by effectiveRequirements():
               1. incident.requirements snapshot (PR 89a, frozen at
@@ -754,14 +777,20 @@ useEffect(() => {
                   {captured} / {total} captured
                 </div>
               </div>
-              <ul className="mt-3 space-y-1 text-[12px]">
-                {requirements.requiredProof.map((item) => {
+              <ul className="mt-3 space-y-2 text-[12px]">
+                {requirements.requiredProof.map((item, idx) => {
                   // PR 94b — Per-slot satisfaction. Captured rows
                   // brighten to solid emerald; pending rows keep the
                   // dim treatment. Only explicit slot assignment
                   // marks a row captured (queue-local).
                   const key = slugRequirement(item);
                   const itemCaptured = key ? !!requirementCaptureMap[key] : false;
+                  // PR 120b — Per-required-proof rationale from the
+                  // frozen snapshot. Parallel array indexed by
+                  // position; empty entries render no "Reason:" line.
+                  const reason = String(
+                    ((incidentRequirements as any)?.requiredProofDescriptions || [])[idx] || ""
+                  ).trim();
                   return (
                     <li key={item} className="flex items-start gap-2">
                       <span
@@ -773,56 +802,28 @@ useEffect(() => {
                       >
                         ✓
                       </span>
-                      <span className={itemCaptured ? "text-emerald-100" : "text-gray-200"}>
-                        {item}
-                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className={itemCaptured ? "text-emerald-100" : "text-gray-200"}>
+                          {item}
+                        </div>
+                        {reason ? (
+                          <div className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
+                            <span className="text-gray-600">Reason: </span>
+                            {reason}
+                          </div>
+                        ) : null}
+                      </div>
                     </li>
                   );
                 })}
               </ul>
-              {/* PR 92 — quiet audit footer surfacing where the
-                  requirements came from. Renders only when we have
-                  a snapshotSource (i.e., panel is being rendered
-                  from real data — either snapshot or archetype
-                  fallback). Format:
-                    customer_template → "Customer template · <name> · v<N>"
-                    org_template      → "Org template · v<N>"
-                    archetype         → "Archetype defaults"
-                  Customer name is read from incident.customer when
-                  available; if absent the label falls back to the
-                  templateKey slug fragment. */}
-              {(() => {
-                const src = requirements.snapshotSource;
-                if (!src) return null;
-                let label;
-                if (src === "customer_template") {
-                  const customerLabel = incidentCustomer || (
-                    requirements.templateKey
-                      ? requirements.templateKey.split("__")[1] || ""
-                      : ""
-                  );
-                  const parts = ["Customer template"];
-                  if (customerLabel) parts.push(customerLabel);
-                  if (typeof requirements.templateVersion === "number") {
-                    parts.push(`v${requirements.templateVersion}`);
-                  }
-                  label = parts.join(" · ");
-                } else if (src === "org_template") {
-                  const parts = ["Org template"];
-                  if (typeof requirements.templateVersion === "number") {
-                    parts.push(`v${requirements.templateVersion}`);
-                  }
-                  label = parts.join(" · ");
-                } else {
-                  label = "Archetype defaults";
-                }
-                return (
-                  <div className="mt-3 pt-2 border-t border-amber-300/10 text-[11px] text-gray-500">
-                    <span className="text-gray-400">Requirements source: </span>
-                    <span>{label}</span>
-                  </div>
-                );
-              })()}
+              {/* PR 92's quiet audit footer ("Requirements source: …")
+                  was removed in PR 120b. The new prominent
+                  ProvenanceBlock above this panel renders the same
+                  information with customer language (PR 120a's
+                  snapshotted customerLabel) instead of slug
+                  fragments, plus an audit framing line on v > 1.
+                  See <ProvenanceBlock /> earlier in this file. */}
             </section>
           );
         })()}
