@@ -21,6 +21,10 @@ import { getBestEvidenceImageRef, getBestEvidencePreviewRef, getThumbExpiresSec,
 // slugRequirement. Used to match evidence.requirementKey to declared
 // required-proof labels for the slot-grouped dossier render.
 import { slugRequirement } from "@/lib/evidence/slugRequirement";
+// PR 120b — provenance block ("Requirements source: <Customer> · <Archetype> · v<N>")
+// rendered above the proof-slot dossier so operators see where the
+// requirements came from before they read the dossier.
+import { ProvenanceBlock } from "@/components/incident/ProvenanceBlock";
 import { normalizeIncidentStatusShared, incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
 import UpgradePrompt from "@/components/UpgradePrompt";
 import RecordNav from "@/components/RecordNav";
@@ -709,13 +713,22 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           .map((s) => String(s || "").trim())
           .filter((s) => s.length > 0)
       : [];
-    type Group = { key: string; label: string; satisfied: boolean; attached: EvidenceDoc[] };
-    const groups: Group[] = requiredLabels.map((label) => {
+    // PR 120b — per-slot rationale parallel array, persisted on the
+    // snapshot by PR 120a. Empty entries mean "no Reason: line" for
+    // that slot; absent array means none at all (legacy records render
+    // exactly as PR 117 did).
+    const reqDescriptions = (incident as any)?.requirements?.requiredProofDescriptions;
+    const descriptions: string[] = Array.isArray(reqDescriptions)
+      ? (reqDescriptions as unknown[]).map((s) => String(s || "").trim())
+      : [];
+    type Group = { key: string; label: string; satisfied: boolean; attached: EvidenceDoc[]; reason: string };
+    const groups: Group[] = requiredLabels.map((label, i) => {
       const key = slugRequirement(label);
       const attached = (evidence || []).filter(
         (ev) => String((ev as any)?.requirementKey || "").trim() === key,
       );
-      return { key, label, satisfied: attached.length > 0, attached };
+      const reason = descriptions[i] || "";
+      return { key, label, satisfied: attached.length > 0, attached, reason };
     });
     const requiredKeys = new Set(groups.map((g) => g.key));
     const additional = (evidence || []).filter((ev) => {
@@ -2096,6 +2109,22 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
             })()}
           </div>
 
+          {/* PEAKOPS_TEMPLATE_PROVENANCE_V1 (PR 120b) — provenance
+              block above the proof dossier. Reads frozen snapshot
+              fields (customerLabel, archetype, templateVersion) and
+              renders "Requirements source: <Customer> · <Archetype>
+              · v<N>" with an audit framing line on v > 1. Hides
+              entirely on archetype-fallback / no-template snapshots. */}
+          <ProvenanceBlock
+            provenance={{
+              source: (incident as any)?.requirements?.source,
+              templateKey: (incident as any)?.requirements?.templateKey,
+              templateVersion: (incident as any)?.requirements?.templateVersion,
+              customerLabel: (incident as any)?.requirements?.customerLabel,
+              archetype: (incident as any)?.archetype,
+            }}
+          />
+
           {/* PEAKOPS_PROOF_SLOT_DOSSIER_V1 (PR 117) — proof grouped by
               required-proof slot (mirrors the export packet's
               organization). Each required slot renders a ✓/✗ header;
@@ -2113,12 +2142,17 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           ) : (
             <div className="space-y-5">
               {(() => {
-                type DossierItem = { key: string; label: string; isEmpty: boolean; list: EvidenceDoc[] };
+                // PR 120b — DossierItem now carries `reason` so each
+                // required slot can render its customer-authored
+                // rationale inline. "Additional proof" entries carry
+                // an empty reason (no slot binding, no rationale).
+                type DossierItem = { key: string; label: string; isEmpty: boolean; list: EvidenceDoc[]; reason: string };
                 const items: DossierItem[] = proofDossier.groups.map((slot) => ({
                   key: slot.key,
                   label: (slot.satisfied ? "✓ " : "✗ ") + slot.label,
                   isEmpty: !slot.satisfied,
                   list: slot.attached,
+                  reason: slot.reason,
                 }));
                 if (proofDossier.additional.length > 0) {
                   items.push({
@@ -2126,6 +2160,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                     label: "Additional proof",
                     isEmpty: false,
                     list: proofDossier.additional,
+                    reason: "",
                   });
                 }
                 return items.map((item) => {
@@ -2135,9 +2170,17 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                   // with many incomplete slots.
                   if (item.isEmpty) {
                     return (
-                      <div key={item.key} className="flex items-baseline justify-between gap-3 py-0.5">
-                        <div className="text-[13px] font-medium text-gray-400 truncate">{item.label}</div>
-                        <div className="text-[11px] text-gray-500 shrink-0">No proof captured</div>
+                      <div key={item.key} className="space-y-0.5 py-0.5">
+                        <div className="flex items-baseline justify-between gap-3">
+                          <div className="text-[13px] font-medium text-gray-400 truncate">{item.label}</div>
+                          <div className="text-[11px] text-gray-500 shrink-0">No proof captured</div>
+                        </div>
+                        {item.reason ? (
+                          <div className="text-[11px] text-gray-500 pl-4">
+                            <span className="text-gray-600">Reason: </span>
+                            {item.reason}
+                          </div>
+                        ) : null}
                       </div>
                     );
                   }
@@ -2160,6 +2203,12 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                         <span>· {list.length} {list.length === 1 ? "piece" : "pieces"}</span>
                       </div>
                     </div>
+                    {item.reason ? (
+                      <div className="text-[11px] text-gray-400">
+                        <span className="text-gray-500">Reason: </span>
+                        {item.reason}
+                      </div>
+                    ) : null}
                     <div className="flex gap-2.5 overflow-x-auto -mx-1 px-1 pb-1">
                       {list.slice(0, 8).map((ev) => {
                         const id = String(ev.id || "");

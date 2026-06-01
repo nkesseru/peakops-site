@@ -48,6 +48,11 @@ type TemplateDoc = {
   customerSlug: string;
   customerLabel: string;
   requiredProof: string[];
+  // PR 120b — parallel to requiredProof; same length invariant
+  // enforced by addRequiredProofItem / removeRequiredProofItem.
+  // Empty entries mean "no Reason: line" for that slot. Persisted
+  // by saveOrgTemplateV1 (PR 120a sanitize + ≤500-char cap).
+  requiredProofDescriptions: string[];
   optionalProof: string[];
   acceptanceCriteria: string[];
   acceptanceChecks: AcceptanceCheck[];
@@ -70,6 +75,7 @@ function emptyDoc(): TemplateDoc {
     customerSlug: "",
     customerLabel: "",
     requiredProof: [""],
+    requiredProofDescriptions: [""],   // PR 120b — parallel array, same length
     optionalProof: [],
     acceptanceCriteria: [],
     acceptanceChecks: [],
@@ -146,6 +152,7 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
             customerSlug: summary.customerSlug || "",
             customerLabel: summary.customerLabel || "",
             requiredProof: [""],
+            requiredProofDescriptions: [""],   // PR 120b — parallel array seed
             optionalProof: [],
             acceptanceCriteria: [],
             acceptanceChecks: [],
@@ -182,6 +189,42 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
       return { ...d, [field]: next };
     });
   }
+
+  // PR 120b — parallel-array setters for requiredProof + descriptions.
+  // The label and reason move together at the same index so the
+  // server-side invariant (descriptions.length === requiredProof.length)
+  // is always met before save. Add/remove always touches both arrays.
+  function setRequiredProofLabel(idx: number, value: string) {
+    setDoc((d) => {
+      const next = d.requiredProof.slice();
+      next[idx] = value;
+      return { ...d, requiredProof: next };
+    });
+  }
+  function setRequiredProofDescription(idx: number, value: string) {
+    setDoc((d) => {
+      const next = d.requiredProofDescriptions.slice();
+      // Pad to current requiredProof length so a description set
+      // before the label edit doesn't drift the parallel arrays.
+      while (next.length < d.requiredProof.length) next.push("");
+      next[idx] = value;
+      return { ...d, requiredProofDescriptions: next };
+    });
+  }
+  function addRequiredProofItem() {
+    setDoc((d) => ({
+      ...d,
+      requiredProof: [...d.requiredProof, ""],
+      requiredProofDescriptions: [...d.requiredProofDescriptions, ""],
+    }));
+  }
+  function removeRequiredProofItem(idx: number) {
+    setDoc((d) => ({
+      ...d,
+      requiredProof: d.requiredProof.filter((_, i) => i !== idx),
+      requiredProofDescriptions: d.requiredProofDescriptions.filter((_, i) => i !== idx),
+    }));
+  }
   function addStringListItem(field: "requiredProof" | "optionalProof" | "acceptanceCriteria") {
     setDoc((d) => ({ ...d, [field]: [...d[field], ""] }));
   }
@@ -216,12 +259,31 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
     setSaving(true);
     setSaveErr("");
     try {
+      // PR 120b — filter label + description as PAIRS so the parallel
+      // arrays stay aligned by index when empty labels get dropped.
+      // saveOrgTemplateV1 server-side also pads/truncates as a final
+      // defense, but doing the pairing here keeps the operator's
+      // intent intact.
+      const reqPairs = doc.requiredProof.map((label, i) => ({
+        label: String(label || "").trim(),
+        description: String(doc.requiredProofDescriptions[i] || "").trim(),
+      })).filter((p) => p.label.length > 0);
+      const requiredProofClean = reqPairs.map((p) => p.label);
+      const requiredProofDescriptionsClean = reqPairs.map((p) => p.description);
+
       const body = {
         actorUid,
         orgId,
         archetype: doc.archetype,
         customerLabel: isOrgWide ? "" : doc.customerLabel.trim(),
-        requiredProof: doc.requiredProof.map((s) => s.trim()).filter(Boolean),
+        requiredProof: requiredProofClean,
+        // Only include the array when at least one entry has text —
+        // keeps the doc lean for templates that don't author reasons
+        // (saveOrgTemplateV1 omits the field anyway in that case;
+        // sending [] avoids an unnecessary write attempt).
+        ...(requiredProofDescriptionsClean.some((s) => s.length > 0)
+          ? { requiredProofDescriptions: requiredProofDescriptionsClean }
+          : {}),
         optionalProof: doc.optionalProof.map((s) => s.trim()).filter(Boolean),
         acceptanceCriteria: doc.acceptanceCriteria.map((s) => s.trim()).filter(Boolean),
         acceptanceChecks: doc.acceptanceChecks,
@@ -341,14 +403,18 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
         </div>
       </section>
 
-      {/* Required proof */}
-      <StringListEditor
-        title="Required proof"
-        subtitle="Items the packet must contain to feel acceptance-ready. At least one is required."
-        values={doc.requiredProof}
-        onChange={(i, v) => setStringList("requiredProof", i, v)}
-        onAdd={() => addStringListItem("requiredProof")}
-        onRemove={(i) => removeStringListItem("requiredProof", i)}
+      {/* Required proof — PR 120b uses RequiredProofEditor so each
+          item carries a label + optional Reason textarea. The Reason
+          flows into incident.requirements.requiredProofDescriptions
+          at incident creation (PR 120a) and renders as a "Reason:"
+          line on Summary / Proof Capture / AcceptanceReadinessPanel. */}
+      <RequiredProofEditor
+        labels={doc.requiredProof}
+        descriptions={doc.requiredProofDescriptions}
+        onLabelChange={setRequiredProofLabel}
+        onDescriptionChange={setRequiredProofDescription}
+        onAdd={addRequiredProofItem}
+        onRemove={removeRequiredProofItem}
       />
 
       {/* Optional proof */}
@@ -510,6 +576,86 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
         </div>
       </section>
     </div>
+  );
+}
+
+// PEAKOPS_TEMPLATE_PROVENANCE_V1 (PR 120b)
+// Richer editor used for the requiredProof section: each item carries
+// a label input + optional Reason textarea, kept on parallel arrays.
+// The acceptanceChecks editor handles its own label/description per
+// item separately (PR 119b); StringListEditor stays in use for
+// optionalProof + acceptanceCriteria where no per-item rationale is
+// needed.
+function RequiredProofEditor({
+  labels,
+  descriptions,
+  onLabelChange,
+  onDescriptionChange,
+  onAdd,
+  onRemove,
+}: {
+  labels: string[];
+  descriptions: string[];
+  onLabelChange: (idx: number, value: string) => void;
+  onDescriptionChange: (idx: number, value: string) => void;
+  onAdd: () => void;
+  onRemove: (idx: number) => void;
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="space-y-1">
+        <div className="text-[12px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
+          Required proof
+        </div>
+        <div className="text-[11px] text-gray-500 leading-relaxed">
+          Items the packet must contain to feel acceptance-ready. At least one is required.
+          Add a Reason to explain WHY the requirement exists — the operator and
+          customer both see this text on every record built from this template.
+        </div>
+      </div>
+      {labels.length === 0 && (
+        <div className="text-[12px] text-gray-500 italic">No items yet.</div>
+      )}
+      {labels.map((label, i) => (
+        <div key={i} className="rounded-xl border border-white/10 bg-white/[0.03] p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              className="flex-1 text-sm bg-black/40 border border-white/15 rounded-lg px-3 py-2"
+              placeholder="Required proof item (e.g., GPS capture)"
+              maxLength={200}
+              value={label}
+              onChange={(e) => onLabelChange(i, e.target.value)}
+            />
+            <button
+              type="button"
+              className="text-[11px] text-gray-400 hover:text-red-300 px-2"
+              onClick={() => onRemove(i)}
+              title="Remove this item"
+            >
+              ×
+            </button>
+          </div>
+          <label className="block text-[11px] text-gray-300">
+            Reason (optional, ≤500 chars)
+            <textarea
+              className="mt-1 w-full text-sm bg-black/40 border border-white/15 rounded-lg px-2 py-1.5 min-h-[44px]"
+              placeholder="Why is this required? (e.g., Customer requires proof of site presence.)"
+              maxLength={500}
+              value={descriptions[i] || ""}
+              onChange={(e) => onDescriptionChange(i, e.target.value)}
+            />
+          </label>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="text-[12px] px-3 py-1.5 rounded-full border border-white/15 bg-white/[0.04] text-gray-200 hover:bg-white/[0.10]"
+        onClick={onAdd}
+      >
+        + Add item
+      </button>
+    </section>
   );
 }
 
