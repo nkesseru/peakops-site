@@ -317,12 +317,21 @@ function computeAcceptanceReadiness({ incident, evidence, jobs, notes }) {
     evidenceByKey.set(k, evidenceByKey.get(k) + 1);
   }
 
+  // PEAKOPS_TEMPLATE_PROVENANCE_V1 (PR 120a)
+  // Per-required-proof rationales authored by the customer template
+  // (PR 119a editor) and frozen into the snapshot by createIncidentV1.
+  // Parallel array; same length as requiredProof. Emit on the check
+  // row when non-empty so AcceptanceReadinessPanel + Summary dossier
+  // can render "Reason: …" inline.
+  const reqDescriptions = reqSnapshot && Array.isArray(reqSnapshot.requiredProofDescriptions)
+    ? reqSnapshot.requiredProofDescriptions
+    : [];
   for (let i = 0; i < reqLabels.length; i++) {
     const label = reqLabels[i];
     const key = slugRequirement(label);
     const count = key ? (evidenceByKey.get(key) || 0) : 0;
     const satisfied = count > 0;
-    checks.push({
+    const row = {
       key: `required_proof__${key || `slot_${i + 1}`}`,
       label,
       category: "required_proof",
@@ -331,7 +340,10 @@ function computeAcceptanceReadiness({ incident, evidence, jobs, notes }) {
       detail: satisfied
         ? `${count} ${count === 1 ? "photo" : "photos"} captured`
         : "No proof captured",
-    });
+    };
+    const desc = String(reqDescriptions[i] || "").trim();
+    if (desc) row.description = desc;
+    checks.push(row);
   }
 
   // ─── SUPERVISOR APPROVAL CHECK ────────────────────────────────
