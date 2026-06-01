@@ -4,8 +4,11 @@ import { NextRequest, NextResponse } from "next/server";
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const password = (formData.get("password") || "").toString();
+  // Default post-login landing. Previously `/admin/stormwatch`, which
+  // returns 404 — the route doesn't exist. `/admin/templates` is the
+  // live admin surface (PR 119b) and is a valid landing page.
   const redirectTo =
-    (formData.get("redirectTo") || "/admin/stormwatch").toString();
+    (formData.get("redirectTo") || "/admin/templates").toString();
 
   const expected = process.env.ADMIN_DASHBOARD_PASSWORD;
 
