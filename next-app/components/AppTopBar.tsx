@@ -49,6 +49,10 @@ import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 
 const TEAM_ROLES = new Set(["owner", "admin", "supervisor"]);
+// PEAKOPS_TEMPLATES_EDITOR_V1 (PR 119b) — Templates nav admin-only.
+// Editing what THIS customer requires is a contract-level decision;
+// supervisors execute work, they don't configure templates.
+const ADMIN_ROLES = new Set(["owner", "admin"]);
 
 type NavItem = {
   key: string;
@@ -63,6 +67,9 @@ const NAV_ITEMS: NavItem[] = [
   { key: "records", label: "Records", href: "/records" },
   { key: "my-work", label: "My Work", href: "/my-work" },
   { key: "team", label: "Team", href: "/team", roles: TEAM_ROLES },
+  // PR 119b — Templates editor for customer acceptance requirements.
+  // Admin-only per scope decision.
+  { key: "templates", label: "Templates", href: "/admin/templates", roles: ADMIN_ROLES },
 ];
 
 function isActive(pathname: string | null, href: string): boolean {
