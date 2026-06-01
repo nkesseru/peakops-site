@@ -421,11 +421,32 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
             if (snapshottedChecks && snapshottedChecks.length > 0) {
               requirementsOut.acceptanceChecks = snapshottedChecks;
             }
+            // PEAKOPS_TEMPLATE_PROVENANCE_V1 (PR 120a)
+            // Carry per-required-proof rationales from the template
+            // into the snapshot, padded/truncated to requiredProof
+            // length so the parallel-array invariant holds. Persisted
+            // only when at least one entry is non-empty (keeps the
+            // snapshot lean for templates that don't author them).
+            if (Array.isArray(data.requiredProofDescriptions)) {
+              const descs = requirementsOut.requiredProof.map((_label, i) => {
+                const v = String(data.requiredProofDescriptions[i] || "").trim();
+                return v.slice(0, 500);
+              });
+              if (descs.some((s) => s.length > 0)) {
+                requirementsOut.requiredProofDescriptions = descs;
+              }
+            }
 
             resolvedSnapshot = {
               source: candidate.source,
               templateKey: candidate.key,
               templateVersion: Number.isFinite(Number(data.version)) ? Number(data.version) : 0,
+              // PR 120a — human-readable customer name carried into
+              // the snapshot so downstream surfaces (Summary
+              // provenance block, export PDF) can show "Comcast
+              // Restoration" without re-fetching the template or
+              // parsing the slug.
+              customerLabel: String(data.customerLabel || "").trim(),
               requirements: requirementsOut,
             };
             break;
@@ -517,6 +538,17 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
       }
       if (resolvedSnapshot.templateVersion !== undefined) {
         reqDoc.templateVersion = resolvedSnapshot.templateVersion;
+      }
+      // PR 120a — propagate provenance fields onto the persisted
+      // snapshot so Summary, Proof Capture, and export PDF can
+      // render "Requirements source: <customerLabel> · <archetype>
+      // · v<version>" without re-fetching the template.
+      if (resolvedSnapshot.customerLabel) {
+        reqDoc.customerLabel = resolvedSnapshot.customerLabel;
+      }
+      if (Array.isArray(resolvedSnapshot.requirements.requiredProofDescriptions)
+          && resolvedSnapshot.requirements.requiredProofDescriptions.length > 0) {
+        reqDoc.requiredProofDescriptions = resolvedSnapshot.requirements.requiredProofDescriptions.slice();
       }
       // PR 104 — Carry the snapshotted acceptanceChecks through to
       // the persisted incident.requirements doc. The inner resolver

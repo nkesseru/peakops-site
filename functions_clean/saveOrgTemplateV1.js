@@ -220,6 +220,16 @@ exports.saveOrgTemplateV1 = onRequest({ cors: true }, async (req, res) => {
     const acceptanceCriteria = sanitizeStringList(body.acceptanceCriteria, 30, 200);
     const acceptanceChecks = sanitizeChecksArray(body.acceptanceChecks);
 
+    // PEAKOPS_TEMPLATE_PROVENANCE_V1 (PR 120a)
+    // Per-required-proof rationales. Parallel array — same length as
+    // requiredProof. Sanitized per entry (≤500 chars, control chars
+    // stripped). Pad with empty strings or truncate so the invariant
+    // (parallel-array-of-equal-length) is always held on the doc.
+    // Empty strings mean "no rationale" for that slot; readers render
+    // gracefully when absent.
+    const rawDescriptions = Array.isArray(body.requiredProofDescriptions) ? body.requiredProofDescriptions : [];
+    const requiredProofDescriptions = requiredProof.map((_label, i) => sanitizeProse(rawDescriptions[i], 500));
+
     if (requiredProof.length === 0) {
       return j(res, 400, {
         ok: false,
@@ -245,6 +255,13 @@ exports.saveOrgTemplateV1 = onRequest({ cors: true }, async (req, res) => {
       customerSlug,
       customerLabel,
       requiredProof,
+      // PR 120a — parallel array; same length as requiredProof.
+      // Persisted only when at least one entry carries non-empty
+      // rationale text so legacy templates without descriptions
+      // stay lean on the doc.
+      ...(requiredProofDescriptions.some((s) => s.length > 0)
+        ? { requiredProofDescriptions }
+        : {}),
       optionalProof,
       acceptanceCriteria,
       acceptanceChecks,
