@@ -374,15 +374,36 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
             // Pass through params verbatim (evaluators handle their
             // own param shape; future check types can take new
             // params without schema changes here).
+            //
+            // PR 118 — Pass through optional customer-authored
+            // `label` (≤200 chars) and `description` (≤500 chars).
+            // Trim, strip control characters, length-cap. Empty/
+            // whitespace values omitted so _readiness.js falls back
+            // to the evaluator's built-in default. The cap matches
+            // the missingItemsPreview truncation in listIncidentsV1
+            // (PR 107a) for predictable downstream rendering.
+            const sanitizeCheckProse = (raw, maxLen) => {
+              const s = String(raw || "")
+                .replace(/[\x00-\x1F\x7F]/g, "")
+                .trim();
+              return s.length > 0 ? s.slice(0, maxLen) : "";
+            };
             const rawChecks = Array.isArray(data.acceptanceChecks) ? data.acceptanceChecks : null;
             const snapshottedChecks = rawChecks
               ? rawChecks
                   .filter((c) => c && typeof c === "object" && String(c.type || "").trim())
-                  .map((c) => ({
-                    type: String(c.type).trim(),
-                    tier: c.tier === "required" ? "required" : "encouraged",
-                    ...(c.params && typeof c.params === "object" ? { params: c.params } : {}),
-                  }))
+                  .map((c) => {
+                    const out = {
+                      type: String(c.type).trim(),
+                      tier: c.tier === "required" ? "required" : "encouraged",
+                      ...(c.params && typeof c.params === "object" ? { params: c.params } : {}),
+                    };
+                    const label = sanitizeCheckProse(c.label, 200);
+                    if (label) out.label = label;
+                    const description = sanitizeCheckProse(c.description, 500);
+                    if (description) out.description = description;
+                    return out;
+                  })
               : null;
 
             const requirementsOut = {

@@ -93,6 +93,27 @@ function _normTier(t) {
   return t === "required" ? "required" : "encouraged";
 }
 
+// PEAKOPS_CUSTOMER_CHECK_LABELS_V1 (PR 118)
+// Customer-authored check.label / check.description override the
+// evaluator's built-in defaults so the customer's exact acceptance
+// language flows through readinessCache → Records pill, Summary
+// dossier, export packet. createIncidentV1 sanitizes both fields
+// at snapshot write (trim + control-char strip + 200/500 char caps)
+// so values reaching here are already safe; we still defensively
+// trim and string-coerce to absorb upstream drift.
+//
+// Empty/whitespace label → fall back to the evaluator's default
+// (NOT the empty string; that would degrade UX). Empty description
+// → omitted from the emitted check row.
+function _resolveLabel(check, fallback) {
+  const v = String((check && check.label) || "").trim();
+  return v.length > 0 ? v : fallback;
+}
+function _resolveDescription(check) {
+  const v = String((check && check.description) || "").trim();
+  return v.length > 0 ? v : undefined;
+}
+
 // PEAKOPS_SUPERVISOR_APPROVAL_SIGNAL_V1 (PR 115)
 // Mirrors exportIncidentPacketV1.isApprovedJob (line 152) — the
 // production-canonical "is this job approved" signal. Aligning the
@@ -116,14 +137,17 @@ function evaluateRequiresMinimumProofCount(check, { evidence }) {
   const minRaw = Number(check?.params?.minCount);
   const min = Number.isFinite(minRaw) && minRaw >= 1 ? Math.floor(minRaw) : 1;
   const have = (Array.isArray(evidence) ? evidence : []).length;
-  return {
+  const description = _resolveDescription(check);
+  const row = {
     key: `template_check__min_proof_${min}`,
-    label: `Minimum ${min} proof ${min === 1 ? "item" : "items"}`,
+    label: _resolveLabel(check, `Minimum ${min} proof ${min === 1 ? "item" : "items"}`),
     category: "template_check",
     tier: _normTier(check.tier),
     satisfied: have >= min,
     detail: `${have} of ${min} captured`,
   };
+  if (description) row.description = description;
+  return row;
 }
 
 function evaluateRequiresSupervisorApproval(check, { jobs }) {
@@ -132,9 +156,10 @@ function evaluateRequiresSupervisorApproval(check, { jobs }) {
   // approveJobV1 writes) counts as supervisor approval, matching
   // exportIncidentPacketV1.isApprovedJob.
   const approved = jobList.filter(_isJobApproved).length;
-  return {
+  const description = _resolveDescription(check);
+  const row = {
     key: "template_check__supervisor_approval",
-    label: "Supervisor approval",
+    label: _resolveLabel(check, "Supervisor approval"),
     category: "template_check",
     tier: _normTier(check.tier),
     satisfied: approved > 0,
@@ -142,6 +167,8 @@ function evaluateRequiresSupervisorApproval(check, { jobs }) {
       ? `${approved} of ${jobList.length} ${jobList.length === 1 ? "task" : "tasks"} approved`
       : "No tasks approved yet",
   };
+  if (description) row.description = description;
+  return row;
 }
 
 function evaluateRequiresAtLeastOneGpsProof(check, { evidence }) {
@@ -153,9 +180,10 @@ function evaluateRequiresAtLeastOneGpsProof(check, { evidence }) {
     const lng = Number(ev?.gps?.lng);
     return Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0);
   }).length;
-  return {
+  const description = _resolveDescription(check);
+  const row = {
     key: "template_check__at_least_one_gps_proof",
-    label: "At least one GPS-tagged proof",
+    label: _resolveLabel(check, "At least one GPS-tagged proof"),
     category: "template_check",
     tier: _normTier(check.tier),
     satisfied: withGps > 0,
@@ -163,6 +191,8 @@ function evaluateRequiresAtLeastOneGpsProof(check, { evidence }) {
       ? `${withGps} proof item${withGps === 1 ? "" : "s"} with GPS`
       : "No proof items have GPS coordinates",
   };
+  if (description) row.description = description;
+  return row;
 }
 
 function evaluateRequiresFieldNotes(check, { incident, notes }) {
@@ -173,27 +203,33 @@ function evaluateRequiresFieldNotes(check, { incident, notes }) {
   const a = String(incident?.incidentNotes || notes?.incidentNotes || "").trim();
   const b = String(incident?.siteNotes || notes?.siteNotes || "").trim();
   const have = !!(a || b);
-  return {
+  const description = _resolveDescription(check);
+  const row = {
     key: "template_check__field_notes",
-    label: "Field notes captured",
+    label: _resolveLabel(check, "Field notes captured"),
     category: "template_check",
     tier: _normTier(check.tier),
     satisfied: have,
     detail: have ? "Notes recorded" : "No notes recorded",
   };
+  if (description) row.description = description;
+  return row;
 }
 
 function evaluateRequiresIncidentClosure(check, { incident }) {
   const status = String(incident?.status || "").trim().toLowerCase();
   const closed = status === "closed";
-  return {
+  const description = _resolveDescription(check);
+  const row = {
     key: "template_check__incident_closure",
-    label: "Incident closure",
+    label: _resolveLabel(check, "Incident closure"),
     category: "template_check",
     tier: _normTier(check.tier),
     satisfied: closed,
     detail: closed ? "Closed" : `Status: ${status || "(unknown)"}`,
   };
+  if (description) row.description = description;
+  return row;
 }
 
 const TEMPLATE_CHECK_EVALUATORS = {
