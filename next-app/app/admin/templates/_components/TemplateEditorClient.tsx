@@ -109,58 +109,83 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
   const [doc, setDoc] = useState<TemplateDoc>(emptyDoc());
   const [loading, setLoading] = useState(!createMode);
   const [loadErr, setLoadErr] = useState<string>("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string>("");
   const [changeNote, setChangeNote] = useState<string>("");
 
-  // Load existing doc (edit mode only). createMode skips fetch and
-  // starts from emptyDoc.
+  // PR 125a/b — Load existing doc (edit mode only) via getOrgTemplateV1.
+  // Returns the FULL doc (arrays + reasons + provenance), unlike the
+  // earlier PR 119b load path which used listOrgTemplatesV1 summaries
+  // and seeded empty arrays. Hard-errors on failure with a retry
+  // button — we deliberately do NOT fall back to a blank-array shape,
+  // since that was the surface of the original re-hydration bug.
   useEffect(() => {
     if (createMode || !templateKey) return;
     let cancelled = false;
+    setLoading(true);
+    setLoadErr("");
     (async () => {
       try {
-        // The list callable returns lightweight summaries only — for
-        // the full doc we read Firestore directly (the doc lives at a
-        // well-known path; client-side read is fine since
-        // saveOrgTemplateV1 server-validates everything on the next
-        // save).
-        const url = `/api/fn/listOrgTemplatesV1?orgId=${encodeURIComponent(orgId)}`;
+        const url = `/api/fn/getOrgTemplateV1?orgId=${encodeURIComponent(orgId)}&templateKey=${encodeURIComponent(templateKey)}`;
         const res = await authedFetch(url, { cache: "no-store" });
-        const out: { ok?: boolean; templates?: any[] } = await res.json().catch(() => ({}));
-        const summary = (out.templates || []).find((t) => t.templateKey === templateKey);
-        if (!summary) {
+        const out: {
+          ok?: boolean;
+          error?: string;
+          template?: {
+            templateKey: string;
+            archetype: string;
+            customerSlug: string;
+            customerLabel: string;
+            requiredProof: string[];
+            requiredProofDescriptions: string[];
+            optionalProof: string[];
+            acceptanceCriteria: string[];
+            acceptanceChecks: AcceptanceCheck[];
+            version: number;
+            createdAt?: string | null;
+            createdBy?: string;
+            updatedAt?: string | null;
+            updatedBy?: string;
+          };
+        } = await res.json().catch(() => ({}));
+
+        if (res.status === 404) {
           if (!cancelled) {
             setLoadErr(`Template "${templateKey}" not found in this org.`);
             setLoading(false);
           }
           return;
         }
-        // Read the full doc directly from Firestore (the summary
-        // doesn't include arrays). For PR 119b we expose the full doc
-        // via a getOrgTemplateV1 in a future PR; today, list already
-        // returns enough for the editor's seed + the user fills in
-        // current arrays from a follow-up direct read. Pragmatic path:
-        // make an extra call to listOrgTemplatesV1 with a per-key
-        // filter... actually simpler: add a second pass that gets the
-        // raw doc. For PR 119b stay minimal — we use only the summary
-        // and let the operator re-enter arrays. Acceptable v1.
+        if (!res.ok || !out.ok || !out.template) {
+          throw new Error(out.error || `getOrgTemplateV1 failed (${res.status})`);
+        }
+
+        const t = out.template;
+        // Pad descriptions to match requiredProof length so the
+        // parallel-array invariant holds in the editor state even if
+        // a legacy doc was stored without descriptions.
+        const reqLabels = Array.isArray(t.requiredProof) ? t.requiredProof.slice() : [];
+        const reqDescs = Array.isArray(t.requiredProofDescriptions) ? t.requiredProofDescriptions.slice() : [];
+        while (reqDescs.length < reqLabels.length) reqDescs.push("");
+        if (reqDescs.length > reqLabels.length) reqDescs.length = reqLabels.length;
+
         if (!cancelled) {
           setDoc({
-            templateKey: summary.templateKey,
-            archetype: (summary.archetype || "") as Archetype,
-            customerSlug: summary.customerSlug || "",
-            customerLabel: summary.customerLabel || "",
-            requiredProof: [""],
-            requiredProofDescriptions: [""],   // PR 120b — parallel array seed
-            optionalProof: [],
-            acceptanceCriteria: [],
-            acceptanceChecks: [],
-            version: summary.version,
-            createdAt: summary.createdAt,
-            createdBy: summary.createdBy,
-            updatedAt: summary.updatedAt,
-            updatedBy: summary.updatedBy,
+            templateKey: t.templateKey,
+            archetype: (t.archetype || "") as Archetype,
+            customerSlug: t.customerSlug || "",
+            customerLabel: t.customerLabel || "",
+            requiredProof: reqLabels.length > 0 ? reqLabels : [""],
+            requiredProofDescriptions: reqLabels.length > 0 ? reqDescs : [""],
+            optionalProof: Array.isArray(t.optionalProof) ? t.optionalProof.slice() : [],
+            acceptanceCriteria: Array.isArray(t.acceptanceCriteria) ? t.acceptanceCriteria.slice() : [],
+            acceptanceChecks: Array.isArray(t.acceptanceChecks) ? t.acceptanceChecks.slice() : [],
+            version: t.version,
+            createdAt: t.createdAt || undefined,
+            createdBy: t.createdBy,
+            updatedAt: t.updatedAt || undefined,
+            updatedBy: t.updatedBy,
           });
           setLoading(false);
         }
@@ -172,7 +197,7 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
       }
     })();
     return () => { cancelled = true; };
-  }, [orgId, templateKey, createMode]);
+  }, [orgId, templateKey, createMode, loadAttempt]);
 
   const isOrgWide = !doc.customerLabel.trim();
 
@@ -274,6 +299,13 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
       const body = {
         actorUid,
         orgId,
+        // PR 125b — Edit path uses explicit templateKey from the loaded
+        // doc so the server anchors save to the exact identity that
+        // was edited. Create mode omits the field so the server
+        // derives templateKey from archetype + customerLabel as
+        // before. This is what eliminates the identity-drift bug
+        // where editing Template A could save into Template B.
+        ...(createMode || !doc.templateKey ? {} : { templateKey: doc.templateKey }),
         archetype: doc.archetype,
         customerLabel: isOrgWide ? "" : doc.customerLabel.trim(),
         requiredProof: requiredProofClean,
@@ -323,8 +355,24 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
   }
   if (loadErr) {
     return (
-      <div className="rounded-xl border border-red-300/25 bg-red-500/[0.05] p-5">
+      <div className="rounded-xl border border-red-300/25 bg-red-500/[0.05] p-5 space-y-3">
         <div className="text-sm text-red-200">{loadErr}</div>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className="text-[12px] px-3 py-1.5 rounded-full border border-white/15 bg-white/[0.06] text-gray-100 hover:bg-white/[0.12]"
+            onClick={() => setLoadAttempt((n) => n + 1)}
+          >
+            Retry
+          </button>
+          <button
+            type="button"
+            className="text-[12px] text-gray-400 hover:text-gray-100"
+            onClick={() => router.push(`/admin/templates?orgId=${encodeURIComponent(orgId)}`)}
+          >
+            Back to list
+          </button>
+        </div>
       </div>
     );
   }
