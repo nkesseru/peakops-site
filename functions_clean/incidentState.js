@@ -14,6 +14,16 @@
 //          customer_rejected → in_progress           (route to rework)
 //          customer_rejected → submitted_to_customer (re-send after fix)
 //
+// PR 126c — Add one edge so legacy `closed` records can be routed
+// through customer review without breaking the legacy terminal
+// promise for records that are never touched. `closed → closed` stays
+// the default; coordinators explicitly opt in by minting a review
+// link via createCustomerReviewLinkV1. No new state, no migration.
+//
+//   closed → submitted_to_customer (operator-driven; sourceStatus=closed
+//                                   recorded on the link + audit)
+//   closed → closed                (terminal default — unchanged)
+//
 // Operator display strings (PR 126a):
 //   submitted_to_customer = "Awaiting customer review"
 //   customer_accepted     = "Accepted by customer"
@@ -51,9 +61,19 @@ function canTransitionIncident(fromStatus, toStatus) {
   const from = normalizeIncidentStatus(fromStatus);
   const to = normalizeIncidentStatus(toStatus);
 
-  // Terminal states never transition.
-  if (from === INCIDENT_STATUS.CLOSED) return to === INCIDENT_STATUS.CLOSED;
+  // customer_accepted is terminal (no transitions out).
   if (from === INCIDENT_STATUS.CUSTOMER_ACCEPTED) return to === INCIDENT_STATUS.CUSTOMER_ACCEPTED;
+
+  // closed is the legacy terminal — preserved as the default — but
+  // PR 126c allows one explicit transition out: closed → submitted_to_customer
+  // when a coordinator routes a sealed record through customer review.
+  // Any other transition out of closed remains rejected.
+  if (from === INCIDENT_STATUS.CLOSED) {
+    return (
+      to === INCIDENT_STATUS.CLOSED ||
+      to === INCIDENT_STATUS.SUBMITTED_TO_CUSTOMER
+    );
+  }
 
   if (from === INCIDENT_STATUS.OPEN) {
     return (

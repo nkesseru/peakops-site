@@ -121,15 +121,23 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
     const incData = incSnap.data() || {};
     const currentStatus = normalizeIncidentStatus(incData.status);
 
-    // Precondition: must be in_progress (any other state, including
-    // already-submitted, is rejected). Coordinators get a clean
-    // "your record isn't ready" error rather than accidentally
-    // overlapping multiple live links.
-    if (currentStatus !== INCIDENT_STATUS.IN_PROGRESS) {
+    // PR 126c — Two legitimate source states:
+    //   in_progress: modern flow (PR 126a). Coordinator sends a record
+    //                that's been internally approved but hasn't hit
+    //                closeIncidentV1 yet.
+    //   closed:      legacy flow. Record was sealed under the pre-126
+    //                terminal model; coordinator routes it through
+    //                customer review retroactively. Captured on the
+    //                link doc + audit row as sourceStatus="closed" so
+    //                reporting can distinguish.
+    // Any other state (open, draft, submitted_to_customer,
+    // customer_accepted, customer_rejected) is rejected — those are
+    // either not-yet-ready or already mid-flow.
+    if (currentStatus !== INCIDENT_STATUS.IN_PROGRESS && currentStatus !== INCIDENT_STATUS.CLOSED) {
       return j(res, 409, {
         ok: false,
         error: "invalid_status_for_review_link",
-        detail: `requires status=in_progress, got status=${currentStatus}`,
+        detail: `requires status=in_progress or closed, got status=${currentStatus}`,
         currentStatus,
       });
     }
@@ -140,6 +148,9 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
         detail: `${currentStatus} -> submitted_to_customer not allowed`,
       });
     }
+    // Capture the source state for audit + reporting. Pinned at link-mint
+    // time so subsequent transitions don't obscure the origin.
+    const sourceStatus = currentStatus;
 
     // All-jobs-approved gate — mirrors closeIncidentV1.js (line 181).
     // Jobs live at the legacy path because createJobV1 hardcodes it.
@@ -221,6 +232,10 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
       archetype,
       templateKey,
       templateVersion,
+      // PR 126c — incident status at link-mint time. Always
+      // "in_progress" or "closed". Disambiguates legitimate workflow
+      // origins in reporting and audit queries.
+      sourceStatus,
     };
     await linkRef.set(linkPayload);
 
@@ -247,6 +262,8 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
         templateKey,
         templateVersion,
         customerLabel,
+        // PR 126c — origin tag preserved across the audit chain.
+        sourceStatus,
       },
     });
 
@@ -261,10 +278,12 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
       actorUid,
       tokenHashPrefix,
       customerLabel,
+      // PR 126c — distinguishes "in_progress" path from legacy "closed".
+      sourceStatus,
     });
 
     console.log("[createCustomerReviewLinkV1] link_created", {
-      orgId, incidentId, tokenHashPrefix, templateVersion, actorUid,
+      orgId, incidentId, tokenHashPrefix, templateVersion, actorUid, sourceStatus,
     });
 
     return j(res, 200, {
@@ -278,6 +297,9 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
       templateKey,
       templateVersion,
       customerLabel,
+      // PR 126c — clients can branch UI on whether this was a fresh
+      // (in_progress) flow or a retroactive (closed) one.
+      sourceStatus,
     });
   } catch (e) {
     console.error("[createCustomerReviewLinkV1] unhandled", { error: String(e?.message || e), stack: e?.stack });
