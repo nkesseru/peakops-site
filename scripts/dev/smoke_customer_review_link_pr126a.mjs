@@ -671,6 +671,167 @@ async function s21_evidenceMerge_legacyPath() {
   return { name, pass: true, detail: `evidence merged across both paths; ${review.evidenceItems.length} items` };
 }
 
+// ── PR 126e scenarios ───────────────────────────────────────────────
+
+async function s22_legacyTitleDerivedArchetype() {
+  const name = "22) PR 126e: Legacy record with blank archetype + title 'Fiber splice verification — ...' → title_derived archetype resolves org-wide template";
+  const incidentId = "inc-s22-title-only";
+
+  // Seed an org-wide template at the archetype the title should resolve to.
+  await db.doc(`orgs/${ORG_ID}/templates/fiber_splice_verification`).set({
+    archetype: "fiber_splice_verification",
+    customerSlug: "",
+    customerLabel: "",
+    requiredProof: ["Title-derived required proof item"],
+    requiredProofDescriptions: ["Title-derived reason"],
+    optionalProof: [],
+    acceptanceCriteria: ["Title-derived criterion"],
+    acceptanceChecks: [
+      { type: "requires_supervisor_approval", tier: "required", label: "Title-derived signoff" },
+    ],
+    version: 2,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  // Seed an incident with NO archetype, NO customer, NO requirements snapshot.
+  // ONLY the title hints at the workflow.
+  await db.doc(`orgs/${ORG_ID}/incidents/${incidentId}`).set({
+    orgId: ORG_ID,
+    incidentId,
+    title: "Fiber splice verification — Internal Alpha Test",
+    location: "Test Lab",
+    summary: "Title-only legacy record",
+    // archetype / customer / requirements all OMITTED — mirrors the
+    // real production record inc_20260508_121451_acnew0.
+    status: "in_progress",
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  await db.doc(`incidents/${incidentId}/jobs/job-1`).set({
+    id: "job-1", status: "approved", reviewStatus: "approved",
+  });
+
+  // Mint link.
+  const createRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `mint failed: ${createRes.status} ${JSON.stringify(createRes.body).slice(0,200)}` };
+
+  // Read dossier.
+  const getRes = await getJson("getCustomerReviewV1", { token: createRes.body.token });
+  if (getRes.status !== 200 || !getRes.body?.ok) return { name, pass: false, detail: `get failed: ${getRes.status}` };
+  const review = getRes.body.review;
+
+  if (review.archetypeSource !== "title_derived") return { name, pass: false, detail: `archetypeSource=${review.archetypeSource} (expected title_derived)` };
+  if (review.requirementsSource !== "template_live") return { name, pass: false, detail: `requirementsSource=${review.requirementsSource}` };
+  if (review.requirements.requiredProof.length !== 1) return { name, pass: false, detail: `requiredProof.length=${review.requirements.requiredProof.length}` };
+  if (review.requirements.requiredProof[0].label !== "Title-derived required proof item") return { name, pass: false, detail: `requiredProof[0].label=${review.requirements.requiredProof[0].label}` };
+  if (review.templateKey !== "fiber_splice_verification") return { name, pass: false, detail: `templateKey=${review.templateKey}` };
+  if (review.templateVersion !== 2) return { name, pass: false, detail: `templateVersion=${review.templateVersion}` };
+
+  return { name, pass: true, detail: `title_derived archetype resolves org-wide template; requiredProof + checks populated` };
+}
+
+async function s23_readyDerivedFromChecks() {
+  const name = "23) PR 126e: readinessCache.ready=false but all required checks satisfied → response shows ready=true";
+  const incidentId = "inc-s23-stale-cache";
+
+  // Seed incident with a stale readinessCache: ready=false but checks all satisfied.
+  await db.doc(`orgs/${ORG_ID}/incidents/${incidentId}`).set({
+    orgId: ORG_ID,
+    incidentId,
+    title: "Stale cache test",
+    customer: "Comcast Restoration",
+    archetype: "fiber_splice_verification",
+    status: "in_progress",
+    requirements: {
+      templateKey: "fiber_splice_verification__comcast-restoration",
+      templateVersion: 7,
+      requiredProof: ["RP-1"],
+      requiredProofDescriptions: ["RP-1 reason"],
+      optionalProof: [],
+      acceptanceCriteria: [],
+      acceptanceChecks: [
+        { type: "requires_supervisor_approval", tier: "required", label: "Signoff" },
+      ],
+    },
+    // Stale cache: ready=false but every required check shows satisfied=true.
+    readinessCache: {
+      ready: false,
+      label: "Pending",
+      checks: [
+        { key: "required_proof__rp-1", tier: "required", satisfied: true, label: "RP-1", detail: "1 photo captured" },
+        { key: "supervisor_approval", tier: "required", satisfied: true, label: "Supervisor approval", detail: "1 of 1 approved" },
+        { key: "field_notes_present", tier: "encouraged", satisfied: false, label: "Field notes" },
+      ],
+    },
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  await db.doc(`incidents/${incidentId}/jobs/job-1`).set({
+    id: "job-1", status: "approved", reviewStatus: "approved",
+  });
+
+  const createRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `mint failed: ${createRes.status}` };
+  const getRes = await getJson("getCustomerReviewV1", { token: createRes.body.token });
+  if (getRes.status !== 200) return { name, pass: false, detail: `get failed: ${getRes.status}` };
+  const review = getRes.body.review;
+
+  if (review.readiness.ready !== true) return { name, pass: false, detail: `readiness.ready=${review.readiness.ready} (expected true since all required satisfied)` };
+  if (review.readiness.label !== "Ready") return { name, pass: false, detail: `readiness.label=${review.readiness.label}` };
+  // Encouraged-only failure should NOT block ready.
+  if (review.readiness.checks.length !== 3) return { name, pass: false, detail: `checks.length=${review.readiness.checks.length}` };
+
+  return { name, pass: true, detail: `derived ready=true overrides stale cached ready=false; encouraged failure does not block` };
+}
+
+async function s24_evidenceLabelFallbackChain() {
+  const name = "24) PR 126e: Evidence label fallback — storagePath basename + 'Proof item' last resort";
+  const incidentId = "inc-s24-evidence-labels";
+
+  await seedIncident(incidentId);
+
+  // Add three evidence docs with different field name patterns:
+  //   (a) only storagePath populated → filename should be the tail
+  //   (b) only originalFilename populated → filename = originalFilename
+  //   (c) totally blank → filename = "Proof item"
+  await db.collection(`orgs/${ORG_ID}/incidents/${incidentId}/evidence_locker`).add({
+    storagePath: "gs://peakops-pilot.appspot.com/orgs/x/incidents/y/photo_8472.jpg",
+    capturedAt: FieldValue.serverTimestamp(),
+  });
+  await db.collection(`orgs/${ORG_ID}/incidents/${incidentId}/evidence_locker`).add({
+    originalFilename: "legacy_originalFilename_field.jpg",
+    description: "Legacy description field becomes caption",
+    capturedAt: FieldValue.serverTimestamp(),
+  });
+  await db.collection(`orgs/${ORG_ID}/incidents/${incidentId}/evidence_locker`).add({
+    capturedAt: FieldValue.serverTimestamp(),
+  });
+
+  const createRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `mint failed: ${createRes.status}` };
+  const getRes = await getJson("getCustomerReviewV1", { token: createRes.body.token });
+  if (getRes.status !== 200) return { name, pass: false, detail: `get failed: ${getRes.status}` };
+  const items = getRes.body.review.evidenceItems;
+
+  const pathDerived = items.find((e) => e.filename === "photo_8472.jpg");
+  if (!pathDerived) return { name, pass: false, detail: `storagePath-derived filename missing: ${JSON.stringify(items.map(i => i.filename))}` };
+
+  const originalNamed = items.find((e) => e.filename === "legacy_originalFilename_field.jpg");
+  if (!originalNamed) return { name, pass: false, detail: `originalFilename fallback missing` };
+  if (originalNamed.caption !== "Legacy description field becomes caption") {
+    return { name, pass: false, detail: `description-as-caption fallback missing; got "${originalNamed.caption}"` };
+  }
+
+  const proofItem = items.find((e) => e.filename === "Proof item");
+  if (!proofItem) return { name, pass: false, detail: `'Proof item' last-resort missing: ${JSON.stringify(items.map(i => i.filename))}` };
+
+  return { name, pass: true, detail: `storagePath basename + originalFilename + 'Proof item' last-resort all surface` };
+}
+
 async function s17_closedRecord_endToEndAccept() {
   const name = "17) PR 126c: closed → mint → customer accepts → customer_accepted (terminal); audit chain carries sourceStatus";
   const incidentId = "inc-s17-closed-accept";
@@ -745,6 +906,10 @@ async function main() {
     s19_modernRecord_keepsSnapshotSource,
     s20_legacyRecord_noTemplate_sourceNone,
     s21_evidenceMerge_legacyPath,
+    // PR 126e — title-derived archetype + ready derivation + evidence labels
+    s22_legacyTitleDerivedArchetype,
+    s23_readyDerivedFromChecks,
+    s24_evidenceLabelFallbackChain,
   ];
   for (const fn of seq) {
     try {

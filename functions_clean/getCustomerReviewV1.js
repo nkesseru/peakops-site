@@ -64,6 +64,10 @@ const {
 // keep the dossier meaningful instead of empty.
 const { toCustomerSlug } = require("./_customerSlug");
 const { computeAcceptanceReadiness } = require("./_readiness");
+// PR 126e — last-resort archetype resolver for legacy records whose
+// archetype + customer fields are blank but whose title implies the
+// intended workflow. Explicit substring map, first-hit wins.
+const { deriveArchetypeFromTitle } = require("./_archetypeFromTitle");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -99,11 +103,39 @@ function pickPositiveVersion(...candidates) {
 // Strip any internal/PII fields from an evidence record before returning.
 function sanitizeEvidenceItem(d) {
   const data = d.data ? (d.data() || {}) : (d || {});
+
+  // PR 126e — broadened filename fallback chain for legacy evidence
+  // docs that use different field names. Modern fields first, then
+  // legacy synonyms, then derive a human-readable tail from the
+  // storage path, then a generic "Proof item" last resort so the
+  // customer dossier never shows blank entries.
+  let filename = trimStr(
+    data.filename || data.fileName || data.originalFilename
+    || data.displayName || data.name
+  );
+  if (!filename) {
+    const path = trimStr(data.storagePath || data.gcsPath || data.path);
+    if (path) {
+      const tail = path.split("/").pop();
+      if (tail) filename = tail;
+    }
+  }
+  if (!filename) filename = "Proof item";
+
+  // PR 126e — caption fallback adds description / note synonyms for
+  // legacy records authored before "caption" was the canonical field.
+  const caption = trimStr(
+    data.caption || data.label || data.description || data.note
+  );
+
   return {
     id: String(d.id || data.id || ""),
-    filename: trimStr(data.filename || data.fileName || data.name),
-    caption: trimStr(data.caption || data.label),
-    slotKey: trimStr(data.slotKey || data.requiredProofKey),
+    filename,
+    caption,
+    // PR 126e — slotKey also accepts requirementKey (used by
+    // _readiness.js evidence-matching). requiredProofKey kept for
+    // backward compatibility with the original sanitizer shape.
+    slotKey: trimStr(data.slotKey || data.requirementKey || data.requiredProofKey),
     capturedAt: tsIso(data.capturedAt || data.createdAt),
     gps: (data.gps && typeof data.gps === "object")
       ? {
@@ -286,11 +318,31 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
 
     let resolvedRequirements = snapshotRequirements;
     let requirementsSource = "snapshot";
+    // PR 126e — track how the archetype was resolved so audit /
+    // reporting can distinguish snapshot reads from incident-field
+    // reads from title-derived inferences from "we couldn't resolve".
+    // Always one of: "snapshot" | "incident_field" | "title_derived" | "none".
+    let archetypeSource = "none";
 
-    if (!snapshotHasReqs) {
-      // Derive templateKey from the incident.
+    if (snapshotHasReqs) {
+      // Modern record: archetype came in via the snapshot.
+      archetypeSource = "snapshot";
+    } else {
+      // Derive archetype from the incident's own fields first.
       const archetypeRaw = trimStr(linkData.archetype) || trimStr(incData.archetype) || trimStr(snapshotRequirements.archetype);
-      const archetype = archetypeRaw.toLowerCase();
+      let archetype = archetypeRaw.toLowerCase();
+      if (archetype) {
+        archetypeSource = "incident_field";
+      } else {
+        // PR 126e — last-resort: derive archetype from the operator-
+        // authored title via the explicit substring map. Customer is
+        // intentionally NOT derived from the title; we resolve only
+        // the org-wide template when archetype is title-derived.
+        const titleHint = trimStr(incData.title || incData.name);
+        archetype = deriveArchetypeFromTitle(titleHint);
+        if (archetype) archetypeSource = "title_derived";
+      }
+
       const customerRaw = trimStr(linkData.customerLabel) || trimStr(snapshotRequirements.customerLabel) || trimStr(incData.customer);
       const customerSlug = customerRaw ? toCustomerSlug(customerRaw) : "";
 
@@ -324,6 +376,8 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
         };
         requirementsSource = "template_live";
       } else {
+        // No template resolves — keep the archetypeSource marker for
+        // audit even though requirementsSource will be "none".
         requirementsSource = "none";
       }
     }
@@ -341,9 +395,19 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
 
     let resolvedReadiness;
     if (cacheHasChecks) {
+      // PR 126e — derive `ready` from the checks themselves rather
+      // than trust the cached boolean. computeAcceptanceReadiness
+      // uses this same definition: a record is ready when every
+      // required check is satisfied. Deriving here keeps the
+      // response self-consistent for cache-hit records whose
+      // ready flag drifted from the checks reality (stale cache).
+      // requiredChecks.length === 0 → ready=false (conservative;
+      // approved in PR 126e plan).
+      const requiredChecks = readinessCache.checks.filter((c) => c && c.tier === "required");
+      const derivedReady = requiredChecks.length > 0 && requiredChecks.every((c) => c && c.satisfied);
       resolvedReadiness = {
-        ready: Boolean(readinessCache.ready),
-        label: trimStr(readinessCache.label) || (readinessCache.ready ? "Ready" : "Pending"),
+        ready: derivedReady,
+        label: derivedReady ? "Ready" : "Pending",
         checks: readinessCache.checks,
       };
     } else {
@@ -398,6 +462,16 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
       // snapshot from a live template lookup from a missing source.
       // Always one of: "snapshot" | "template_live" | "none".
       requirementsSource,
+
+      // PR 126e marker — separate audit signal for HOW the archetype
+      // was resolved (independent of whether a template ultimately
+      // matched). Lets ops queries answer "how many records resolved
+      // their archetype via title hint?" Always one of:
+      //   "snapshot"        — pulled from incident.requirements.archetype
+      //   "incident_field"  — pulled from incident.archetype
+      //   "title_derived"   — explicit-substring map matched the title
+      //   "none"            — could not resolve
+      archetypeSource,
 
       // Surface fields — same data Summary shows operator-side.
       title: trimStr(incData.title || incData.name),
