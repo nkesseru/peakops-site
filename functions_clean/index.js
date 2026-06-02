@@ -124,3 +124,16 @@ safeExport("createSupervisorRequestV1", "./createSupervisorRequestV1");
 
 // Job org assignment
 safeExport("assignJobOrgV1", "./assignJobOrgV1");
+
+// PEAKOPS_CUSTOMER_REVIEW_LINK_V1 (PR 126a)
+// Customer Reviewer Link — the missing wall between supervisor sign-off
+// and customer acceptance. Trio:
+//   createCustomerReviewLinkV1  — admin-only; mints tokenized review link
+//   getCustomerReviewV1         — token-only; returns sanitized dossier
+//   submitCustomerReviewV1      — token-only; accept | reject + audit
+// No login required for the customer-facing callables; the URL token is
+// the credential (256-bit, SHA-256 hashed at rest, never logged in
+// cleartext).
+safeExport("createCustomerReviewLinkV1", "./createCustomerReviewLinkV1");
+safeExport("getCustomerReviewV1", "./getCustomerReviewV1");
+safeExport("submitCustomerReviewV1", "./submitCustomerReviewV1");
