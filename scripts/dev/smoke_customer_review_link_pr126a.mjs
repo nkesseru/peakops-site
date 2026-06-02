@@ -478,8 +478,81 @@ async function s15_stateMachine_legacyPreserved() {
   if (!canTransitionIncident("open", "closed")) return { name, pass: false, detail: "open→closed should be allowed" };
   if (!canTransitionIncident("in_progress", "closed")) return { name, pass: false, detail: "in_progress→closed should be allowed" };
   if (canTransitionIncident("customer_accepted", "in_progress")) return { name, pass: false, detail: "customer_accepted should be terminal" };
-  if (canTransitionIncident("closed", "customer_accepted")) return { name, pass: false, detail: "closed should be terminal (incl. cross-flow)" };
-  return { name, pass: true, detail: `legacy transitions intact; new terminal states isolated` };
+  // PR 126c — closed → submitted_to_customer is now allowed; other closed-exits still rejected
+  if (canTransitionIncident("closed", "customer_accepted")) return { name, pass: false, detail: "closed should reject direct → customer_accepted" };
+  if (canTransitionIncident("closed", "in_progress")) return { name, pass: false, detail: "closed should reject → in_progress" };
+  if (!canTransitionIncident("closed", "submitted_to_customer")) return { name, pass: false, detail: "PR 126c: closed → submitted_to_customer must be allowed" };
+  if (!canTransitionIncident("closed", "closed")) return { name, pass: false, detail: "closed → closed (terminal default) must still be allowed" };
+  return { name, pass: true, detail: `legacy transitions intact; closed → submitted_to_customer added (PR 126c)` };
+}
+
+// ── PR 126c scenarios ───────────────────────────────────────────────
+
+async function s16_createLink_fromClosedRecord() {
+  const name = "16) PR 126c: Create link from closed record → 200; sourceStatus=closed on link doc + response + audit";
+  const incidentId = "inc-s16-closed";
+  await seedIncident(incidentId, { status: "closed" });
+
+  const res = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (res.status !== 200 || !res.body?.ok) return { name, pass: false, detail: `${res.status} ${JSON.stringify(res.body).slice(0,200)}` };
+  if (res.body.sourceStatus !== "closed") return { name, pass: false, detail: `response sourceStatus=${res.body.sourceStatus}` };
+  if (res.body.status !== "submitted_to_customer") return { name, pass: false, detail: `target status=${res.body.status}` };
+
+  // Verify the incident actually moved
+  const incStatus = await readIncidentStatus(incidentId);
+  if (incStatus !== "submitted_to_customer") return { name, pass: false, detail: `incident status=${incStatus}` };
+
+  // Verify sourceStatus persisted on the link doc
+  const tokenHash = await hashTokenForLookup(res.body.token);
+  const link = await readLinkDoc(tokenHash);
+  if (!link) return { name, pass: false, detail: "link doc missing" };
+  if (link.sourceStatus !== "closed") return { name, pass: false, detail: `link.sourceStatus=${link.sourceStatus}` };
+
+  // Verify audit row carries sourceStatus
+  const audit = await readAuditTail(3);
+  const linkCreatedAudit = audit.find((a) => a.type === "customer_review_link_created" && a.incidentId === incidentId);
+  if (!linkCreatedAudit) return { name, pass: false, detail: "audit row missing" };
+  if (linkCreatedAudit.sourceStatus !== "closed") return { name, pass: false, detail: `audit.sourceStatus=${linkCreatedAudit.sourceStatus}` };
+
+  return { name, pass: true, detail: `mint from closed; sourceStatus="closed" on response + link doc + audit; status moved to submitted_to_customer`, token: res.body.token };
+}
+
+async function s17_closedRecord_endToEndAccept() {
+  const name = "17) PR 126c: closed → mint → customer accepts → customer_accepted (terminal); audit chain carries sourceStatus";
+  const incidentId = "inc-s17-closed-accept";
+  await seedIncident(incidentId, { status: "closed" });
+
+  const createRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `create from closed failed ${createRes.status}` };
+  if (createRes.body.sourceStatus !== "closed") return { name, pass: false, detail: `sourceStatus=${createRes.body.sourceStatus}` };
+
+  const acceptRes = await postJson("submitCustomerReviewV1", {
+    token: createRes.body.token,
+    action: "accept",
+    comment: "Confirmed retroactively — record looks good.",
+  });
+  if (acceptRes.status !== 200 || !acceptRes.body?.ok) return { name, pass: false, detail: `accept failed ${acceptRes.status} ${JSON.stringify(acceptRes.body).slice(0,200)}` };
+  if (acceptRes.body.status !== "customer_accepted") return { name, pass: false, detail: `final status=${acceptRes.body.status}` };
+
+  const finalStatus = await readIncidentStatus(incidentId);
+  if (finalStatus !== "customer_accepted") return { name, pass: false, detail: `incident final status=${finalStatus}` };
+
+  // Audit chain: link_created (sourceStatus=closed) + customer_accepted
+  const allAudit = await db
+    .collection(`orgs/${ORG_ID}/customer_review_audit`)
+    .where("incidentId", "==", incidentId)
+    .get();
+  const types = allAudit.docs.map((d) => ({ type: d.data().type, sourceStatus: d.data().sourceStatus || null }));
+  const hasLinkCreated = types.some((t) => t.type === "customer_review_link_created" && t.sourceStatus === "closed");
+  const hasAccepted = types.some((t) => t.type === "customer_accepted");
+  if (!hasLinkCreated) return { name, pass: false, detail: `link_created audit missing or wrong sourceStatus: ${JSON.stringify(types)}` };
+  if (!hasAccepted) return { name, pass: false, detail: `customer_accepted audit missing: ${JSON.stringify(types)}` };
+
+  return { name, pass: true, detail: `closed → submitted_to_customer → customer_accepted end-to-end; full audit chain with sourceStatus="closed"` };
 }
 
 // ── main ───────────────────────────────────────────────────────────
@@ -512,6 +585,9 @@ async function main() {
     s13_postRateLimit,
     s14_getReview_recordsAccess,
     s15_stateMachine_legacyPreserved,
+    // PR 126c — closed-source flow
+    s16_createLink_fromClosedRecord,
+    s17_closedRecord_endToEndAccept,
   ];
   for (const fn of seq) {
     try {
