@@ -35,6 +35,9 @@ import { authedFetch } from "@/lib/apiClient";
 // the same `readinessData` state (no duplicate requests).
 import { AcceptanceReadinessPanel, type PanelData } from "@/components/AcceptanceReadinessPanel";
 import type { AcceptanceReadiness } from "@/lib/incidents/acceptanceReadinessTypes";
+// PR 126b — coordinator-side mint UI for the customer-review corridor.
+// Single CTA on this page; modal handles the one-time URL display.
+import { SendToCustomerModal } from "./SendToCustomerModal";
 
 type IncidentDoc = {
   id: string;
@@ -638,6 +641,9 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   // packet export so the panel reflects the freshly-cached state.
   const [readinessData, setReadinessData] = useState<PanelData>({ kind: "loading" });
   const [readinessRefetchTick, setReadinessRefetchTick] = useState(0);
+  // PR 126b — coordinator-side modal for minting a customer review link.
+  // Gated to admin/owner roles + records in in_progress or closed status.
+  const [showSendToCustomer, setShowSendToCustomer] = useState(false);
   const [upgrade, setUpgrade] = useState<{
     open: boolean;
     reason: string;
@@ -1650,6 +1656,42 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           current="summary"
           isSealed={String(incident?.status || "").toLowerCase() === "closed"}
         />
+
+        {/* PR 126b — Send to customer review (admin/owner only).
+            Visible when:
+              - role is owner or admin (operator authzn)
+              - incident.status is in_progress OR closed (mint-precondition;
+                createCustomerReviewLinkV1 enforces the all-jobs-approved
+                rule server-side and surfaces blocked jobs in the modal)
+              - incident has not been already sent to customer (status
+                shouldn't be submitted_to_customer / customer_accepted /
+                customer_rejected on this surface) */}
+        {(() => {
+          const role = String(getActorRole?.() || "").toLowerCase();
+          const isAdmin = role === "owner" || role === "admin";
+          const status = String(incident?.status || "").toLowerCase();
+          const isMintEligible = status === "in_progress" || status === "closed";
+          if (!isAdmin || !isMintEligible || !orgId || !incidentId) return null;
+          return (
+            <section className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 sm:py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="space-y-0.5">
+                <div className="text-[12px] uppercase tracking-[0.18em] font-semibold text-amber-200/80">
+                  Customer review
+                </div>
+                <div className="text-[12px] text-gray-300">
+                  Generate a tokenized URL the customer can use to accept or request a correction.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-full text-[12px] font-semibold text-black bg-white hover:bg-white/90 shrink-0"
+                onClick={() => setShowSendToCustomer(true)}
+              >
+                Send to customer review
+              </button>
+            </section>
+          );
+        })()}
 
         {/* Integrity detail — collapsed amber block linked from masthead chip */}
         {truthError ? (
@@ -3031,6 +3073,18 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
       </div>
       </div>
     </main>
+
+    {/* PR 126b — Coordinator-side mint modal. Mounted at root so it
+        overlays everything; closes on Cancel/Close/X. Modal handles
+        its own internal state (confirm → minting → result | error). */}
+    {showSendToCustomer && orgId && incidentId ? (
+      <SendToCustomerModal
+        orgId={orgId}
+        incidentId={String(incidentId)}
+        actorUid={getActorUid?.() || undefined}
+        onClose={() => setShowSendToCustomer(false)}
+      />
+    ) : null}
     </>
   );
 }
