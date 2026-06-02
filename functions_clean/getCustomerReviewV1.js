@@ -59,6 +59,11 @@ const {
   ipPrefixFromRequest,
   userAgentFingerprint,
 } = require("./_customerReviewToken");
+// PR 126d — legacy-record fallbacks for records that predate the
+// PR 89a/104 snapshot contract. Template lookup + readiness recompute
+// keep the dossier meaningful instead of empty.
+const { toCustomerSlug } = require("./_customerSlug");
+const { computeAcceptanceReadiness } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -76,6 +81,19 @@ function tsIso(v) {
 
 function trimStr(v) {
   return String(v == null ? "" : v).trim();
+}
+
+// PR 126d — pick the first positive-finite version number from a
+// list of candidates. Skips null/undefined explicitly so the
+// classic Number(null)===0 trap can't fall through and surface 0
+// as a "valid" version on legacy records with no template.
+function pickPositiveVersion(...candidates) {
+  for (const v of candidates) {
+    if (v == null) continue;
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
 }
 
 // Strip any internal/PII fields from an evidence record before returning.
@@ -220,26 +238,135 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
     }
     const incSnap = await incRef.get();
     const incData = incSnap.data() || {};
-    const requirements = (incData.requirements && typeof incData.requirements === "object") ? incData.requirements : {};
+    const snapshotRequirements = (incData.requirements && typeof incData.requirements === "object") ? incData.requirements : {};
 
     // Readiness cache — same source the Records / Summary surfaces use.
     const readinessCache = (incData.readinessCache && typeof incData.readinessCache === "object")
       ? incData.readinessCache
       : null;
 
-    // Evidence list — read directly from the canonical subcollection.
-    let evidenceItems = [];
-    try {
-      const evSnap = await incRef.collection("evidence_locker").limit(200).get();
-      evidenceItems = evSnap.docs.map((d) => sanitizeEvidenceItem(d));
-    } catch (e) {
-      // Fall back to the top-level legacy path if it exists.
+    // ─── PR 126d · Evidence merge across canonical AND legacy ──────
+    // Per the refreshReadinessCache pattern (_readiness.js:511),
+    // subcollections live at the legacy `incidents/{id}/...` path.
+    // Some records have evidence at canonical too due to dual-tree
+    // drift. Read both, merge dedupe by doc id, never skip on empty.
+    const legacyIncRef = db.collection("incidents").doc(linkData.incidentId);
+    const [evCanonicalSnap, evLegacySnap, jobsSnap, notesSnap] = await Promise.all([
+      incRef.collection("evidence_locker").limit(200).get().catch(() => null),
+      legacyIncRef.collection("evidence_locker").limit(200).get().catch(() => null),
+      legacyIncRef.collection("jobs").limit(500).get().catch(() => null),
+      legacyIncRef.collection("notes").doc("main").get().catch(() => null),
+    ]);
+    const seenEvidenceIds = new Set();
+    const evidenceItems = [];
+    const evidenceRaw = [];                  // unsanitized for readiness compute
+    // Order matters: legacy first so any canonical drift is layered on
+    // top without overwriting. Dedupe is by id, so duplicates are
+    // dropped silently regardless of order.
+    for (const snap of [evLegacySnap, evCanonicalSnap]) {
+      if (!snap) continue;
+      for (const d of snap.docs) {
+        if (seenEvidenceIds.has(d.id)) continue;
+        seenEvidenceIds.add(d.id);
+        evidenceRaw.push({ id: d.id, ...d.data() });
+        evidenceItems.push(sanitizeEvidenceItem(d));
+      }
+    }
+    const jobs = jobsSnap ? jobsSnap.docs.map((d) => ({ id: d.id, ...d.data() })) : [];
+    const notes = (notesSnap && notesSnap.exists) ? (notesSnap.data() || null) : null;
+
+    // ─── PR 126d · Requirements fallback (snapshot → template_live → none) ──
+    // Modern records (post-PR-89a) carry incident.requirements with
+    // requiredProof + acceptanceChecks etc. Legacy records (pre-89a,
+    // ~before 2026-05-27) don't have the snapshot at all. For those
+    // we fall back to a live template lookup so the customer sees a
+    // real packet instead of an empty shell.
+    const snapshotHasReqs = Array.isArray(snapshotRequirements.requiredProof)
+      && snapshotRequirements.requiredProof.length > 0;
+
+    let resolvedRequirements = snapshotRequirements;
+    let requirementsSource = "snapshot";
+
+    if (!snapshotHasReqs) {
+      // Derive templateKey from the incident.
+      const archetypeRaw = trimStr(linkData.archetype) || trimStr(incData.archetype) || trimStr(snapshotRequirements.archetype);
+      const archetype = archetypeRaw.toLowerCase();
+      const customerRaw = trimStr(linkData.customerLabel) || trimStr(snapshotRequirements.customerLabel) || trimStr(incData.customer);
+      const customerSlug = customerRaw ? toCustomerSlug(customerRaw) : "";
+
+      let template = null;
+      if (archetype) {
+        // Try customer-specific first; fall back to org-wide. Mirrors
+        // createIncidentV1's snapshot resolver convention so the
+        // template the customer sees is the same one the record
+        // would have snapshotted under the modern flow.
+        if (customerSlug) {
+          const ts = await db.doc(`orgs/${linkData.orgId}/templates/${archetype}__${customerSlug}`).get().catch(() => null);
+          if (ts && ts.exists) template = ts.data() || null;
+        }
+        if (!template) {
+          const ts = await db.doc(`orgs/${linkData.orgId}/templates/${archetype}`).get().catch(() => null);
+          if (ts && ts.exists) template = ts.data() || null;
+        }
+      }
+
+      if (template) {
+        resolvedRequirements = {
+          requiredProof: Array.isArray(template.requiredProof) ? template.requiredProof : [],
+          requiredProofDescriptions: Array.isArray(template.requiredProofDescriptions) ? template.requiredProofDescriptions : [],
+          optionalProof: Array.isArray(template.optionalProof) ? template.optionalProof : [],
+          acceptanceCriteria: Array.isArray(template.acceptanceCriteria) ? template.acceptanceCriteria : [],
+          acceptanceChecks: Array.isArray(template.acceptanceChecks) ? template.acceptanceChecks : [],
+          templateKey: trimStr(template.templateKey) || (customerSlug ? `${archetype}__${customerSlug}` : archetype),
+          templateVersion: Number.isFinite(Number(template.version)) ? Number(template.version) : null,
+          customerLabel: trimStr(template.customerLabel) || customerRaw,
+          archetype: trimStr(template.archetype) || archetype,
+        };
+        requirementsSource = "template_live";
+      } else {
+        requirementsSource = "none";
+      }
+    }
+
+    // ─── PR 126d · Readiness fallback ────────────────────────────────
+    // Modern records have readinessCache populated by mutation
+    // callables (PR 108 refreshReadinessCache). Legacy records may
+    // have a stale cache from before requirements were resolved, or
+    // no cache at all. If the cache is missing OR has no checks,
+    // recompute inline using the (possibly template-resolved)
+    // requirements + the merged evidence + jobs + notes we just read.
+    const cacheHasChecks = readinessCache
+      && Array.isArray(readinessCache.checks)
+      && readinessCache.checks.length > 0;
+
+    let resolvedReadiness;
+    if (cacheHasChecks) {
+      resolvedReadiness = {
+        ready: Boolean(readinessCache.ready),
+        label: trimStr(readinessCache.label) || (readinessCache.ready ? "Ready" : "Pending"),
+        checks: readinessCache.checks,
+      };
+    } else {
       try {
-        const evSnap = await db
-          .collection("incidents").doc(linkData.incidentId)
-          .collection("evidence_locker").limit(200).get();
-        evidenceItems = evSnap.docs.map((d) => sanitizeEvidenceItem(d));
-      } catch (_e) { /* ignore */ }
+        const incForCompute = { ...incData, requirements: resolvedRequirements };
+        const computed = computeAcceptanceReadiness({
+          incident: incForCompute,
+          evidence: evidenceRaw,
+          jobs,
+          notes,
+        });
+        resolvedReadiness = {
+          ready: Boolean(computed && computed.ready),
+          label: (computed && computed.ready) ? "Ready" : "Pending",
+          checks: (computed && Array.isArray(computed.checks)) ? computed.checks : [],
+        };
+      } catch (e) {
+        // Pure-compute failure shouldn't break the dossier; surface
+        // the empty cache as-is and let UI render the structural
+        // requirements without a satisfaction overlay.
+        console.warn("[getCustomerReviewV1] readiness recompute failed", e && e.message);
+        resolvedReadiness = { ready: false, label: "Not computed", checks: [] };
+      }
     }
 
     const currentStatus = normalizeIncidentStatus(incData.status);
@@ -249,12 +376,28 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
     const review = {
       // Provenance — Customer sees the template name + version they
       // were promised. This is the audit anchor across the boundary.
-      customerLabel: trimStr(linkData.customerLabel) || trimStr(requirements.customerLabel) || trimStr(incData.customer),
-      archetype: trimStr(linkData.archetype) || trimStr(requirements.archetype) || trimStr(incData.archetype),
-      templateKey: trimStr(linkData.templateKey) || trimStr(requirements.templateKey),
-      templateVersion: Number.isFinite(Number(linkData.templateVersion))
-        ? Number(linkData.templateVersion)
-        : (Number.isFinite(Number(requirements.templateVersion)) ? Number(requirements.templateVersion) : null),
+      customerLabel: trimStr(linkData.customerLabel)
+        || trimStr(resolvedRequirements.customerLabel)
+        || trimStr(snapshotRequirements.customerLabel)
+        || trimStr(incData.customer),
+      archetype: trimStr(linkData.archetype)
+        || trimStr(resolvedRequirements.archetype)
+        || trimStr(snapshotRequirements.archetype)
+        || trimStr(incData.archetype),
+      templateKey: trimStr(linkData.templateKey)
+        || trimStr(resolvedRequirements.templateKey)
+        || trimStr(snapshotRequirements.templateKey),
+      templateVersion: pickPositiveVersion(
+        linkData.templateVersion,
+        resolvedRequirements.templateVersion,
+        snapshotRequirements.templateVersion,
+      ),
+
+      // PR 126d marker — surface where the requirements came from so
+      // the UI (PR 126b) and auditors can distinguish a frozen
+      // snapshot from a live template lookup from a missing source.
+      // Always one of: "snapshot" | "template_live" | "none".
+      requirementsSource,
 
       // Surface fields — same data Summary shows operator-side.
       title: trimStr(incData.title || incData.name),
@@ -262,24 +405,24 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
       summary: trimStr(incData.summary || incData.description),
 
       requirements: {
-        requiredProof: Array.isArray(requirements.requiredProof)
-          ? requirements.requiredProof.map((label, i) => ({
+        requiredProof: Array.isArray(resolvedRequirements.requiredProof)
+          ? resolvedRequirements.requiredProof.map((label, i) => ({
             label: trimStr(label),
-            description: trimStr(Array.isArray(requirements.requiredProofDescriptions)
-              ? requirements.requiredProofDescriptions[i]
+            description: trimStr(Array.isArray(resolvedRequirements.requiredProofDescriptions)
+              ? resolvedRequirements.requiredProofDescriptions[i]
               : ""),
           }))
           : [],
-        optionalProof: Array.isArray(requirements.optionalProof)
-          ? requirements.optionalProof.map(trimStr).filter(Boolean)
+        optionalProof: Array.isArray(resolvedRequirements.optionalProof)
+          ? resolvedRequirements.optionalProof.map(trimStr).filter(Boolean)
           : [],
-        acceptanceCriteria: Array.isArray(requirements.acceptanceCriteria)
-          ? requirements.acceptanceCriteria.map(trimStr).filter(Boolean)
+        acceptanceCriteria: Array.isArray(resolvedRequirements.acceptanceCriteria)
+          ? resolvedRequirements.acceptanceCriteria.map(trimStr).filter(Boolean)
           : [],
       },
 
-      acceptanceChecks: Array.isArray(requirements.acceptanceChecks)
-        ? requirements.acceptanceChecks.map((c) => ({
+      acceptanceChecks: Array.isArray(resolvedRequirements.acceptanceChecks)
+        ? resolvedRequirements.acceptanceChecks.map((c) => ({
           type: trimStr(c && c.type),
           tier: (c && c.tier === "required") ? "required" : "encouraged",
           label: trimStr(c && c.label),
@@ -287,13 +430,7 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
         }))
         : [],
 
-      readiness: readinessCache
-        ? {
-          ready: Boolean(readinessCache.ready),
-          label: trimStr(readinessCache.label) || (readinessCache.ready ? "Ready" : "Pending"),
-          checks: Array.isArray(readinessCache.checks) ? readinessCache.checks : [],
-        }
-        : { ready: false, label: "Not computed", checks: [] },
+      readiness: resolvedReadiness,
 
       evidenceItems,
 

@@ -519,6 +519,158 @@ async function s16_createLink_fromClosedRecord() {
   return { name, pass: true, detail: `mint from closed; sourceStatus="closed" on response + link doc + audit; status moved to submitted_to_customer`, token: res.body.token };
 }
 
+// ── PR 126d scenarios ───────────────────────────────────────────────
+
+async function s18_legacyRecord_templateFallback() {
+  const name = "18) PR 126d: Legacy record (no incident.requirements snapshot) — dossier falls back to template_live";
+  const incidentId = "inc-s18-legacy-no-snapshot";
+
+  // Seed a template at the org-wide path the fallback will resolve to.
+  await db.doc(`orgs/${ORG_ID}/templates/legacy_archetype__legacy-customer`).set({
+    archetype: "legacy_archetype",
+    customerSlug: "legacy-customer",
+    customerLabel: "Legacy Customer",
+    requiredProof: ["Splice photo (legacy)", "Vault photo (legacy)"],
+    requiredProofDescriptions: ["Legacy reason 1", "Legacy reason 2"],
+    optionalProof: ["OTDR trace (legacy)"],
+    acceptanceCriteria: ["All photos uploaded (legacy)"],
+    acceptanceChecks: [
+      { type: "requires_supervisor_approval", tier: "required", label: "Legacy QA signoff" },
+    ],
+    version: 3,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  // Seed an incident WITHOUT incident.requirements — simulates pre-89a.
+  await db.doc(`orgs/${ORG_ID}/incidents/${incidentId}`).set({
+    orgId: ORG_ID,
+    incidentId,
+    title: "Legacy record (no snapshot)",
+    location: "1234 Legacy Lane",
+    summary: "Pre-PR-89a record without requirements snapshot",
+    customer: "Legacy Customer",
+    archetype: "legacy_archetype",
+    status: "in_progress",
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  // Jobs at legacy path (required for createCustomerReviewLinkV1 gate).
+  await db.doc(`incidents/${incidentId}/jobs/job-1`).set({
+    id: "job-1", title: "Legacy job", status: "approved", reviewStatus: "approved",
+  });
+
+  // Mint link.
+  const createRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `mint failed: ${createRes.status}` };
+  const token = createRes.body.token;
+
+  // Get dossier.
+  const getRes = await getJson("getCustomerReviewV1", { token });
+  if (getRes.status !== 200 || !getRes.body?.ok) return { name, pass: false, detail: `get failed: ${getRes.status}` };
+  const review = getRes.body.review;
+  if (review.requirementsSource !== "template_live") return { name, pass: false, detail: `requirementsSource=${review.requirementsSource}` };
+  if (review.requirements.requiredProof.length !== 2) return { name, pass: false, detail: `requiredProof.length=${review.requirements.requiredProof.length}` };
+  if (review.requirements.requiredProof[0].label !== "Splice photo (legacy)") return { name, pass: false, detail: `requiredProof[0].label=${review.requirements.requiredProof[0].label}` };
+  if (review.requirements.requiredProof[0].description !== "Legacy reason 1") return { name, pass: false, detail: `description not propagated from template` };
+  if (review.acceptanceChecks.length !== 1) return { name, pass: false, detail: `acceptanceChecks.length=${review.acceptanceChecks.length}` };
+  if (review.templateKey !== "legacy_archetype__legacy-customer") return { name, pass: false, detail: `templateKey=${review.templateKey}` };
+  if (review.templateVersion !== 3) return { name, pass: false, detail: `templateVersion=${review.templateVersion}` };
+
+  return { name, pass: true, detail: `legacy record dossier hydrated from template_live (v3); customerSlug-derived templateKey resolved` };
+}
+
+async function s19_modernRecord_keepsSnapshotSource() {
+  const name = "19) PR 126d: Modern record (with snapshot) keeps requirementsSource=snapshot (no regression)";
+  const incidentId = "inc-s19-modern";
+  await seedIncident(incidentId);                // existing seedIncident gives a full snapshot
+
+  const createRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `mint failed: ${createRes.status}` };
+  const token = createRes.body.token;
+
+  const getRes = await getJson("getCustomerReviewV1", { token });
+  if (getRes.status !== 200 || !getRes.body?.ok) return { name, pass: false, detail: `get failed: ${getRes.status}` };
+  const review = getRes.body.review;
+  if (review.requirementsSource !== "snapshot") return { name, pass: false, detail: `requirementsSource=${review.requirementsSource} (expected snapshot)` };
+  if (review.requirements.requiredProof.length !== 2) return { name, pass: false, detail: `snapshot data not populated; len=${review.requirements.requiredProof.length}` };
+  if (review.requirements.requiredProof[0].description !== "Wide shot of sealed enclosure") {
+    return { name, pass: false, detail: `requiredProof[0].description=${review.requirements.requiredProof[0].description}`};
+  }
+
+  return { name, pass: true, detail: `modern record uses snapshot path; PR 126d adds no regression` };
+}
+
+async function s20_legacyRecord_noTemplate_sourceNone() {
+  const name = "20) PR 126d: Legacy record with no snapshot AND no resolvable template → requirementsSource=none; dossier renders structural skeleton";
+  const incidentId = "inc-s20-no-template";
+
+  // Seed incident WITHOUT requirements AND WITHOUT a template anywhere.
+  await db.doc(`orgs/${ORG_ID}/incidents/${incidentId}`).set({
+    orgId: ORG_ID,
+    incidentId,
+    title: "Orphan record",
+    customer: "Unknown Customer",       // no template at any archetype/slug
+    archetype: "totally_unmapped_archetype",
+    status: "in_progress",
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  await db.doc(`incidents/${incidentId}/jobs/job-1`).set({
+    id: "job-1", status: "approved", reviewStatus: "approved",
+  });
+
+  const createRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `mint failed: ${createRes.status}` };
+  const token = createRes.body.token;
+
+  const getRes = await getJson("getCustomerReviewV1", { token });
+  if (getRes.status !== 200 || !getRes.body?.ok) return { name, pass: false, detail: `get failed: ${getRes.status}` };
+  const review = getRes.body.review;
+  if (review.requirementsSource !== "none") return { name, pass: false, detail: `requirementsSource=${review.requirementsSource} (expected none)` };
+  if (review.requirements.requiredProof.length !== 0) return { name, pass: false, detail: `unexpected requiredProof on none-source: ${JSON.stringify(review.requirements.requiredProof)}` };
+  // Skeleton dossier still renders title etc.
+  if (review.title !== "Orphan record") return { name, pass: false, detail: `title not surfaced: ${review.title}` };
+
+  return { name, pass: true, detail: `orphan record returns requirementsSource=none; title + structure still rendered` };
+}
+
+async function s21_evidenceMerge_legacyPath() {
+  const name = "21) PR 126d: Evidence merge — record with evidence ONLY at legacy path renders evidenceItems (not empty)";
+  const incidentId = "inc-s21-evidence-legacy-only";
+  await seedIncident(incidentId);
+
+  // Add evidence at the LEGACY path only (not under orgs/{orgId}/incidents/...).
+  await db.collection(`incidents/${incidentId}/evidence_locker`).add({
+    filename: "legacy_evidence.jpg",
+    caption: "Stored only at the legacy path",
+    slotKey: "required_proof_0",
+    capturedAt: FieldValue.serverTimestamp(),
+  });
+
+  const createRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `mint failed: ${createRes.status}` };
+  const token = createRes.body.token;
+
+  const getRes = await getJson("getCustomerReviewV1", { token });
+  if (getRes.status !== 200) return { name, pass: false, detail: `get failed: ${getRes.status}` };
+  const review = getRes.body.review;
+
+  // seedIncident already adds 1 canonical evidence doc; the new
+  // legacy-only one brings the merged total to 2 (dedupe is by id;
+  // these have different auto-ids so both surface).
+  const legacyHit = review.evidenceItems.find((e) => e.filename === "legacy_evidence.jpg");
+  if (!legacyHit) return { name, pass: false, detail: `legacy-path evidence missing from merge: ${JSON.stringify(review.evidenceItems.map((e) => e.filename))}` };
+  if (review.evidenceItems.length < 2) return { name, pass: false, detail: `expected >=2 evidence items after merge; got ${review.evidenceItems.length}` };
+
+  return { name, pass: true, detail: `evidence merged across both paths; ${review.evidenceItems.length} items` };
+}
+
 async function s17_closedRecord_endToEndAccept() {
   const name = "17) PR 126c: closed → mint → customer accepts → customer_accepted (terminal); audit chain carries sourceStatus";
   const incidentId = "inc-s17-closed-accept";
@@ -588,6 +740,11 @@ async function main() {
     // PR 126c — closed-source flow
     s16_createLink_fromClosedRecord,
     s17_closedRecord_endToEndAccept,
+    // PR 126d — legacy-record fallbacks
+    s18_legacyRecord_templateFallback,
+    s19_modernRecord_keepsSnapshotSource,
+    s20_legacyRecord_noTemplate_sourceNone,
+    s21_evidenceMerge_legacyPath,
   ];
   for (const fn of seq) {
     try {
