@@ -788,6 +788,39 @@ async function s18_priorityDeriverThresholds() {
   return { name, pass: true, detail: `all ${cases.length} threshold combinations correct` };
 }
 
+async function s19_actionType_provideTestResults() {
+  const name = "19) PR 127a3: addRecoveryActionV1 accepts the new 'provide_test_results' action type";
+  const incidentId = "inc-s19-provide-test-results";
+  await seedIncident(incidentId);
+  const createRes = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+    source: "internal_qc",
+  });
+  const caseId = createRes.body.caseId;
+
+  // Confirm new type accepted
+  const r = await postJson("addRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    type: "provide_test_results",
+    title: "Submit OTDR trace + loss measurements",
+    description: "Customer requested test data for the splice work.",
+    assigneeRole: "field_lead",
+  });
+  if (r.status !== 200 || !r.body?.ok) return { name, pass: false, detail: `${r.status} ${JSON.stringify(r.body).slice(0,200)}` };
+  if (r.body.type !== "provide_test_results") return { name, pass: false, detail: `type=${r.body.type}` };
+
+  // Confirm bogus type still rejected (regression check)
+  const bogus = await postJson("addRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    type: "totally_bogus", title: "Should fail",
+  });
+  if (bogus.status !== 400 || bogus.body?.error !== "invalid_action_type") {
+    return { name, pass: false, detail: `bogus type should 400; got ${bogus.status} ${bogus.body?.error}` };
+  }
+
+  return { name, pass: true, detail: `provide_test_results accepted; bogus types still rejected` };
+}
+
 // ── main ───────────────────────────────────────────────────────────
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
@@ -816,6 +849,8 @@ async function main() {
     s16_listRecoveryCasesV1,
     s17_getRecoveryCaseV1,
     s18_priorityDeriverThresholds,
+    // PR 127a3 — new action type
+    s19_actionType_provideTestResults,
   ];
 
   const results = [];
