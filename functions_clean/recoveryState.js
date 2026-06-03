@@ -75,7 +75,7 @@ const OWNER_ROLES = Object.freeze([
 ]);
 const OWNER_ROLES_SET = new Set(OWNER_ROLES);
 
-// ── Action types (9) ─────────────────────────────────────────────
+// ── Action types (10) ────────────────────────────────────────────
 const RECOVERY_ACTION_TYPES = Object.freeze([
   "recapture_proof",
   "clarify_with_customer",
@@ -85,6 +85,13 @@ const RECOVERY_ACTION_TYPES = Object.freeze([
   "escalate_to_customer",
   "documentation_fix",
   "field_revisit",
+  // PR 127a3 — telecom / fiber recovery commonly requires test
+  // results (OTDR traces, loss measurements, splice reports) that
+  // are distinct from generic documentation. Adding as a first-class
+  // action type so the UI surfaces it as "Provide Test Results"
+  // instead of forcing operators to overload "Upload Missing
+  // Documentation."
+  "provide_test_results",
   "other",
 ]);
 const RECOVERY_ACTION_TYPES_SET = new Set(RECOVERY_ACTION_TYPES);
