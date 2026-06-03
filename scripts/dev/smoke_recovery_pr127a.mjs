@@ -593,6 +593,52 @@ async function s14_autoResolveOnAccept() {
   return { name, pass: true, detail: `auto-resolved on customer accept; recovered terminal + revenue_recovered audit` };
 }
 
+async function s15_createWithCause_autoTriages() {
+  const name = "15) PR 127a1: createRecoveryCaseV1 with cause.primary supplied → initial status=triaged + case_triaged audit; without cause → stays open";
+  const incidentIdA = "inc-s15-with-cause";
+  const incidentIdB = "inc-s15-no-cause";
+  await seedIncident(incidentIdA);
+  await seedIncident(incidentIdB);
+
+  // With cause.primary → expect status=triaged + both case_opened AND case_triaged audits
+  const rA = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incidentIdA,
+    source: "internal_qc", priority: "high",
+    cause: { primary: "missing_required_proof", operatorNotes: "Auto-triage on create" },
+  });
+  if (rA.status !== 200) return { name, pass: false, detail: `with cause: ${rA.status}` };
+  if (rA.body.status !== "triaged") {
+    return { name, pass: false, detail: `with cause: status=${rA.body.status} (expected triaged)` };
+  }
+  const cA = await readCase(rA.body.caseId);
+  if (cA.status !== "triaged") return { name, pass: false, detail: `with cause doc: status=${cA.status}` };
+  if (cA.cause?.primary !== "missing_required_proof") return { name, pass: false, detail: `cause not persisted` };
+
+  const auditA = await readAuditForCase(rA.body.caseId);
+  if (!auditA.includes("case_opened")) return { name, pass: false, detail: `with cause: no case_opened: ${auditA}` };
+  if (!auditA.includes("case_triaged")) return { name, pass: false, detail: `with cause: no case_triaged: ${auditA}` };
+
+  // Without cause.primary → expect status=open + only case_opened audit
+  const rB = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incidentIdB,
+    source: "internal_qc", priority: "low",
+  });
+  if (rB.status !== 200) return { name, pass: false, detail: `no cause: ${rB.status}` };
+  if (rB.body.status !== "open") {
+    return { name, pass: false, detail: `no cause: status=${rB.body.status} (expected open)` };
+  }
+  const cB = await readCase(rB.body.caseId);
+  if (cB.status !== "open") return { name, pass: false, detail: `no cause doc: status=${cB.status}` };
+
+  const auditB = await readAuditForCase(rB.body.caseId);
+  if (!auditB.includes("case_opened")) return { name, pass: false, detail: `no cause: no case_opened: ${auditB}` };
+  if (auditB.includes("case_triaged")) {
+    return { name, pass: false, detail: `no cause: unexpected case_triaged: ${auditB}` };
+  }
+
+  return { name, pass: true, detail: `with cause → triaged + case_triaged audit; without cause → open + no triage audit` };
+}
+
 // ── main ───────────────────────────────────────────────────────────
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
@@ -615,6 +661,8 @@ async function main() {
     s12_autoCreateOnReject,
     s13_secondRejectionExtendsCase,
     s14_autoResolveOnAccept,
+    // PR 127a1 — auto-triage on create with cause
+    s15_createWithCause_autoTriages,
   ];
 
   const results = [];

@@ -195,6 +195,19 @@ exports.createRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
       ? Number(reqSnapshot.templateVersion)
       : null;
 
+    // PR 127a1 — auto-triage on create when cause.primary is supplied.
+    // Mirrors the updateRecoveryCaseV1 behavior so the create + update
+    // paths are consistent. Production smoke (post PR 127a deploy)
+    // surfaced this gap: cases created with cause set stayed at `open`
+    // forever, blocking the operator from a clean transition path.
+    // No cause primary → stays at `open` (operator triages later).
+    // No effect on the auto-create flow (which doesn't set cause.primary
+    // on creation; auto-created cases capture the customer comment but
+    // leave the operator to categorize).
+    const initialStatus = cause && cause.primary
+      ? RECOVERY_STATUS.TRIAGED
+      : RECOVERY_STATUS.OPEN;
+
     // Create case with Firestore auto-id (per PR 127a decision #1).
     const caseRef = db.collection("orgs").doc(orgId).collection("recovery_cases").doc();
     const now = FieldValue.serverTimestamp();
@@ -204,7 +217,7 @@ exports.createRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
       incidentId,
       ...(templateKey ? { templateKey } : {}),
       ...(templateVersion != null ? { templateVersion } : {}),
-      status: RECOVERY_STATUS.OPEN,
+      status: initialStatus,
       priority,
       revenueAtRisk,
       cause,
@@ -237,23 +250,37 @@ exports.createRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
     };
     await caseRef.set(newCase);
 
-    // Audit.
+    // Audit — case_opened always fires; PR 127a1 adds case_triaged
+    // when the create also categorized the cause (initialStatus=triaged).
     await writeRecoveryAudit({
       type: "case_opened",
       orgId, caseId: caseRef.id, incidentId,
       actorUid, actorRole,
-      meta: { source, priority, manual: true },
+      meta: { source, priority, manual: true, initialStatus },
     });
+    if (initialStatus === RECOVERY_STATUS.TRIAGED) {
+      await writeRecoveryAudit({
+        type: "case_triaged",
+        orgId, caseId: caseRef.id, incidentId,
+        actorUid, actorRole,
+        meta: {
+          causePrimary: cause.primary,
+          createTimeTriage: true,
+        },
+      });
+    }
 
     console.log("[createRecoveryCaseV1] case_opened", {
-      orgId, incidentId, caseId: caseRef.id, source, priority, actorUid,
+      orgId, incidentId, caseId: caseRef.id,
+      source, priority, actorUid,
+      initialStatus,
     });
 
     return j(res, 200, {
       ok: true,
       orgId, incidentId,
       caseId: caseRef.id,
-      status: RECOVERY_STATUS.OPEN,
+      status: initialStatus,
       priority,
       source,
     });
