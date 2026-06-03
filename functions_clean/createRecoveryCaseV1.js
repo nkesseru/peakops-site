@@ -39,12 +39,12 @@ const { extractActorUid } = require("./_actor");
 const { resolveIncidentRef } = require("./_incidentPath");
 const {
   RECOVERY_STATUS,
-  RECOVERY_PRIORITY_SET,
   RECOVERY_SOURCE_SET,
   REVENUE_TYPE_SET,
   RECOVERY_CAUSE_PRIMARY_SET,
   OWNER_ROLES_SET,
 } = require("./recoveryState");
+// RECOVERY_PRIORITY_SET no longer used — priority is derived (PR 127a2).
 const { writeRecoveryAudit } = require("./_recoveryAudit");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
@@ -103,14 +103,13 @@ exports.createRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
       });
     }
 
-    const priority = trimStr(body.priority || "").toLowerCase() || "medium";
-    if (!RECOVERY_PRIORITY_SET.has(priority)) {
-      return j(res, 400, {
-        ok: false,
-        error: "invalid_priority",
-        detail: "priority must be one of: low, medium, high, critical",
-      });
-    }
+    // PR 127a2 — priority is system-derived from amount + aging on
+    // every read, not operator-selected. body.priority is silently
+    // ignored for backwards compat with any in-flight UI; the
+    // persisted field is set to a write-time derived snapshot (using
+    // daysOpen=0 since the case is being created now), but reads
+    // always re-derive based on current aging.
+    const priority = "medium";   // write-time default; never read for display
 
     // Cause is optional on create — operator may want to triage later.
     let cause = {};
