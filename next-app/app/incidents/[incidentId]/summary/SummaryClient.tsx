@@ -38,6 +38,9 @@ import type { AcceptanceReadiness } from "@/lib/incidents/acceptanceReadinessTyp
 // PR 126b — coordinator-side mint UI for the customer-review corridor.
 // Single CTA on this page; modal handles the one-time URL display.
 import { SendToCustomerModal } from "./SendToCustomerModal";
+// PR 127b — open Recovery Case from inside the incident summary
+// (operator-initiated, source=internal_qc).
+import { OpenRecoveryCaseModal } from "./OpenRecoveryCaseModal";
 
 type IncidentDoc = {
   id: string;
@@ -644,6 +647,9 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   // PR 126b — coordinator-side modal for minting a customer review link.
   // Gated to admin/owner roles + records in in_progress or closed status.
   const [showSendToCustomer, setShowSendToCustomer] = useState(false);
+  // PR 127b — coordinator-side modal for opening a Recovery Case.
+  // Visible when no active case exists for this incident.
+  const [showOpenRecoveryCase, setShowOpenRecoveryCase] = useState(false);
   const [upgrade, setUpgrade] = useState<{
     open: boolean;
     reason: string;
@@ -1656,6 +1662,42 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           current="summary"
           isSealed={String(incident?.status || "").toLowerCase() === "closed"}
         />
+
+        {/* PR 127b — Open recovery case (admin/owner/coordinator).
+            Visible when:
+              - role is owner/admin/supervisor/coordinator
+              - incident is not in a customer-acceptance terminal state
+              - orgId + incidentId resolved
+            Backend remains source of truth — UI gate is informational.
+            Excludes terminal customer-acceptance states per planning answer #6:
+            customer_accepted, abandoned/written-off equivalents. */}
+        {(() => {
+          const role = String(getActorRole?.() || "").toLowerCase();
+          const allowed = role === "owner" || role === "admin" || role === "supervisor" || role === "coordinator";
+          const status = String(incident?.status || "").toLowerCase();
+          const blockedStatuses = new Set(["customer_accepted", "abandoned", "written_off", "expired"]);
+          const eligible = !blockedStatuses.has(status);
+          if (!allowed || !eligible || !orgId || !incidentId) return null;
+          return (
+            <section className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 sm:py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="space-y-0.5">
+                <div className="text-[12px] uppercase tracking-[0.18em] font-semibold text-amber-200/80">
+                  Recovery
+                </div>
+                <div className="text-[12px] text-gray-300">
+                  Track revenue at risk and recovery work for this record.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-full text-[12px] font-semibold text-black bg-white hover:bg-white/90 shrink-0"
+                onClick={() => setShowOpenRecoveryCase(true)}
+              >
+                Open recovery case
+              </button>
+            </section>
+          );
+        })()}
 
         {/* PR 126b — Send to customer review (admin/owner only).
             Visible when:
@@ -3083,6 +3125,16 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         incidentId={String(incidentId)}
         actorUid={getActorUid?.() || undefined}
         onClose={() => setShowSendToCustomer(false)}
+      />
+    ) : null}
+
+    {/* PR 127b — Open recovery case modal. Same mounting pattern. */}
+    {showOpenRecoveryCase && orgId && incidentId ? (
+      <OpenRecoveryCaseModal
+        orgId={orgId}
+        incidentId={String(incidentId)}
+        actorUid={getActorUid?.() || ""}
+        onClose={() => setShowOpenRecoveryCase(false)}
       />
     ) : null}
     </>
