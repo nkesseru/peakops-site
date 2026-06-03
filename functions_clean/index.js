@@ -148,3 +148,7 @@ safeExport("createRecoveryCaseV1", "./createRecoveryCaseV1");
 safeExport("updateRecoveryCaseV1", "./updateRecoveryCaseV1");
 safeExport("addRecoveryActionV1", "./addRecoveryActionV1");
 safeExport("updateRecoveryActionV1", "./updateRecoveryActionV1");
+// PR 127a2 — read-side callables for the operator UI (PR 127b).
+// Priority is system-derived on every read (see _recoveryPriority.js).
+safeExport("listRecoveryCasesV1", "./listRecoveryCasesV1");
+safeExport("getRecoveryCaseV1", "./getRecoveryCaseV1");

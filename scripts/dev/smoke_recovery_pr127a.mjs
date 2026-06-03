@@ -107,14 +107,16 @@ async function readAuditForCase(caseId) {
 // ── Scenarios ──────────────────────────────────────────────────────
 
 async function s1_manualCreate_happyPath() {
-  const name = "1) Manual case create as admin → 200; case opens in `open`; audit row written";
+  const name = "1) Manual case create as admin → 200; case opens in `open`; revenue + audit written";
   const incidentId = "inc-s1-manual";
   await seedIncident(incidentId);
 
+  // PR 127a2: body.priority is silently ignored — priority is derived
+  // on every read. Persisted value defaults to "medium". This test
+  // verifies the create+persist path (revenue + audit), not priority.
   const res = await postJson("createRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
     source: "internal_qc",
-    priority: "high",
     revenueAtRisk: { amount: 12500, type: "estimated" },
   });
   if (res.status !== 200 || !res.body?.ok) return { name, pass: false, detail: `${res.status} ${JSON.stringify(res.body).slice(0,200)}` };
@@ -122,12 +124,11 @@ async function s1_manualCreate_happyPath() {
   const c = await readCase(caseId);
   if (!c) return { name, pass: false, detail: "case doc missing" };
   if (c.status !== "open") return { name, pass: false, detail: `status=${c.status}` };
-  if (c.priority !== "high") return { name, pass: false, detail: `priority=${c.priority}` };
   if (c.revenueAtRisk?.amount !== 12500) return { name, pass: false, detail: `amount=${c.revenueAtRisk?.amount}` };
   if (c.revenueAtRisk?.type !== "estimated") return { name, pass: false, detail: `type=${c.revenueAtRisk?.type}` };
   const audit = await readAuditForCase(caseId);
   if (!audit.includes("case_opened")) return { name, pass: false, detail: `audit missing case_opened: ${audit}` };
-  return { name, pass: true, detail: `case ${caseId} opened with priority=high, revenue $12500 estimated`, caseId };
+  return { name, pass: true, detail: `case ${caseId} opened; revenue $12500 estimated; priority is read-derived (not asserted on persisted doc)`, caseId };
 }
 
 async function s2_manualCreate_deniedForField() {
@@ -143,37 +144,43 @@ async function s2_manualCreate_deniedForField() {
 }
 
 async function s3_create_invalidEnums() {
-  const name = "3) Invalid priority / cause / source / revenue type → 400 each";
+  const name = "3) Invalid cause / source / revenue type → 400 each; invalid priority silently ignored (PR 127a2)";
   const incidentId = "inc-s3-invalid";
   await seedIncident(incidentId);
 
-  const r1 = await postJson("createRecoveryCaseV1", {
+  // PR 127a2: body.priority is silently ignored. "EXTREME" no longer
+  // produces a 400 — instead the case is created with the persisted
+  // default. We verify the silent-ignore path AND keep coverage for
+  // the other three invalid-enum gates.
+  const rPriorityIgnored = await postJson("createRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
     source: "internal_qc", priority: "EXTREME",
   });
-  if (r1.status !== 400 || r1.body?.error !== "invalid_priority") return { name, pass: false, detail: `priority: ${r1.status} ${r1.body?.error}` };
+  if (rPriorityIgnored.status !== 200) {
+    return { name, pass: false, detail: `priority should be silently ignored but got ${rPriorityIgnored.status}` };
+  }
 
   const r2 = await postJson("createRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
-    source: "internal_qc", priority: "low",
+    source: "internal_qc",
     cause: { primary: "bogus_cause" },
   });
   if (r2.status !== 400 || r2.body?.error !== "invalid_cause_primary") return { name, pass: false, detail: `cause: ${r2.status} ${r2.body?.error}` };
 
   const r3 = await postJson("createRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
-    source: "compliance_audit", priority: "low",
+    source: "compliance_audit",
   });
   if (r3.status !== 400 || r3.body?.error !== "invalid_source") return { name, pass: false, detail: `source: ${r3.status} ${r3.body?.error}` };
 
   const r4 = await postJson("createRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
-    source: "internal_qc", priority: "low",
+    source: "internal_qc",
     revenueAtRisk: { amount: 100, type: "guessed" },
   });
   if (r4.status !== 400 || r4.body?.error !== "invalid_revenue_type") return { name, pass: false, detail: `revType: ${r4.status} ${r4.body?.error}` };
 
-  return { name, pass: true, detail: "all 4 invalid-enum paths reject with 400" };
+  return { name, pass: true, detail: "invalid cause/source/revenueType → 400; invalid priority silently ignored as designed" };
 }
 
 async function s4_update_validTransition() {
@@ -639,6 +646,148 @@ async function s15_createWithCause_autoTriages() {
   return { name, pass: true, detail: `with cause → triaged + case_triaged audit; without cause → open + no triage audit` };
 }
 
+// ── PR 127a2 scenarios ─────────────────────────────────────────────
+
+async function getJson(name, query) {
+  const qs = new URLSearchParams(query).toString();
+  const res = await fetch(`${FN_BASE}/${name}?${qs}`);
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch (_e) {}
+  return { status: res.status, body: json || text };
+}
+
+async function s16_listRecoveryCasesV1() {
+  const name = "16) PR 127a2: listRecoveryCasesV1 returns cases with derived priority + aggregate totals";
+  // Seed two cases with different revenue / aging profiles
+  const incA = "inc-s16-list-A";
+  const incB = "inc-s16-list-B";
+  await seedIncident(incA);
+  await seedIncident(incB);
+  // Case A: $50k actual → expect "critical" derived
+  await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incA,
+    source: "internal_qc",
+    cause: { primary: "scope_dispute" },
+    revenueAtRisk: { amount: 50000, type: "actual" },
+  });
+  // Case B: unknown amount, 0 days → expect "low" derived
+  await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incB,
+    source: "internal_qc",
+  });
+
+  // Non-admin denied
+  const denied = await getJson("listRecoveryCasesV1", { orgId: ORG_ID, actorUid: FIELD_UID });
+  if (denied.status !== 403) return { name, pass: false, detail: `non-admin should 403; got ${denied.status}` };
+
+  // Admin list
+  const ok = await getJson("listRecoveryCasesV1", { orgId: ORG_ID, actorUid: ADMIN_UID });
+  if (ok.status !== 200 || !ok.body?.ok) return { name, pass: false, detail: `${ok.status} ${JSON.stringify(ok.body).slice(0,200)}` };
+  const cases = ok.body.cases || [];
+  if (!Array.isArray(cases) || cases.length < 2) return { name, pass: false, detail: `expected ≥2 cases; got ${cases.length}` };
+
+  const caseA = cases.find((c) => c.incidentId === incA);
+  const caseB = cases.find((c) => c.incidentId === incB);
+  if (!caseA || !caseB) return { name, pass: false, detail: `missing cases by incidentId` };
+
+  if (caseA.priority !== "critical") return { name, pass: false, detail: `caseA derived priority=${caseA.priority} (expected critical for $50k)` };
+  if (caseB.priority !== "low") return { name, pass: false, detail: `caseB derived priority=${caseB.priority} (expected low for unknown + 0 days)` };
+
+  // Totals strip should aggregate non-terminal cases
+  if (!ok.body.totals) return { name, pass: false, detail: "totals missing" };
+  if (typeof ok.body.totals.openCases !== "number") return { name, pass: false, detail: `openCases not numeric` };
+  if (typeof ok.body.totals.openRevenue !== "number") return { name, pass: false, detail: `openRevenue not numeric` };
+  if (ok.body.totals.openRevenue < 50000) return { name, pass: false, detail: `openRevenue too low: ${ok.body.totals.openRevenue}` };
+
+  return { name, pass: true, detail: `list returned ${cases.length} cases; derived priority correct; totals aggregated ($${ok.body.totals.openRevenue})` };
+}
+
+async function s17_getRecoveryCaseV1() {
+  const name = "17) PR 127a2: getRecoveryCaseV1 returns full case detail + actions + audit; derived priority";
+  const incidentId = "inc-s17-detail";
+  await seedIncident(incidentId);
+
+  const createRes = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+    source: "internal_qc",
+    cause: { primary: "missing_required_proof" },
+    revenueAtRisk: { amount: 20000, type: "estimated" },
+  });
+  const caseId = createRes.body.caseId;
+
+  // Add two actions
+  await postJson("addRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    type: "recapture_proof", title: "Recapture splice photo",
+  });
+  await postJson("addRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    type: "documentation_fix", title: "Update narrative",
+  });
+
+  // Non-admin denied
+  const denied = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: FIELD_UID });
+  if (denied.status !== 403) return { name, pass: false, detail: `non-admin should 403; got ${denied.status}` };
+
+  // Unknown case → 404
+  const unknown = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId: "nonexistent", actorUid: ADMIN_UID });
+  if (unknown.status !== 404) return { name, pass: false, detail: `unknown caseId should 404; got ${unknown.status}` };
+
+  // Happy path
+  const ok = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (ok.status !== 200 || !ok.body?.ok) return { name, pass: false, detail: `${ok.status} ${JSON.stringify(ok.body).slice(0,200)}` };
+
+  const c = ok.body.case;
+  if (!c) return { name, pass: false, detail: "case detail missing" };
+  // $20k estimated, 0 days → high (per threshold table)
+  if (c.priority !== "high") return { name, pass: false, detail: `derived priority=${c.priority} (expected high for $20k)` };
+  if (c.cause?.primary !== "missing_required_proof") return { name, pass: false, detail: `cause not surfaced` };
+
+  if (!Array.isArray(ok.body.actions) || ok.body.actions.length !== 2) {
+    return { name, pass: false, detail: `actions=${ok.body.actions?.length} (expected 2)` };
+  }
+  if (!Array.isArray(ok.body.audit) || ok.body.audit.length < 3) {
+    return { name, pass: false, detail: `audit=${ok.body.audit?.length} (expected ≥3: case_opened, case_triaged, action_created × 2)` };
+  }
+
+  // Audit should be newest-first
+  if (ok.body.audit.length >= 2) {
+    const ts0 = new Date(ok.body.audit[0].createdAt || 0).getTime();
+    const ts1 = new Date(ok.body.audit[1].createdAt || 0).getTime();
+    if (ts0 < ts1) return { name, pass: false, detail: `audit not sorted desc: [0]=${ts0} < [1]=${ts1}` };
+  }
+
+  return { name, pass: true, detail: `detail returned with derived priority=high, ${ok.body.actions.length} actions, ${ok.body.audit.length} audit rows (newest first)` };
+}
+
+async function s18_priorityDeriverThresholds() {
+  const name = "18) PR 127a2: derivePriority threshold matrix correctness";
+  const { derivePriority } = await import("/Users/kesserumini/peakops/my-app/functions_clean/_recoveryPriority.js");
+
+  const cases = [
+    // [amount, days, type, expected]
+    [50000, 0, "actual", "critical"],     // amount threshold
+    [49999, 29, "actual", "high"],         // just under both critical bands
+    [20000, 0, "actual", "high"],          // high amount
+    [5000, 0, "estimated", "medium"],      // medium amount
+    [100, 0, "actual", "low"],             // low amount
+    [0, 30, "unknown", "critical"],        // unknown amount but old enough
+    [99999, 30, "unknown", "critical"],    // unknown ignores amount
+    [99999, 0, "unknown", "low"],          // unknown + fresh
+    [3000, 14, "actual", "high"],          // aging wins (high) over amount (low)
+    [25000, 7, "actual", "high"],          // amount wins (high) over aging (medium)
+  ];
+
+  for (const [amount, days, type, expected] of cases) {
+    const got = derivePriority({ amount, daysOpen: days, amountType: type });
+    if (got !== expected) {
+      return { name, pass: false, detail: `${amount}/${days}d/${type} → got "${got}" (expected "${expected}")` };
+    }
+  }
+  return { name, pass: true, detail: `all ${cases.length} threshold combinations correct` };
+}
+
 // ── main ───────────────────────────────────────────────────────────
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
@@ -663,6 +812,10 @@ async function main() {
     s14_autoResolveOnAccept,
     // PR 127a1 — auto-triage on create with cause
     s15_createWithCause_autoTriages,
+    // PR 127a2 — list + get + derived priority
+    s16_listRecoveryCasesV1,
+    s17_getRecoveryCaseV1,
+    s18_priorityDeriverThresholds,
   ];
 
   const results = [];

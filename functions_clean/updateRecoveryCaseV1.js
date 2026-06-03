@@ -36,13 +36,13 @@ const { extractActorUid } = require("./_actor");
 const {
   RECOVERY_STATUS,
   TERMINAL_STATUSES,
-  RECOVERY_PRIORITY_SET,
   REVENUE_TYPE_SET,
   RECOVERY_CAUSE_PRIMARY_SET,
   OWNER_ROLES_SET,
   canTransitionRecovery,
   normalizeRecoveryStatus,
 } = require("./recoveryState");
+// RECOVERY_PRIORITY_SET no longer used — priority is derived (PR 127a2).
 const { writeRecoveryAudit } = require("./_recoveryAudit");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
@@ -206,24 +206,15 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
     }
 
     // ── priority ────────────────────────────────────────────────
-    if (typeof body.priority === "string") {
-      const newPriority = trimStr(body.priority).toLowerCase();
-      if (!RECOVERY_PRIORITY_SET.has(newPriority)) {
-        return j(res, 400, {
-          ok: false,
-          error: "invalid_priority",
-          detail: "priority must be low, medium, high, or critical",
-        });
-      }
-      if (newPriority !== String(before.priority || "")) {
-        updates.priority = newPriority;
-        auditEvents.push({
-          type: "case_priority_changed",
-          before: { priority: before.priority },
-          after: { priority: newPriority },
-        });
-      }
-    }
+    // PR 127a2 — priority is system-derived from amount + aging on
+    // every read (see _recoveryPriority.js). body.priority is
+    // silently ignored for backwards compat — the persisted field
+    // is informational only and never read for display.
+    // (Previous PR 127a behavior validated + persisted priority on
+    // update; that path is intentionally removed.)
+    // NOTE: revenueAtRisk changes still trigger an audit event below;
+    // that's the closest analog to "priority changed" since the
+    // derived priority shifts with amount.
 
     // ── cause (partial) ─────────────────────────────────────────
     if (body.cause && typeof body.cause === "object") {
