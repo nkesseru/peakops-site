@@ -56,6 +56,14 @@ const {
   hashPrefix,
 } = require("./_customerReviewToken");
 const { emitTimelineEvent } = require("./timelineEmit");
+// PR 127a — when a review link is minted against an incident with an
+// active recovery case, append the new PacketVersionRef + transition
+// the case to awaiting_customer. Best-effort; never fails the mint.
+const {
+  RECOVERY_STATUS,
+  TERMINAL_STATUSES,
+} = require("./recoveryState");
+const { writeRecoveryAudit } = require("./_recoveryAudit");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -282,8 +290,73 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
       sourceStatus,
     });
 
+    // PR 127a — If an active recovery case exists for this incident,
+    // append the new PacketVersionRef and transition the case to
+    // awaiting_customer. Best-effort; mint always succeeds even if
+    // this fails.
+    let linkedRecoveryCaseId = null;
+    try {
+      const casesQuery = await db
+        .collection("orgs").doc(orgId).collection("recovery_cases")
+        .where("incidentId", "==", incidentId)
+        .where("status", "in", [
+          RECOVERY_STATUS.OPEN,
+          RECOVERY_STATUS.TRIAGED,
+          RECOVERY_STATUS.IN_PROGRESS,
+          RECOVERY_STATUS.AWAITING_CUSTOMER,
+          RECOVERY_STATUS.ESCALATED,
+        ])
+        .limit(1)
+        .get();
+      if (!casesQuery.empty) {
+        const caseRef = casesQuery.docs[0].ref;
+        const caseData = casesQuery.docs[0].data() || {};
+        if (!TERMINAL_STATUSES.has(String(caseData.status || ""))) {
+          const packetVersionRef = {
+            packetVersionId: tokenHashPrefix,
+            outcome: "pending",
+            outcomeAt: null,
+            mintedAt: new Date().toISOString(),
+            mintedBy: actorUid,
+            templateVersionAtMint: templateVersion,
+          };
+          const prevPkts = Array.isArray(caseData.packetVersions) ? caseData.packetVersions.slice() : [];
+          const dup = prevPkts.some((p) => p && p.packetVersionId === tokenHashPrefix);
+          const newPkts = dup ? prevPkts : prevPkts.concat([packetVersionRef]);
+          await caseRef.update({
+            packetVersions: newPkts,
+            currentPacketVersion: tokenHashPrefix,
+            cycleCount: newPkts.length,
+            status: RECOVERY_STATUS.AWAITING_CUSTOMER,
+            updatedAt: FieldValue.serverTimestamp(),
+            updatedBy: actorUid,
+          });
+          linkedRecoveryCaseId = caseRef.id;
+          await writeRecoveryAudit({
+            type: "packet_version_appended",
+            orgId, caseId: caseRef.id, incidentId,
+            actorUid,
+            meta: { tokenHashPrefix, sourceStatus, templateVersion },
+          });
+          if (caseData.status !== RECOVERY_STATUS.AWAITING_CUSTOMER) {
+            await writeRecoveryAudit({
+              type: "case_status_changed",
+              orgId, caseId: caseRef.id, incidentId,
+              actorUid,
+              before: { status: caseData.status },
+              after: { status: RECOVERY_STATUS.AWAITING_CUSTOMER },
+              meta: { reason: "review_link_minted" },
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error("[createCustomerReviewLinkV1] recovery_link failed", e && e.message);
+    }
+
     console.log("[createCustomerReviewLinkV1] link_created", {
       orgId, incidentId, tokenHashPrefix, templateVersion, actorUid, sourceStatus,
+      linkedRecoveryCaseId,
     });
 
     return j(res, 200, {
@@ -300,6 +373,10 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
       // PR 126c — clients can branch UI on whether this was a fresh
       // (in_progress) flow or a retroactive (closed) one.
       sourceStatus,
+      // PR 127a — if an active recovery case was linked to this mint,
+      // return its id so the operator UI can show "Mint linked to
+      // case <id>" instead of just the URL.
+      linkedRecoveryCaseId,
     });
   } catch (e) {
     console.error("[createCustomerReviewLinkV1] unhandled", { error: String(e?.message || e), stack: e?.stack });
