@@ -52,6 +52,10 @@ const {
   userAgentFingerprint,
 } = require("./_customerReviewToken");
 const { emitTimelineEvent } = require("./timelineEmit");
+// PR 127a — inline call to recovery auto-create on reject + auto-resolve on accept.
+// Best-effort: any failure inside the recovery helpers is swallowed; the
+// customer-side action still succeeds. Audit gaps surface in logs.
+const { autoCreateOrExtendCase, autoResolveOnAccept } = require("./_recoveryAutoCreate");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -258,6 +262,47 @@ exports.submitCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
     console.log("[submitCustomerReviewV1] customer_action", {
       orgId, incidentId, tokenHashPrefix, finalAction, targetStatus,
     });
+
+    // PR 127a — Inline recovery handling. Best-effort; never fails the
+    // customer-side action. Two paths:
+    //   reject → auto-create new case OR extend existing one
+    //   accept → auto-resolve any awaiting_customer case
+    try {
+      const packetVersionRef = {
+        packetVersionId: tokenHashPrefix,
+        outcome: finalAction,
+        outcomeAt: new Date().toISOString(),
+        customerComment: comment || null,
+        templateVersionAtMint: linkData && Number.isFinite(Number(linkData.templateVersion))
+          ? Number(linkData.templateVersion) : null,
+      };
+      if (finalAction === "rejected") {
+        const r = await autoCreateOrExtendCase({
+          orgId, incidentId,
+          source: "customer_rejected",
+          actorUid: (linkData && linkData.createdBy) || "system",
+          tokenHashPrefix,
+          customerComment: comment || "",
+          packetVersion: packetVersionRef,
+        });
+        console.log("[submitCustomerReviewV1] recovery_auto_handled", {
+          orgId, incidentId, caseId: r.caseId, created: r.created,
+        });
+      } else if (finalAction === "accepted") {
+        const r = await autoResolveOnAccept({
+          orgId, incidentId,
+          tokenHashPrefix,
+          customerComment: comment || "",
+        });
+        if (r.resolved) {
+          console.log("[submitCustomerReviewV1] recovery_auto_resolved", {
+            orgId, incidentId, caseId: r.caseId,
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[submitCustomerReviewV1] recovery_auto_handler failed", e && e.message);
+    }
 
     return j(res, 200, {
       ok: true,

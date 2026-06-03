@@ -137,3 +137,14 @@ safeExport("assignJobOrgV1", "./assignJobOrgV1");
 safeExport("createCustomerReviewLinkV1", "./createCustomerReviewLinkV1");
 safeExport("getCustomerReviewV1", "./getCustomerReviewV1");
 safeExport("submitCustomerReviewV1", "./submitCustomerReviewV1");
+
+// PEAKOPS_RECOVERY_CASE_V1 (PR 127a)
+// Revenue Protection & Recovery — Recovery Cases are the primary
+// object; Recovery Actions are work items inside a case. Auto-create
+// fires inline from submitCustomerReviewV1 on customer rejection;
+// auto-resolve fires inline on customer acceptance of a re-submission.
+// Wedge guards: no CRM, no dispatch, no accounting, no SLA enforcement.
+safeExport("createRecoveryCaseV1", "./createRecoveryCaseV1");
+safeExport("updateRecoveryCaseV1", "./updateRecoveryCaseV1");
+safeExport("addRecoveryActionV1", "./addRecoveryActionV1");
+safeExport("updateRecoveryActionV1", "./updateRecoveryActionV1");
