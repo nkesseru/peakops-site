@@ -85,6 +85,32 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
 
     const data = caseSnap.data() || {};
 
+    // PR 127c-a — denorm incident.title + incident.location into the
+    // response so the operator UI's "WHERE" and job-name surfaces have
+    // the data without a second round-trip. Reads the incident doc
+    // canonically; on failure (incident deleted out from under the case)
+    // the fields just return empty strings — UI flags as data defect.
+    let jobTitle = "";
+    let jobLocation = "";
+    try {
+      const incidentId = trimStr(data.incidentId);
+      if (incidentId) {
+        const canonicalIncRef = db.collection("orgs").doc(orgId)
+          .collection("incidents").doc(incidentId);
+        let incSnap = await canonicalIncRef.get();
+        if (!incSnap.exists) {
+          incSnap = await db.collection("incidents").doc(incidentId).get();
+        }
+        if (incSnap.exists) {
+          const incData = incSnap.data() || {};
+          jobTitle = trimStr(incData.title || incData.name);
+          jobLocation = trimStr(incData.location || incData.address || incData.siteAddress);
+        }
+      }
+    } catch (e) {
+      console.warn("[getRecoveryCaseV1] incident denorm failed", e && e.message);
+    }
+
     // ── Derive priority from current amount + aging ────────────
     const amount = Number(data.revenueAtRisk?.amount);
     const amountType = trimStr(data.revenueAtRisk?.type) || "unknown";
@@ -170,6 +196,10 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
       caseId,
       orgId,
       incidentId: trimStr(data.incidentId),
+      // PR 127c-a — denormed from the incident doc for the UI hero
+      // "WHERE" section and queue list rendering.
+      jobTitle,
+      jobLocation,
       templateKey: trimStr(data.templateKey),
       templateVersion: Number.isFinite(Number(data.templateVersion)) ? Number(data.templateVersion) : null,
 
