@@ -32,8 +32,16 @@ export function useMemberNames(orgId: string, actorUid: string) {
         const url = `/api/fn/listOrgMembersV1?orgId=${encodeURIComponent(orgId)}&actorUid=${encodeURIComponent(actorUid)}`;
         const res = await authedFetch(url, { cache: "no-store" });
         const out: any = await res.json().catch(() => ({}));
-        if (!cancelled && res.ok && Array.isArray(out.members)) {
-          setMembers(out.members);
+        // listOrgMembersV1 returns the array as `docs` (whitelisted projection;
+        // see functions_clean/listOrgMembersV1.js:91). Tolerate `members` too
+        // in case a future backend variant uses that name.
+        const arr = Array.isArray(out.docs)
+          ? out.docs
+          : Array.isArray(out.members)
+            ? out.members
+            : [];
+        if (!cancelled && res.ok) {
+          setMembers(arr);
         }
       } catch {
         // Non-fatal: hook returns uid-as-display as fallback.
