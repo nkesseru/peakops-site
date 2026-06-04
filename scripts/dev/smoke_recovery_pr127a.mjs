@@ -475,7 +475,7 @@ async function s12_autoCreateOnReject() {
   const token = mintRes.body.token;
 
   const rejRes = await postJson("submitCustomerReviewV1", {
-    token, action: "reject", comment: "OTDR trace missing",
+    token, action: "reject", comment: "Please call to discuss",
   });
   if (rejRes.status !== 200) return { name, pass: false, detail: `reject: ${rejRes.status}` };
 
@@ -485,7 +485,7 @@ async function s12_autoCreateOnReject() {
   if (c.status !== "open") return { name, pass: false, detail: `case status=${c.status}` };
   if (c.rejection?.source !== "customer_rejected") return { name, pass: false, detail: `source=${c.rejection?.source}` };
   if (c.priority !== "medium") return { name, pass: false, detail: `priority=${c.priority}` };
-  if (c.cause?.customerComment !== "OTDR trace missing") return { name, pass: false, detail: `comment not captured: ${c.cause?.customerComment}` };
+  if (c.cause?.customerComment !== "Please call to discuss") return { name, pass: false, detail: `comment not captured: ${c.cause?.customerComment}` };
   if (!Array.isArray(c.packetVersions) || c.packetVersions.length !== 1) return { name, pass: false, detail: `packetVersions=${c.packetVersions?.length}` };
 
   // Verify starter action.
@@ -872,6 +872,118 @@ async function s19_actionType_provideTestResults() {
   return { name, pass: true, detail: `provide_test_results accepted; bogus types still rejected` };
 }
 
+// ── PR 128a scenarios ──────────────────────────────────────────────
+
+async function s21_autoCreateInfersCauseFromComment() {
+  const name = "21) PR 128a: Auto-create on customer_rejected infers cause from comment; OTDR keyword → missing_test_result";
+  const incidentId = "inc-s21-otdr-reject";
+  await seedIncident(incidentId);
+
+  const mintRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (mintRes.status !== 200) return { name, pass: false, detail: `mint failed: ${mintRes.status}` };
+
+  const rejRes = await postJson("submitCustomerReviewV1", {
+    token: mintRes.body.token, action: "reject", comment: "We need the OTDR trace before we can sign off.",
+  });
+  if (rejRes.status !== 200) return { name, pass: false, detail: `reject failed: ${rejRes.status}` };
+
+  const c = await findCaseByIncident(incidentId);
+  if (!c) return { name, pass: false, detail: "case not auto-created" };
+  if (c.cause?.primary !== "missing_test_result") return { name, pass: false, detail: `cause.primary=${c.cause?.primary} (expected missing_test_result)` };
+  if (c.cause?.inferredFromComment !== true) return { name, pass: false, detail: `inferredFromComment=${c.cause?.inferredFromComment}` };
+  if (c.status !== "triaged") return { name, pass: false, detail: `status=${c.status} (expected triaged from create-time cause)` };
+  const audit = await readAuditForCase(c.id);
+  if (!audit.includes("case_triaged")) return { name, pass: false, detail: `no case_triaged audit: ${audit}` };
+
+  return { name, pass: true, detail: `cause inferred → missing_test_result; case at triaged; case_triaged audit fired` };
+}
+
+async function s22_autoCreateNoMatchKeepsCauseUnset() {
+  const name = "22) PR 128a: customer comment with no keyword match leaves cause.primary unset";
+  const incidentId = "inc-s22-no-keyword-match";
+  await seedIncident(incidentId);
+  const mintRes = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  const rejRes = await postJson("submitCustomerReviewV1", {
+    token: mintRes.body.token, action: "reject", comment: "Looks fine to me but we still need to talk.",
+  });
+  if (rejRes.status !== 200) return { name, pass: false, detail: `reject failed: ${rejRes.status}` };
+  const c = await findCaseByIncident(incidentId);
+  if (!c) return { name, pass: false, detail: "case not auto-created" };
+  if (c.cause?.primary) return { name, pass: false, detail: `unexpected cause.primary=${c.cause.primary} for no-keyword-match` };
+  if (c.cause?.inferredFromComment === true) return { name, pass: false, detail: `inferredFromComment=true with no cause set` };
+  if (c.status !== "open") return { name, pass: false, detail: `status=${c.status} (expected open)` };
+  return { name, pass: true, detail: `no keyword match → cause.primary unset; status open` };
+}
+
+async function s23_suggestedActionsInResponse() {
+  const name = "23) PR 128a: getRecoveryCaseV1 returns suggestedActions filtered against existing";
+  const incidentId = "inc-s23-suggestions";
+  await seedIncident(incidentId);
+  const createRes = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+    source: "internal_qc",
+    cause: { primary: "missing_test_result" },
+  });
+  const caseId = createRes.body.caseId;
+
+  // No actions yet → expect both suggestions
+  let getRes = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (getRes.status !== 200) return { name, pass: false, detail: `get1 failed: ${getRes.status}` };
+  const initial = getRes.body.suggestedActions;
+  if (!Array.isArray(initial) || initial.length !== 2) return { name, pass: false, detail: `expected 2 suggestions; got ${initial?.length}` };
+  if (initial[0].type !== "provide_test_results") return { name, pass: false, detail: `first suggestion type=${initial[0].type}` };
+  if (!initial[0].description || initial[0].description.length === 0) return { name, pass: false, detail: `first suggestion missing description (pre-populated check)` };
+  if (initial[0].assigneeRole !== "field_lead") return { name, pass: false, detail: `first suggestion role=${initial[0].assigneeRole}` };
+
+  // Add one of the suggested types → expect filtered to 1
+  await postJson("addRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    type: "provide_test_results", title: "Already added",
+  });
+  getRes = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  const afterAdd = getRes.body.suggestedActions;
+  if (!Array.isArray(afterAdd) || afterAdd.length !== 1) return { name, pass: false, detail: `after add: expected 1; got ${afterAdd?.length}` };
+  if (afterAdd[0].type !== "re_submit_to_customer") return { name, pass: false, detail: `remaining suggestion type=${afterAdd[0].type}` };
+
+  return { name, pass: true, detail: `suggestions returned + filtered after add; descriptions + roles pre-populated` };
+}
+
+async function s24_neverOverwriteManuallySetCause() {
+  const name = "24) PR 128a: keyword match must NOT overwrite a manually-set cause on case extension (second rejection)";
+  const incidentId = "inc-s24-no-overwrite";
+  await seedIncident(incidentId);
+
+  // First reject — comment "blurry" → derives proof_quality_insufficient
+  const mint1 = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint1.body.token, action: "reject", comment: "Photo is blurry" });
+  let c = await findCaseByIncident(incidentId);
+  if (c.cause?.primary !== "proof_quality_insufficient") return { name, pass: false, detail: `1st: cause=${c.cause?.primary}` };
+
+  // Operator manually overrides cause to documentation_error
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId: c.id,
+    cause: { primary: "documentation_error" },
+  });
+  c = (await db.doc(`orgs/${ORG_ID}/recovery_cases/${c.id}`).get()).data();
+  if (c.cause.primary !== "documentation_error") return { name, pass: false, detail: `after override: cause=${c.cause.primary}` };
+  if (c.cause.inferredFromComment !== false) return { name, pass: false, detail: `inferredFromComment not cleared after manual set` };
+
+  // Send a second reject with comment that WOULD match a different cause
+  await db.doc(`orgs/${ORG_ID}/incidents/${incidentId}`).update({ status: "in_progress" });
+  await postJson("updateRecoveryCaseV1", { actorUid: ADMIN_UID, orgId: ORG_ID, caseId: c.id, status: "in_progress" });
+  const mint2 = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint2.body.token, action: "reject", comment: "OTDR trace is missing" });
+
+  c = (await db.doc(`orgs/${ORG_ID}/recovery_cases/${c.id}`).get()).data();
+  if (c.cause.primary !== "documentation_error") return { name, pass: false, detail: `2nd reject overwrote cause to ${c.cause.primary}` };
+
+  return { name, pass: true, detail: `manual cause preserved across second rejection; inferredFromComment cleared on manual set` };
+}
+
 // ── main ───────────────────────────────────────────────────────────
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
@@ -904,6 +1016,11 @@ async function main() {
     s19_actionType_provideTestResults,
     // PR 127c-a — denorm jobTitle + jobLocation
     s20_denormJobTitleAndLocation,
+    // PR 128a — cause inference + suggested actions
+    s21_autoCreateInfersCauseFromComment,
+    s22_autoCreateNoMatchKeepsCauseUnset,
+    s23_suggestedActionsInResponse,
+    s24_neverOverwriteManuallySetCause,
   ];
 
   const results = [];

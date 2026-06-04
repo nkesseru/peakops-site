@@ -29,6 +29,9 @@ const {
   deterministicCaseId,
 } = require("./recoveryState");
 const { writeRecoveryAudit } = require("./_recoveryAudit");
+// PR 128a — derive cause.primary from the customer rejection comment
+// when no cause is set. First-match substring map; null on no match.
+const { deriveCauseFromComment } = require("./_recoveryAutomation");
 
 /**
  * Auto-create or extend a recovery case for an incident that just
@@ -168,6 +171,14 @@ async function autoCreateOrExtendCase(args) {
   const starterActionId = `action_${caseId}_starter`;
   const actionRef = caseRef.collection("actions").doc(starterActionId);
 
+  // PR 128a — derive cause.primary from the customer comment via the
+  // explicit substring keyword map. Hoisted to function scope so the
+  // post-transaction audit emission block can read it.
+  const inferredCause = source === "customer_rejected"
+    ? deriveCauseFromComment(customerComment)
+    : null;
+  const initialStatus = inferredCause ? RECOVERY_STATUS.TRIAGED : RECOVERY_STATUS.OPEN;
+
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(caseRef);
     if (snap.exists) {
@@ -190,11 +201,20 @@ async function autoCreateOrExtendCase(args) {
 
     // Fresh create.
     const now = FieldValue.serverTimestamp();
+    const causeDoc = {
+      ...(customerComment ? { customerComment } : {}),
+      ...(inferredCause ? {
+        primary: inferredCause,
+        inferredFromComment: true,
+        categorizedBy: "system",
+        categorizedAt: now,
+      } : {}),
+    };
     const newCase = {
       id: caseId,
       orgId,
       incidentId,
-      status: RECOVERY_STATUS.OPEN,
+      status: initialStatus,
       priority,
       revenueAtRisk: {
         amount: 0,
@@ -203,7 +223,7 @@ async function autoCreateOrExtendCase(args) {
         enteredBy: actorUid,
         enteredAt: now,
       },
-      cause: customerComment ? { customerComment } : {},
+      cause: causeDoc,
       rejection: {
         source,
         tokenHashPrefix: tokenHashPrefix || null,
@@ -266,8 +286,27 @@ async function autoCreateOrExtendCase(args) {
         source, tokenHashPrefix,
         customerComment: customerComment || null,
         priority,
+        // PR 128a — record whether automation set the cause at create
+        // time, so audit reporting can answer "how often does the
+        // keyword map catch the right cause?"
+        inferredCause: inferredCause || null,
       },
     });
+    // PR 128a — if cause was inferred from comment, emit a case_triaged
+    // audit row alongside the auto-open. Mirrors PR 127a1's manual
+    // create-with-cause flow.
+    if (inferredCause) {
+      await writeRecoveryAudit({
+        type: "case_triaged",
+        orgId, caseId, incidentId,
+        actorUid,
+        meta: {
+          causePrimary: inferredCause,
+          inferredFromComment: true,
+          createTimeTriage: true,
+        },
+      });
+    }
     await writeRecoveryAudit({
       type: "action_created",
       orgId, caseId, incidentId,
@@ -277,6 +316,8 @@ async function autoCreateOrExtendCase(args) {
     });
     console.log("[_recoveryAutoCreate] case_opened", {
       orgId, incidentId, caseId, source, priority,
+      inferredCause: inferredCause || "(none)",
+      initialStatus,
     });
   }
 

@@ -20,6 +20,10 @@ const {
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
 const { derivePriority, daysOpenSince } = require("./_recoveryPriority");
+// PR 128a — suggested action chain per cause primary; filtered against
+// actions already on the case (by type). Wedge guard: no writes here,
+// pure read.
+const { getSuggestedActions } = require("./_recoveryAutomation");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -223,6 +227,11 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
         operatorNotes: trimStr(data.cause?.operatorNotes),
         categorizedBy: trimStr(data.cause?.categorizedBy),
         categorizedAt: tsIso(data.cause?.categorizedAt),
+        // PR 128a — surface the "inferred from customer comment" flag
+        // so the UI MISSION card can show the marker + one-click
+        // override. Cleared whenever an operator manually sets
+        // cause.primary via updateRecoveryCaseV1.
+        inferredFromComment: Boolean(data.cause?.inferredFromComment),
       },
 
       rejection: {
@@ -270,12 +279,19 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
       actorUid, actorRole,
     });
 
+    // PR 128a — Suggested actions per cause. Filtered against actions
+    // already on the case (by type) so we don't re-suggest something
+    // the operator already added. Empty array when cause isn't set
+    // or when all suggestions have been added already.
+    const suggestedActions = getSuggestedActions(detail.cause.primary, actions);
+
     return j(res, 200, {
       ok: true,
       orgId, caseId,
       case: detail,
       actions,
       audit,
+      suggestedActions,
     });
   } catch (e) {
     console.error("[getRecoveryCaseV1] unhandled", { error: String(e?.message || e), stack: e?.stack });

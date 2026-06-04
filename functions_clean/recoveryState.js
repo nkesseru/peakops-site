@@ -51,7 +51,7 @@ const RECOVERY_SOURCE_SET = new Set(RECOVERY_SOURCE);
 const REVENUE_TYPE = Object.freeze(["actual", "estimated", "unknown"]);
 const REVENUE_TYPE_SET = new Set(REVENUE_TYPE);
 
-// ── Cause taxonomy (10) — most-specific-first ────────────────────
+// ── Cause taxonomy (11) — most-specific-first ────────────────────
 const RECOVERY_CAUSE_PRIMARY = Object.freeze([
   "missing_required_proof",
   "proof_quality_insufficient",
@@ -62,6 +62,12 @@ const RECOVERY_CAUSE_PRIMARY = Object.freeze([
   "compliance_failure",
   "unclear_customer_feedback",
   "internal_qc_caught",
+  // PR 128a — telecom blind spot. OTDR traces, loss measurements,
+  // splice reports are first-class proof items distinct from generic
+  // documentation. Promoted from the catch-all "missing_required_proof"
+  // because the recovery action chain differs (Provide Test Results vs
+  // Capture Missing Proof).
+  "missing_test_result",
   "other",
 ]);
 const RECOVERY_CAUSE_PRIMARY_SET = new Set(RECOVERY_CAUSE_PRIMARY);
