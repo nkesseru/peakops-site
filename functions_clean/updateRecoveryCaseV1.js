@@ -233,6 +233,10 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
           causeUpdates["cause.primary"] = p;
           causeUpdates["cause.categorizedBy"] = actorUid;
           causeUpdates["cause.categorizedAt"] = FieldValue.serverTimestamp();
+          // PR 128a — operator just manually set cause.primary; clear
+          // the "inferred from customer comment" marker so the UI
+          // stops showing it.
+          causeUpdates["cause.inferredFromComment"] = false;
           // First-time triage transitions open → triaged if not blocked.
           if (currentStatus === RECOVERY_STATUS.OPEN && !statusChanged) {
             if (canTransitionRecovery(currentStatus, RECOVERY_STATUS.TRIAGED)) {
