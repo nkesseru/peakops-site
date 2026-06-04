@@ -23,15 +23,17 @@ import { useAuth } from "@/hooks/useAuth";
 import AppTopBar from "@/components/AppTopBar";
 import RequireAuth from "@/components/RequireAuth";
 import { CaseStatusBadge } from "@/components/recovery/StatusBadge";
-import { RevenueDisplay } from "@/components/recovery/RevenueDisplay";
 import { EvidencePicker } from "@/components/recovery/EvidencePicker";
 import { AddRecoveryActionModal } from "@/components/recovery/AddRecoveryActionModal";
 import { ResolveCaseModal } from "@/components/recovery/ResolveCaseModal";
 import { NextActionBlock } from "@/components/recovery/NextActionBlock";
 import { WhereSection } from "@/components/recovery/WhereSection";
-import { WhatsWrongSection } from "@/components/recovery/WhatsWrongSection";
 import { DoneActionsList } from "@/components/recovery/DoneActionsList";
 import { CollapsibleCaseDetails } from "@/components/recovery/CollapsibleCaseDetails";
+// PR 127d — mission-briefing card replaces the 2-stat hero +
+// standalone WhatsWrongSection. Problem · Reason · Impact in one
+// briefing-style top block, then WHERE, then YOUR NEXT MOVE.
+import { MissionBriefingCard } from "@/components/recovery/MissionBriefingCard";
 import { useMemberNames } from "@/lib/recovery/useMemberNames";
 import { TERMINAL_STATUSES } from "@/lib/recovery/displayConstants";
 import type {
@@ -236,27 +238,16 @@ function DetailContent({ caseId }: { caseId: string }) {
         ← Recovery
       </button>
 
-      {/* TWO BIG NUMBERS — Revenue at risk + Days aging */}
-      <section className="grid grid-cols-2 gap-3 sm:gap-4">
-        <BigStat
-          value={<RevenueDisplay revenue={caseData.revenueAtRisk} size="lg" showType={true} />}
-          label="At risk"
-        />
-        <BigStat
-          value={
-            <span className="text-2xl sm:text-3xl font-semibold tabular-nums text-white">
-              {caseData.daysOpen} <span className="text-base font-medium text-gray-400">day{caseData.daysOpen === 1 ? "" : "s"}</span>
-            </span>
-          }
-          label="Aging"
-        />
-      </section>
-
-      {/* WHAT'S WRONG */}
-      <WhatsWrongSection
+      {/* PR 127d — MISSION briefing card replaces the BigStat hero
+          and the standalone WhatsWrongSection. Problem · Reason ·
+          Impact in a briefing-style block. Revenue and aging are
+          demoted to the footnote line inside the card. */}
+      <MissionBriefingCard
         causePrimary={caseData.cause.primary || ""}
         customerComment={caseData.cause.customerComment}
         operatorNotes={caseData.cause.operatorNotes}
+        revenueAtRisk={caseData.revenueAtRisk}
+        daysOpen={caseData.daysOpen}
       />
 
       {/* WHERE */}
@@ -369,15 +360,6 @@ function DetailContent({ caseId }: { caseId: string }) {
           onConfirm={(ids) => handleAttachEvidence(showEvidencePickerForActionId, ids)}
         />
       )}
-    </div>
-  );
-}
-
-function BigStat({ value, label }: { value: React.ReactNode; label: string }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5">
-      <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-gray-500">{label}</div>
-      <div className="mt-1.5">{value}</div>
     </div>
   );
 }
