@@ -1,15 +1,18 @@
-// PEAKOPS_RECOVERY_UI_V1 (PR 127b)
+// PEAKOPS_RECOVERY_UI_V1 (PR 127c-b)
 //
-// Recovery case detail page. Revenue-first framing — every visible
-// section answers one of the five questions:
-//   What is wrong? → cause + customer comment
-//   How much revenue is at risk? → hero stat
-//   Who owns recovery? → ownership section
-//   What is blocking acceptance? → Recovery Actions list
-//   What happens next? → first open action + case action bar
+// Recovery case detail — distracted-user redesign.
 //
-// Audit timeline is collapsible (not visually dominant per the
-// PR 127b scope-guard reminder).
+// Information hierarchy approved 2026-06-04:
+//   1. What is wrong?    → cause + customer comment (top, prominent)
+//   2. Where is the job? → job name + address + maps link
+//   3. What do I do?     → NEXT ACTION block (dominant CTA)
+//   4. Did I finish it?  → single-line list of done actions
+// Plus: collapsible footer with everything else (priority, owner, etc.)
+//
+// Priority is INVISIBLE in the primary UI — used for sort only on
+// the queue. Member uids are resolved to names via listOrgMembersV1.
+// Recovery actions require address or GPS; if neither, show data
+// defect flag (do not hide).
 
 "use client";
 
@@ -19,21 +22,18 @@ import { authedFetch } from "@/lib/apiClient";
 import { useAuth } from "@/hooks/useAuth";
 import AppTopBar from "@/components/AppTopBar";
 import RequireAuth from "@/components/RequireAuth";
-import { PriorityBadge } from "@/components/recovery/PriorityBadge";
 import { CaseStatusBadge } from "@/components/recovery/StatusBadge";
 import { RevenueDisplay } from "@/components/recovery/RevenueDisplay";
-import { RecoveryActionListItem } from "@/components/recovery/RecoveryActionListItem";
 import { EvidencePicker } from "@/components/recovery/EvidencePicker";
 import { AddRecoveryActionModal } from "@/components/recovery/AddRecoveryActionModal";
 import { ResolveCaseModal } from "@/components/recovery/ResolveCaseModal";
-import { customerLabelFromTemplateKey } from "@/lib/recovery/customerLabelFromTemplateKey";
-import {
-  CAUSE_DISPLAY,
-  OWNER_ROLE_DISPLAY,
-  SOURCE_DISPLAY,
-  TERMINAL_STATUSES,
-  formatRevenue,
-} from "@/lib/recovery/displayConstants";
+import { NextActionBlock } from "@/components/recovery/NextActionBlock";
+import { WhereSection } from "@/components/recovery/WhereSection";
+import { WhatsWrongSection } from "@/components/recovery/WhatsWrongSection";
+import { DoneActionsList } from "@/components/recovery/DoneActionsList";
+import { CollapsibleCaseDetails } from "@/components/recovery/CollapsibleCaseDetails";
+import { useMemberNames } from "@/lib/recovery/useMemberNames";
+import { TERMINAL_STATUSES } from "@/lib/recovery/displayConstants";
 import type {
   GetRecoveryCaseResponse,
   RecoveryCaseDetail,
@@ -41,26 +41,9 @@ import type {
   RecoveryAuditEvent,
   RecoveryActionType,
   OwnerRole,
-  PacketVersionRef,
 } from "@/lib/recovery/types";
 
-type Props = {
-  caseId: string;
-};
-
-function fmtIso(iso?: string | null): string {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString(undefined, {
-      year: "numeric", month: "short", day: "numeric",
-      hour: "2-digit", minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
+type Props = { caseId: string };
 
 export default function RecoveryCaseClient({ caseId }: Props) {
   return (
@@ -84,6 +67,8 @@ function DetailContent({ caseId }: { caseId: string }) {
   const actorUid = String(user?.uid || "").trim();
   const orgId = String(sp?.get("orgId") || "").trim();
 
+  const memberNames = useMemberNames(orgId, actorUid);
+
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [caseData, setCaseData] = useState<RecoveryCaseDetail | null>(null);
@@ -97,7 +82,6 @@ function DetailContent({ caseId }: { caseId: string }) {
   const [showAddAction, setShowAddAction] = useState(false);
   const [showResolve, setShowResolve] = useState(false);
   const [showEvidencePickerForActionId, setShowEvidencePickerForActionId] = useState<string>("");
-  const [showAuditTimeline, setShowAuditTimeline] = useState(false);
 
   useEffect(() => {
     if (!orgId || !caseId || !actorUid) return;
@@ -129,10 +113,16 @@ function DetailContent({ caseId }: { caseId: string }) {
 
   const refresh = useCallback(() => setRefreshTick((n) => n + 1), []);
 
-  const firstOpenAction = useMemo(
-    () => actions.find((a) => a.status === "open" || a.status === "in_progress") || null,
-    [actions]
-  );
+  // Split actions: NEXT (first open / in_progress) vs DONE (the rest).
+  // Blocked actions also surface as the "next" attention since they need
+  // operator unblocking.
+  const { nextAction, doneActions, otherOpenActions } = useMemo(() => {
+    const next = actions.find((a) => a.status === "open" || a.status === "in_progress" || a.status === "blocked") || null;
+    const done = actions.filter((a) => a.status === "done" || a.status === "skipped");
+    const otherOpen = actions.filter((a) => a !== next && (a.status === "open" || a.status === "in_progress" || a.status === "blocked"));
+    return { nextAction: next, doneActions: done, otherOpenActions: otherOpen };
+  }, [actions]);
+
   const isTerminal = caseData ? TERMINAL_STATUSES.has(caseData.status) : false;
 
   async function callUpdateAction(actionId: string, body: Record<string, unknown>) {
@@ -197,16 +187,10 @@ function DetailContent({ caseId }: { caseId: string }) {
       const res = await authedFetch(`/api/fn/updateRecoveryCaseV1`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          orgId, caseId, actorUid,
-          status: args.outcome,
-          resolution: args,
-        }),
+        body: JSON.stringify({ orgId, caseId, actorUid, status: args.outcome, resolution: args }),
       });
       const out: any = await res.json().catch(() => ({}));
-      if (!res.ok || !out.ok) {
-        throw new Error(out.detail || out.error || `HTTP ${res.status}`);
-      }
+      if (!res.ok || !out.ok) throw new Error(out.detail || out.error || `HTTP ${res.status}`);
       setShowResolve(false);
       await refresh();
     } catch (e: any) {
@@ -215,8 +199,7 @@ function DetailContent({ caseId }: { caseId: string }) {
   }
 
   async function handleEscalate() {
-    if (!caseData) return;
-    if (caseData.status === "escalated") return;
+    if (!caseData || caseData.status === "escalated") return;
     setOpErr("");
     try {
       const res = await authedFetch(`/api/fn/updateRecoveryCaseV1`, {
@@ -232,183 +215,75 @@ function DetailContent({ caseId }: { caseId: string }) {
     }
   }
 
-  if (!isAdmin) {
-    return <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5 text-sm text-gray-300">Recovery is admin/coordinator only.</div>;
-  }
-  if (!orgId) {
-    return <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5 text-sm text-gray-300">Missing orgId.</div>;
-  }
-  if (loading) {
-    return <div className="text-[12px] text-gray-500 italic py-8 text-center">Loading recovery case…</div>;
-  }
-  if (err) {
-    return (
-      <div className="rounded-xl border border-red-300/25 bg-red-500/[0.05] p-5 space-y-3">
-        <div className="text-sm text-red-200">{err}</div>
-        <button onClick={refresh} className="text-[12px] px-3 py-1.5 rounded-full border border-white/15 bg-white/[0.06] hover:bg-white/[0.12]">Retry</button>
-      </div>
-    );
-  }
-  if (!caseData) {
-    return <div className="text-gray-500 text-sm italic py-8 text-center">Case not found.</div>;
-  }
-
-  const customerLabel = customerLabelFromTemplateKey(caseData.templateKey) || "—";
-  const causeLabel = caseData.cause.primary
-    ? (CAUSE_DISPLAY[caseData.cause.primary as keyof typeof CAUSE_DISPLAY] || caseData.cause.primary)
-    : "Not yet triaged";
+  if (!isAdmin) return <Panel>Recovery is admin/coordinator only.</Panel>;
+  if (!orgId) return <Panel>Missing orgId.</Panel>;
+  if (loading) return <div className="text-[12px] text-gray-500 italic py-8 text-center">Loading recovery case…</div>;
+  if (err) return (
+    <div className="rounded-xl border border-red-300/25 bg-red-500/[0.05] p-5 space-y-3">
+      <div className="text-sm text-red-200">{err}</div>
+      <button onClick={refresh} className="text-[12px] px-3 py-1.5 rounded-full border border-white/15 bg-white/[0.06] hover:bg-white/[0.12]">Retry</button>
+    </div>
+  );
+  if (!caseData) return <div className="text-gray-500 text-sm italic py-8 text-center">Case not found.</div>;
 
   return (
     <div className="space-y-5">
-      {/* Back nav */}
+      {/* Back */}
       <button
         onClick={() => router.push(`/recovery?orgId=${encodeURIComponent(orgId)}`)}
         className="text-[12px] text-gray-400 hover:text-gray-200"
       >
-        ← Recovery cases
+        ← Recovery
       </button>
 
-      {/* Header + provenance */}
-      <header className="space-y-1.5">
-        <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-          Recovery case · {caseId.slice(0, 8)}
-        </div>
-        <h1 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">
-          {customerLabel} · Cycle {caseData.cycleCount}
-        </h1>
-        <div className="text-[12px] text-gray-400">
-          {caseData.templateKey && (
-            <span className="font-mono">{caseData.templateKey}</span>
-          )}
-          {caseData.templateVersion != null && <span> · v{caseData.templateVersion}</span>}
-          {caseData.rejection.source && (
-            <span> · Source: {SOURCE_DISPLAY[caseData.rejection.source as keyof typeof SOURCE_DISPLAY] || caseData.rejection.source}</span>
-          )}
-        </div>
-      </header>
-
-      {/* Hero stats — At risk / Priority / Status */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <HeroCard label="At risk">
-          <RevenueDisplay revenue={caseData.revenueAtRisk} size="lg" />
-        </HeroCard>
-        <HeroCard label="Priority">
-          <div className="flex items-center gap-2 pt-1">
-            <PriorityBadge priority={caseData.priority} />
-          </div>
-          <div className="text-[10px] text-gray-500 mt-1.5">derived from revenue + aging</div>
-        </HeroCard>
-        <HeroCard label="Status">
-          <div className="flex items-center gap-2 pt-1">
-            <CaseStatusBadge status={caseData.status} />
-          </div>
-          <div className="text-[10px] text-gray-500 mt-1.5 tabular-nums">{caseData.daysOpen} day{caseData.daysOpen === 1 ? "" : "s"} aging</div>
-        </HeroCard>
-      </div>
-
-      {/* Why */}
-      <section className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5 space-y-2">
-        <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">Why</div>
-        <div className="text-sm text-white">
-          <span className="text-gray-400">Cause:</span> {causeLabel}
-        </div>
-        {caseData.cause.customerComment && (
-          <div className="text-[12px] text-gray-300">
-            <span className="text-gray-500">Customer said:</span> &ldquo;{caseData.cause.customerComment}&rdquo;
-          </div>
-        )}
-        {caseData.cause.operatorNotes && (
-          <div className="text-[12px] text-gray-300">
-            <span className="text-gray-500">Operator note:</span> {caseData.cause.operatorNotes}
-          </div>
-        )}
+      {/* TWO BIG NUMBERS — Revenue at risk + Days aging */}
+      <section className="grid grid-cols-2 gap-3 sm:gap-4">
+        <BigStat
+          value={<RevenueDisplay revenue={caseData.revenueAtRisk} size="lg" showType={true} />}
+          label="At risk"
+        />
+        <BigStat
+          value={
+            <span className="text-2xl sm:text-3xl font-semibold tabular-nums text-white">
+              {caseData.daysOpen} <span className="text-base font-medium text-gray-400">day{caseData.daysOpen === 1 ? "" : "s"}</span>
+            </span>
+          }
+          label="Aging"
+        />
       </section>
 
-      {/* Owner */}
-      <section className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5 space-y-1.5">
-        <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">Owner</div>
-        <div className="text-sm text-white">
-          {caseData.ownership.owner ? (
-            <>
-              <span className="font-mono text-[12px] text-gray-300">{caseData.ownership.owner}</span>
-              {caseData.ownership.ownerRole && (
-                <span className="text-gray-500"> · {OWNER_ROLE_DISPLAY[caseData.ownership.ownerRole as keyof typeof OWNER_ROLE_DISPLAY] || caseData.ownership.ownerRole}</span>
-              )}
-            </>
-          ) : (
-            <span className="text-gray-500 italic">Unassigned</span>
-          )}
-        </div>
-      </section>
+      {/* WHAT'S WRONG */}
+      <WhatsWrongSection
+        causePrimary={caseData.cause.primary || ""}
+        customerComment={caseData.cause.customerComment}
+        operatorNotes={caseData.cause.operatorNotes}
+      />
 
-      {/* Recovery Actions */}
-      <section className="space-y-2.5">
-        <div className="flex items-center justify-between">
-          <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-            Recovery Actions ({actions.length})
-          </div>
-          {!isTerminal && (
-            <button
-              onClick={() => setShowAddAction(true)}
-              className="text-[11px] px-3 py-1.5 rounded-full border border-white/15 bg-white/[0.04] text-gray-200 hover:bg-white/[0.10]"
-            >
-              + Add action
-            </button>
-          )}
-        </div>
-        {actions.length === 0 ? (
-          <div className="text-[12px] text-gray-500 italic py-3 text-center rounded-xl border border-white/10 bg-white/[0.02]">
-            No Recovery Actions yet.
-          </div>
-        ) : (
-          <div className="space-y-2.5">
-            {actions.map((a) => (
-              <RecoveryActionListItem
-                key={a.id}
-                action={a}
-                busy={busyActionId === a.id}
-                onMarkInProgress={() => callUpdateAction(a.id, { status: "in_progress" })}
-                onMarkDone={() => callUpdateAction(a.id, { status: "done" })}
-                onAttachEvidence={() => setShowEvidencePickerForActionId(a.id)}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      {/* WHERE */}
+      <WhereSection
+        jobTitle={caseData.jobTitle}
+        jobLocation={caseData.jobLocation}
+        incidentId={caseData.incidentId}
+        orgId={orgId}
+      />
 
-      {/* Packet Versions */}
-      {caseData.packetVersions.length > 0 && (
-        <PacketVersionsList versions={caseData.packetVersions} />
-      )}
-
-      {/* Case actions */}
+      {/* NEXT ACTION — dominant CTA */}
       {!isTerminal && (
-        <section className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3.5">
-          <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-gray-500 mb-2">Case actions</div>
-          {opErr && (
-            <div className="mb-2 rounded-lg border border-red-300/25 bg-red-500/[0.05] px-3 py-2 text-[12px] text-red-200">
-              {opErr}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {caseData.status !== "escalated" && (
-              <button
-                onClick={handleEscalate}
-                className="text-[12px] px-3 py-1.5 rounded-full border border-orange-400/30 bg-orange-500/10 text-orange-200 hover:bg-orange-500/20"
-              >
-                Escalate
-              </button>
-            )}
-            <button
-              onClick={() => setShowResolve(true)}
-              className="text-[12px] px-3 py-1.5 rounded-full border border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20"
-            >
-              Resolve…
-            </button>
-          </div>
-        </section>
+        <NextActionBlock
+          nextAction={nextAction}
+          assigneeNameResolver={memberNames.resolve}
+          busy={busyActionId === (nextAction?.id || "")}
+          opErr={opErr}
+          onMarkInProgress={() => nextAction && callUpdateAction(nextAction.id, { status: "in_progress" })}
+          onMarkDone={() => nextAction && callUpdateAction(nextAction.id, { status: "done" })}
+          onAttachEvidence={() => nextAction && setShowEvidencePickerForActionId(nextAction.id)}
+          onAddAction={() => setShowAddAction(true)}
+          onResolveCase={() => setShowResolve(true)}
+          allActionsDone={!nextAction && actions.length > 0 && doneActions.length === actions.length}
+        />
       )}
 
+      {/* Terminal case — show resolution summary */}
       {isTerminal && caseData.resolution && (
         <section className="rounded-xl border border-emerald-300/25 bg-emerald-500/[0.05] px-4 py-3.5 space-y-1">
           <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-emerald-200/80">Resolved</div>
@@ -421,41 +296,50 @@ function DetailContent({ caseId }: { caseId: string }) {
           {caseData.resolution.notes && (
             <div className="text-[12px] text-emerald-100/80 italic">&ldquo;{caseData.resolution.notes}&rdquo;</div>
           )}
-          {caseData.resolution.resolvedAt && (
-            <div className="text-[11px] text-emerald-200/60 tabular-nums">{fmtIso(caseData.resolution.resolvedAt)}</div>
-          )}
         </section>
       )}
 
-      {/* Audit timeline — collapsible */}
-      <section className="rounded-xl border border-white/10 bg-white/[0.02]">
-        <button
-          onClick={() => setShowAuditTimeline((v) => !v)}
-          className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-white/[0.03] transition"
-        >
-          <span className="text-[10px] uppercase tracking-[0.18em] font-semibold text-gray-500">
-            Audit timeline · {audit.length} events
-          </span>
-          <span className="text-[11px] text-gray-500">{showAuditTimeline ? "Collapse" : "Expand"}</span>
-        </button>
-        {showAuditTimeline && (
-          <div className="border-t border-white/[0.05] px-4 py-3 space-y-1.5">
-            {audit.length === 0 ? (
-              <div className="text-[12px] text-gray-500 italic">No audit events yet.</div>
-            ) : (
-              audit.map((ev) => (
-                <div key={ev.id} className="text-[11px] flex items-start gap-2">
-                  <span className="text-gray-500 tabular-nums shrink-0 w-32">{fmtIso(ev.createdAt)}</span>
-                  <span className="text-gray-300 font-mono">{ev.type}</span>
-                  {ev.actorUid && (
-                    <span className="text-gray-500">· {ev.actorUid.slice(0, 8)}</span>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </section>
+      {/* DONE (and other open actions if any) — single-line list, visible without expansion */}
+      {(doneActions.length > 0 || otherOpenActions.length > 0) && (
+        <DoneActionsList
+          done={doneActions}
+          otherOpen={otherOpenActions}
+          assigneeNameResolver={memberNames.resolve}
+        />
+      )}
+
+      {/* Add Recovery Action — small footer trigger if case still active */}
+      {!isTerminal && nextAction && (
+        <div className="text-center">
+          <button
+            type="button"
+            onClick={() => setShowAddAction(true)}
+            className="text-[11px] text-gray-400 hover:text-gray-200 px-3 py-1 rounded-full border border-white/10 hover:border-white/20"
+          >
+            + Add Recovery Action
+          </button>
+        </div>
+      )}
+
+      {/* Escalate (small, separate from primary CTA) */}
+      {!isTerminal && caseData.status !== "escalated" && (
+        <div className="text-center">
+          <button
+            type="button"
+            onClick={handleEscalate}
+            className="text-[11px] text-orange-300/70 hover:text-orange-200 px-3 py-1 rounded-full border border-orange-400/20 hover:border-orange-400/40"
+          >
+            Escalate
+          </button>
+        </div>
+      )}
+
+      {/* Collapsible: status, owner, source, packet versions, audit — everything de-emphasized */}
+      <CollapsibleCaseDetails
+        caseData={caseData}
+        audit={audit}
+        assigneeNameResolver={memberNames.resolve}
+      />
 
       {/* Modals */}
       {showAddAction && (
@@ -489,42 +373,15 @@ function DetailContent({ caseId }: { caseId: string }) {
   );
 }
 
-function HeroCard({ label, children }: { label: string; children: React.ReactNode }) {
+function BigStat({ value, label }: { value: React.ReactNode; label: string }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5">
       <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-gray-500">{label}</div>
-      <div className="mt-1">{children}</div>
+      <div className="mt-1.5">{value}</div>
     </div>
   );
 }
 
-function PacketVersionsList({ versions }: { versions: PacketVersionRef[] }) {
-  return (
-    <section className="space-y-2.5">
-      <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-        Packet versions ({versions.length})
-      </div>
-      <div className="space-y-2">
-        {versions.map((p, i) => {
-          const outcomeClass =
-            p.outcome === "accepted" ? "text-emerald-300" :
-            p.outcome === "rejected" ? "text-red-300" :
-            "text-gray-400";
-          return (
-            <div key={`${p.packetVersionId}-${i}`} className="rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5 text-[12px]">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-gray-300">
-                  #{i + 1} · <span className="font-mono text-[10px] text-gray-500">{p.packetVersionId.slice(0, 12)}…</span>
-                </span>
-                <span className={`uppercase tracking-wider text-[10px] ${outcomeClass}`}>{p.outcome || "pending"}</span>
-              </div>
-              {p.customerComment && (
-                <div className="text-[11px] text-gray-400 mt-1 italic">&ldquo;{p.customerComment}&rdquo;</div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
+function Panel({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-xl border border-white/10 bg-white/[0.03] p-5 text-sm text-gray-300">{children}</div>;
 }

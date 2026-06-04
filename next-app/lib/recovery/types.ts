@@ -107,6 +107,9 @@ export type RecoveryResolution = {
 export type RecoveryCaseListItem = {
   caseId: string;
   incidentId: string;
+  // PR 127c-a — denormed from incident doc
+  jobTitle?: string;
+  jobLocation?: string;
   title?: string;
   templateKey?: string;
   templateVersion?: number | null;
@@ -167,6 +170,9 @@ export type RecoveryCaseDetail = {
   caseId: string;
   orgId: string;
   incidentId: string;
+  // PR 127c-a — denormed from incident doc
+  jobTitle?: string;
+  jobLocation?: string;
   templateKey?: string;
   templateVersion?: number | null;
   status: RecoveryStatus;
