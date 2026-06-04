@@ -788,6 +788,57 @@ async function s18_priorityDeriverThresholds() {
   return { name, pass: true, detail: `all ${cases.length} threshold combinations correct` };
 }
 
+async function s20_denormJobTitleAndLocation() {
+  const name = "20) PR 127c-a: listRecoveryCasesV1 + getRecoveryCaseV1 denorm jobTitle + jobLocation from incident";
+  const incidentId = "inc-s20-denorm";
+  // Seed with a specific title + location so we can assert exactly.
+  await db.doc(`orgs/${ORG_ID}/incidents/${incidentId}`).set({
+    orgId: ORG_ID,
+    incidentId,
+    title: "PR 127c-a · Denorm smoke",
+    location: "9999 Denorm Way, Smokeville",
+    customer: "Comcast Restoration",
+    archetype: "fiber_splice_verification",
+    status: "in_progress",
+    requirements: {
+      templateKey: "fiber_splice_verification__comcast-restoration",
+      templateVersion: 7,
+      requiredProof: ["X"],
+      requiredProofDescriptions: [""],
+    },
+    readinessCache: { ready: true, label: "Ready", checks: [] },
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  await db.doc(`incidents/${incidentId}/jobs/job-1`).set({
+    id: "job-1", status: "approved", reviewStatus: "approved",
+  });
+
+  // Create case
+  const createRes = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+    source: "internal_qc",
+    cause: { primary: "internal_qc_caught" },
+  });
+  if (createRes.status !== 200) return { name, pass: false, detail: `create: ${createRes.status}` };
+  const caseId = createRes.body.caseId;
+
+  // List should include the denormed fields
+  const listRes = await getJson("listRecoveryCasesV1", { orgId: ORG_ID, actorUid: ADMIN_UID });
+  if (listRes.status !== 200) return { name, pass: false, detail: `list: ${listRes.status}` };
+  const fromList = (listRes.body.cases || []).find((c) => c.caseId === caseId);
+  if (!fromList) return { name, pass: false, detail: "case not in list" };
+  if (fromList.jobTitle !== "PR 127c-a · Denorm smoke") return { name, pass: false, detail: `list.jobTitle=${fromList.jobTitle}` };
+  if (fromList.jobLocation !== "9999 Denorm Way, Smokeville") return { name, pass: false, detail: `list.jobLocation=${fromList.jobLocation}` };
+
+  // Detail should also include them
+  const getRes = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (getRes.status !== 200) return { name, pass: false, detail: `get: ${getRes.status}` };
+  if (getRes.body.case.jobTitle !== "PR 127c-a · Denorm smoke") return { name, pass: false, detail: `detail.jobTitle=${getRes.body.case.jobTitle}` };
+  if (getRes.body.case.jobLocation !== "9999 Denorm Way, Smokeville") return { name, pass: false, detail: `detail.jobLocation=${getRes.body.case.jobLocation}` };
+
+  return { name, pass: true, detail: `jobTitle + jobLocation denormed correctly on both list + detail` };
+}
+
 async function s19_actionType_provideTestResults() {
   const name = "19) PR 127a3: addRecoveryActionV1 accepts the new 'provide_test_results' action type";
   const incidentId = "inc-s19-provide-test-results";
@@ -851,6 +902,8 @@ async function main() {
     s18_priorityDeriverThresholds,
     // PR 127a3 — new action type
     s19_actionType_provideTestResults,
+    // PR 127c-a — denorm jobTitle + jobLocation
+    s20_denormJobTitleAndLocation,
   ];
 
   const results = [];

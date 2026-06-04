@@ -82,17 +82,50 @@ exports.listRecoveryCasesV1 = onRequest({ cors: true }, async (req, res) => {
     }
 
     const now = new Date();
+    // PR 127c-a — batch-fetch incident docs for jobTitle / jobLocation
+    // denorm. Done once outside the map() so we have one Firestore read
+    // per unique incidentId rather than per-case.
+    const incidentIds = Array.from(new Set(
+      docs.map((d) => trimStr(d.data()?.incidentId)).filter(Boolean)
+    ));
+    const incidentLookup = new Map();
+    await Promise.all(incidentIds.map(async (incidentId) => {
+      try {
+        const canonicalRef = db.collection("orgs").doc(orgId)
+          .collection("incidents").doc(incidentId);
+        let snap = await canonicalRef.get();
+        if (!snap.exists) {
+          snap = await db.collection("incidents").doc(incidentId).get();
+        }
+        if (snap.exists) {
+          const incData = snap.data() || {};
+          incidentLookup.set(incidentId, {
+            jobTitle: trimStr(incData.title || incData.name),
+            jobLocation: trimStr(incData.location || incData.address || incData.siteAddress),
+          });
+        }
+      } catch (e) {
+        console.warn("[listRecoveryCasesV1] incident denorm failed", incidentId, e && e.message);
+      }
+    }));
+
     const cases = docs.map((d) => {
       const data = d.data() || {};
       const amount = Number(data.revenueAtRisk?.amount);
       const amountType = trimStr(data.revenueAtRisk?.type) || "unknown";
       const daysOpen = daysOpenSince(data.openedAt, now);
       const derivedPriority = derivePriority({ amount, daysOpen, amountType });
+      const incidentId = trimStr(data.incidentId);
+      const inc = incidentLookup.get(incidentId) || { jobTitle: "", jobLocation: "" };
 
       return {
         // Identity
         caseId: d.id,
-        incidentId: trimStr(data.incidentId),
+        incidentId,
+
+        // PR 127c-a — denormed from incident doc for queue display.
+        jobTitle: inc.jobTitle,
+        jobLocation: inc.jobLocation,
 
         // Display fields
         title: trimStr(data.title),             // (denorm not stored; UI joins with incident if needed)
