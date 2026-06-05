@@ -26,16 +26,11 @@ const { extractActorUid } = require("./_actor");
 const {
   RECOVERY_ACTION_STATUS_SET,
   OWNER_ROLES_SET,
-  RECOVERY_STATUS,
-  canTransitionRecovery,
 } = require("./recoveryState");
 const { writeRecoveryAudit } = require("./_recoveryAudit");
-
-// PR 129a — action statuses that count as "open work" for the
-// ready-to-resubmit gate. If after the update zero actions remain in
-// any of these statuses, AND ≥1 action has ever existed on the case,
-// the case auto-transitions to `ready_to_resubmit`.
-const OPEN_ACTION_STATUSES = new Set(["open", "in_progress", "blocked"]);
+// PR 130a — auto-flip logic extracted to a shared helper so the
+// foreman wrapper (completeRecoveryFieldWorkV1) can reuse it.
+const { tryAutoFlipToReadyToResubmit } = require("./_recoveryAutoFlip");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -234,75 +229,14 @@ exports.updateRecoveryActionV1 = onRequest({ cors: true }, async (req, res) => {
       });
     }
 
-    // PR 129a — Auto-transition gate. If this update moved an action to
-    // a terminal action-status (done/skipped) and zero actions on the
-    // case remain open/in_progress/blocked, flip the case to
-    // ready_to_resubmit so the operator's CTA becomes "Mint Resubmission
-    // Link." Idempotent on retry — if the case is already at
-    // ready_to_resubmit (or beyond), we skip silently.
-    let autoFlipped = false;
-    try {
-      const movedToTerminal = updates.status === "done" || updates.status === "skipped";
-      if (movedToTerminal) {
-        // Re-read case status fresh inside the gate (the caseSnap above
-        // was pre-update; another concurrent action could have flipped
-        // state in the meantime).
-        const freshCaseSnap = await caseRef.get();
-        const freshStatus = String((freshCaseSnap.data() || {}).status || "");
-        const eligibleFrom =
-          freshStatus === RECOVERY_STATUS.OPEN ||
-          freshStatus === RECOVERY_STATUS.IN_PROGRESS;
-        if (eligibleFrom && canTransitionRecovery(freshStatus, RECOVERY_STATUS.READY_TO_RESUBMIT)) {
-          // Count remaining open actions on the case. Pre-write action
-          // update is already persisted at this point, so the query
-          // reflects the just-applied change.
-          const actionsSnap = await caseRef.collection("actions").get();
-          let totalActions = 0;
-          let doneCount = 0;
-          let skippedCount = 0;
-          let openCount = 0;
-          for (const d of actionsSnap.docs) {
-            totalActions += 1;
-            const s = String((d.data() || {}).status || "");
-            if (s === "done") doneCount += 1;
-            else if (s === "skipped") skippedCount += 1;
-            else if (OPEN_ACTION_STATUSES.has(s)) openCount += 1;
-          }
-          if (totalActions > 0 && openCount === 0) {
-            await caseRef.update({
-              status: RECOVERY_STATUS.READY_TO_RESUBMIT,
-              updatedAt: FieldValue.serverTimestamp(),
-              updatedBy: "system",
-            });
-            await writeRecoveryAudit({
-              type: "case_ready_for_resubmission",
-              orgId, caseId, incidentId,
-              actorUid: "system",
-              meta: {
-                totalActions, doneCount, skippedCount,
-                triggeredByActionId: actionId,
-                fromStatus: freshStatus,
-              },
-            });
-            await writeRecoveryAudit({
-              type: "case_status_changed",
-              orgId, caseId, incidentId,
-              actorUid: "system",
-              before: { status: freshStatus },
-              after: { status: RECOVERY_STATUS.READY_TO_RESUBMIT },
-              meta: { reason: "all_actions_complete" },
-            });
-            autoFlipped = true;
-            console.log("[updateRecoveryActionV1] auto_flipped_ready_to_resubmit", {
-              orgId, caseId, totalActions, doneCount, skippedCount,
-            });
-          }
-        }
-      }
-    } catch (e) {
-      // Best-effort; never fail the action update.
-      console.error("[updateRecoveryActionV1] auto-transition failed", e && e.message);
-    }
+    // PR 129a — Auto-transition gate, extracted to _recoveryAutoFlip
+    // in PR 130a so the foreman wrapper can share it. The helper is
+    // best-effort and never throws.
+    const autoFlipped = await tryAutoFlipToReadyToResubmit({
+      caseRef, orgId, caseId, incidentId,
+      actionId,
+      newActionStatus: updates.status,
+    });
 
     return j(res, 200, {
       ok: true,
