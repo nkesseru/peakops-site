@@ -82,10 +82,15 @@ async function autoCreateOrExtendCase(args) {
     .where("incidentId", "==", incidentId)
     .where("status", "in", [
       RECOVERY_STATUS.OPEN,
-      RECOVERY_STATUS.TRIAGED,
       RECOVERY_STATUS.IN_PROGRESS,
+      RECOVERY_STATUS.READY_TO_RESUBMIT,
       RECOVERY_STATUS.AWAITING_CUSTOMER,
       RECOVERY_STATUS.ESCALATED,
+      // PR 129a — legacy tolerance: pre-129a cases persisted with
+      // status="triaged" must still be found as the active case for
+      // their incident. The state was dropped from new writes but
+      // remains queryable for migration.
+      "triaged",
     ])
     .limit(1)
     .get();
@@ -111,41 +116,93 @@ async function autoCreateOrExtendCase(args) {
       const existingPkts = Array.isArray(data.packetVersions) ? data.packetVersions.slice() : [];
       const pktId = (args.packetVersion && args.packetVersion.packetVersionId) || tokenHashPrefix || "";
 
-      // Idempotency: don't append if this packetVersionId is already there.
-      const dup = pktId && existingPkts.some((p) => String(p.packetVersionId || "") === pktId);
+      // PR 129a — if the rejected packet matches a pending entry in the
+      // chain (i.e., the customer just rejected the latest mint), mark
+      // it as rejected in-place rather than appending a duplicate row.
+      // Otherwise append.
+      const pendingIdx = pktId
+        ? existingPkts.findIndex((p) => String(p && p.packetVersionId || "") === pktId)
+        : -1;
       let newPkts = existingPkts;
-      if (!dup && args.packetVersion) {
+      let isReRejection = false;
+      if (pendingIdx >= 0) {
+        const prev = existingPkts[pendingIdx] || {};
+        newPkts = existingPkts.slice();
+        newPkts[pendingIdx] = {
+          ...prev,
+          outcome: "rejected",
+          outcomeAt: new Date().toISOString(),
+          customerComment: customerComment || prev.customerComment || null,
+        };
+        // Treat any rejection that lands on a previously-pending packet
+        // as a re-rejection event — even if the case wasn't strictly in
+        // awaiting_customer (defensive against race-altered state).
+        isReRejection = true;
+      } else if (args.packetVersion) {
         newPkts = existingPkts.concat([args.packetVersion]);
       }
 
-      // Status: if we were awaiting_customer, the rejection bumps us
-      // back to in_progress so the operator knows action is needed.
-      const newStatus = data.status === RECOVERY_STATUS.AWAITING_CUSTOMER
+      // PR 129a — re-rejection of an awaiting-customer packet bumps us
+      // back to in_progress so the operator knows the loop continues.
+      // Same transition rule applies to ready_to_resubmit (race: customer
+      // rejects an old link after operator already marked all done).
+      const wasAwaitingOrReady =
+        data.status === RECOVERY_STATUS.AWAITING_CUSTOMER ||
+        data.status === RECOVERY_STATUS.READY_TO_RESUBMIT;
+      const newStatus = wasAwaitingOrReady
         ? RECOVERY_STATUS.IN_PROGRESS
         : data.status;
 
       tx.update(existingCaseRef, {
         packetVersions: newPkts,
         currentPacketVersion: pktId || data.currentPacketVersion || null,
-        cycleCount: newPkts.length,
         status: newStatus,
         updatedAt: FieldValue.serverTimestamp(),
         updatedBy: actorUid,
-        // If this rejection has a customer comment, append to cause notes
-        // without overwriting any existing operator notes.
+        // PR 128a — re-derive cause from the new comment (may differ
+        // from the original cause). The existing operator-set cause is
+        // preserved if no inference matches the new comment.
         ...(customerComment ? { "cause.customerComment": customerComment } : {}),
       });
 
-      return { caseId: snap.id, prevStatus: data.status, newStatus };
+      return {
+        caseId: snap.id,
+        prevStatus: data.status,
+        newStatus,
+        isReRejection,
+        packetOrdinal: pendingIdx >= 0 ? (existingPkts[pendingIdx]?.ordinal || pendingIdx + 1) : null,
+      };
     });
 
     if (result) {
-      await writeRecoveryAudit({
-        type: "packet_version_appended",
-        orgId, caseId: result.caseId, incidentId,
-        actorUid,
-        meta: { tokenHashPrefix, source, customerComment: customerComment || null },
-      });
+      // PR 129a — distinguish "first-rejection packet appended" from
+      // "re-rejection of an outstanding packet" in the audit stream.
+      if (result.isReRejection) {
+        await writeRecoveryAudit({
+          type: "case_re_rejected",
+          orgId, caseId: result.caseId, incidentId,
+          actorUid,
+          meta: {
+            tokenHashPrefix,
+            packetOrdinal: result.packetOrdinal,
+            customerComment: customerComment || null,
+            prevStatus: result.prevStatus,
+          },
+        });
+        await writeRecoveryAudit({
+          type: "packet_version_outcome",
+          orgId, caseId: result.caseId, incidentId,
+          actorUid,
+          meta: { packetVersionId: tokenHashPrefix, outcome: "rejected" },
+        });
+      } else {
+        await writeRecoveryAudit({
+          type: "packet_version_appended",
+          orgId, caseId: result.caseId, incidentId,
+          actorUid,
+          meta: { tokenHashPrefix, source, customerComment: customerComment || null },
+        });
+      }
       if (result.prevStatus !== result.newStatus) {
         await writeRecoveryAudit({
           type: "case_status_changed",
@@ -153,11 +210,12 @@ async function autoCreateOrExtendCase(args) {
           actorUid,
           before: { status: result.prevStatus },
           after: { status: result.newStatus },
-          meta: { reason: "extended_by_new_rejection" },
+          meta: { reason: result.isReRejection ? "customer_re_rejected" : "extended_by_new_rejection" },
         });
       }
       console.log("[_recoveryAutoCreate] extended_existing", {
         orgId, incidentId, caseId: result.caseId,
+        isReRejection: result.isReRejection,
       });
       return { caseId: result.caseId, created: false, actionId: null };
     }
@@ -166,7 +224,10 @@ async function autoCreateOrExtendCase(args) {
   }
 
   // ── CREATE new case ──────────────────────────────────────────────
-  const caseId = deterministicCaseId(incidentId, tokenHashPrefix);
+  // PR 129a — caseId = incidentId (sanitized). One case per incident,
+  // ever. Resubmission cycles append packetVersions; new cases for the
+  // same incident only happen if the prior one was already terminal.
+  const caseId = deterministicCaseId(incidentId);
   const caseRef = casesRef.doc(caseId);
   const starterActionId = `action_${caseId}_starter`;
   const actionRef = caseRef.collection("actions").doc(starterActionId);
@@ -177,7 +238,9 @@ async function autoCreateOrExtendCase(args) {
   const inferredCause = source === "customer_rejected"
     ? deriveCauseFromComment(customerComment)
     : null;
-  const initialStatus = inferredCause ? RECOVERY_STATUS.TRIAGED : RECOVERY_STATUS.OPEN;
+  // PR 129a — dropped `triaged` state. Inferred cause still records
+  // `cause.inferredFromComment: true` so the UI can show the marker,
+  // but the case starts at `open` regardless.
 
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(caseRef);
@@ -192,7 +255,6 @@ async function autoCreateOrExtendCase(args) {
         tx.update(caseRef, {
           packetVersions: existingPkts.concat([args.packetVersion]),
           currentPacketVersion: pktId || null,
-          cycleCount: existingPkts.length + 1,
           updatedAt: FieldValue.serverTimestamp(),
         });
       }
@@ -214,7 +276,9 @@ async function autoCreateOrExtendCase(args) {
       id: caseId,
       orgId,
       incidentId,
-      status: initialStatus,
+      // PR 129a — always start at open; cause.inferredFromComment is
+      // the only signal that the system pre-classified.
+      status: RECOVERY_STATUS.OPEN,
       priority,
       revenueAtRisk: {
         amount: 0,
@@ -239,7 +303,8 @@ async function autoCreateOrExtendCase(args) {
       },
       packetVersions: args.packetVersion ? [args.packetVersion] : [],
       currentPacketVersion: args.packetVersion ? args.packetVersion.packetVersionId : null,
-      cycleCount: args.packetVersion ? 1 : 0,
+      // PR 129a — cycleCount dropped; derived from packetVersions.length-1
+      // in getRecoveryCaseV1 response shape (resubmissionCount).
       openedAt: now,
       slaTarget: null,
       resolvedAt: null,
@@ -292,21 +357,9 @@ async function autoCreateOrExtendCase(args) {
         inferredCause: inferredCause || null,
       },
     });
-    // PR 128a — if cause was inferred from comment, emit a case_triaged
-    // audit row alongside the auto-open. Mirrors PR 127a1's manual
-    // create-with-cause flow.
-    if (inferredCause) {
-      await writeRecoveryAudit({
-        type: "case_triaged",
-        orgId, caseId, incidentId,
-        actorUid,
-        meta: {
-          causePrimary: inferredCause,
-          inferredFromComment: true,
-          createTimeTriage: true,
-        },
-      });
-    }
+    // PR 129a — dropped case_triaged emission. cause.inferredFromComment
+    // is now the only signal that the system pre-classified; UI reads
+    // it directly via getRecoveryCaseV1 (PR 128b).
     await writeRecoveryAudit({
       type: "action_created",
       orgId, caseId, incidentId,
@@ -317,7 +370,6 @@ async function autoCreateOrExtendCase(args) {
     console.log("[_recoveryAutoCreate] case_opened", {
       orgId, incidentId, caseId, source, priority,
       inferredCause: inferredCause || "(none)",
-      initialStatus,
     });
   }
 
@@ -395,6 +447,15 @@ async function autoResolveOnAccept(args) {
   });
 
   if (result) {
+    // PR 129a — emit packet_version_outcome on accept so the audit
+    // stream captures every packet outcome (accepted/rejected/revoked)
+    // through one channel.
+    await writeRecoveryAudit({
+      type: "packet_version_outcome",
+      orgId, caseId, incidentId,
+      actorUid: "customer",
+      meta: { packetVersionId: tokenHashPrefix, outcome: "accepted" },
+    });
     await writeRecoveryAudit({
       type: "case_status_changed",
       orgId, caseId, incidentId,

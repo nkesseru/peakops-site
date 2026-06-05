@@ -17,12 +17,20 @@
 //     a relationship)
 //   - Terminal states are truly terminal (no reopen path)
 
-// ── Case statuses (9) ────────────────────────────────────────────
+// ── Case statuses (9) — PR 129a ───────────────────────────────────
+// Architecture lock 2026-06-05:
+//   - Dropped `triaged` (PR 127a1) — the cause.inferredFromComment
+//     flag already signals "system pre-classified," so a separate
+//     state added noise without driving distinct operator action.
+//   - Added `ready_to_resubmit` — auto-entered when all recovery
+//     actions reach a terminal (done/skipped) state and the case
+//     hasn't yet been resolved. Drives the "Mint Resubmission Link"
+//     CTA in the operator UI (PR 129b).
 const RECOVERY_STATUS = Object.freeze({
   OPEN: "open",
-  TRIAGED: "triaged",
   IN_PROGRESS: "in_progress",
-  AWAITING_CUSTOMER: "awaiting_customer",
+  READY_TO_RESUBMIT: "ready_to_resubmit",  // PR 129a — all actions done
+  AWAITING_CUSTOMER: "awaiting_customer",  // resubmission link minted
   ESCALATED: "escalated",
   RECOVERED: "recovered",                  // terminal
   PARTIAL_RECOVERY: "partial_recovery",    // terminal
@@ -140,14 +148,8 @@ function canTransitionRecovery(from, to) {
     case RECOVERY_STATUS.OPEN:
       return [
         RECOVERY_STATUS.OPEN,
-        RECOVERY_STATUS.TRIAGED,
-        RECOVERY_STATUS.ABANDONED,
-      ].includes(t);
-
-    case RECOVERY_STATUS.TRIAGED:
-      return [
-        RECOVERY_STATUS.TRIAGED,
         RECOVERY_STATUS.IN_PROGRESS,
+        RECOVERY_STATUS.READY_TO_RESUBMIT,
         RECOVERY_STATUS.ESCALATED,
         RECOVERY_STATUS.ABANDONED,
       ].includes(t);
@@ -155,6 +157,7 @@ function canTransitionRecovery(from, to) {
     case RECOVERY_STATUS.IN_PROGRESS:
       return [
         RECOVERY_STATUS.IN_PROGRESS,
+        RECOVERY_STATUS.READY_TO_RESUBMIT,
         RECOVERY_STATUS.AWAITING_CUSTOMER,
         RECOVERY_STATUS.ESCALATED,
         RECOVERY_STATUS.RECOVERED,
@@ -162,7 +165,24 @@ function canTransitionRecovery(from, to) {
         RECOVERY_STATUS.ABANDONED,
       ].includes(t);
 
+    case RECOVERY_STATUS.READY_TO_RESUBMIT:
+      // PR 129a — operator mints the resubmission (→ awaiting_customer),
+      // adds another action (→ in_progress), escalates, or terminates.
+      // Direct skip to recovered is not allowed — recovery is defined
+      // by customer acceptance, which routes through awaiting_customer.
+      return [
+        RECOVERY_STATUS.READY_TO_RESUBMIT,
+        RECOVERY_STATUS.AWAITING_CUSTOMER,
+        RECOVERY_STATUS.IN_PROGRESS,
+        RECOVERY_STATUS.ESCALATED,
+        RECOVERY_STATUS.PARTIAL_RECOVERY,
+        RECOVERY_STATUS.ABANDONED,
+      ].includes(t);
+
     case RECOVERY_STATUS.AWAITING_CUSTOMER:
+      // Customer accept → recovered; customer reject → in_progress
+      // (back into the loop). Operator can also escalate or abandon
+      // (e.g. customer non-responsive).
       return [
         RECOVERY_STATUS.AWAITING_CUSTOMER,
         RECOVERY_STATUS.IN_PROGRESS,
@@ -175,6 +195,7 @@ function canTransitionRecovery(from, to) {
       return [
         RECOVERY_STATUS.ESCALATED,
         RECOVERY_STATUS.IN_PROGRESS,
+        RECOVERY_STATUS.READY_TO_RESUBMIT,
         RECOVERY_STATUS.RECOVERED,
         RECOVERY_STATUS.PARTIAL_RECOVERY,
         RECOVERY_STATUS.ABANDONED,
@@ -190,15 +211,16 @@ function isTerminal(status) {
 }
 
 // ── Deterministic case id for auto-create path ────────────────────
-// Two near-simultaneous rejections on the same incident token
-// would produce the same id (idempotent on retry). For different
-// tokens, they get different ids — but in practice an incident
-// only has one open case at a time, so the lookup-then-create
-// transaction reuses the existing case rather than minting a new id.
-function deterministicCaseId(incidentId, tokenHashPrefix) {
-  const inc = String(incidentId || "").trim().replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100);
-  const tok = String(tokenHashPrefix || "").trim().replace(/[^A-Za-z0-9]/g, "").slice(0, 16);
-  return `case_${inc}_${tok || "manual"}`;
+// PR 129a architecture lock: one case per incident, ever. The
+// case id is the incident id (sanitized). Resubmission cycles
+// append PacketVersionRef entries to the same case rather than
+// creating a new case. Legacy cases written with the previous
+// `case_${incidentId}_${tokenHashPrefix}` scheme remain queryable
+// via the `incidentId` field — the lookup-then-create path in
+// _recoveryAutoCreate.js handles both ID spaces.
+function deterministicCaseId(incidentId /*, tokenHashPrefix (deprecated, ignored) */) {
+  const inc = String(incidentId || "").trim().replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 120);
+  return `case_${inc}`;
 }
 
 module.exports = {

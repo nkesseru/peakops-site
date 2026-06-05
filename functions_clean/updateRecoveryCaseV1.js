@@ -237,18 +237,9 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
           // the "inferred from customer comment" marker so the UI
           // stops showing it.
           causeUpdates["cause.inferredFromComment"] = false;
-          // First-time triage transitions open → triaged if not blocked.
-          if (currentStatus === RECOVERY_STATUS.OPEN && !statusChanged) {
-            if (canTransitionRecovery(currentStatus, RECOVERY_STATUS.TRIAGED)) {
-              updates.status = RECOVERY_STATUS.TRIAGED;
-              auditEvents.push({
-                type: "case_triaged",
-                before: { status: currentStatus },
-                after: { status: RECOVERY_STATUS.TRIAGED },
-                meta: { causePrimary: p },
-              });
-            }
-          }
+          // PR 129a — auto-transition to `triaged` dropped (state
+          // collapsed into `open`). The cause field itself is the
+          // signal that triage happened.
         }
       }
       if (typeof body.cause.secondary === "string") {
