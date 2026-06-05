@@ -36,6 +36,8 @@ export type RecoveryCausePrimary =
   | "compliance_failure"
   | "unclear_customer_feedback"
   | "internal_qc_caught"
+  // PR 128a — telecom blind spot (OTDR trace, loss measurement, splice report)
+  | "missing_test_result"
   | "other";
 
 export type OwnerRole = "coordinator" | "supervisor" | "field_lead" | "manager";
@@ -71,6 +73,21 @@ export type RecoveryCauseDetail = {
   operatorNotes?: string;
   categorizedBy?: string;
   categorizedAt?: string | null;
+  // PR 128a — true when cause.primary was derived from the customer
+  // comment at case-creation time. Cleared by updateRecoveryCaseV1
+  // whenever an operator manually sets cause.primary.
+  inferredFromComment?: boolean;
+};
+
+// PR 128b — pre-filled action recommendation from the backend
+// RECOVERY_CAUSE_AUTOMATION map. Backend filters out any suggestion
+// whose type already exists on the case, so the UI can render this
+// array directly.
+export type SuggestedAction = {
+  type: RecoveryActionType;
+  title: string;
+  description: string;
+  assigneeRole: OwnerRole | "";
 };
 
 export type PacketVersionRef = {
@@ -206,6 +223,9 @@ export type GetRecoveryCaseResponse = {
   case?: RecoveryCaseDetail;
   actions?: RecoveryAction[];
   audit?: RecoveryAuditEvent[];
+  // PR 128b — pre-filtered against actions already on the case.
+  // Empty when cause.primary is unset or all suggestions added.
+  suggestedActions?: SuggestedAction[];
   error?: string;
 };
 

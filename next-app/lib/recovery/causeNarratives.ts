@@ -52,6 +52,10 @@ export const CAUSE_NARRATIVES: Record<RecoveryCausePrimary, Narrative> = {
     titleFallback: "Internal QC catch",
     why: "Caught before the customer saw it. Fix internally; no customer involvement yet.",
   },
+  missing_test_result: {
+    titleFallback: "Test result missing",
+    why: "Customer is asking for test data — OTDR trace, loss measurement, or splice report. Pull the results and resubmit.",
+  },
   other: {
     titleFallback: "See operator notes",
     why: "Custom situation. Operator should add notes explaining what needs to change.",
