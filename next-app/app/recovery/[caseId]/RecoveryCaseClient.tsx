@@ -37,6 +37,10 @@ import { MissionBriefingCard } from "@/components/recovery/MissionBriefingCard";
 // PR 128b — suggested-actions panel sits between MISSION and WHERE
 // so the operator's eye flows: What's wrong → What should I do.
 import { SuggestedActionsPanel } from "@/components/recovery/SuggestedActionsPanel";
+// PR 129b — Resubmission loop UI surfaces.
+import { ResubmissionBanner } from "@/components/recovery/ResubmissionBanner";
+import { AwaitingCustomerBanner } from "@/components/recovery/AwaitingCustomerBanner";
+import { ResubmissionLinkResultModal } from "@/components/recovery/ResubmissionLinkResultModal";
 import { useMemberNames } from "@/lib/recovery/useMemberNames";
 import { TERMINAL_STATUSES } from "@/lib/recovery/displayConstants";
 import type {
@@ -48,6 +52,7 @@ import type {
   RecoveryCausePrimary,
   OwnerRole,
   SuggestedAction,
+  MintResubmissionLinkResponse,
 } from "@/lib/recovery/types";
 
 type Props = { caseId: string };
@@ -95,6 +100,15 @@ function DetailContent({ caseId }: { caseId: string }) {
   const [suggestionErr, setSuggestionErr] = useState<string>("");
   // PR 128b — busy state for cause-override write
   const [overrideBusy, setOverrideBusy] = useState(false);
+
+  // PR 129b — resubmission mint state.
+  const [mintBusy, setMintBusy] = useState(false);
+  const [mintErr, setMintErr] = useState<string>("");
+  const [mintedLink, setMintedLink] = useState<{ url: string; ordinal: number; token?: string } | null>(null);
+  // Stores the most-recently minted resubmission URL across the session
+  // so the AwaitingCustomerBanner can render it even after the modal
+  // closes. Lost on full reload (the cleartext token is never persisted).
+  const [cachedReviewUrl, setCachedReviewUrl] = useState<string>("");
 
   const [showAddAction, setShowAddAction] = useState(false);
   const [showResolve, setShowResolve] = useState(false);
@@ -302,6 +316,46 @@ function DetailContent({ caseId }: { caseId: string }) {
     }
   }
 
+  // PR 129b — mint a customer-review link for resubmission. Backend
+  // requires case.status === ready_to_resubmit and the linked incident
+  // to be in a mintable state. Returns the cleartext URL once.
+  async function handleMintResubmission(args: { changeSummary?: string }) {
+    setMintErr("");
+    setMintBusy(true);
+    try {
+      const res = await authedFetch(`/api/fn/mintResubmissionLinkV1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orgId, caseId, actorUid,
+          ...(args.changeSummary ? { changeSummary: args.changeSummary } : {}),
+        }),
+      });
+      const out: MintResubmissionLinkResponse = await res.json().catch(() => ({ ok: false }));
+      if (!res.ok || !out.ok || !out.url) {
+        // Surface server detail when available so the operator sees
+        // exactly why the mint refused (e.g. incident not in a
+        // mintable state, outstanding pending packet).
+        throw new Error(out.detail || out.error || `HTTP ${res.status}`);
+      }
+      // Compose full URL with origin for the modal display.
+      const fullUrl = /^https?:\/\//.test(out.url)
+        ? out.url
+        : `${typeof window !== "undefined" ? window.location.origin : ""}${out.url}`;
+      setMintedLink({
+        url: fullUrl,
+        ordinal: out.ordinal || 1,
+        token: out.token,
+      });
+      setCachedReviewUrl(fullUrl);
+      await refresh();
+    } catch (e: any) {
+      setMintErr(e?.message || String(e));
+    } finally {
+      setMintBusy(false);
+    }
+  }
+
   async function handleEscalate() {
     if (!caseData || caseData.status === "escalated") return;
     setOpErr("");
@@ -378,8 +432,33 @@ function DetailContent({ caseId }: { caseId: string }) {
         orgId={orgId}
       />
 
-      {/* NEXT ACTION — dominant CTA */}
-      {!isTerminal && (
+      {/* PR 129b — Dominant CTA / state surface. Branches on case
+          status so the coordinator always sees the single clearest
+          "what to do next" panel:
+            ready_to_resubmit   → ResubmissionBanner (mint CTA)
+            awaiting_customer   → AwaitingCustomerBanner (informational)
+            anything else open  → NextActionBlock (per-action CTAs)
+          Terminal states fall through to the resolution summary below. */}
+      {!isTerminal && caseData.status === "ready_to_resubmit" && (
+        <ResubmissionBanner
+          busy={mintBusy}
+          errorMessage={mintErr}
+          onMint={handleMintResubmission}
+        />
+      )}
+      {!isTerminal && caseData.status === "awaiting_customer" && (
+        <AwaitingCustomerBanner
+          currentPacket={
+            caseData.packetVersions.find((p) => p.outcome === "pending")
+            || caseData.packetVersions[caseData.packetVersions.length - 1]
+          }
+          cachedReviewUrl={cachedReviewUrl}
+          daysOpen={caseData.daysOpen}
+        />
+      )}
+      {!isTerminal &&
+        caseData.status !== "ready_to_resubmit" &&
+        caseData.status !== "awaiting_customer" && (
         <NextActionBlock
           nextAction={nextAction}
           assigneeNameResolver={memberNames.resolve}
@@ -478,6 +557,16 @@ function DetailContent({ caseId }: { caseId: string }) {
           submitting={busyActionId === showEvidencePickerForActionId}
           onCancel={() => setShowEvidencePickerForActionId("")}
           onConfirm={(ids) => handleAttachEvidence(showEvidencePickerForActionId, ids)}
+        />
+      )}
+      {/* PR 129b — One-shot review URL after successful mint. After
+          dismissal the cleartext token is gone. */}
+      {mintedLink && (
+        <ResubmissionLinkResultModal
+          url={mintedLink.url}
+          ordinal={mintedLink.ordinal}
+          token={mintedLink.token}
+          onClose={() => setMintedLink(null)}
         />
       )}
     </div>

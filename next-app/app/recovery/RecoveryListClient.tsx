@@ -213,8 +213,10 @@ function ListContent() {
           <FilterChip active={filterStatus === "all"} onClick={() => setFilterStatus("all")}>All</FilterChip>
           <FilterChip active={filterStatus === "active"} onClick={() => setFilterStatus("active")}>Active</FilterChip>
           <FilterChip active={filterStatus === "open"} onClick={() => setFilterStatus("open")}>Open</FilterChip>
-          <FilterChip active={filterStatus === "triaged"} onClick={() => setFilterStatus("triaged")}>Triaged</FilterChip>
           <FilterChip active={filterStatus === "in_progress"} onClick={() => setFilterStatus("in_progress")}>In progress</FilterChip>
+          {/* PR 129b — ready_to_resubmit + awaiting_customer surface as
+              first-class queue filters; `triaged` filter dropped. */}
+          <FilterChip active={filterStatus === "ready_to_resubmit"} onClick={() => setFilterStatus("ready_to_resubmit")}>Ready to resubmit</FilterChip>
           <FilterChip active={filterStatus === "awaiting_customer"} onClick={() => setFilterStatus("awaiting_customer")}>Awaiting</FilterChip>
           <FilterChip active={filterStatus === "recovered"} onClick={() => setFilterStatus("recovered")}>Recovered</FilterChip>
         </div>
@@ -352,7 +354,7 @@ function CasesTable({
                 <td className="px-3 py-3 text-[12px] truncate max-w-[200px]">
                   {causeLabel
                     ? <span className="text-gray-300">{causeLabel}</span>
-                    : <span className="text-amber-300/70 italic">not triaged</span>
+                    : <span className="text-amber-300/70 italic">no cause yet</span>
                   }
                 </td>
                 <td className="px-3 py-3 text-[12px] truncate max-w-[220px]">

@@ -9,16 +9,22 @@
 // Wedge guard reminder (encoded in copy + UX, not just types):
 // RecoveryCase = "work required to recover revenue", NOT "a ticket."
 
+// PR 129a — dropped `triaged` (collapsed into `open`); added
+// `ready_to_resubmit` (auto-entered when all recovery actions complete).
+// The `triaged` literal is preserved here as a legacy-tolerance value
+// so the UI doesn't crash if it reads a pre-PR-129a case from
+// Firestore — but no new writes use it.
 export type RecoveryStatus =
   | "open"
-  | "triaged"
   | "in_progress"
+  | "ready_to_resubmit"
   | "awaiting_customer"
   | "escalated"
   | "recovered"
   | "partial_recovery"
   | "abandoned"
-  | "expired";
+  | "expired"
+  | "triaged"; // legacy
 
 export type RecoveryPriority = "low" | "medium" | "high" | "critical";
 
@@ -92,12 +98,20 @@ export type SuggestedAction = {
 
 export type PacketVersionRef = {
   packetVersionId: string;
+  // PR 129a — ordinal: 1-indexed position in the immutable chain.
+  // Legacy entries without ordinal default to insertion order in the
+  // getRecoveryCaseV1 response shape.
+  ordinal: number;
   outcome?: "pending" | "accepted" | "rejected" | "revoked" | "expired" | string;
   outcomeAt?: string | null;
   mintedAt?: string | null;
   mintedBy?: string;
   customerComment?: string | null;
   templateVersionAtMint?: number | null;
+  // PR 129a — operator-authored summary of what changed between this
+  // version and the previous one. Persisted at mintResubmissionLinkV1
+  // time. Not customer-visible in MVP.
+  changeSummary?: string | null;
 };
 
 export type RecoveryOwnership = {
@@ -137,7 +151,9 @@ export type RecoveryCaseListItem = {
   owner?: string;
   ownerRole?: string;
   daysOpen: number;
-  cycleCount: number;
+  // PR 129a — derived from packetVersions.length - 1 in
+  // listRecoveryCasesV1. Replaces persisted cycleCount.
+  resubmissionCount: number;
   openedAt?: string | null;
   updatedAt?: string | null;
   resolvedAt?: string | null;
@@ -205,7 +221,9 @@ export type RecoveryCaseDetail = {
   ownership: RecoveryOwnership;
   packetVersions: PacketVersionRef[];
   currentPacketVersion?: string;
-  cycleCount: number;
+  // PR 129a — derived in getRecoveryCaseV1: packetVersions.length - 1.
+  // cycleCount removed from response shape (still present on legacy docs).
+  resubmissionCount: number;
   openedAt?: string | null;
   daysOpen: number;
   resolvedAt?: string | null;
@@ -252,4 +270,28 @@ export type UpdateRecoveryCaseResponse = {
   detail?: string;
   currentStatus?: RecoveryStatus;
   attemptedStatus?: RecoveryStatus;
+};
+
+// PR 129a — mintResubmissionLinkV1 returns the cleartext review URL
+// once (operator copies + shares). After this response the link is
+// retrievable only via the customer-facing token endpoints.
+export type MintResubmissionLinkResponse = {
+  ok: boolean;
+  orgId?: string;
+  caseId?: string;
+  incidentId?: string;
+  token?: string;
+  tokenHashPrefix?: string;
+  url?: string;
+  packetVersionId?: string;
+  ordinal?: number;
+  status?: RecoveryStatus;
+  templateKey?: string;
+  templateVersion?: number | null;
+  customerLabel?: string;
+  error?: string;
+  detail?: string;
+  currentStatus?: RecoveryStatus;
+  incidentStatus?: string;
+  outstandingPacketVersionId?: string | null;
 };

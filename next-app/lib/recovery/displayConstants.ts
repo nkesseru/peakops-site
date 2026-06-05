@@ -22,14 +22,19 @@ import type {
 
 export const STATUS_DISPLAY: Record<RecoveryStatus, string> = {
   open: "Open",
-  triaged: "Triaged",
   in_progress: "In progress",
+  // PR 129a — auto-entered when all actions are done; drives the
+  // Resubmit Packet CTA in the operator UI.
+  ready_to_resubmit: "Ready to resubmit",
+  // PR 129a — resubmission link minted; customer hasn't responded yet.
   awaiting_customer: "Awaiting customer",
   escalated: "Escalated",
   recovered: "Recovered",
   partial_recovery: "Partial recovery",
   abandoned: "Abandoned",
   expired: "Expired",
+  // PR 129a — legacy label for pre-PR-129a cases; new writes never use this.
+  triaged: "Triaged (legacy)",
 };
 
 export const TERMINAL_STATUSES = new Set<RecoveryStatus>([
@@ -76,14 +81,18 @@ export const PRIORITY_RANK: Record<RecoveryPriority, number> = {
 
 export const STATUS_PILL_CLASS: Record<RecoveryStatus, string> = {
   open: "bg-gray-500/15 text-gray-200 border-gray-400/30",
-  triaged: "bg-sky-500/15 text-sky-200 border-sky-400/30",
   in_progress: "bg-blue-500/15 text-blue-200 border-blue-400/30",
+  // PR 129a — green: actively eligible to resubmit (the operator's
+  // bright signal to act). Distinct from awaiting (waiting).
+  ready_to_resubmit: "bg-emerald-500/15 text-emerald-200 border-emerald-400/30",
   awaiting_customer: "bg-violet-500/15 text-violet-200 border-violet-400/30",
   escalated: "bg-orange-500/15 text-orange-200 border-orange-400/30",
   recovered: "bg-emerald-500/15 text-emerald-200 border-emerald-400/30",
   partial_recovery: "bg-teal-500/15 text-teal-200 border-teal-400/30",
   abandoned: "bg-gray-500/10 text-gray-400 border-gray-500/20",
   expired: "bg-gray-500/10 text-gray-400 border-gray-500/20",
+  // PR 129a — legacy pill class (matches old triaged styling).
+  triaged: "bg-sky-500/15 text-sky-200 border-sky-400/30",
 };
 
 // ── Recovery Action type display (PR 127a3 includes 10th type) ───

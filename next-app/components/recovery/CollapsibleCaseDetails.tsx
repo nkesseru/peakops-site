@@ -91,8 +91,17 @@ export function CollapsibleCaseDetails({ caseData, audit, assigneeNameResolver }
               </div>
             )}
             <div className="flex items-center gap-2">
-              <span className="text-gray-500 w-24">Cycle</span>
-              <span className="text-gray-200">{caseData.cycleCount}</span>
+              <span className="text-gray-500 w-24">Resubmissions</span>
+              <span className="text-gray-200">
+                {/* PR 129a — derived from packetVersions.length - 1 in
+                    getRecoveryCaseV1. 0 = original packet only (no
+                    resubmissions yet); 1 = customer rejected once and
+                    we minted v2; etc. */}
+                {caseData.resubmissionCount}
+                {caseData.resubmissionCount > 0 && (
+                  <span className="text-gray-500"> · {caseData.packetVersions.length} packet{caseData.packetVersions.length === 1 ? "" : "s"}</span>
+                )}
+              </span>
             </div>
             {caseData.openedAt && (
               <div className="flex items-center gap-2">
@@ -102,7 +111,9 @@ export function CollapsibleCaseDetails({ caseData, audit, assigneeNameResolver }
             )}
           </div>
 
-          {/* Packet versions */}
+          {/* Packet versions — PR 129a renders by ordinal + outcome
+              with the per-packet change summary when present. Reads
+              top-down v1 → vN; backend already sorts by ordinal. */}
           {caseData.packetVersions.length > 0 && (
             <div className="pt-3 border-t border-white/[0.05] space-y-2">
               <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-gray-500">
@@ -113,16 +124,26 @@ export function CollapsibleCaseDetails({ caseData, audit, assigneeNameResolver }
                   const outcomeClass =
                     p.outcome === "accepted" ? "text-emerald-300" :
                     p.outcome === "rejected" ? "text-red-300" :
+                    p.outcome === "revoked" ? "text-gray-500" :
                     "text-gray-400";
+                  const label = `v${p.ordinal || i + 1}`;
                   return (
                     <div key={`${p.packetVersionId}-${i}`} className="text-[11px]">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-gray-500">#{i + 1}</span>
+                        <span className="text-gray-300 font-semibold">{label}</span>
                         <span className={`uppercase tracking-wider text-[10px] ${outcomeClass}`}>{p.outcome || "pending"}</span>
-                        <span className="text-gray-500 font-mono">{p.packetVersionId.slice(0, 12)}…</span>
+                        {p.mintedAt && (
+                          <span className="text-gray-500">{fmtIso(p.mintedAt)}</span>
+                        )}
+                        <span className="text-gray-500 font-mono text-[10px]">{(p.packetVersionId || "").slice(0, 10)}…</span>
                       </div>
+                      {p.changeSummary && (
+                        <div className="text-gray-300 text-[11px] ml-5 leading-relaxed">
+                          <span className="text-gray-500">What changed:</span> {p.changeSummary}
+                        </div>
+                      )}
                       {p.customerComment && (
-                        <div className="text-gray-400 italic text-[11px] ml-4">&ldquo;{p.customerComment}&rdquo;</div>
+                        <div className="text-gray-400 italic text-[11px] ml-5">&ldquo;{p.customerComment}&rdquo;</div>
                       )}
                     </div>
                   );
