@@ -34,6 +34,9 @@ import { CollapsibleCaseDetails } from "@/components/recovery/CollapsibleCaseDet
 // standalone WhatsWrongSection. Problem · Reason · Impact in one
 // briefing-style top block, then WHERE, then YOUR NEXT MOVE.
 import { MissionBriefingCard } from "@/components/recovery/MissionBriefingCard";
+// PR 128b — suggested-actions panel sits between MISSION and WHERE
+// so the operator's eye flows: What's wrong → What should I do.
+import { SuggestedActionsPanel } from "@/components/recovery/SuggestedActionsPanel";
 import { useMemberNames } from "@/lib/recovery/useMemberNames";
 import { TERMINAL_STATUSES } from "@/lib/recovery/displayConstants";
 import type {
@@ -42,7 +45,9 @@ import type {
   RecoveryAction,
   RecoveryAuditEvent,
   RecoveryActionType,
+  RecoveryCausePrimary,
   OwnerRole,
+  SuggestedAction,
 } from "@/lib/recovery/types";
 
 type Props = { caseId: string };
@@ -76,10 +81,20 @@ function DetailContent({ caseId }: { caseId: string }) {
   const [caseData, setCaseData] = useState<RecoveryCaseDetail | null>(null);
   const [actions, setActions] = useState<RecoveryAction[]>([]);
   const [audit, setAudit] = useState<RecoveryAuditEvent[]>([]);
+  // PR 128b — backend-filtered suggested action chain for cause.primary
+  const [suggestedActions, setSuggestedActions] = useState<SuggestedAction[]>([]);
   const [refreshTick, setRefreshTick] = useState(0);
 
   const [busyActionId, setBusyActionId] = useState<string>("");
   const [opErr, setOpErr] = useState<string>("");
+
+  // PR 128b — busy state for the suggestions panel (per-type single-add
+  // and a separate flag for [Add all]).
+  const [busySuggestionType, setBusySuggestionType] = useState<string>("");
+  const [busyAddAll, setBusyAddAll] = useState(false);
+  const [suggestionErr, setSuggestionErr] = useState<string>("");
+  // PR 128b — busy state for cause-override write
+  const [overrideBusy, setOverrideBusy] = useState(false);
 
   const [showAddAction, setShowAddAction] = useState(false);
   const [showResolve, setShowResolve] = useState(false);
@@ -102,6 +117,7 @@ function DetailContent({ caseId }: { caseId: string }) {
         setCaseData(out.case);
         setActions(out.actions || []);
         setAudit(out.audit || []);
+        setSuggestedActions(out.suggestedActions || []);
         setLoading(false);
       } catch (e: any) {
         if (!cancelled) {
@@ -200,6 +216,92 @@ function DetailContent({ caseId }: { caseId: string }) {
     }
   }
 
+  // PR 128b — add a single suggested action. Reuses the same
+  // addRecoveryActionV1 endpoint as the Add Action modal so the
+  // backend wedge (deterministic ID, audit emit) stays one path.
+  async function handleAddSuggested(s: SuggestedAction) {
+    setSuggestionErr("");
+    setBusySuggestionType(s.type);
+    try {
+      const res = await authedFetch(`/api/fn/addRecoveryActionV1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orgId, caseId, actorUid,
+          type: s.type,
+          title: s.title,
+          description: s.description || undefined,
+          assigneeRole: s.assigneeRole || undefined,
+        }),
+      });
+      const out: any = await res.json().catch(() => ({}));
+      if (!res.ok || !out.ok) throw new Error(out.error || `HTTP ${res.status}`);
+      await refresh();
+    } catch (e: any) {
+      setSuggestionErr(e?.message || String(e));
+    } finally {
+      setBusySuggestionType("");
+    }
+  }
+
+  // PR 128b — add every suggested action. Sequential so a partial
+  // failure leaves a coherent partial state and the operator can see
+  // exactly which one broke. Backend dedupe-by-type ensures we never
+  // double-add.
+  async function handleAddAllSuggested(list: SuggestedAction[]) {
+    setSuggestionErr("");
+    setBusyAddAll(true);
+    try {
+      for (const s of list) {
+        const res = await authedFetch(`/api/fn/addRecoveryActionV1`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            orgId, caseId, actorUid,
+            type: s.type,
+            title: s.title,
+            description: s.description || undefined,
+            assigneeRole: s.assigneeRole || undefined,
+          }),
+        });
+        const out: any = await res.json().catch(() => ({}));
+        if (!res.ok || !out.ok) throw new Error(out.error || `HTTP ${res.status}`);
+      }
+      await refresh();
+    } catch (e: any) {
+      setSuggestionErr(e?.message || String(e));
+      // Refresh anyway so the operator sees which suggestions did land.
+      await refresh();
+    } finally {
+      setBusyAddAll(false);
+    }
+  }
+
+  // PR 128b — operator override for the inferred cause. Backend
+  // clears cause.inferredFromComment on any manual cause.primary set,
+  // so the badge disappears on next load.
+  async function handleOverrideCause(newCause: RecoveryCausePrimary) {
+    setOpErr("");
+    setOverrideBusy(true);
+    try {
+      const res = await authedFetch(`/api/fn/updateRecoveryCaseV1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orgId, caseId, actorUid,
+          cause: { primary: newCause },
+        }),
+      });
+      const out: any = await res.json().catch(() => ({}));
+      if (!res.ok || !out.ok) throw new Error(out.error || `HTTP ${res.status}`);
+      await refresh();
+    } catch (e: any) {
+      setOpErr(e?.message || String(e));
+    } finally {
+      setOverrideBusy(false);
+    }
+  }
+
   async function handleEscalate() {
     if (!caseData || caseData.status === "escalated") return;
     setOpErr("");
@@ -248,7 +350,25 @@ function DetailContent({ caseId }: { caseId: string }) {
         operatorNotes={caseData.cause.operatorNotes}
         revenueAtRisk={caseData.revenueAtRisk}
         daysOpen={caseData.daysOpen}
+        inferredFromComment={Boolean(caseData.cause.inferredFromComment)}
+        onOverrideCause={!isTerminal ? handleOverrideCause : undefined}
+        overrideBusy={overrideBusy}
       />
+
+      {/* PR 128b — Suggested actions, sitting directly under MISSION.
+          What's wrong? (above) → What should I do? (here).
+          Hidden when empty (no cause, or all already added) or when
+          case is terminal. */}
+      {!isTerminal && suggestedActions.length > 0 && (
+        <SuggestedActionsPanel
+          suggestions={suggestedActions}
+          busyType={busySuggestionType}
+          busyAddAll={busyAddAll}
+          errorMessage={suggestionErr}
+          onAdd={handleAddSuggested}
+          onAddAll={handleAddAllSuggested}
+        />
+      )}
 
       {/* WHERE */}
       <WhereSection

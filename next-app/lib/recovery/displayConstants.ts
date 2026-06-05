@@ -144,6 +144,7 @@ export const CAUSE_DISPLAY: Record<RecoveryCausePrimary, string> = {
   compliance_failure: "Compliance failure",
   unclear_customer_feedback: "Unclear customer feedback",
   internal_qc_caught: "Internal QC catch",
+  missing_test_result: "Missing test result",
   other: "Other",
 };
 
@@ -152,6 +153,7 @@ export const CAUSE_ORDERED: RecoveryCausePrimary[] = [
   "proof_quality_insufficient",
   "wrong_proof_uploaded",
   "documentation_error",
+  "missing_test_result",
   "customer_changed_requirements",
   "scope_dispute",
   "compliance_failure",
