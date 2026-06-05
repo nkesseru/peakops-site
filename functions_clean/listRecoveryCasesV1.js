@@ -155,9 +155,13 @@ exports.listRecoveryCasesV1 = onRequest({ cors: true }, async (req, res) => {
         owner: trimStr(data.ownership?.owner),
         ownerRole: trimStr(data.ownership?.ownerRole),
 
-        // Aging + cycle counters
+        // Aging + resubmission counter (PR 129a: derived from packet
+        // chain length; cycleCount removed from response shape).
         daysOpen,
-        cycleCount: Number.isFinite(Number(data.cycleCount)) ? Number(data.cycleCount) : 0,
+        resubmissionCount: Math.max(
+          0,
+          (Array.isArray(data.packetVersions) ? data.packetVersions.length : 0) - 1
+        ),
 
         // Timestamps
         openedAt: tsIso(data.openedAt),

@@ -152,3 +152,7 @@ safeExport("updateRecoveryActionV1", "./updateRecoveryActionV1");
 // Priority is system-derived on every read (see _recoveryPriority.js).
 safeExport("listRecoveryCasesV1", "./listRecoveryCasesV1");
 safeExport("getRecoveryCaseV1", "./getRecoveryCaseV1");
+// PR 129a — mints the resubmission customer-review link for a case
+// at ready_to_resubmit, appends PacketVersionRef, transitions case
+// to awaiting_customer.
+safeExport("mintResubmissionLinkV1", "./mintResubmissionLinkV1");

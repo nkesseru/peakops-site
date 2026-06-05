@@ -249,9 +249,39 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
         history: Array.isArray(data.ownership?.history) ? data.ownership.history : [],
       },
 
-      packetVersions: Array.isArray(data.packetVersions) ? data.packetVersions : [],
+      // PR 129a — packetVersions sorted by ordinal (legacy entries
+      // without an ordinal field fall back to insertion order via the
+      // index). Each entry includes outcome / mintedAt / customerComment
+      // for the UI version-history row.
+      packetVersions: (() => {
+        const raw = Array.isArray(data.packetVersions) ? data.packetVersions.slice() : [];
+        const annotated = raw.map((p, i) => {
+          const ord = Number.isFinite(Number(p?.ordinal)) ? Number(p.ordinal) : (i + 1);
+          return {
+            packetVersionId: trimStr(p?.packetVersionId),
+            ordinal: ord,
+            outcome: trimStr(p?.outcome) || "pending",
+            outcomeAt: tsIso(p?.outcomeAt),
+            mintedAt: tsIso(p?.mintedAt),
+            mintedBy: trimStr(p?.mintedBy),
+            customerComment: trimStr(p?.customerComment) || null,
+            templateVersionAtMint: Number.isFinite(Number(p?.templateVersionAtMint))
+              ? Number(p.templateVersionAtMint)
+              : null,
+            changeSummary: trimStr(p?.changeSummary) || null,
+          };
+        });
+        annotated.sort((a, b) => a.ordinal - b.ordinal);
+        return annotated;
+      })(),
       currentPacketVersion: trimStr(data.currentPacketVersion),
-      cycleCount: Number.isFinite(Number(data.cycleCount)) ? Number(data.cycleCount) : 0,
+      // PR 129a — `cycleCount` deprecated; expose `resubmissionCount`
+      // derived from packetVersions.length - 1. First mint = no
+      // resubmissions yet; second mint = first resubmission; etc.
+      resubmissionCount: Math.max(
+        0,
+        (Array.isArray(data.packetVersions) ? data.packetVersions.length : 0) - 1
+      ),
 
       openedAt: tsIso(data.openedAt),
       daysOpen,

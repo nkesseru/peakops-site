@@ -184,7 +184,11 @@ async function s3_create_invalidEnums() {
 }
 
 async function s4_update_validTransition() {
-  const name = "4) Update case open → triaged via setting cause.primary; in_progress next";
+  // PR 129a — dropped `triaged`; setting cause.primary no longer
+  // auto-transitions. Case stays at `open` until operator explicitly
+  // moves it to in_progress, and `open → in_progress` is a single-step
+  // legal transition. cause.categorizedBy carries the triage signal.
+  const name = "4) Set cause.primary leaves status=open (no auto-triage); open → in_progress is direct";
   const incidentId = "inc-s4-update";
   await seedIncident(incidentId);
   const createRes = await postJson("createRecoveryCaseV1", {
@@ -193,17 +197,18 @@ async function s4_update_validTransition() {
   });
   const caseId = createRes.body.caseId;
 
-  // Setting primary cause should auto-transition open → triaged.
+  // Setting primary cause persists it but does NOT change status.
   const r1 = await postJson("updateRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
     cause: { primary: "missing_required_proof", operatorNotes: "Splice photo missing" },
   });
   if (r1.status !== 200) return { name, pass: false, detail: `update1: ${r1.status} ${JSON.stringify(r1.body).slice(0,150)}` };
   let c = await readCase(caseId);
-  if (c.status !== "triaged") return { name, pass: false, detail: `expected triaged; got ${c.status}` };
+  if (c.status !== "open") return { name, pass: false, detail: `expected open (no auto-triage); got ${c.status}` };
   if (c.cause?.primary !== "missing_required_proof") return { name, pass: false, detail: `cause not set` };
+  if (!c.cause?.categorizedBy) return { name, pass: false, detail: `cause.categorizedBy not stamped` };
 
-  // Then triaged → in_progress (explicit status set).
+  // open → in_progress is now a direct legal transition.
   const r2 = await postJson("updateRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
     status: "in_progress",
@@ -213,9 +218,9 @@ async function s4_update_validTransition() {
   if (c.status !== "in_progress") return { name, pass: false, detail: `expected in_progress; got ${c.status}` };
 
   const audit = await readAuditForCase(caseId);
-  if (!audit.includes("case_triaged")) return { name, pass: false, detail: `no case_triaged audit: ${audit}` };
+  if (audit.includes("case_triaged")) return { name, pass: false, detail: `unexpected case_triaged audit (state dropped in PR 129a): ${audit}` };
   if (!audit.includes("case_status_changed")) return { name, pass: false, detail: `no case_status_changed audit` };
-  return { name, pass: true, detail: `open → triaged (auto, on cause) → in_progress; audits coherent` };
+  return { name, pass: true, detail: `cause set without auto-triage; open → in_progress direct; no case_triaged audit` };
 }
 
 async function s5_update_invalidTransition() {
@@ -248,7 +253,7 @@ async function s6_resolveCase_terminal() {
     revenueAtRisk: { amount: 5000, type: "actual" },
   });
   const caseId = createRes.body.caseId;
-  // Walk through valid transitions: open → triaged → in_progress → recovered
+  // PR 129a — Walk: open → in_progress → recovered (triaged collapsed).
   await postJson("updateRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
     cause: { primary: "internal_qc_caught" },
@@ -459,7 +464,18 @@ async function s11_updateActionLifecycle() {
 
   const audit = await readAuditForCase(caseId);
   if (!audit.includes("action_completed")) return { name, pass: false, detail: `no action_completed audit: ${audit}` };
-  return { name, pass: true, detail: `action lifecycle stamps timestamps; invalid status rejected; action_completed audit fired` };
+
+  // PR 129a — auto-flip: this was the only action and it's now done,
+  // so the case should have auto-transitioned to ready_to_resubmit
+  // with case_ready_for_resubmission + case_status_changed audits.
+  const caseFinal = await readCase(caseId);
+  if (caseFinal.status !== "ready_to_resubmit") {
+    return { name, pass: false, detail: `expected case auto-flip to ready_to_resubmit; got ${caseFinal.status}` };
+  }
+  if (!audit.includes("case_ready_for_resubmission")) {
+    return { name, pass: false, detail: `no case_ready_for_resubmission audit: ${audit}` };
+  }
+  return { name, pass: true, detail: `action lifecycle + auto-flip to ready_to_resubmit when last open action closes` };
 }
 
 async function s12_autoCreateOnReject() {
@@ -503,7 +519,7 @@ async function s12_autoCreateOnReject() {
 }
 
 async function s13_secondRejectionExtendsCase() {
-  const name = "13) Second rejection extends existing case (no duplicate); cycleCount=2; status reverts in_progress";
+  const name = "13) Second rejection extends existing case (no duplicate); packetVersions.length=2; status → in_progress";
   const incidentId = "inc-s13-second-reject";
   await seedIncident(incidentId);
 
@@ -547,10 +563,21 @@ async function s13_secondRejectionExtendsCase() {
   if (allCases.size !== 1) return { name, pass: false, detail: `expected 1 case; got ${allCases.size}` };
 
   c2 = await readCase(caseId);
-  if (c2.cycleCount !== 2) return { name, pass: false, detail: `cycleCount=${c2.cycleCount}` };
+  // PR 129a — cycleCount removed; verify packetVersions.length instead.
+  if (c2.packetVersions.length !== 2) return { name, pass: false, detail: `packetVersions.length=${c2.packetVersions.length}` };
   if (c2.status !== "in_progress") return { name, pass: false, detail: `expected in_progress after 2nd reject; got ${c2.status}` };
 
-  return { name, pass: true, detail: `single case absorbed 2 rejections; cycleCount=2; status reverted in_progress` };
+  // PR 129a — case_re_rejected audit should have fired because the 2nd
+  // rejection landed on a packet that was outstanding (pending → rejected).
+  const audit = await readAuditForCase(caseId);
+  if (!audit.includes("case_re_rejected")) {
+    return { name, pass: false, detail: `expected case_re_rejected audit; got: ${audit}` };
+  }
+  if (!audit.includes("packet_version_outcome")) {
+    return { name, pass: false, detail: `expected packet_version_outcome audit; got: ${audit}` };
+  }
+
+  return { name, pass: true, detail: `single case absorbed 2 rejections; packetVersions=2; case_re_rejected + packet_version_outcome audits fired` };
 }
 
 async function s14_autoResolveOnAccept() {
@@ -600,39 +627,45 @@ async function s14_autoResolveOnAccept() {
   return { name, pass: true, detail: `auto-resolved on customer accept; recovered terminal + revenue_recovered audit` };
 }
 
-async function s15_createWithCause_autoTriages() {
-  const name = "15) PR 127a1: createRecoveryCaseV1 with cause.primary supplied → initial status=triaged + case_triaged audit; without cause → stays open";
+async function s15_createWithCauseStaysOpen() {
+  // PR 129a — `triaged` state dropped. Manual create with cause.primary
+  // supplied lands at `open`; cause.categorizedBy + cause.primary carry
+  // the triage signal. case_triaged audit no longer emitted (regression
+  // guard).
+  const name = "15) PR 129a: createRecoveryCaseV1 with cause stays open (no auto-triage); cause.categorizedBy stamped; no case_triaged audit";
   const incidentIdA = "inc-s15-with-cause";
   const incidentIdB = "inc-s15-no-cause";
   await seedIncident(incidentIdA);
   await seedIncident(incidentIdB);
 
-  // With cause.primary → expect status=triaged + both case_opened AND case_triaged audits
+  // With cause.primary → status=open; cause persisted with categorizedBy.
   const rA = await postJson("createRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incidentIdA,
     source: "internal_qc", priority: "high",
-    cause: { primary: "missing_required_proof", operatorNotes: "Auto-triage on create" },
+    cause: { primary: "missing_required_proof", operatorNotes: "Set at create time" },
   });
   if (rA.status !== 200) return { name, pass: false, detail: `with cause: ${rA.status}` };
-  if (rA.body.status !== "triaged") {
-    return { name, pass: false, detail: `with cause: status=${rA.body.status} (expected triaged)` };
+  if (rA.body.status !== "open") {
+    return { name, pass: false, detail: `with cause: status=${rA.body.status} (expected open after PR 129a)` };
   }
   const cA = await readCase(rA.body.caseId);
-  if (cA.status !== "triaged") return { name, pass: false, detail: `with cause doc: status=${cA.status}` };
+  if (cA.status !== "open") return { name, pass: false, detail: `with cause doc: status=${cA.status}` };
   if (cA.cause?.primary !== "missing_required_proof") return { name, pass: false, detail: `cause not persisted` };
 
   const auditA = await readAuditForCase(rA.body.caseId);
   if (!auditA.includes("case_opened")) return { name, pass: false, detail: `with cause: no case_opened: ${auditA}` };
-  if (!auditA.includes("case_triaged")) return { name, pass: false, detail: `with cause: no case_triaged: ${auditA}` };
+  if (auditA.includes("case_triaged")) {
+    return { name, pass: false, detail: `unexpected case_triaged (state dropped in PR 129a): ${auditA}` };
+  }
 
-  // Without cause.primary → expect status=open + only case_opened audit
+  // Without cause.primary → also status=open + only case_opened audit
   const rB = await postJson("createRecoveryCaseV1", {
     actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incidentIdB,
     source: "internal_qc", priority: "low",
   });
   if (rB.status !== 200) return { name, pass: false, detail: `no cause: ${rB.status}` };
   if (rB.body.status !== "open") {
-    return { name, pass: false, detail: `no cause: status=${rB.body.status} (expected open)` };
+    return { name, pass: false, detail: `no cause: status=${rB.body.status}` };
   }
   const cB = await readCase(rB.body.caseId);
   if (cB.status !== "open") return { name, pass: false, detail: `no cause doc: status=${cB.status}` };
@@ -643,7 +676,7 @@ async function s15_createWithCause_autoTriages() {
     return { name, pass: false, detail: `no cause: unexpected case_triaged: ${auditB}` };
   }
 
-  return { name, pass: true, detail: `with cause → triaged + case_triaged audit; without cause → open + no triage audit` };
+  return { name, pass: true, detail: `both paths land at open; no case_triaged audit on either; cause.primary persisted when supplied` };
 }
 
 // ── PR 127a2 scenarios ─────────────────────────────────────────────
@@ -748,7 +781,8 @@ async function s17_getRecoveryCaseV1() {
     return { name, pass: false, detail: `actions=${ok.body.actions?.length} (expected 2)` };
   }
   if (!Array.isArray(ok.body.audit) || ok.body.audit.length < 3) {
-    return { name, pass: false, detail: `audit=${ok.body.audit?.length} (expected ≥3: case_opened, case_triaged, action_created × 2)` };
+    // PR 129a — case_triaged removed; expect ≥3: case_opened + action_created × 2
+    return { name, pass: false, detail: `audit=${ok.body.audit?.length} (expected ≥3: case_opened, action_created × 2)` };
   }
 
   // Audit should be newest-first
@@ -893,11 +927,19 @@ async function s21_autoCreateInfersCauseFromComment() {
   if (!c) return { name, pass: false, detail: "case not auto-created" };
   if (c.cause?.primary !== "missing_test_result") return { name, pass: false, detail: `cause.primary=${c.cause?.primary} (expected missing_test_result)` };
   if (c.cause?.inferredFromComment !== true) return { name, pass: false, detail: `inferredFromComment=${c.cause?.inferredFromComment}` };
-  if (c.status !== "triaged") return { name, pass: false, detail: `status=${c.status} (expected triaged from create-time cause)` };
+  // PR 129a — `triaged` state dropped; case stays at `open`.
+  // cause.inferredFromComment + cause.primary carry the pre-classified signal.
+  if (c.status !== "open") return { name, pass: false, detail: `status=${c.status} (expected open after PR 129a)` };
   const audit = await readAuditForCase(c.id);
-  if (!audit.includes("case_triaged")) return { name, pass: false, detail: `no case_triaged audit: ${audit}` };
+  // case_triaged audit no longer emitted.
+  if (audit.includes("case_triaged")) {
+    return { name, pass: false, detail: `unexpected case_triaged audit (PR 129a dropped this): ${audit}` };
+  }
+  if (!audit.includes("case_auto_opened_from_rejection")) {
+    return { name, pass: false, detail: `no case_auto_opened_from_rejection: ${audit}` };
+  }
 
-  return { name, pass: true, detail: `cause inferred → missing_test_result; case at triaged; case_triaged audit fired` };
+  return { name, pass: true, detail: `cause inferred → missing_test_result; case at open; inferredFromComment=true; no case_triaged audit` };
 }
 
 async function s22_autoCreateNoMatchKeepsCauseUnset() {
@@ -985,6 +1027,266 @@ async function s24_neverOverwriteManuallySetCause() {
 }
 
 // ── main ───────────────────────────────────────────────────────────
+// ── PR 129a — Resubmission loop scenarios ─────────────────────────
+
+async function s25_mintResubmission_happyPath() {
+  // Full resubmission loop: auto-create case → set cause → set in_progress
+  // → complete only action → auto-flip to ready_to_resubmit →
+  // mintResubmissionLinkV1 → awaiting_customer with ordinal=2 packet.
+  const name = "25) PR 129a: mintResubmissionLinkV1 happy path — ready_to_resubmit → awaiting_customer; ordinal=2; case_resubmitted audit";
+  const incidentId = "inc-s25-resubmit";
+  await seedIncident(incidentId);
+
+  // First rejection auto-creates case + starter action.
+  const mint1 = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint1.body.token, action: "reject", comment: "Need clarification" });
+
+  const c1 = await findCaseByIncident(incidentId);
+  const caseId = c1.id;
+
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "missing_required_proof" },
+  });
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress",
+  });
+
+  // Complete the auto-created starter action — last action → auto-flip.
+  const actionsSnap = await db.collection(`orgs/${ORG_ID}/recovery_cases/${caseId}/actions`).get();
+  if (actionsSnap.empty) return { name, pass: false, detail: "no starter action found" };
+  const starterActionId = actionsSnap.docs[0].id;
+  const r1 = await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: starterActionId,
+    status: "done", outcome: "Captured what was missing",
+  });
+  if (r1.status !== 200) return { name, pass: false, detail: `action done: ${r1.status}` };
+  if (r1.body.caseAutoFlippedToReadyToResubmit !== true) {
+    return { name, pass: false, detail: `expected caseAutoFlippedToReadyToResubmit=true; got ${r1.body.caseAutoFlippedToReadyToResubmit}` };
+  }
+
+  let c = await readCase(caseId);
+  if (c.status !== "ready_to_resubmit") return { name, pass: false, detail: `expected ready_to_resubmit; got ${c.status}` };
+
+  // Mint the resubmission link.
+  const mintR = await postJson("mintResubmissionLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    changeSummary: "Recaptured missing proof; ready for re-review.",
+  });
+  if (mintR.status !== 200) return { name, pass: false, detail: `mint resub: ${mintR.status} ${JSON.stringify(mintR.body).slice(0,200)}` };
+  if (mintR.body.ordinal !== 2) return { name, pass: false, detail: `expected ordinal=2; got ${mintR.body.ordinal}` };
+  if (mintR.body.status !== "awaiting_customer") return { name, pass: false, detail: `mint status=${mintR.body.status}` };
+  if (!mintR.body.token) return { name, pass: false, detail: "no token in response" };
+
+  c = await readCase(caseId);
+  if (c.status !== "awaiting_customer") return { name, pass: false, detail: `case status=${c.status} after mint` };
+  if (c.packetVersions.length !== 2) return { name, pass: false, detail: `packetVersions=${c.packetVersions.length}; expected 2` };
+  const v2 = c.packetVersions.find((p) => p.ordinal === 2);
+  if (!v2) return { name, pass: false, detail: "v2 not in packetVersions" };
+  if (v2.outcome !== "pending") return { name, pass: false, detail: `v2.outcome=${v2.outcome}` };
+  if (v2.changeSummary !== "Recaptured missing proof; ready for re-review.") {
+    return { name, pass: false, detail: `v2.changeSummary not persisted` };
+  }
+
+  const audit = await readAuditForCase(caseId);
+  if (!audit.includes("case_ready_for_resubmission")) return { name, pass: false, detail: `no case_ready_for_resubmission: ${audit}` };
+  if (!audit.includes("case_resubmitted")) return { name, pass: false, detail: `no case_resubmitted: ${audit}` };
+  return { name, pass: true, detail: `auto-flip + mint resubmission → ordinal=2 v2 packet; awaiting_customer; case_resubmitted audit fired` };
+}
+
+async function s26_mintResubmission_rejectedWhenNotReady() {
+  // mintResubmissionLinkV1 must refuse when the case isn't in
+  // ready_to_resubmit — protects against operator mints out of state.
+  const name = "26) PR 129a: mintResubmissionLinkV1 rejects when case.status != ready_to_resubmit";
+  const incidentId = "inc-s26-not-ready";
+  await seedIncident(incidentId);
+
+  const create = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+    source: "internal_qc", priority: "low",
+  });
+  const caseId = create.body.caseId;
+  // Case is at `open` — not eligible to mint resubmission.
+  const r = await postJson("mintResubmissionLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+  });
+  if (r.status !== 409 || r.body?.error !== "invalid_status_for_resubmission") {
+    return { name, pass: false, detail: `expected 409 invalid_status_for_resubmission; got ${r.status} ${JSON.stringify(r.body).slice(0,150)}` };
+  }
+  return { name, pass: true, detail: `409 invalid_status_for_resubmission when case is open (not ready_to_resubmit)` };
+}
+
+async function s27_resubmission_customerAccepts() {
+  // Customer accepts the resubmission packet → case → recovered;
+  // packet_version_outcome audit + revenue_recovered fire.
+  const name = "27) PR 129a: customer accepts resubmission → case recovered + packet_version_outcome (accepted)";
+  const incidentId = "inc-s27-accept-v2";
+  await seedIncident(incidentId);
+
+  const mint1 = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint1.body.token, action: "reject", comment: "Need it captured" });
+
+  const c1 = await findCaseByIncident(incidentId);
+  const caseId = c1.id;
+
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "missing_required_proof" },
+    revenueAtRisk: { amount: 5000, type: "actual" },
+  });
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress",
+  });
+  // Complete starter action → auto-flip to ready_to_resubmit
+  const acts = await db.collection(`orgs/${ORG_ID}/recovery_cases/${caseId}/actions`).get();
+  await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: acts.docs[0].id,
+    status: "done", outcome: "Done",
+  });
+
+  const mintR = await postJson("mintResubmissionLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+  });
+  if (mintR.status !== 200) return { name, pass: false, detail: `mint resub: ${mintR.status}` };
+
+  // Customer accepts the new packet.
+  const acc = await postJson("submitCustomerReviewV1", {
+    token: mintR.body.token, action: "accept", comment: "Looks good now",
+  });
+  if (acc.status !== 200) return { name, pass: false, detail: `accept: ${acc.status}` };
+
+  const c = await readCase(caseId);
+  if (c.status !== "recovered") return { name, pass: false, detail: `expected recovered; got ${c.status}` };
+  const v2 = c.packetVersions.find((p) => p.ordinal === 2);
+  if (!v2 || v2.outcome !== "accepted") {
+    return { name, pass: false, detail: `v2.outcome=${v2 && v2.outcome}; expected accepted` };
+  }
+
+  const audit = await readAuditForCase(caseId);
+  if (!audit.includes("packet_version_outcome")) return { name, pass: false, detail: `no packet_version_outcome: ${audit}` };
+  if (!audit.includes("revenue_recovered")) return { name, pass: false, detail: `no revenue_recovered: ${audit}` };
+  return { name, pass: true, detail: `v2 accepted → case recovered + packet_version_outcome(accepted) + revenue_recovered audits` };
+}
+
+async function s28_resubmission_customerReRejects() {
+  // Customer rejects the resubmission → case → in_progress + case_re_rejected
+  // + packet outcome flipped to rejected.
+  const name = "28) PR 129a: customer re-rejects resubmission → in_progress + case_re_rejected + packet_version_outcome(rejected)";
+  const incidentId = "inc-s28-rereject-v2";
+  await seedIncident(incidentId);
+
+  const mint1 = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint1.body.token, action: "reject", comment: "First reject" });
+  const c1 = await findCaseByIncident(incidentId);
+  const caseId = c1.id;
+
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "missing_required_proof" },
+  });
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress",
+  });
+  const acts = await db.collection(`orgs/${ORG_ID}/recovery_cases/${caseId}/actions`).get();
+  await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: acts.docs[0].id, status: "done",
+  });
+
+  const mintR = await postJson("mintResubmissionLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+  });
+  if (mintR.status !== 200) return { name, pass: false, detail: `mint resub: ${mintR.status}` };
+
+  // Customer re-rejects.
+  const rej = await postJson("submitCustomerReviewV1", {
+    token: mintR.body.token, action: "reject", comment: "Still not what I asked for",
+  });
+  if (rej.status !== 200) return { name, pass: false, detail: `re-reject: ${rej.status}` };
+
+  const c = await readCase(caseId);
+  if (c.status !== "in_progress") return { name, pass: false, detail: `expected in_progress; got ${c.status}` };
+  const v2 = c.packetVersions.find((p) => p.ordinal === 2);
+  if (!v2 || v2.outcome !== "rejected") {
+    return { name, pass: false, detail: `v2.outcome=${v2 && v2.outcome}; expected rejected` };
+  }
+  // Still one case for this incident — no duplicate.
+  const allCases = await db.collection(`orgs/${ORG_ID}/recovery_cases`)
+    .where("incidentId", "==", incidentId).get();
+  if (allCases.size !== 1) return { name, pass: false, detail: `expected 1 case; got ${allCases.size}` };
+
+  const audit = await readAuditForCase(caseId);
+  if (!audit.includes("case_re_rejected")) return { name, pass: false, detail: `no case_re_rejected: ${audit}` };
+  if (!audit.includes("packet_version_outcome")) return { name, pass: false, detail: `no packet_version_outcome: ${audit}` };
+  return { name, pass: true, detail: `v2 re-rejected → in_progress; case_re_rejected + packet_version_outcome audits; no duplicate case` };
+}
+
+async function s29_resubmissionCount_derived() {
+  // getRecoveryCaseV1 should expose resubmissionCount = packetVersions.length - 1.
+  const name = "29) PR 129a: getRecoveryCaseV1 returns resubmissionCount derived (length - 1); cycleCount no longer in response";
+  const incidentId = "inc-s29-resub-count";
+  await seedIncident(incidentId);
+
+  // 0 packets → resubmissionCount = 0 (we floor at 0)
+  const create = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+    source: "internal_qc", priority: "low",
+  });
+  const caseId = create.body.caseId;
+  const getRes0 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (getRes0.status !== 200) return { name, pass: false, detail: `get0: ${getRes0.status}` };
+  if (getRes0.body.case.resubmissionCount !== 0) {
+    return { name, pass: false, detail: `expected resubmissionCount=0 with 0 packets; got ${getRes0.body.case.resubmissionCount}` };
+  }
+  if ("cycleCount" in getRes0.body.case) {
+    return { name, pass: false, detail: `cycleCount still in response: ${getRes0.body.case.cycleCount}` };
+  }
+
+  // Mint two packets manually via createCustomerReviewLinkV1 path
+  // (case is open → not eligible for mintResubmissionLinkV1, but the
+  // incident-side mint appends to any non-terminal case).
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "missing_required_proof" },
+  });
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress",
+  });
+  await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  // Bump incident back to in_progress so we can mint a second link.
+  await db.doc(`orgs/${ORG_ID}/incidents/${incidentId}`).update({ status: "in_progress" });
+  await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+
+  const getRes2 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (getRes2.status !== 200) return { name, pass: false, detail: `get2: ${getRes2.status}` };
+  if (getRes2.body.case.resubmissionCount !== 1) {
+    return { name, pass: false, detail: `expected resubmissionCount=1 with 2 packets; got ${getRes2.body.case.resubmissionCount}` };
+  }
+  // Ordinals: v1 + v2 should both be present and sorted.
+  const pkts = getRes2.body.case.packetVersions || [];
+  if (pkts.length !== 2 || pkts[0].ordinal !== 1 || pkts[1].ordinal !== 2) {
+    return { name, pass: false, detail: `packetVersions ordinals: ${pkts.map((p)=>p.ordinal).join(",")}` };
+  }
+
+  return { name, pass: true, detail: `resubmissionCount = packetVersions.length - 1; ordinals=[1,2]; cycleCount removed from response` };
+}
+
+async function s30_caseIdIsIncidentId() {
+  // PR 129a — new cases auto-created use caseId = `case_${incidentId}`.
+  const name = "30) PR 129a: new auto-created cases use caseId = `case_${incidentId}` (sanitized)";
+  const incidentId = "inc-s30-canonical-id";
+  await seedIncident(incidentId);
+  const mint = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint.body.token, action: "reject", comment: "Reject" });
+
+  const c = await findCaseByIncident(incidentId);
+  // Sanitization rule in deterministicCaseId — alphanumeric / underscore / dash preserved.
+  const expectedId = `case_${incidentId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+  if (c.id !== expectedId) {
+    return { name, pass: false, detail: `caseId=${c.id}; expected ${expectedId} (PR 129a canonical scheme)` };
+  }
+  return { name, pass: true, detail: `auto-created caseId is case_<incidentId>; no token suffix` };
+}
+
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
   await sleep(500);
@@ -1006,8 +1308,8 @@ async function main() {
     s12_autoCreateOnReject,
     s13_secondRejectionExtendsCase,
     s14_autoResolveOnAccept,
-    // PR 127a1 — auto-triage on create with cause
-    s15_createWithCause_autoTriages,
+    // PR 129a — cause-set no longer auto-triages; case stays open
+    s15_createWithCauseStaysOpen,
     // PR 127a2 — list + get + derived priority
     s16_listRecoveryCasesV1,
     s17_getRecoveryCaseV1,
@@ -1021,6 +1323,13 @@ async function main() {
     s22_autoCreateNoMatchKeepsCauseUnset,
     s23_suggestedActionsInResponse,
     s24_neverOverwriteManuallySetCause,
+    // PR 129a — resubmission loop
+    s25_mintResubmission_happyPath,
+    s26_mintResubmission_rejectedWhenNotReady,
+    s27_resubmission_customerAccepts,
+    s28_resubmission_customerReRejects,
+    s29_resubmissionCount_derived,
+    s30_caseIdIsIncidentId,
   ];
 
   const results = [];

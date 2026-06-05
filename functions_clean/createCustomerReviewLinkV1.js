@@ -301,10 +301,12 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
         .where("incidentId", "==", incidentId)
         .where("status", "in", [
           RECOVERY_STATUS.OPEN,
-          RECOVERY_STATUS.TRIAGED,
           RECOVERY_STATUS.IN_PROGRESS,
+          RECOVERY_STATUS.READY_TO_RESUBMIT,
           RECOVERY_STATUS.AWAITING_CUSTOMER,
           RECOVERY_STATUS.ESCALATED,
+          // PR 129a — legacy tolerance: pre-129a triaged cases.
+          "triaged",
         ])
         .limit(1)
         .get();
@@ -312,21 +314,26 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
         const caseRef = casesQuery.docs[0].ref;
         const caseData = casesQuery.docs[0].data() || {};
         if (!TERMINAL_STATUSES.has(String(caseData.status || ""))) {
+          const prevPkts = Array.isArray(caseData.packetVersions) ? caseData.packetVersions.slice() : [];
+          // PR 129a — ordinal = next position in the immutable chain.
+          // Persisted so the UI can render "v3 of N" without recomputing.
+          const ordinal = prevPkts.length + 1;
           const packetVersionRef = {
             packetVersionId: tokenHashPrefix,
+            ordinal,
             outcome: "pending",
             outcomeAt: null,
             mintedAt: new Date().toISOString(),
             mintedBy: actorUid,
             templateVersionAtMint: templateVersion,
           };
-          const prevPkts = Array.isArray(caseData.packetVersions) ? caseData.packetVersions.slice() : [];
           const dup = prevPkts.some((p) => p && p.packetVersionId === tokenHashPrefix);
           const newPkts = dup ? prevPkts : prevPkts.concat([packetVersionRef]);
           await caseRef.update({
             packetVersions: newPkts,
             currentPacketVersion: tokenHashPrefix,
-            cycleCount: newPkts.length,
+            // PR 129a — cycleCount dropped; resubmissionCount derived
+            // at read time from packetVersions.length - 1.
             status: RECOVERY_STATUS.AWAITING_CUSTOMER,
             updatedAt: FieldValue.serverTimestamp(),
             updatedBy: actorUid,
@@ -336,7 +343,7 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
             type: "packet_version_appended",
             orgId, caseId: caseRef.id, incidentId,
             actorUid,
-            meta: { tokenHashPrefix, sourceStatus, templateVersion },
+            meta: { tokenHashPrefix, ordinal, sourceStatus, templateVersion },
           });
           if (caseData.status !== RECOVERY_STATUS.AWAITING_CUSTOMER) {
             await writeRecoveryAudit({

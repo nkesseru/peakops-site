@@ -13,12 +13,21 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 /**
  * Append an audit row to orgs/{orgId}/recovery_audit/{auto-id}.
  *
- * Event types (PR 127a):
- *   case_opened, case_auto_opened_from_rejection, case_triaged,
- *   case_assigned, case_status_changed, case_priority_changed,
- *   case_revenue_updated, case_resolved, revenue_recovered,
- *   action_created, action_assigned, action_status_changed,
- *   action_completed, packet_version_appended
+ * Event types:
+ *   PR 127a:
+ *     case_opened, case_auto_opened_from_rejection, case_assigned,
+ *     case_status_changed, case_priority_changed, case_revenue_updated,
+ *     case_resolved, revenue_recovered, action_created, action_assigned,
+ *     action_status_changed, action_completed, packet_version_appended
+ *   PR 129a:
+ *     case_ready_for_resubmission (auto, when all actions complete)
+ *     case_resubmitted (operator-driven, via mintResubmissionLinkV1)
+ *     case_re_rejected (customer re-rejects an awaiting_customer packet)
+ *     packet_version_outcome (every outcome write on a PacketVersionRef)
+ *   PR 127a1 / 128a (deprecated, no longer emitted):
+ *     case_triaged — state collapsed into `open`; the
+ *     cause.inferredFromComment + cause.categorizedBy fields carry
+ *     the same signal.
  *
  * @param {object} entry
  * @param {string} entry.type
