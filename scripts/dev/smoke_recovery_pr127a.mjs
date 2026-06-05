@@ -1287,6 +1287,239 @@ async function s30_caseIdIsIncidentId() {
   return { name, pass: true, detail: `auto-created caseId is case_<incidentId>; no token suffix` };
 }
 
+// ── PR 129c — Full v2/v3 round-trip ───────────────────────────────
+// Proves the complete Recovery Resubmission Loop end-to-end inside
+// one case, exercising every state transition the architecture lock
+// promises: customer reject → ready_to_resubmit → mint v2 →
+// awaiting_customer → customer re-reject → in_progress → ready again
+// → mint v3 → awaiting → customer accept → recovered.
+
+async function s31_fullResubmissionRoundTrip() {
+  const name = "31) PR 129c: Full v2/v3 round-trip (reject v1 → mint v2 → reject v2 → mint v3 → accept v3)";
+  const incidentId = "inc-s31-full-round-trip";
+  await seedIncident(incidentId);
+
+  const transitions = [];
+
+  // ── STEP 1: v1 mint + customer rejection (auto-create case) ────
+  const v1 = await postJson("createCustomerReviewLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+  });
+  if (v1.status !== 200) return { name, pass: false, detail: `v1 mint: ${v1.status} ${JSON.stringify(v1.body).slice(0,200)}` };
+  // Comment chosen so the PR 128a keyword map infers
+  // cause=missing_required_proof on auto-create.
+  const rej1 = await postJson("submitCustomerReviewV1", {
+    token: v1.body.token, action: "reject", comment: "We need missing photos for slot 3",
+  });
+  if (rej1.status !== 200) return { name, pass: false, detail: `v1 reject: ${rej1.status}` };
+
+  const c0 = await findCaseByIncident(incidentId);
+  if (!c0) return { name, pass: false, detail: "case not auto-created from v1 reject" };
+  const caseId = c0.id;
+  transitions.push(`v1-reject:status=${c0.status}`);
+  if (c0.status !== "open") {
+    return { name, pass: false, detail: `after v1 reject: status=${c0.status} (expected open per PR 129a — no auto-triage)` };
+  }
+  if (c0.cause?.primary !== "missing_required_proof") {
+    return { name, pass: false, detail: `inferred cause: ${c0.cause?.primary} (expected missing_required_proof from "missing" keyword)` };
+  }
+  if (c0.cause?.inferredFromComment !== true) {
+    return { name, pass: false, detail: `cause.inferredFromComment not set` };
+  }
+  if (c0.packetVersions.length !== 1) {
+    return { name, pass: false, detail: `expected 1 packetVersion after v1; got ${c0.packetVersions.length}` };
+  }
+
+  // ── STEP 2: operator sets revenue + transitions in_progress ────
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    revenueAtRisk: { amount: 8000, type: "actual", notes: "Disputed line item" },
+  });
+  const tr1 = await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress",
+  });
+  if (tr1.status !== 200) return { name, pass: false, detail: `open → in_progress: ${tr1.status}` };
+
+  // ── STEP 3: complete starter action → auto-flip ────────────────
+  const actsSnap = await db.collection(`orgs/${ORG_ID}/recovery_cases/${caseId}/actions`).get();
+  if (actsSnap.empty) return { name, pass: false, detail: "no starter action" };
+  const starterId = actsSnap.docs[0].id;
+  const done1 = await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: starterId,
+    status: "done", outcome: "Clarified customer needs",
+  });
+  if (done1.status !== 200) return { name, pass: false, detail: `action done: ${done1.status}` };
+  if (done1.body.caseAutoFlippedToReadyToResubmit !== true) {
+    return { name, pass: false, detail: `expected auto-flip after last action done; flip flag=${done1.body.caseAutoFlippedToReadyToResubmit}` };
+  }
+  const c1 = await readCase(caseId);
+  transitions.push(`actions-done:status=${c1.status}`);
+  if (c1.status !== "ready_to_resubmit") {
+    return { name, pass: false, detail: `after action done: status=${c1.status} (expected ready_to_resubmit)` };
+  }
+
+  // ── STEP 4: mint v2 via mintResubmissionLinkV1 ─────────────────
+  const v2change = "Re-captured photos for slot 3 as requested.";
+  const v2mint = await postJson("mintResubmissionLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, changeSummary: v2change,
+  });
+  if (v2mint.status !== 200) return { name, pass: false, detail: `v2 mint: ${v2mint.status} ${JSON.stringify(v2mint.body).slice(0,200)}` };
+  if (v2mint.body.ordinal !== 2) return { name, pass: false, detail: `v2 ordinal=${v2mint.body.ordinal}` };
+  if (!v2mint.body.token || !v2mint.body.url) return { name, pass: false, detail: "v2 mint missing token/url" };
+
+  const c2 = await readCase(caseId);
+  transitions.push(`v2-mint:status=${c2.status},ordinal=${v2mint.body.ordinal}`);
+  if (c2.status !== "awaiting_customer") return { name, pass: false, detail: `after v2 mint: status=${c2.status}` };
+  if (c2.packetVersions.length !== 2) return { name, pass: false, detail: `v2 pkts=${c2.packetVersions.length}` };
+  const v2pkt = c2.packetVersions.find((p) => p.ordinal === 2);
+  if (!v2pkt) return { name, pass: false, detail: "v2 packetVersion entry missing" };
+  if (v2pkt.outcome !== "pending") return { name, pass: false, detail: `v2.outcome=${v2pkt.outcome}` };
+  if (v2pkt.changeSummary !== v2change) return { name, pass: false, detail: `v2.changeSummary not persisted; got=${v2pkt.changeSummary}` };
+
+  // ── STEP 4-VERIFY: read via getRecoveryCaseV1 endpoint ─────────
+  const getV2 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (getV2.status !== 200) return { name, pass: false, detail: `getRecoveryCaseV1: ${getV2.status}` };
+  if (getV2.body.case.resubmissionCount !== 1) {
+    return { name, pass: false, detail: `resubmissionCount=${getV2.body.case.resubmissionCount} after v2 mint (expected 1)` };
+  }
+  // Ordinals must round-trip through the response.
+  const ords = (getV2.body.case.packetVersions || []).map((p) => p.ordinal).sort((a, b) => a - b);
+  if (JSON.stringify(ords) !== "[1,2]") return { name, pass: false, detail: `response ordinals: ${JSON.stringify(ords)}` };
+
+  // ── STEP 5: customer rejects v2 ────────────────────────────────
+  const rej2 = await postJson("submitCustomerReviewV1", {
+    token: v2mint.body.token, action: "reject",
+    comment: "The blurry photos still aren't clear enough",
+  });
+  if (rej2.status !== 200) return { name, pass: false, detail: `v2 reject: ${rej2.status}` };
+
+  const c3 = await readCase(caseId);
+  transitions.push(`v2-reject:status=${c3.status}`);
+  if (c3.status !== "in_progress") return { name, pass: false, detail: `after v2 reject: status=${c3.status} (expected in_progress)` };
+  // v2 entry should now show outcome=rejected
+  const v2Updated = c3.packetVersions.find((p) => p.ordinal === 2);
+  if (v2Updated.outcome !== "rejected") return { name, pass: false, detail: `v2.outcome=${v2Updated.outcome} after reject (expected rejected)` };
+  if (v2Updated.customerComment !== "The blurry photos still aren't clear enough") {
+    return { name, pass: false, detail: `v2.customerComment not updated` };
+  }
+  // Single case invariant — no duplicate created.
+  const allCases = await db.collection(`orgs/${ORG_ID}/recovery_cases`)
+    .where("incidentId", "==", incidentId).get();
+  if (allCases.size !== 1) return { name, pass: false, detail: `expected 1 case for incident; got ${allCases.size}` };
+  // Manual cause preserved across re-rejection.
+  if (c3.cause?.primary !== "missing_required_proof") {
+    return { name, pass: false, detail: `cause.primary mutated by re-rejection: ${c3.cause?.primary}` };
+  }
+
+  // ── STEP 5-VERIFY: suggestions still returned by endpoint ──────
+  const getV2reject = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (!Array.isArray(getV2reject.body.suggestedActions)) {
+    return { name, pass: false, detail: `suggestedActions not in response after re-reject` };
+  }
+  // Cause is still missing_required_proof → chain is [recapture_proof, re_submit_to_customer].
+  // Existing actions: clarify_with_customer (done from step 3). Neither chain
+  // type is present yet, so both are still suggested.
+  const sugTypes = getV2reject.body.suggestedActions.map((s) => s.type).sort();
+  if (sugTypes.length === 0) {
+    return { name, pass: false, detail: `expected non-empty suggestions after re-reject; got empty` };
+  }
+
+  // ── STEP 6: add a new action + complete → second auto-flip ─────
+  const addRes = await postJson("addRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    type: "recapture_proof", title: "Re-shoot for clarity at higher resolution",
+    assigneeRole: "field_lead",
+  });
+  if (addRes.status !== 200) return { name, pass: false, detail: `add new action: ${addRes.status}` };
+  const newActionId = addRes.body.actionId;
+
+  const done2 = await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: newActionId,
+    status: "done", outcome: "Re-shot at 4K, captured slate label",
+  });
+  if (done2.status !== 200) return { name, pass: false, detail: `2nd action done: ${done2.status}` };
+  if (done2.body.caseAutoFlippedToReadyToResubmit !== true) {
+    return { name, pass: false, detail: `expected 2nd auto-flip; flag=${done2.body.caseAutoFlippedToReadyToResubmit}` };
+  }
+  const c4 = await readCase(caseId);
+  transitions.push(`v3-ready:status=${c4.status}`);
+  if (c4.status !== "ready_to_resubmit") {
+    return { name, pass: false, detail: `after 2nd action done: status=${c4.status}` };
+  }
+
+  // ── STEP 7: mint v3 ────────────────────────────────────────────
+  const v3change = "Re-shot at higher resolution with slate label visible.";
+  const v3mint = await postJson("mintResubmissionLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, changeSummary: v3change,
+  });
+  if (v3mint.status !== 200) return { name, pass: false, detail: `v3 mint: ${v3mint.status} ${JSON.stringify(v3mint.body).slice(0,200)}` };
+  if (v3mint.body.ordinal !== 3) return { name, pass: false, detail: `v3 ordinal=${v3mint.body.ordinal} (expected 3)` };
+
+  const c5 = await readCase(caseId);
+  transitions.push(`v3-mint:status=${c5.status},ordinal=${v3mint.body.ordinal}`);
+  if (c5.status !== "awaiting_customer") return { name, pass: false, detail: `after v3 mint: status=${c5.status}` };
+  if (c5.packetVersions.length !== 3) return { name, pass: false, detail: `v3 pkts=${c5.packetVersions.length}` };
+
+  // ── STEP 8: customer accepts v3 → case recovered ───────────────
+  const acc = await postJson("submitCustomerReviewV1", {
+    token: v3mint.body.token, action: "accept", comment: "Perfect, accepted.",
+  });
+  if (acc.status !== 200) return { name, pass: false, detail: `v3 accept: ${acc.status}` };
+
+  const cFinal = await readCase(caseId);
+  transitions.push(`v3-accept:status=${cFinal.status}`);
+  if (cFinal.status !== "recovered") {
+    return { name, pass: false, detail: `final: status=${cFinal.status} (expected recovered)` };
+  }
+  const v3pkt = cFinal.packetVersions.find((p) => p.ordinal === 3);
+  if (!v3pkt || v3pkt.outcome !== "accepted") {
+    return { name, pass: false, detail: `v3.outcome=${v3pkt && v3pkt.outcome}` };
+  }
+  if (!cFinal.resolvedAt) return { name, pass: false, detail: "resolvedAt not stamped" };
+
+  // ── FINAL: audit trail coherence ───────────────────────────────
+  const audit = await readAuditForCase(caseId);
+  // Must-have audit types across the whole round-trip:
+  const required = [
+    "case_auto_opened_from_rejection",
+    "action_created",
+    "case_status_changed",
+    "case_revenue_updated",
+    "action_completed",
+    "case_ready_for_resubmission",
+    "case_resubmitted",
+    "case_re_rejected",
+    "packet_version_outcome",
+    "case_resolved",
+    "revenue_recovered",
+  ];
+  const missing = required.filter((t) => !audit.includes(t));
+  if (missing.length > 0) {
+    return { name, pass: false, detail: `missing audit types: ${missing.join(", ")} | got: ${[...new Set(audit)].sort().join(", ")}` };
+  }
+  // case_resubmitted must have fired twice (v2 + v3).
+  const resubmittedCount = audit.filter((t) => t === "case_resubmitted").length;
+  if (resubmittedCount !== 2) {
+    return { name, pass: false, detail: `case_resubmitted fired ${resubmittedCount} times (expected 2)` };
+  }
+  // case_ready_for_resubmission must have fired twice (before v2 + v3 mints).
+  const readyCount = audit.filter((t) => t === "case_ready_for_resubmission").length;
+  if (readyCount !== 2) {
+    return { name, pass: false, detail: `case_ready_for_resubmission fired ${readyCount} times (expected 2)` };
+  }
+
+  // ── FINAL: getRecoveryCaseV1 response shape on terminal case ───
+  const getFinal = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (getFinal.body.case.resubmissionCount !== 2) {
+    return { name, pass: false, detail: `final resubmissionCount=${getFinal.body.case.resubmissionCount} (expected 2)` };
+  }
+
+  return {
+    name, pass: true,
+    detail: `transitions: ${transitions.join(" → ")} | pkts=3 (ordinal 1,2,3 outcomes rejected,rejected,accepted) | audit ${audit.length} rows | case_resubmitted×2, case_ready_for_resubmission×2`,
+  };
+}
+
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
   await sleep(500);
@@ -1330,6 +1563,10 @@ async function main() {
     s28_resubmission_customerReRejects,
     s29_resubmissionCount_derived,
     s30_caseIdIsIncidentId,
+    // PR 129c — full v2/v3 round-trip in a single case (the smoke
+    // the prod PR 129a verification couldn't reach because the smoke
+    // target's incident was stuck at status=draft).
+    s31_fullResubmissionRoundTrip,
   ];
 
   const results = [];
