@@ -156,3 +156,9 @@ safeExport("getRecoveryCaseV1", "./getRecoveryCaseV1");
 // at ready_to_resubmit, appends PacketVersionRef, transitions case
 // to awaiting_customer.
 safeExport("mintResubmissionLinkV1", "./mintResubmissionLinkV1");
+// PR 130a — Foreman bridge backend. Two narrow endpoints surface
+// recovery actions to field users without exposing RecoveryCase.
+// Architecture lock: foremen see only Problem → Location → Action →
+// Done; never see case-level data.
+safeExport("listRecoveryActionsForIncidentV1", "./listRecoveryActionsForIncidentV1");
+safeExport("completeRecoveryFieldWorkV1", "./completeRecoveryFieldWorkV1");
