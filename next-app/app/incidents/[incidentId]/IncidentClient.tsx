@@ -25,6 +25,11 @@ import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
 import RecordNav from "@/components/RecordNav";
 import AppTopBar from "@/components/AppTopBar";
+// PR 130b — surfaces recovery actions assigned to the field user inside
+// the active incident overview as "Extra work needed before this can
+// be accepted." Hidden when there's nothing to do. The component never
+// exposes recovery-case / revenue / resubmission vocabulary.
+import { RecoveryWorkSection } from "@/components/recovery/RecoveryWorkSection";
 import {
   incidentStatusLabel,
   incidentStatusPill,
@@ -3054,6 +3059,19 @@ useEffect(() => {
             </div>
           </section>
         ) : null}
+
+        {/* PR 130b — Recovery field work surfaces inline at the top of
+            overview as the FIRST thing the field user sees after the
+            supervisor banner. Hidden when backend returns zero items.
+            Refresh callback re-pulls incident + evidence so the row
+            count for any newly-attached proof stays in sync. */}
+        {activeTab === "overview" && orgId && incidentId && (
+          <RecoveryWorkSection
+            orgId={orgId}
+            incidentId={incidentId}
+            onWorkChanged={refresh}
+          />
+        )}
 
 {/* Quick actions */}
         {activeTab === "evidence" ? (
