@@ -39,6 +39,9 @@ function causeDocId(causePrimary) {
 function actionDocId(actionType) {
   return `action_effectiveness_${String(actionType || "unknown").replace(/[^A-Za-z0-9_]/g, "_")}`;
 }
+function templateGapDocId(templateKey) {
+  return `template_gap_${String(templateKey || "unknown").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
 
 // Convert an event timestamp (Firestore Timestamp or ISO string) to
 // the YYYY-MM-DD UTC bucket key.
@@ -358,6 +361,132 @@ async function aggregateActionEffectiveness({ orgId, auditId, audit }) {
 }
 
 // ── read helper for getRecoveryAggregatesV1 ───────────────────────
+// ── 4. template_gap aggregator (PR 132c-a) ────────────────────────
+// One doc per templateKey (cross-version per decision lock — the
+// admin thinks in template families, not specific revisions). Tracks
+// rejections + per-cause mix + per-version mix + outcome split.
+//
+// Surface (PR 132c-b): Template Editor renders a "Potential Revenue
+// Protection Opportunity" inline strip when rejections in the
+// 30-day window cross the threshold (3).
+//
+// Causes considered "template gaps" (recommendation copy in UI):
+//   missing_required_proof, missing_test_result,
+//   proof_quality_insufficient, wrong_proof_uploaded,
+//   documentation_error, compliance_failure
+// Other causes (scope_dispute, customer_changed_requirements, etc.)
+// show count only; the UI gates the recommendation copy.
+async function aggregateTemplateGap({ orgId, auditId, audit }) {
+  const eventType = String(audit.type || "");
+  const bucketKey = bucketKeyFromCreatedAt(audit.createdAt);
+  if (!bucketKey) return false;
+  const caseId = String(audit.caseId || "");
+  if (!caseId) return false;
+
+  const db = getFirestore();
+  const meta = audit.meta || {};
+
+  // Resolve templateKey + templateVersion from the case doc. Both
+  // are written by createRecoveryCaseV1 / _recoveryAutoCreate when
+  // the incident has them; null for older / incomplete cases.
+  let templateKey = "";
+  let templateVersion = null;
+  try {
+    const caseSnap = await db.doc(`orgs/${orgId}/recovery_cases/${caseId}`).get();
+    if (!caseSnap.exists) return false;
+    const caseData = caseSnap.data() || {};
+    templateKey = String(caseData.templateKey || "").trim();
+    if (Number.isFinite(Number(caseData.templateVersion))) {
+      templateVersion = Number(caseData.templateVersion);
+    }
+  } catch (e) {
+    console.warn("[aggregateTemplateGap] case read failed", e && e.message);
+    return false;
+  }
+  // No templateKey on the case → nothing to attribute. Common for
+  // legacy cases prior to PR 127c-a's denorm.
+  if (!templateKey) return false;
+
+  let delta = null;
+  let lifetime = null;
+  const versionKey = templateVersion != null ? `v${templateVersion}` : "vUnknown";
+
+  if (eventType === "case_auto_opened_from_rejection" || eventType === "case_opened") {
+    // A new rejection (or manual case open) lands on this template.
+    // For auto-opened cases, prefer meta.inferredCause (the cause
+    // attributed at create-time). For manual opens, the cause may
+    // have been provided in the create call; fall back to "unknown"
+    // when absent.
+    let causePrimary = "";
+    if (eventType === "case_auto_opened_from_rejection") {
+      causePrimary = String(meta.inferredCause || "unknown").trim() || "unknown";
+    } else {
+      // case_opened doesn't carry cause in meta today; we re-read the
+      // case doc's cause.primary (already loaded above? we only read
+      // templateKey/version; do an extra read here).
+      try {
+        const cs = await db.doc(`orgs/${orgId}/recovery_cases/${caseId}`).get();
+        causePrimary = String((cs.data() || {}).cause?.primary || "unknown").trim() || "unknown";
+      } catch { causePrimary = "unknown"; }
+    }
+    delta = {
+      rejections: 1,
+      causeMix: { [causePrimary]: 1 },
+      versionMix: { [versionKey]: 1 },
+    };
+    lifetime = {
+      rejections: 1,
+      causeMix: { [causePrimary]: 1 },
+      versionMix: { [versionKey]: 1 },
+    };
+  } else if (eventType === "case_resolved") {
+    const outcome = String(meta.outcome || "");
+    delta = { caseResolutions: 1 };
+    lifetime = { caseResolutions: 1 };
+    if (outcome === "recovered") {
+      delta.recoveredCount = 1;
+      lifetime.recoveredCount = 1;
+    } else if (outcome === "abandoned") {
+      delta.abandonedCount = 1;
+      lifetime.abandonedCount = 1;
+    } else if (outcome === "partial_recovery") {
+      delta.partialRecoveryCount = 1;
+      lifetime.partialRecoveryCount = 1;
+    }
+    const t = Number(meta.timeToResolutionSec);
+    if (Number.isFinite(t) && t >= 0) {
+      delta.totalRecoveryDurationSec = t;
+      delta.recoveryDurationSamples = 1;
+      lifetime.totalRecoveryDurationSec = t;
+      lifetime.recoveryDurationSamples = 1;
+    }
+  } else if (eventType === "revenue_recovered") {
+    const rar = meta.revenueAtRisk || {};
+    const amt = Number(rar.amount);
+    const finalAmt = Number(meta.finalAmount);
+    const recovered = Number.isFinite(finalAmt) && finalAmt > 0 ? finalAmt : (Number.isFinite(amt) ? amt : 0);
+    if (recovered > 0) {
+      delta = { totalRevenueRecovered: recovered };
+      lifetime = { totalRevenueRecovered: recovered };
+    }
+  } else {
+    return false;
+  }
+
+  if (!delta) return false;
+  const docRef = db.collection("orgs").doc(orgId).collection("recovery_aggregates").doc(templateGapDocId(templateKey));
+  return await applyAggregateDelta({
+    docRef, auditId, eventType, bucketKey,
+    bucketDelta: delta,
+    lifetimeDelta: lifetime,
+    docSeed: {
+      orgId,
+      viewType: "template_gap",
+      templateKey,
+    },
+  });
+}
+
 /**
  * Sum the daily buckets within the rolling window
  * [now - windowDays, now] and return a flat metrics object.
@@ -395,10 +524,14 @@ module.exports = {
   aggregateRecoveryMetrics,
   aggregateCauseEffectiveness,
   aggregateActionEffectiveness,
+  // PR 132c-a — template_gap aggregator powers the Template Editor
+  // "Potential Revenue Protection Opportunity" surface (PR 132c-b).
+  aggregateTemplateGap,
   summarizeWindow,
   // exported for the read endpoint to know which doc IDs to query
   metricsDocId,
   causeDocId,
   actionDocId,
+  templateGapDocId,
   bucketKeyFromCreatedAt,
 };

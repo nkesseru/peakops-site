@@ -32,6 +32,7 @@ const { extractActorUid } = require("./_actor");
 const {
   summarizeWindow,
   metricsDocId,
+  templateGapDocId,
 } = require("./_recoveryAggregators");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
@@ -41,6 +42,11 @@ const ALLOWED_TYPES = new Set([
   "recovery_metrics",
   "cause_effectiveness",
   "action_effectiveness",
+  // PR 132c-a — per-templateKey rejection mix. Surfaces in the
+  // Template Editor as "Potential Revenue Protection Opportunity"
+  // (PR 132c-b). Optional templateKey query param filters to a
+  // single template doc; absent → returns all rows.
+  "template_gap",
 ]);
 
 function j(res, status, body) {
@@ -105,12 +111,33 @@ exports.getRecoveryAggregatesV1 = onRequest({ cors: true }, async (req, res) => 
       });
     }
 
-    // cause_effectiveness or action_effectiveness — fan out across docs
-    const prefix = type === "cause_effectiveness"
-      ? "cause_effectiveness_"
-      : "action_effectiveness_";
+    // PR 132c-a — template_gap supports an optional templateKey
+    // filter. When provided, return a single template's doc (the
+    // shape the Template Editor surface wants). When absent, fall
+    // through to the fan-out path below.
+    if (type === "template_gap") {
+      const templateKey = trimStr(req.query?.templateKey);
+      if (templateKey) {
+        const snap = await aggsRef.doc(templateGapDocId(templateKey)).get();
+        if (!snap.exists) {
+          return j(res, 200, {
+            ok: true, orgId, type, windowDays, templateKey,
+            summary: summarizeWindow({}, windowDays),
+            lifetime: {},
+          });
+        }
+        const data = snap.data() || {};
+        return j(res, 200, {
+          ok: true, orgId, type, windowDays, templateKey,
+          summary: summarizeWindow(data, windowDays),
+          lifetime: data.lifetime || {},
+        });
+      }
+      // Fall through to multi-row fan-out below.
+    }
 
-    // Use viewType field for the query (matches what _recoveryAggregators seeds).
+    // cause_effectiveness / action_effectiveness / template_gap (unfiltered)
+    // — fan out across docs of this viewType.
     const viewType = type;
     const querySnap = await aggsRef.where("viewType", "==", viewType).get();
 
@@ -122,14 +149,19 @@ exports.getRecoveryAggregatesV1 = onRequest({ cors: true }, async (req, res) => 
         docId: doc.id,
         ...(type === "cause_effectiveness" ? { causePrimary: data.causePrimary || null } : {}),
         ...(type === "action_effectiveness" ? { actionType: data.actionType || null } : {}),
+        ...(type === "template_gap" ? { templateKey: data.templateKey || null } : {}),
         summary,
         lifetime: data.lifetime || {},
       });
     }
 
-    // Sort largest-first by "totalCases" (cause) or "totalUses" (action)
-    // within the window, so the most-active surfaces first.
-    const sortKey = type === "cause_effectiveness" ? "totalCases" : "totalUses";
+    // Sort largest-first by "totalCases" (cause), "totalUses" (action),
+    // or "rejections" (template_gap) within the window, so the
+    // most-active surfaces first.
+    const sortKey =
+      type === "cause_effectiveness" ? "totalCases" :
+      type === "template_gap" ? "rejections" :
+      "totalUses";
     rows.sort((a, b) => (Number(b.summary.metrics?.[sortKey]) || 0) - (Number(a.summary.metrics?.[sortKey]) || 0));
 
     console.log("[getRecoveryAggregatesV1] returned", {
