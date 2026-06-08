@@ -32,6 +32,13 @@ const { writeRecoveryAudit } = require("./_recoveryAudit");
 // PR 128a — derive cause.primary from the customer rejection comment
 // when no cause is set. First-match substring map; null on no match.
 const { deriveCauseFromComment } = require("./_recoveryAutomation");
+// PR 132a — Recovery Intelligence enrichments: hash customer labels
+// (no PII), record timing on outcome events, count actions on resolve.
+const {
+  hashCustomerLabel,
+  durationSec,
+  countActionsByStatus,
+} = require("./_recoveryEnrichments");
 
 /**
  * Auto-create or extend a recovery case for an incident that just
@@ -171,6 +178,13 @@ async function autoCreateOrExtendCase(args) {
         newStatus,
         isReRejection,
         packetOrdinal: pendingIdx >= 0 ? (existingPkts[pendingIdx]?.ordinal || pendingIdx + 1) : null,
+        // PR 132a — carry the prior packet's mint info so the post-
+        // txn audit can record timeToOutcomeSec + templateVersionAtMint
+        // on the packet_version_outcome event.
+        priorPacketMintedAt: pendingIdx >= 0 ? existingPkts[pendingIdx]?.mintedAt || null : null,
+        priorPacketTemplateVersionAtMint: pendingIdx >= 0
+          ? existingPkts[pendingIdx]?.templateVersionAtMint || null
+          : null,
       };
     });
 
@@ -193,7 +207,13 @@ async function autoCreateOrExtendCase(args) {
           type: "packet_version_outcome",
           orgId, caseId: result.caseId, incidentId,
           actorUid,
-          meta: { packetVersionId: tokenHashPrefix, outcome: "rejected" },
+          meta: {
+            packetVersionId: tokenHashPrefix,
+            outcome: "rejected",
+            // PR 132a — intelligence enrichments
+            timeToOutcomeSec: durationSec(result.priorPacketMintedAt, new Date()),
+            templateVersionAtMint: result.priorPacketTemplateVersionAtMint,
+          },
         });
       } else {
         await writeRecoveryAudit({
@@ -242,6 +262,24 @@ async function autoCreateOrExtendCase(args) {
   // `cause.inferredFromComment: true` so the UI can show the marker,
   // but the case starts at `open` regardless.
 
+  // PR 132a — hash the customer label so future intelligence (PR 132c+)
+  // can count rejections-per-customer without storing PII. Best-effort:
+  // a failed read just leaves the field null; the case still creates.
+  let hashedCustomerLabel = null;
+  try {
+    let incSnap = await db.doc(`orgs/${orgId}/incidents/${incidentId}`).get();
+    if (!incSnap.exists) {
+      incSnap = await db.doc(`incidents/${incidentId}`).get();
+    }
+    if (incSnap.exists) {
+      const incData = incSnap.data() || {};
+      const label = (incData.requirements && incData.requirements.customerLabel) || incData.customer || "";
+      hashedCustomerLabel = hashCustomerLabel(label);
+    }
+  } catch (eHash) {
+    console.warn("[_recoveryAutoCreate] customer-label hash failed", eHash && eHash.message);
+  }
+
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(caseRef);
     if (snap.exists) {
@@ -276,6 +314,11 @@ async function autoCreateOrExtendCase(args) {
       id: caseId,
       orgId,
       incidentId,
+      // PR 132a — irreversible hash of the customer label so future
+      // customer-pattern intelligence can group cases without PII.
+      // Null when no label is known; populated retroactively never
+      // (only set on create).
+      hashedCustomerLabel,
       // PR 129a — always start at open; cause.inferredFromComment is
       // the only signal that the system pre-classified.
       status: RECOVERY_STATUS.OPEN,
@@ -420,9 +463,13 @@ async function autoResolveOnAccept(args) {
     if (data.status !== RECOVERY_STATUS.AWAITING_CUSTOMER) return null;
 
     const existingPkts = Array.isArray(data.packetVersions) ? data.packetVersions.slice() : [];
+    // PR 132a — capture the matched packet's prior info so the post-
+    // txn audit can record timing + template version.
+    let matchedPriorPacket = null;
     // Mark the current packet version as accepted in the denorm array.
     const updatedPkts = existingPkts.map((p) => {
       if (p && p.packetVersionId === tokenHashPrefix) {
+        matchedPriorPacket = p;
         return { ...p, outcome: "accepted", outcomeAt: new Date().toISOString() };
       }
       return p;
@@ -443,10 +490,35 @@ async function autoResolveOnAccept(args) {
       updatedAt: FieldValue.serverTimestamp(),
     });
 
-    return { caseId, prevStatus: data.status, revenueAtRisk: data.revenueAtRisk };
+    return {
+      caseId,
+      prevStatus: data.status,
+      revenueAtRisk: data.revenueAtRisk,
+      openedAt: data.openedAt,
+      packetVersionsCount: existingPkts.length,
+      priorPacketMintedAt: matchedPriorPacket?.mintedAt || null,
+      priorPacketTemplateVersionAtMint: matchedPriorPacket?.templateVersionAtMint || null,
+    };
   });
 
   if (result) {
+    // PR 132a — compute enrichments before audit emit. timeToResolution
+    // uses case.openedAt (set by createRecoveryCaseV1 / auto-create).
+    // totalActionsCompleted requires an actions read; do it once.
+    const nowDate = new Date();
+    const timeToResolutionSec = durationSec(result.openedAt, nowDate);
+    const totalResubmissions = Math.max(0, (result.packetVersionsCount || 0) - 1);
+    let totalActionsCompleted = null;
+    let totalActions = null;
+    try {
+      const actsSnap = await caseRef.collection("actions").get();
+      const counts = countActionsByStatus(actsSnap.docs);
+      totalActionsCompleted = counts.done + counts.skipped;
+      totalActions = counts.total;
+    } catch (eActs) {
+      console.warn("[_recoveryAutoCreate.autoResolveOnAccept] actions read failed", eActs && eActs.message);
+    }
+
     // PR 129a — emit packet_version_outcome on accept so the audit
     // stream captures every packet outcome (accepted/rejected/revoked)
     // through one channel.
@@ -454,7 +526,13 @@ async function autoResolveOnAccept(args) {
       type: "packet_version_outcome",
       orgId, caseId, incidentId,
       actorUid: "customer",
-      meta: { packetVersionId: tokenHashPrefix, outcome: "accepted" },
+      meta: {
+        packetVersionId: tokenHashPrefix,
+        outcome: "accepted",
+        // PR 132a — intelligence enrichments
+        timeToOutcomeSec: durationSec(result.priorPacketMintedAt, nowDate),
+        templateVersionAtMint: result.priorPacketTemplateVersionAtMint,
+      },
     });
     await writeRecoveryAudit({
       type: "case_status_changed",
@@ -468,13 +546,27 @@ async function autoResolveOnAccept(args) {
       type: "case_resolved",
       orgId, caseId, incidentId,
       actorUid: "customer",
-      meta: { outcome: "recovered", tokenHashPrefix },
+      meta: {
+        outcome: "recovered",
+        tokenHashPrefix,
+        // PR 132a — intelligence enrichments
+        timeToResolutionSec,
+        totalResubmissions,
+        totalActionsCompleted,
+        totalActions,
+      },
     });
     await writeRecoveryAudit({
       type: "revenue_recovered",
       orgId, caseId, incidentId,
       actorUid: "customer",
-      meta: { revenueAtRisk: result.revenueAtRisk || null },
+      meta: {
+        revenueAtRisk: result.revenueAtRisk || null,
+        // PR 132a — same timing as case_resolved so revenue-weighted
+        // aggregates can join either event source.
+        timeToResolutionSec,
+        totalResubmissions,
+      },
     });
     console.log("[_recoveryAutoCreate] auto_resolved", { orgId, incidentId, caseId });
     return { caseId, resolved: true };

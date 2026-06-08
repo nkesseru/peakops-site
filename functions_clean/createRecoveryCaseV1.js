@@ -46,6 +46,10 @@ const {
 } = require("./recoveryState");
 // RECOVERY_PRIORITY_SET no longer used — priority is derived (PR 127a2).
 const { writeRecoveryAudit } = require("./_recoveryAudit");
+// PR 132a — Recovery Intelligence: persist a hash of the customer
+// label so future intelligence (PR 132c+) can identify pattern
+// customers without storing PII.
+const { hashCustomerLabel } = require("./_recoveryEnrichments");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -193,6 +197,9 @@ exports.createRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
     const templateVersion = Number.isFinite(Number(reqSnapshot.templateVersion))
       ? Number(reqSnapshot.templateVersion)
       : null;
+    // PR 132a — irreversible hash of the customer label.
+    const customerLabelRaw = trimStr(reqSnapshot.customerLabel) || trimStr(incData.customer);
+    const hashedCustomerLabel = hashCustomerLabel(customerLabelRaw);
 
     // PR 129a — dropped `triaged` state. Manual create with cause set
     // starts at `open`. The cause.primary + cause.categorizedBy fields
@@ -209,6 +216,9 @@ exports.createRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
       incidentId,
       ...(templateKey ? { templateKey } : {}),
       ...(templateVersion != null ? { templateVersion } : {}),
+      // PR 132a — hashedCustomerLabel for future customer-pattern
+      // intelligence; null when no customer label is on the incident.
+      hashedCustomerLabel,
       status: initialStatus,
       priority,
       revenueAtRisk,

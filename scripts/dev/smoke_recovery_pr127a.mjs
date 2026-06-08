@@ -1844,6 +1844,168 @@ async function s37_resubmissionReadinessStates() {
   return { name, pass: true, detail: `red(no actions) → red(open in_progress) → green(ready_to_resubmit) → neutral(terminal abandoned)` };
 }
 
+// ── PR 132a — Recovery Intelligence event enrichment scenarios ────
+
+async function readAuditRowsForCase(caseId) {
+  const snap = await db.collection(`orgs/${ORG_ID}/recovery_audit`)
+    .where("caseId", "==", caseId)
+    .get();
+  return snap.docs.map((d) => d.data());
+}
+
+async function s38_hashedCustomerLabelOnCase() {
+  const name = "38) PR 132a: hashedCustomerLabel persisted on auto-created + manually-created cases; same label produces same hash";
+  const incidentA = "inc-s38-customer-hash-a";
+  const incidentB = "inc-s38-customer-hash-b";
+  await seedIncident(incidentA, { customer: "Acme Telecom Co" });
+  await seedIncident(incidentB, { customer: "ACME Telecom Co " });
+
+  const mint = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incidentA });
+  await postJson("submitCustomerReviewV1", { token: mint.body.token, action: "reject", comment: "missing items" });
+  const caseA = await findCaseByIncident(incidentA);
+  if (!caseA?.hashedCustomerLabel || typeof caseA.hashedCustomerLabel !== "string" || caseA.hashedCustomerLabel.length !== 32) {
+    return { name, pass: false, detail: `auto-create hashedCustomerLabel bad: ${caseA?.hashedCustomerLabel}` };
+  }
+
+  const manual = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incidentB,
+    source: "internal_qc", priority: "low",
+  });
+  const caseB = await readCase(manual.body.caseId);
+  if (!caseB?.hashedCustomerLabel || caseB.hashedCustomerLabel.length !== 32) {
+    return { name, pass: false, detail: `manual hashedCustomerLabel bad: ${caseB?.hashedCustomerLabel}` };
+  }
+  if (caseA.hashedCustomerLabel !== caseB.hashedCustomerLabel) {
+    return { name, pass: false, detail: `hashes differ: ${caseA.hashedCustomerLabel} vs ${caseB.hashedCustomerLabel}` };
+  }
+
+  return { name, pass: true, detail: `both 32-char hashes; "Acme Telecom Co" / "ACME Telecom Co " produce identical hash` };
+}
+
+async function s39_causeOverriddenEvent() {
+  const name = "39) PR 132a: cause_overridden audit fires on manual cause change; meta.originallyInferred true→false across two overrides";
+  const incidentId = "inc-s39-cause-override";
+  await seedIncident(incidentId);
+
+  const mint = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint.body.token, action: "reject", comment: "Need OTDR trace before signoff" });
+  const c1 = await findCaseByIncident(incidentId);
+  const caseId = c1.id;
+  if (c1.cause?.primary !== "missing_test_result") {
+    return { name, pass: false, detail: `inferred cause wrong: ${c1.cause?.primary}` };
+  }
+
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "scope_dispute" },
+  });
+  const rows1 = await readAuditRowsForCase(caseId);
+  const ovs1 = rows1.filter((r) => r.type === "cause_overridden");
+  if (ovs1.length !== 1) {
+    return { name, pass: false, detail: `expected 1 cause_overridden; got ${ovs1.length}` };
+  }
+  if (ovs1[0].before?.causePrimary !== "missing_test_result" || ovs1[0].after?.causePrimary !== "scope_dispute") {
+    return { name, pass: false, detail: `before/after wrong: ${JSON.stringify({ before: ovs1[0].before, after: ovs1[0].after })}` };
+  }
+  if (ovs1[0].meta?.originallyInferred !== true) {
+    return { name, pass: false, detail: `originallyInferred=${ovs1[0].meta?.originallyInferred} (expected true)` };
+  }
+
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "documentation_error" },
+  });
+  const rows2 = await readAuditRowsForCase(caseId);
+  const ovs2 = rows2.filter((r) => r.type === "cause_overridden");
+  if (ovs2.length !== 2) {
+    return { name, pass: false, detail: `expected 2 cause_overridden rows; got ${ovs2.length}` };
+  }
+  const second = ovs2.find((r) => r.after?.causePrimary === "documentation_error");
+  if (second?.meta?.originallyInferred !== false) {
+    return { name, pass: false, detail: `second originallyInferred=${second?.meta?.originallyInferred} (expected false)` };
+  }
+
+  return { name, pass: true, detail: `cause_overridden fires with before/after; originallyInferred true on 1st (inferred), false on 2nd (after-flag-cleared)` };
+}
+
+async function s40_intelligenceEnrichmentsOnAuditRows() {
+  const name = "40) PR 132a: intelligence enrichments on case_resolved (timing + counts), action_completed (timing + evidence), packet_version_outcome (timing + templateVersion)";
+  const incidentId = "inc-s40-enrichments";
+  await seedIncident(incidentId);
+
+  const mint1 = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint1.body.token, action: "reject", comment: "Need photos" });
+  const c1 = await findCaseByIncident(incidentId);
+  const caseId = c1.id;
+
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "missing_required_proof" },
+    revenueAtRisk: { amount: 5000, type: "actual" },
+  });
+  await postJson("updateRecoveryCaseV1", { actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress" });
+
+  const actsSnap = await db.collection(`orgs/${ORG_ID}/recovery_cases/${caseId}/actions`).get();
+  const starterId = actsSnap.docs[0].id;
+  await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: starterId,
+    status: "done", outcome: "Clarified",
+  });
+
+  const mint2 = await postJson("mintResubmissionLinkV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    changeSummary: "Captured the missing items.",
+  });
+  if (mint2.status !== 200) return { name, pass: false, detail: `mint v2: ${mint2.status}` };
+
+  await postJson("submitCustomerReviewV1", {
+    token: mint2.body.token, action: "accept", comment: "Looks good",
+  });
+
+  const rows = await readAuditRowsForCase(caseId);
+
+  const ac = rows.find((r) => r.type === "action_completed");
+  if (!ac) return { name, pass: false, detail: "action_completed audit missing" };
+  if (typeof ac.meta?.timeToCompleteSec !== "number" || ac.meta.timeToCompleteSec < 0) {
+    return { name, pass: false, detail: `action_completed timeToCompleteSec invalid: ${JSON.stringify(ac.meta)}` };
+  }
+  if (typeof ac.meta?.evidenceAttachedCount !== "number") {
+    return { name, pass: false, detail: `action_completed evidenceAttachedCount missing: ${JSON.stringify(ac.meta)}` };
+  }
+  if (!ac.meta?.actionType) {
+    return { name, pass: false, detail: `action_completed actionType missing: ${JSON.stringify(ac.meta)}` };
+  }
+
+  const pkAccept = rows.find((r) => r.type === "packet_version_outcome" && r.meta?.outcome === "accepted");
+  if (!pkAccept) return { name, pass: false, detail: "packet_version_outcome(accepted) missing" };
+  if (typeof pkAccept.meta?.timeToOutcomeSec !== "number") {
+    return { name, pass: false, detail: `pkAccept timeToOutcomeSec missing: ${JSON.stringify(pkAccept.meta)}` };
+  }
+
+  const cr = rows.find((r) => r.type === "case_resolved");
+  if (!cr) return { name, pass: false, detail: "case_resolved audit missing" };
+  if (typeof cr.meta?.timeToResolutionSec !== "number") {
+    return { name, pass: false, detail: `case_resolved timeToResolutionSec missing: ${JSON.stringify(cr.meta)}` };
+  }
+  if (cr.meta?.totalResubmissions !== 1) {
+    return { name, pass: false, detail: `case_resolved totalResubmissions=${cr.meta?.totalResubmissions} (expected 1)` };
+  }
+  if (typeof cr.meta?.totalActionsCompleted !== "number") {
+    return { name, pass: false, detail: `case_resolved totalActionsCompleted missing: ${JSON.stringify(cr.meta)}` };
+  }
+
+  const rr = rows.find((r) => r.type === "revenue_recovered");
+  if (!rr) return { name, pass: false, detail: "revenue_recovered audit missing" };
+  if (typeof rr.meta?.timeToResolutionSec !== "number") {
+    return { name, pass: false, detail: `revenue_recovered timeToResolutionSec missing: ${JSON.stringify(rr.meta)}` };
+  }
+
+  return {
+    name, pass: true,
+    detail: `action_completed{t=${ac.meta.timeToCompleteSec}s, evidence=${ac.meta.evidenceAttachedCount}, type=${ac.meta.actionType}} | pkt_outcome(accept){t=${pkAccept.meta.timeToOutcomeSec}s} | case_resolved{t=${cr.meta.timeToResolutionSec}s, resubmissions=${cr.meta.totalResubmissions}, actionsCompleted=${cr.meta.totalActionsCompleted}} | revenue_recovered{t=${rr.meta.timeToResolutionSec}s}`,
+  };
+}
+
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
   await sleep(500);
@@ -1901,6 +2063,10 @@ async function main() {
     s35_changeSummarySuggestion,
     s36_revenueAtRiskSuggestion,
     s37_resubmissionReadinessStates,
+    // PR 132a — Recovery Intelligence event enrichments + new event
+    s38_hashedCustomerLabelOnCase,
+    s39_causeOverriddenEvent,
+    s40_intelligenceEnrichmentsOnAuditRows,
   ];
 
   const results = [];
