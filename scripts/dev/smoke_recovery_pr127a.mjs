@@ -1714,6 +1714,136 @@ async function s34_listRecoveryActionsForIncidentScoping() {
   return { name, pass: true, detail: `field user sees 2 of 3 actions (field_lead + uid-assigned); coordinator-only hidden; no case-level data leaked; uid-assigned completion works` };
 }
 
+// ── PR 131a — Phase 2 suggestions scenarios ────────────────────────
+// Verifies getRecoveryCaseV1's `suggestions` block:
+//   - changeSummary from actions completed since last packet
+//   - revenueAtRisk pre-fill via priority chain
+//   - resubmissionReadiness green/red/neutral states
+
+async function s35_changeSummarySuggestion() {
+  const name = "35) PR 131a: suggestions.changeSummary builds bullet list from actions completed since last packet";
+  const incidentId = "inc-s35-change-summary";
+  await seedIncident(incidentId);
+
+  // v1 reject auto-creates case + starter action
+  const mint1 = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint1.body.token, action: "reject", comment: "Need missing photos" });
+  const c1 = await findCaseByIncident(incidentId);
+  const caseId = c1.id;
+
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "missing_required_proof" },
+  });
+  await postJson("updateRecoveryCaseV1", { actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress" });
+  const actsSnap = await db.collection(`orgs/${ORG_ID}/recovery_cases/${caseId}/actions`).get();
+  const starterId = actsSnap.docs[0].id;
+  await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: starterId,
+    status: "done",
+  });
+
+  const pre = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (pre.status !== 200 || !pre.body.suggestions) return { name, pass: false, detail: "no suggestions block in response" };
+  const cs = pre.body.suggestions.changeSummary;
+  if (!cs || !cs.startsWith("Changes made:")) return { name, pass: false, detail: `changeSummary=${cs}` };
+  if (!cs.includes("•")) return { name, pass: false, detail: "expected bullet character in changeSummary" };
+
+  return { name, pass: true, detail: `changeSummary populated: ${cs.replace(/\n/g, " | ")}` };
+}
+
+async function s36_revenueAtRiskSuggestion() {
+  const name = "36) PR 131a: suggestions.revenueAtRisk priority chain — null when no source data; sum-of-jobs when seeded";
+  const incidentId = "inc-s36-revenue-suggest";
+  await seedIncident(incidentId);
+
+  const create = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+    source: "internal_qc", priority: "low",
+  });
+  const caseId = create.body.caseId;
+
+  const r1 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (r1.body.suggestions.revenueAtRisk !== null) {
+    return { name, pass: false, detail: `expected null suggestion with no data; got ${JSON.stringify(r1.body.suggestions.revenueAtRisk)}` };
+  }
+
+  await db.doc(`incidents/${incidentId}/jobs/job-a`).set({ status: "approved", reviewStatus: "approved", estimatedRevenue: 4500 });
+  await db.doc(`incidents/${incidentId}/jobs/job-b`).set({ status: "approved", reviewStatus: "approved", estimatedRevenue: 2800 });
+  const r2 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  const sug = r2.body.suggestions.revenueAtRisk;
+  if (!sug || sug.amount !== 7300 || sug.type !== "estimated" || sug.source !== "sum_of_jobs") {
+    return { name, pass: false, detail: `sum_of_jobs path: ${JSON.stringify(sug)}` };
+  }
+
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    revenueAtRisk: { amount: 9000, type: "actual" },
+  });
+  const r3 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  if (r3.body.suggestions.revenueAtRisk !== null) {
+    return { name, pass: false, detail: `expected null when actual already set; got ${JSON.stringify(r3.body.suggestions.revenueAtRisk)}` };
+  }
+
+  return { name, pass: true, detail: `null when no data; sum_of_jobs=$7300/estimated when seeded; null when actual already set` };
+}
+
+async function s37_resubmissionReadinessStates() {
+  const name = "37) PR 131a: suggestions.resubmissionReadiness — red on open work, green on ready_to_resubmit, neutral on terminal";
+  const incidentId = "inc-s37-readiness";
+  await seedIncident(incidentId);
+
+  const create = await postJson("createRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, incidentId,
+    source: "internal_qc", priority: "low",
+  });
+  const caseId = create.body.caseId;
+  const r1 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  const rd1 = r1.body.suggestions.resubmissionReadiness;
+  if (rd1.state !== "red" || rd1.ready !== false) return { name, pass: false, detail: `open+no-actions: ${JSON.stringify(rd1)}` };
+  if (!rd1.reasons.some((s) => /No recovery actions/i.test(s))) {
+    return { name, pass: false, detail: `expected "no actions" reason; got ${rd1.reasons.join(" | ")}` };
+  }
+
+  const addRes = await postJson("addRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    type: "recapture_proof", title: "Capture photo", assigneeRole: "field_lead",
+  });
+  await postJson("updateRecoveryCaseV1", { actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress" });
+  const r2 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  const rd2 = r2.body.suggestions.resubmissionReadiness;
+  if (rd2.state !== "red") return { name, pass: false, detail: `in_progress+open: ${JSON.stringify(rd2)}` };
+  if (!rd2.reasons.some((s) => /still open/i.test(s))) {
+    return { name, pass: false, detail: `expected "still open" reason; got ${rd2.reasons.join(" | ")}` };
+  }
+
+  await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: addRes.body.actionId,
+    status: "done",
+  });
+  const r3 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  const rd3 = r3.body.suggestions.resubmissionReadiness;
+  if (rd3.state !== "green" || rd3.ready !== true) return { name, pass: false, detail: `ready_to_resubmit: ${JSON.stringify(rd3)}` };
+  if (rd3.headline !== "Ready to resubmit") return { name, pass: false, detail: `green headline=${rd3.headline}` };
+
+  // Abandon directly from ready_to_resubmit → terminal
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    revenueAtRisk: { amount: 1000, type: "actual" },
+  });
+  const resolveRes = await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    status: "abandoned",
+    resolution: { outcome: "abandoned", notes: "smoke test terminal" },
+  });
+  if (resolveRes.status !== 200) return { name, pass: false, detail: `abandon: ${resolveRes.status} ${JSON.stringify(resolveRes.body).slice(0,200)}` };
+  const r4 = await getJson("getRecoveryCaseV1", { orgId: ORG_ID, caseId, actorUid: ADMIN_UID });
+  const rd4 = r4.body.suggestions.resubmissionReadiness;
+  if (rd4.state !== "neutral") return { name, pass: false, detail: `terminal: ${JSON.stringify(rd4)}` };
+
+  return { name, pass: true, detail: `red(no actions) → red(open in_progress) → green(ready_to_resubmit) → neutral(terminal abandoned)` };
+}
+
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
   await sleep(500);
@@ -1766,6 +1896,11 @@ async function main() {
     s32_foremanCompletesFieldLeadAction,
     s33_foremanForbiddenForCoordinatorAction,
     s34_listRecoveryActionsForIncidentScoping,
+    // PR 131a — Phase 2 suggestions (changeSummary, revenueAtRisk,
+    // resubmissionReadiness)
+    s35_changeSummarySuggestion,
+    s36_revenueAtRiskSuggestion,
+    s37_resubmissionReadinessStates,
   ];
 
   const results = [];
