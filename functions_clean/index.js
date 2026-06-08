@@ -162,3 +162,9 @@ safeExport("mintResubmissionLinkV1", "./mintResubmissionLinkV1");
 // Done; never see case-level data.
 safeExport("listRecoveryActionsForIncidentV1", "./listRecoveryActionsForIncidentV1");
 safeExport("completeRecoveryFieldWorkV1", "./completeRecoveryFieldWorkV1");
+// PR 132b — Recovery Intelligence aggregates. Trigger writes to
+// orgs/{orgId}/recovery_aggregates/{viewKey}; read endpoint exposes
+// rolling-window summaries (30/90/365 days) computed at read time.
+// Admin-only; no PII; no cross-org reads.
+safeExport("onRecoveryAuditWrite", "./onRecoveryAuditWrite");
+safeExport("getRecoveryAggregatesV1", "./getRecoveryAggregatesV1");

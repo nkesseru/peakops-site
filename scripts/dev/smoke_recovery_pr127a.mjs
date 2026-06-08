@@ -1853,6 +1853,25 @@ async function readAuditRowsForCase(caseId) {
   return snap.docs.map((d) => d.data());
 }
 
+// PR 132b — Wait for the onRecoveryAuditWrite trigger to fire and
+// propagate into the recovery_aggregates collection. The emulator
+// delivers triggers in ~hundreds of ms but isn't synchronous, so
+// the smoke harness polls until the expected state appears.
+async function waitForAggregateUpdate(docId, predicate, { maxMs = 8000, intervalMs = 200 } = {}) {
+  const ref = db.doc(`orgs/${ORG_ID}/recovery_aggregates/${docId}`);
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const snap = await ref.get();
+    const data = snap.exists ? (snap.data() || null) : null;
+    try {
+      if (predicate(data)) return data;
+    } catch (_e) { /* keep polling */ }
+    await sleep(intervalMs);
+  }
+  const final = await ref.get();
+  return final.exists ? (final.data() || null) : null;
+}
+
 async function s38_hashedCustomerLabelOnCase() {
   const name = "38) PR 132a: hashedCustomerLabel persisted on auto-created + manually-created cases; same label produces same hash";
   const incidentA = "inc-s38-customer-hash-a";
@@ -2006,6 +2025,189 @@ async function s40_intelligenceEnrichmentsOnAuditRows() {
   };
 }
 
+// ── PR 132b — Aggregates trigger + read endpoint ──────────────────
+
+async function s41_aggregateTriggerUpdatesAllThree() {
+  const name = "41) PR 132b: onRecoveryAuditWrite trigger updates recovery_metrics + cause_effectiveness + action_effectiveness on a full flow";
+  const incidentId = "inc-s41-aggregate-flow";
+  await seedIncident(incidentId);
+
+  // Full v1 reject → resolve flow generates audit rows for:
+  //   case_auto_opened_from_rejection (metrics+cause)
+  //   action_completed (action)
+  //   case_resolved (metrics+cause)
+  //   revenue_recovered (metrics+cause)
+  const mint = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId });
+  await postJson("submitCustomerReviewV1", { token: mint.body.token, action: "reject", comment: "Need missing photos" });
+  const c = await findCaseByIncident(incidentId);
+  const caseId = c.id;
+  await postJson("updateRecoveryCaseV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId,
+    cause: { primary: "missing_required_proof" },
+    revenueAtRisk: { amount: 7500, type: "actual" },
+  });
+  await postJson("updateRecoveryCaseV1", { actorUid: ADMIN_UID, orgId: ORG_ID, caseId, status: "in_progress" });
+  const actsSnap = await db.collection(`orgs/${ORG_ID}/recovery_cases/${caseId}/actions`).get();
+  await postJson("updateRecoveryActionV1", {
+    actorUid: ADMIN_UID, orgId: ORG_ID, caseId, actionId: actsSnap.docs[0].id,
+    status: "done", outcome: "Done",
+  });
+  const mintR = await postJson("mintResubmissionLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, caseId });
+  await postJson("submitCustomerReviewV1", {
+    token: mintR.body.token, action: "accept", comment: "Looks good",
+  });
+
+  // Wait for trigger to propagate. Predicates check the lifetime
+  // totals we expect after this single case.
+  const metrics = await waitForAggregateUpdate(
+    "recovery_metrics",
+    (d) => d?.lifetime?.casesOpened >= 1 && d?.lifetime?.casesRecovered >= 1 && d?.lifetime?.totalRevenueRecovered >= 7500,
+  );
+  if (!metrics) return { name, pass: false, detail: "recovery_metrics doc never reached expected state" };
+
+  const cause = await waitForAggregateUpdate(
+    "cause_effectiveness_missing_required_proof",
+    (d) => d?.lifetime?.casesRecovered >= 1 && d?.lifetime?.totalRevenueRecovered >= 7500,
+  );
+  if (!cause) return { name, pass: false, detail: "cause_effectiveness_missing_required_proof doc never reached expected state" };
+
+  // The starter action created by auto-create is type=clarify_with_customer.
+  const action = await waitForAggregateUpdate(
+    "action_effectiveness_clarify_with_customer",
+    (d) => d?.lifetime?.totalUses >= 1,
+  );
+  if (!action) return { name, pass: false, detail: "action_effectiveness_clarify_with_customer doc never reached expected state" };
+
+  // Verify viewType + key fields are populated
+  if (metrics.viewType !== "recovery_metrics") return { name, pass: false, detail: `metrics.viewType=${metrics.viewType}` };
+  if (cause.causePrimary !== "missing_required_proof") return { name, pass: false, detail: `cause.causePrimary=${cause.causePrimary}` };
+  if (action.actionType !== "clarify_with_customer") return { name, pass: false, detail: `action.actionType=${action.actionType}` };
+
+  return {
+    name, pass: true,
+    detail: `metrics{cases=${metrics.lifetime.casesOpened}/${metrics.lifetime.casesRecovered}, $${metrics.lifetime.totalRevenueRecovered}} | cause{recovered=${cause.lifetime.casesRecovered}, $${cause.lifetime.totalRevenueRecovered}} | action{uses=${action.lifetime.totalUses}}`,
+  };
+}
+
+async function s42_getRecoveryAggregatesEndpoint() {
+  const name = "42) PR 132b: getRecoveryAggregatesV1 returns rolling-window summaries (30/90/365) with correct shape";
+  // No new seed — relies on prior smoke scenarios having populated
+  // aggregates (we ran s41+earlier which all hit aggregators).
+
+  const metrics30 = await getJson("getRecoveryAggregatesV1", {
+    orgId: ORG_ID, type: "recovery_metrics", windowDays: 30, actorUid: ADMIN_UID,
+  });
+  if (metrics30.status !== 200 || !metrics30.body?.ok) {
+    return { name, pass: false, detail: `metrics30: ${metrics30.status} ${JSON.stringify(metrics30.body).slice(0,200)}` };
+  }
+  if (!metrics30.body.summary || typeof metrics30.body.summary.metrics !== "object") {
+    return { name, pass: false, detail: `summary shape: ${JSON.stringify(metrics30.body).slice(0,200)}` };
+  }
+  if (metrics30.body.windowDays !== 30) return { name, pass: false, detail: `windowDays=${metrics30.body.windowDays}` };
+  if (typeof metrics30.body.summary.windowStart !== "string") {
+    return { name, pass: false, detail: "windowStart missing" };
+  }
+
+  // Cause endpoint returns rows[]
+  const causeAll = await getJson("getRecoveryAggregatesV1", {
+    orgId: ORG_ID, type: "cause_effectiveness", windowDays: 90, actorUid: ADMIN_UID,
+  });
+  if (causeAll.status !== 200 || !Array.isArray(causeAll.body?.rows)) {
+    return { name, pass: false, detail: `cause: ${causeAll.status} ${JSON.stringify(causeAll.body).slice(0,200)}` };
+  }
+  // We populated cause_effectiveness_missing_required_proof in s41 (and
+  // others in earlier scenarios); verify at least one row carries
+  // causePrimary + summary.
+  const causeRows = causeAll.body.rows;
+  if (causeRows.length === 0) return { name, pass: false, detail: "no cause rows" };
+  if (!causeRows[0].causePrimary || typeof causeRows[0].summary?.metrics !== "object") {
+    return { name, pass: false, detail: `cause row shape: ${JSON.stringify(causeRows[0]).slice(0,200)}` };
+  }
+
+  const actionAll = await getJson("getRecoveryAggregatesV1", {
+    orgId: ORG_ID, type: "action_effectiveness", windowDays: 365, actorUid: ADMIN_UID,
+  });
+  if (actionAll.status !== 200 || !Array.isArray(actionAll.body?.rows)) {
+    return { name, pass: false, detail: `action: ${actionAll.status} ${JSON.stringify(actionAll.body).slice(0,200)}` };
+  }
+  if (actionAll.body.rows.length === 0) return { name, pass: false, detail: "no action rows" };
+  if (!actionAll.body.rows[0].actionType) {
+    return { name, pass: false, detail: `action row shape: ${JSON.stringify(actionAll.body.rows[0]).slice(0,200)}` };
+  }
+
+  // Bad window → 400
+  const bad = await getJson("getRecoveryAggregatesV1", {
+    orgId: ORG_ID, type: "recovery_metrics", windowDays: 7, actorUid: ADMIN_UID,
+  });
+  if (bad.status !== 400 || bad.body?.error !== "invalid_window") {
+    return { name, pass: false, detail: `bad window: ${bad.status} ${JSON.stringify(bad.body).slice(0,200)}` };
+  }
+
+  return {
+    name, pass: true,
+    detail: `metrics(30d): summary populated; cause(90d): ${causeRows.length} rows; action(365d): ${actionAll.body.rows.length} rows; bad window=400`,
+  };
+}
+
+async function s43_aggregatorIdempotency() {
+  const name = "43) PR 132b: aggregator is idempotent — calling with same auditId twice does not double-count";
+
+  // Call the aggregator helper directly with a synthetic event so we
+  // can re-fire with the same auditId deterministically. The trigger
+  // dispatches to this same code path, so testing the helper proves
+  // the idempotency guarantee.
+  const aggs = require("/Users/kesserumini/peakops/my-app/functions_clean/_recoveryAggregators");
+
+  const fakeAuditId = `idempotency-test-${Date.now()}`;
+  const fakeEvent = {
+    type: "action_completed",
+    createdAt: new Date().toISOString(),
+    meta: {
+      actionType: "idempotency_test_action_type",
+      timeToCompleteSec: 600,
+      evidenceAttachedCount: 2,
+    },
+  };
+
+  // First call should apply
+  const first = await aggs.aggregateActionEffectiveness({
+    orgId: ORG_ID, auditId: fakeAuditId, audit: fakeEvent,
+  });
+  if (first !== true) return { name, pass: false, detail: `first call returned ${first} (expected true)` };
+
+  // Read aggregate state after first
+  let docRef = db.doc(`orgs/${ORG_ID}/recovery_aggregates/action_effectiveness_idempotency_test_action_type`);
+  const after1 = (await docRef.get()).data();
+  if (!after1 || after1.lifetime?.totalUses !== 1) {
+    return { name, pass: false, detail: `after first: totalUses=${after1?.lifetime?.totalUses} (expected 1)` };
+  }
+
+  // Second call with SAME auditId should be a no-op
+  const second = await aggs.aggregateActionEffectiveness({
+    orgId: ORG_ID, auditId: fakeAuditId, audit: fakeEvent,
+  });
+  if (second !== false) return { name, pass: false, detail: `second call returned ${second} (expected false — duplicate)` };
+
+  const after2 = (await docRef.get()).data();
+  if (!after2 || after2.lifetime?.totalUses !== 1) {
+    return { name, pass: false, detail: `after second: totalUses=${after2?.lifetime?.totalUses} (expected still 1)` };
+  }
+
+  // Different auditId → should apply
+  const differentAuditId = `idempotency-test-${Date.now()}-different`;
+  const third = await aggs.aggregateActionEffectiveness({
+    orgId: ORG_ID, auditId: differentAuditId, audit: fakeEvent,
+  });
+  if (third !== true) return { name, pass: false, detail: `third call (new auditId) returned ${third}` };
+
+  const after3 = (await docRef.get()).data();
+  if (!after3 || after3.lifetime?.totalUses !== 2) {
+    return { name, pass: false, detail: `after third: totalUses=${after3?.lifetime?.totalUses} (expected 2)` };
+  }
+
+  return { name, pass: true, detail: `first apply: totalUses 0→1; duplicate auditId: no change (stays 1); new auditId: 1→2` };
+}
+
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
   await sleep(500);
@@ -2067,6 +2269,10 @@ async function main() {
     s38_hashedCustomerLabelOnCase,
     s39_causeOverriddenEvent,
     s40_intelligenceEnrichmentsOnAuditRows,
+    // PR 132b — Aggregates trigger + read endpoint
+    s41_aggregateTriggerUpdatesAllThree,
+    s42_getRecoveryAggregatesEndpoint,
+    s43_aggregatorIdempotency,
   ];
 
   const results = [];
