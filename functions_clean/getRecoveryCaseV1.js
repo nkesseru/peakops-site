@@ -24,6 +24,13 @@ const { derivePriority, daysOpenSince } = require("./_recoveryPriority");
 // actions already on the case (by type). Wedge guard: no writes here,
 // pure read.
 const { getSuggestedActions } = require("./_recoveryAutomation");
+// PR 131a — Phase 2 suggestions: changeSummary, revenueAtRisk pre-fill,
+// resubmissionReadiness. All computed at read time; no auto-commit.
+const {
+  deriveChangeSummary,
+  deriveRevenueAtRiskSuggestion,
+  deriveResubmissionReadiness,
+} = require("./_recoverySuggestions");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -96,6 +103,11 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
     // the fields just return empty strings — UI flags as data defect.
     let jobTitle = "";
     let jobLocation = "";
+    // PR 131a — also retain the raw incident + jobs payload so the
+    // revenueAtRisk suggestion helper can sample them. Best-effort:
+    // failure just means no suggestion (helper handles null inputs).
+    let incidentRaw = null;
+    let jobsRaw = [];
     try {
       const incidentId = trimStr(data.incidentId);
       if (incidentId) {
@@ -107,8 +119,18 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
         }
         if (incSnap.exists) {
           const incData = incSnap.data() || {};
+          incidentRaw = incData;
           jobTitle = trimStr(incData.title || incData.name);
           jobLocation = trimStr(incData.location || incData.address || incData.siteAddress);
+          // Jobs live at the legacy path (createJobV1 hardcodes it).
+          // Cheap read; bounded to 50 for the revenue sum heuristic.
+          try {
+            const jobsSnap = await db.collection("incidents").doc(incidentId)
+              .collection("jobs").limit(50).get();
+            jobsRaw = jobsSnap.docs.map((d) => d.data() || {});
+          } catch (eJobs) {
+            console.warn("[getRecoveryCaseV1] jobs read for revenue suggestion failed", eJobs && eJobs.message);
+          }
         }
       }
     } catch (e) {
@@ -315,6 +337,23 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
     // or when all suggestions have been added already.
     const suggestedActions = getSuggestedActions(detail.cause.primary, actions);
 
+    // PR 131a — Phase 2 suggestions block. All three computed at read
+    // time, surfaced for UI pre-fill. The UI must render them as
+    // suggestions (italic, distinct from saved values) — no auto-
+    // commit anywhere.
+    const suggestions = {
+      changeSummary: deriveChangeSummary(detail.packetVersions, actions),
+      revenueAtRisk: deriveRevenueAtRiskSuggestion({
+        caseData: data,
+        incidentData: incidentRaw,
+        jobsData: jobsRaw,
+      }),
+      resubmissionReadiness: deriveResubmissionReadiness({
+        caseData: data,
+        actions,
+      }),
+    };
+
     return j(res, 200, {
       ok: true,
       orgId, caseId,
@@ -322,6 +361,9 @@ exports.getRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
       actions,
       audit,
       suggestedActions,
+      // PR 131a — Phase 2: pre-fill data the UI uses to reduce
+      // coordinator typing. Every field is operator-overridable.
+      suggestions,
     });
   } catch (e) {
     console.error("[getRecoveryCaseV1] unhandled", { error: String(e?.message || e), stack: e?.stack });
