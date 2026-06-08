@@ -41,6 +41,9 @@ import { SuggestedActionsPanel } from "@/components/recovery/SuggestedActionsPan
 import { ResubmissionBanner } from "@/components/recovery/ResubmissionBanner";
 import { AwaitingCustomerBanner } from "@/components/recovery/AwaitingCustomerBanner";
 import { ResubmissionLinkResultModal } from "@/components/recovery/ResubmissionLinkResultModal";
+// PR 131b — Phase 2 readiness strip; surfaces directly below MISSION
+// to answer "Can I send this back?" before scrolling.
+import { ReadinessStrip } from "@/components/recovery/ReadinessStrip";
 import { useMemberNames } from "@/lib/recovery/useMemberNames";
 import { TERMINAL_STATUSES } from "@/lib/recovery/displayConstants";
 import type {
@@ -53,6 +56,7 @@ import type {
   OwnerRole,
   SuggestedAction,
   MintResubmissionLinkResponse,
+  RecoverySuggestionsBlock,
 } from "@/lib/recovery/types";
 
 type Props = { caseId: string };
@@ -88,6 +92,9 @@ function DetailContent({ caseId }: { caseId: string }) {
   const [audit, setAudit] = useState<RecoveryAuditEvent[]>([]);
   // PR 128b — backend-filtered suggested action chain for cause.primary
   const [suggestedActions, setSuggestedActions] = useState<SuggestedAction[]>([]);
+  // PR 131b — Phase 2 read-time suggestions block. Drives ReadinessStrip,
+  // MissionBriefingCard revenue hint, and ResubmissionBanner pre-fill.
+  const [suggestions, setSuggestions] = useState<RecoverySuggestionsBlock | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
   const [busyActionId, setBusyActionId] = useState<string>("");
@@ -132,6 +139,7 @@ function DetailContent({ caseId }: { caseId: string }) {
         setActions(out.actions || []);
         setAudit(out.audit || []);
         setSuggestedActions(out.suggestedActions || []);
+        setSuggestions(out.suggestions || null);
         setLoading(false);
       } catch (e: any) {
         if (!cancelled) {
@@ -407,7 +415,17 @@ function DetailContent({ caseId }: { caseId: string }) {
         inferredFromComment={Boolean(caseData.cause.inferredFromComment)}
         onOverrideCause={!isTerminal ? handleOverrideCause : undefined}
         overrideBusy={overrideBusy}
+        revenueAtRiskSuggestion={suggestions?.revenueAtRisk}
       />
+
+      {/* PR 131b — Readiness strip directly below MISSION, per decision
+          lock 2026-06-08. Answers the single most important coordinator
+          question: "Can I send this back?" Always renders when the
+          suggestions block is present; green/red/neutral states with
+          no amber. */}
+      {suggestions?.resubmissionReadiness && (
+        <ReadinessStrip readiness={suggestions.resubmissionReadiness} />
+      )}
 
       {/* PR 128b — Suggested actions, sitting directly under MISSION.
           What's wrong? (above) → What should I do? (here).
@@ -444,6 +462,7 @@ function DetailContent({ caseId }: { caseId: string }) {
           busy={mintBusy}
           errorMessage={mintErr}
           onMint={handleMintResubmission}
+          changeSummarySuggestion={suggestions?.changeSummary ?? null}
         />
       )}
       {!isTerminal && caseData.status === "awaiting_customer" && (

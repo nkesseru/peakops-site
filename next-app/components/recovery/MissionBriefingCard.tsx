@@ -22,7 +22,11 @@
 import { useState } from "react";
 import { getCauseNarrative } from "@/lib/recovery/causeNarratives";
 import { formatRevenue, CAUSE_DISPLAY, CAUSE_ORDERED } from "@/lib/recovery/displayConstants";
-import type { RevenueAtRisk, RecoveryCausePrimary } from "@/lib/recovery/types";
+import type {
+  RevenueAtRisk,
+  RecoveryCausePrimary,
+  RevenueAtRiskSuggestion,
+} from "@/lib/recovery/types";
 
 type Props = {
   causePrimary?: string;
@@ -37,6 +41,12 @@ type Props = {
   onOverrideCause?: (newCause: RecoveryCausePrimary) => void;
   // True while the override write is in flight
   overrideBusy?: boolean;
+  // PR 131b — Inline revenue suggestion (PR 131a backend). Non-null
+  // only when the case's revenueAtRisk is empty/unknown AND the
+  // backend chain found a source value. Rendered as small italic
+  // text below the impact line; no apply button, no modal — pure
+  // hint per decision lock ("Inline helper only").
+  revenueAtRiskSuggestion?: RevenueAtRiskSuggestion | null;
 };
 
 export function MissionBriefingCard({
@@ -48,6 +58,7 @@ export function MissionBriefingCard({
   inferredFromComment,
   onOverrideCause,
   overrideBusy,
+  revenueAtRiskSuggestion,
 }: Props) {
   const narrative = getCauseNarrative(causePrimary);
   const customer = String(customerComment || "").trim();
@@ -58,6 +69,16 @@ export function MissionBriefingCard({
   const impactText = hasAmount
     ? `${formatRevenue(amount, revenueAtRisk.currency || "USD")} in dispute · ${daysOpen}d aging`
     : `Revenue at risk unknown · ${daysOpen}d aging`;
+
+  // PR 131b — small inline suggestion line: "Suggested: $X (type)".
+  // Only render when backend returned a non-null suggestion AND the
+  // case doesn't already have an actual/estimated amount set
+  // (backend handles this filter, but we double-check defensively).
+  const showRevenueHint = Boolean(
+    revenueAtRiskSuggestion &&
+    revenueAtRiskSuggestion.amount > 0 &&
+    !hasAmount
+  );
 
   return (
     <section className="rounded-xl border border-amber-400/30 bg-gradient-to-b from-amber-500/[0.08] to-white/[0.02] px-5 py-5 sm:px-6 sm:py-6 space-y-4">
@@ -139,6 +160,20 @@ export function MissionBriefingCard({
       <div className="text-[11px] uppercase tracking-wider text-amber-200/70 pt-2 border-t border-amber-400/20 font-medium">
         {impactText}
       </div>
+
+      {/* PR 131b — Inline revenue suggestion. Rendered only when the
+          case has no real amount AND the backend chain (PR 131a) found
+          a source value. Italic + low-key per decision lock: helper
+          only, no apply button, no large card. */}
+      {showRevenueHint && revenueAtRiskSuggestion && (
+        <div className="text-[11px] text-amber-200/70 italic leading-relaxed -mt-3">
+          Suggested:{" "}
+          <span className="not-italic font-semibold text-amber-100">
+            {formatRevenue(revenueAtRiskSuggestion.amount, revenueAtRisk.currency || "USD")}
+          </span>{" "}
+          ({revenueAtRiskSuggestion.type})
+        </div>
+      )}
     </section>
   );
 }
