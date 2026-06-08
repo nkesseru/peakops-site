@@ -31,10 +31,20 @@ type Props = {
   errorMessage?: string;
   /** Called when the operator clicks "Create resubmission review link." */
   onMint: (args: { changeSummary?: string }) => void;
+  /** PR 131b — Pre-fill value for the "What changed?" textarea, from
+      PR 131a's suggestions.changeSummary backend helper. When null,
+      the entire "What changed?" section is hidden (decision lock #5:
+      "Hide section entirely. Do not show placeholders.") */
+  changeSummarySuggestion?: string | null;
 };
 
-export function ResubmissionBanner({ busy, errorMessage, onMint }: Props) {
-  const [changeSummary, setChangeSummary] = useState("");
+export function ResubmissionBanner({ busy, errorMessage, onMint, changeSummarySuggestion }: Props) {
+  // PR 131b — pre-fill from backend suggestion when present. The
+  // operator can edit or clear (uncontrolled after first mount).
+  const [changeSummary, setChangeSummary] = useState(
+    typeof changeSummarySuggestion === "string" ? changeSummarySuggestion : ""
+  );
+  const showChangeSummarySection = Boolean(changeSummarySuggestion);
 
   return (
     <section className="rounded-xl border-2 border-emerald-400/50 bg-gradient-to-b from-emerald-500/[0.12] to-emerald-500/[0.04] px-5 py-5 sm:px-6 sm:py-6 space-y-4">
@@ -51,20 +61,27 @@ export function ResubmissionBanner({ busy, errorMessage, onMint }: Props) {
         </div>
       </div>
 
-      <div className="space-y-1.5 pt-2 border-t border-emerald-400/20">
-        <label className="block text-[11px] text-emerald-100/80 uppercase tracking-wider font-semibold">
-          What changed? <span className="text-emerald-200/60 normal-case font-normal">(optional, for your records)</span>
-        </label>
-        <textarea
-          className="w-full text-sm bg-black/30 border border-emerald-300/25 rounded-lg px-3 py-2 placeholder-emerald-100/40 text-emerald-50 focus:outline-none focus:ring-1 focus:ring-emerald-300/50"
-          placeholder="e.g. Re-captured proof for slot 3; added OTDR trace as requested."
-          rows={2}
-          maxLength={CHANGE_SUMMARY_MAX}
-          disabled={busy}
-          value={changeSummary}
-          onChange={(e) => setChangeSummary(e.target.value)}
-        />
-      </div>
+      {/* PR 131b — Hidden entirely when no suggestion exists (decision
+          lock #5). When shown, the textarea is pre-filled with the
+          backend-derived bullet list; operator can edit or clear. */}
+      {showChangeSummarySection && (
+        <div className="space-y-1.5 pt-2 border-t border-emerald-400/20">
+          <label className="block text-[11px] text-emerald-100/80 uppercase tracking-wider font-semibold">
+            What changed?{" "}
+            <span className="text-emerald-200/60 normal-case font-normal">
+              (auto-filled from completed actions — edit as needed)
+            </span>
+          </label>
+          <textarea
+            className="w-full text-sm bg-black/30 border border-emerald-300/25 rounded-lg px-3 py-2 placeholder-emerald-100/40 text-emerald-50 focus:outline-none focus:ring-1 focus:ring-emerald-300/50"
+            rows={Math.min(8, Math.max(3, changeSummary.split("\n").length + 1))}
+            maxLength={CHANGE_SUMMARY_MAX}
+            disabled={busy}
+            value={changeSummary}
+            onChange={(e) => setChangeSummary(e.target.value)}
+          />
+        </div>
+      )}
 
       {errorMessage && (
         <div className="rounded-lg border border-red-300/30 bg-red-500/[0.08] px-3 py-2 text-[12px] text-red-100">

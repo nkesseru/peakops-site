@@ -96,6 +96,32 @@ export type SuggestedAction = {
   assigneeRole: OwnerRole | "";
 };
 
+// PR 131a/b — Phase 2 read-time suggestions surfaced under
+// case.suggestions in the getRecoveryCaseV1 response. Each field is
+// pre-fill or signal only; the UI must render visibly distinct from
+// saved values and never auto-commit.
+export type RevenueAtRiskSuggestion = {
+  amount: number;
+  type: "actual" | "estimated";
+  source: string; // e.g. "incident", "sum_of_jobs"
+};
+
+export type ResubmissionReadiness = {
+  // green = ready_to_resubmit; red = open/in_progress/escalated with
+  // blocking work; neutral = terminal or awaiting_customer
+  state: "green" | "red" | "neutral";
+  ready: boolean;
+  headline: string;
+  reasons: string[];
+  warnings: string[];
+};
+
+export type RecoverySuggestionsBlock = {
+  changeSummary: string | null;
+  revenueAtRisk: RevenueAtRiskSuggestion | null;
+  resubmissionReadiness: ResubmissionReadiness;
+};
+
 export type PacketVersionRef = {
   packetVersionId: string;
   // PR 129a — ordinal: 1-indexed position in the immutable chain.
@@ -244,6 +270,9 @@ export type GetRecoveryCaseResponse = {
   // PR 128b — pre-filtered against actions already on the case.
   // Empty when cause.primary is unset or all suggestions added.
   suggestedActions?: SuggestedAction[];
+  // PR 131a — Phase 2 read-time suggestions. Always present in
+  // successful responses; individual fields may be null.
+  suggestions?: RecoverySuggestionsBlock;
   error?: string;
 };
 
