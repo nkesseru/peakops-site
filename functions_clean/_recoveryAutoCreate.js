@@ -262,10 +262,16 @@ async function autoCreateOrExtendCase(args) {
   // `cause.inferredFromComment: true` so the UI can show the marker,
   // but the case starts at `open` regardless.
 
-  // PR 132a — hash the customer label so future intelligence (PR 132c+)
-  // can count rejections-per-customer without storing PII. Best-effort:
-  // a failed read just leaves the field null; the case still creates.
+  // PR 132a / PR 132c-a — Read the incident once to populate three
+  // fields on the case doc:
+  //   - hashedCustomerLabel (PR 132a, for customer-pattern intelligence)
+  //   - templateKey + templateVersion (PR 132c-a, for template_gap
+  //     aggregator — without these, auto-created cases never feed the
+  //     "Potential Revenue Protection Opportunity" surface)
+  // Best-effort: a failed read just leaves fields null; the case still creates.
   let hashedCustomerLabel = null;
+  let incTemplateKey = "";
+  let incTemplateVersion = null;
   try {
     let incSnap = await db.doc(`orgs/${orgId}/incidents/${incidentId}`).get();
     if (!incSnap.exists) {
@@ -273,11 +279,16 @@ async function autoCreateOrExtendCase(args) {
     }
     if (incSnap.exists) {
       const incData = incSnap.data() || {};
-      const label = (incData.requirements && incData.requirements.customerLabel) || incData.customer || "";
+      const reqs = (incData.requirements && typeof incData.requirements === "object") ? incData.requirements : {};
+      const label = reqs.customerLabel || incData.customer || "";
       hashedCustomerLabel = hashCustomerLabel(label);
+      incTemplateKey = String(reqs.templateKey || "").trim();
+      if (Number.isFinite(Number(reqs.templateVersion))) {
+        incTemplateVersion = Number(reqs.templateVersion);
+      }
     }
-  } catch (eHash) {
-    console.warn("[_recoveryAutoCreate] customer-label hash failed", eHash && eHash.message);
+  } catch (eRead) {
+    console.warn("[_recoveryAutoCreate] incident read failed", eRead && eRead.message);
   }
 
   const result = await db.runTransaction(async (tx) => {
@@ -319,6 +330,12 @@ async function autoCreateOrExtendCase(args) {
       // Null when no label is known; populated retroactively never
       // (only set on create).
       hashedCustomerLabel,
+      // PR 132c-a — templateKey + templateVersion on the case doc
+      // so the template_gap aggregator (and the existing
+      // getRecoveryCaseV1 / list endpoints) can attribute cases to
+      // templates. Mirrors createRecoveryCaseV1's behavior.
+      ...(incTemplateKey ? { templateKey: incTemplateKey } : {}),
+      ...(incTemplateVersion != null ? { templateVersion: incTemplateVersion } : {}),
       // PR 129a — always start at open; cause.inferredFromComment is
       // the only signal that the system pre-classified.
       status: RECOVERY_STATUS.OPEN,

@@ -22,6 +22,8 @@ const {
   aggregateRecoveryMetrics,
   aggregateCauseEffectiveness,
   aggregateActionEffectiveness,
+  // PR 132c-a — fourth aggregator: per-templateKey rejection mix.
+  aggregateTemplateGap,
 } = require("./_recoveryAggregators");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
@@ -37,7 +39,7 @@ exports.onRecoveryAuditWrite = onDocumentCreated(
     const audit = (snap && typeof snap.data === "function") ? (snap.data() || {}) : {};
     if (!audit || !audit.type) return;
 
-    // Run all three aggregators in parallel. Each is independent so
+    // Run all four aggregators in parallel. Each is independent so
     // a failure in one shouldn't block the others. We deliberately
     // catch + log instead of letting the trigger retry — duplicates
     // are handled by the aggregator's idempotency check, but bad
@@ -55,6 +57,10 @@ exports.onRecoveryAuditWrite = onDocumentCreated(
         console.error("[onRecoveryAuditWrite] action_effectiveness failed", { orgId, auditId, error: String(e?.message || e) });
         return false;
       }),
+      aggregateTemplateGap({ orgId, auditId, audit }).catch((e) => {
+        console.error("[onRecoveryAuditWrite] template_gap failed", { orgId, auditId, error: String(e?.message || e) });
+        return false;
+      }),
     ]);
 
     console.log("[onRecoveryAuditWrite] dispatched", {
@@ -64,6 +70,7 @@ exports.onRecoveryAuditWrite = onDocumentCreated(
         metrics: results[0],
         cause: results[1],
         action: results[2],
+        templateGap: results[3],
       },
     });
   }

@@ -2208,6 +2208,161 @@ async function s43_aggregatorIdempotency() {
   return { name, pass: true, detail: `first apply: totalUses 0→1; duplicate auditId: no change (stays 1); new auditId: 1→2` };
 }
 
+// ── PR 132c-a — Template gap aggregator scenarios ─────────────────
+
+async function s44_templateGapAggregatesCases() {
+  const name = "44) PR 132c-a: template_gap aggregator counts rejections + cause mix + version mix per templateKey";
+  // Three incidents on the same templateKey but different versions.
+  // After auto-create + resolve, the template_gap doc for that
+  // templateKey should show rejections=3, causeMix correct, versionMix
+  // covering both versions.
+  const templateKey = "fiber_splice_verification__comcast-restoration";
+  const incidentIds = ["inc-s44-tg-a", "inc-s44-tg-b", "inc-s44-tg-c"];
+  // Seed all three with the same templateKey but different versions
+  await seedIncident(incidentIds[0], { archetype: "fiber_splice_verification" });
+  await seedIncident(incidentIds[1], { archetype: "fiber_splice_verification" });
+  await seedIncident(incidentIds[2], { archetype: "fiber_splice_verification" });
+  // Override templateVersion on each (seedIncident sets v7; bump one to v8)
+  await db.doc(`orgs/${ORG_ID}/incidents/${incidentIds[2]}`).set(
+    { requirements: { templateKey, templateVersion: 8, customerLabel: "Comcast Restoration", archetype: "fiber_splice_verification", requiredProof: [], acceptanceChecks: [] } },
+    { merge: true },
+  );
+
+  // Auto-create 3 cases via customer rejection. Two with OTDR keyword
+  // (→ missing_test_result), one with generic comment (cause unknown).
+  for (const incId of incidentIds.slice(0, 2)) {
+    const mint = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incId });
+    await postJson("submitCustomerReviewV1", {
+      token: mint.body.token, action: "reject", comment: "We need the OTDR trace before signoff",
+    });
+  }
+  const mint3 = await postJson("createCustomerReviewLinkV1", { actorUid: ADMIN_UID, orgId: ORG_ID, incidentId: incidentIds[2] });
+  await postJson("submitCustomerReviewV1", {
+    token: mint3.body.token, action: "reject", comment: "Please call to discuss",
+  });
+
+  // Wait for the trigger to propagate ALL 3 rejections into the doc.
+  // Predicate looks for v8 (the LAST incident's templateVersion) so
+  // we don't race against the v7→v8 trigger ordering.
+  const docId = `template_gap_${templateKey.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+  const doc = await waitForAggregateUpdate(
+    docId,
+    (d) => (d?.lifetime?.versionMix?.v8 || 0) >= 1 && (d?.lifetime?.versionMix?.v7 || 0) >= 2,
+  );
+  if (!doc) return { name, pass: false, detail: "template_gap doc never reached versionMix expectation (v7≥2, v8≥1)" };
+
+  if (doc.viewType !== "template_gap") return { name, pass: false, detail: `viewType=${doc.viewType}` };
+  if (doc.templateKey !== templateKey) return { name, pass: false, detail: `templateKey=${doc.templateKey}` };
+
+  const lifetime = doc.lifetime || {};
+  if ((lifetime.rejections || 0) < 3) return { name, pass: false, detail: `rejections=${lifetime.rejections}` };
+  const causeMix = lifetime.causeMix || {};
+  if ((causeMix.missing_test_result || 0) < 2) {
+    return { name, pass: false, detail: `causeMix.missing_test_result=${causeMix.missing_test_result} (expected ≥2)` };
+  }
+  const versionMix = lifetime.versionMix || {};
+  if ((versionMix.v7 || 0) < 2 || (versionMix.v8 || 0) < 1) {
+    return { name, pass: false, detail: `versionMix=${JSON.stringify(versionMix)}` };
+  }
+
+  return {
+    name, pass: true,
+    detail: `rejections=${lifetime.rejections} | causeMix=${JSON.stringify(causeMix)} | versionMix=${JSON.stringify(versionMix)}`,
+  };
+}
+
+async function s45_templateGapEndpointWithKeyFilter() {
+  const name = "45) PR 132c-a: getRecoveryAggregatesV1 supports type=template_gap with optional templateKey filter";
+
+  // Filtered: single template by key
+  const filtered = await getJson("getRecoveryAggregatesV1", {
+    orgId: ORG_ID, type: "template_gap", windowDays: 30, actorUid: ADMIN_UID,
+    templateKey: "fiber_splice_verification__comcast-restoration",
+  });
+  if (filtered.status !== 200 || !filtered.body?.ok) {
+    return { name, pass: false, detail: `filtered: ${filtered.status} ${JSON.stringify(filtered.body).slice(0,200)}` };
+  }
+  if (filtered.body.templateKey !== "fiber_splice_verification__comcast-restoration") {
+    return { name, pass: false, detail: `filtered templateKey=${filtered.body.templateKey}` };
+  }
+  if (!filtered.body.summary || typeof filtered.body.summary.metrics !== "object") {
+    return { name, pass: false, detail: `filtered shape: ${JSON.stringify(filtered.body).slice(0,200)}` };
+  }
+  const filteredRej = Number(filtered.body.summary.metrics?.rejections);
+  if (!Number.isFinite(filteredRej) || filteredRej < 3) {
+    return { name, pass: false, detail: `filtered rejections=${filteredRej} (expected ≥3 from s44)` };
+  }
+
+  // Unfiltered: all templates with rejections
+  const all = await getJson("getRecoveryAggregatesV1", {
+    orgId: ORG_ID, type: "template_gap", windowDays: 30, actorUid: ADMIN_UID,
+  });
+  if (all.status !== 200 || !Array.isArray(all.body?.rows)) {
+    return { name, pass: false, detail: `unfiltered: ${all.status} ${JSON.stringify(all.body).slice(0,200)}` };
+  }
+  if (all.body.rows.length === 0) {
+    return { name, pass: false, detail: "no template_gap rows" };
+  }
+  if (!all.body.rows[0].templateKey) {
+    return { name, pass: false, detail: `row missing templateKey: ${JSON.stringify(all.body.rows[0]).slice(0,200)}` };
+  }
+  // Sorted by rejections desc — first row should be our heavily-rejected template
+  if (all.body.rows[0].templateKey !== "fiber_splice_verification__comcast-restoration") {
+    return { name, pass: false, detail: `first row templateKey=${all.body.rows[0].templateKey} (expected heavily-rejected fiber template first)` };
+  }
+
+  return {
+    name, pass: true,
+    detail: `filtered single doc: rejections=${filteredRej} | unfiltered rows=${all.body.rows.length}; sorted by rejections desc`,
+  };
+}
+
+async function s46_templateGapThresholdAwareness() {
+  const name = "46) PR 132c-a: template_gap threshold awareness — endpoint returns counts so UI can apply 3-rejection threshold";
+  // Smoke harness can't change time, so we verify the SHAPE matches
+  // what 132c-b UI needs to apply the 3-rejection / 30-day threshold:
+  // - summary.metrics.rejections is a number
+  // - lifetime.versionMix is an object
+  // - lifetime.causeMix is an object
+  // The threshold itself is UI-side (per decision lock).
+  const r = await getJson("getRecoveryAggregatesV1", {
+    orgId: ORG_ID, type: "template_gap", windowDays: 30, actorUid: ADMIN_UID,
+    templateKey: "fiber_splice_verification__comcast-restoration",
+  });
+  if (r.status !== 200) return { name, pass: false, detail: `${r.status}` };
+
+  const summary = r.body.summary || {};
+  const metrics = summary.metrics || {};
+  const lifetime = r.body.lifetime || {};
+
+  // The fields the UI will threshold-check
+  if (typeof metrics.rejections !== "number") {
+    return { name, pass: false, detail: `summary.metrics.rejections type=${typeof metrics.rejections}` };
+  }
+  if (!metrics.causeMix || typeof metrics.causeMix !== "object") {
+    return { name, pass: false, detail: `summary.metrics.causeMix missing` };
+  }
+  if (!metrics.versionMix || typeof metrics.versionMix !== "object") {
+    return { name, pass: false, detail: `summary.metrics.versionMix missing` };
+  }
+  // Lifetime carries the same shape for trend display
+  if (typeof lifetime.rejections !== "number") {
+    return { name, pass: false, detail: `lifetime.rejections type=${typeof lifetime.rejections}` };
+  }
+
+  // The UI will decide top-cause client-side:
+  const topCause = Object.entries(metrics.causeMix)
+    .sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))[0];
+  if (!topCause || !topCause[0]) {
+    return { name, pass: false, detail: `no top cause derivable from causeMix` };
+  }
+
+  return {
+    name, pass: true,
+    detail: `summary.metrics.rejections=${metrics.rejections} causeMix=${JSON.stringify(metrics.causeMix)} versionMix=${JSON.stringify(metrics.versionMix)} | derivedTopCause=${topCause[0]}(${topCause[1]})`,
+  };
+}
+
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
   await sleep(500);
@@ -2273,6 +2428,10 @@ async function main() {
     s41_aggregateTriggerUpdatesAllThree,
     s42_getRecoveryAggregatesEndpoint,
     s43_aggregatorIdempotency,
+    // PR 132c-a — template_gap aggregator + endpoint extension
+    s44_templateGapAggregatesCases,
+    s45_templateGapEndpointWithKeyFilter,
+    s46_templateGapThresholdAwareness,
   ];
 
   const results = [];
