@@ -22,6 +22,10 @@ import { useAuth } from "@/hooks/useAuth";
 import AppTopBar from "@/components/AppTopBar";
 import RequireAuth from "@/components/RequireAuth";
 import { ARCHETYPE_VALUES, ARCHETYPE_LABELS, type Archetype } from "@/lib/incidents/newIncidentDraft";
+// PR 132c-b — "Revenue Protection Opportunity" strip surfaces
+// template_gap aggregate data from PR 132c-a. Hidden below the
+// 3-rejection / 30-day threshold.
+import { RevenueProtectionOpportunityStrip } from "@/components/recovery/RevenueProtectionOpportunityStrip";
 
 const ADMIN_ROLES = new Set(["owner", "admin"]);
 
@@ -396,6 +400,17 @@ function EditorBody({ orgId, templateKey, createMode }: Props) {
           </div>
         )}
       </header>
+
+      {/* PR 132c-b — Revenue Protection Opportunity strip. Mounts in
+          edit mode only (we need a real templateKey to query the
+          aggregate). Self-hides below the 3-rejection / 30-day
+          threshold per architecture lock. */}
+      {!createMode && doc.templateKey && (
+        <RevenueProtectionOpportunityStrip
+          orgId={orgId}
+          templateKey={doc.templateKey}
+        />
+      )}
 
       {/* Archetype + scope */}
       <section className="space-y-3">
