@@ -31,6 +31,9 @@ const { writeRecoveryAudit } = require("./_recoveryAudit");
 // PR 130a — auto-flip logic extracted to a shared helper so the
 // foreman wrapper (completeRecoveryFieldWorkV1) can reuse it.
 const { tryAutoFlipToReadyToResubmit } = require("./_recoveryAutoFlip");
+// PR 132a — Recovery Intelligence: timing + evidence count enrich
+// every action_completed audit row.
+const { durationSec } = require("./_recoveryEnrichments");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -131,10 +134,23 @@ exports.updateRecoveryActionV1 = onRequest({ cors: true }, async (req, res) => {
         if (newStatus === "done" || newStatus === "skipped") {
           updates.completedAt = FieldValue.serverTimestamp();
         }
+        // PR 132a — intelligence enrichment for action_completed.
+        // timeToCompleteSec uses createdAt as the start (action lifetime
+        // including queue time, not just active work). evidenceAttachedCount
+        // captures whether the action wrapped with supporting proof.
+        const auditMeta = {};
+        if (newStatus === "done") {
+          auditMeta.timeToCompleteSec = durationSec(before.createdAt, new Date());
+          auditMeta.evidenceAttachedCount = Array.isArray(before.evidence) ? before.evidence.length : 0;
+          // Carry the action type so per-type aggregates (PR 132b)
+          // don't need to re-read the action doc.
+          auditMeta.actionType = String(before.type || "");
+        }
         auditEvents.push({
           type: newStatus === "done" ? "action_completed" : "action_status_changed",
           before: { status: before.status },
           after: { status: newStatus },
+          ...(Object.keys(auditMeta).length ? { meta: auditMeta } : {}),
         });
       }
     }

@@ -44,6 +44,10 @@ const {
 } = require("./recoveryState");
 // RECOVERY_PRIORITY_SET no longer used — priority is derived (PR 127a2).
 const { writeRecoveryAudit } = require("./_recoveryAudit");
+// PR 132a — event enrichments for Recovery Intelligence: timing,
+// counts, and the cause_overridden event when an operator corrects
+// an inferred cause.
+const { durationSec, countActionsByStatus } = require("./_recoveryEnrichments");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -181,9 +185,38 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
         ...(finalAmount != null ? { finalAmount } : {}),
         ...(resolution.notes ? { notes: sanitizeText(resolution.notes, NOTES_MAX) } : {}),
       };
+      // PR 132a — Enrich case_resolved with intelligence-grade
+      // metadata: time to resolution (seconds since openedAt), total
+      // resubmissions completed in this recovery, and how many actions
+      // wrapped (done + skipped). Read the actions subcollection once
+      // here — terminal transitions are infrequent, the cost is fine.
+      let totalActionsCompleted = null;
+      let totalActionsTotal = null;
+      try {
+        const actsSnap = await caseRef.collection("actions").get();
+        const counts = countActionsByStatus(actsSnap.docs);
+        totalActionsCompleted = counts.done + counts.skipped;
+        totalActionsTotal = counts.total;
+      } catch (eActs) {
+        console.warn("[updateRecoveryCaseV1] action count read failed", eActs && eActs.message);
+      }
+      const totalResubmissions = Math.max(
+        0,
+        (Array.isArray(before.packetVersions) ? before.packetVersions.length : 0) - 1,
+      );
+      const resolutionTimingSec = durationSec(before.openedAt, new Date());
+
       auditEvents.push({
         type: "case_resolved",
-        meta: { outcome, finalAmount: finalAmount != null ? finalAmount : null },
+        meta: {
+          outcome,
+          finalAmount: finalAmount != null ? finalAmount : null,
+          // PR 132a enrichments for the intelligence layer
+          timeToResolutionSec: resolutionTimingSec,
+          totalResubmissions,
+          totalActionsCompleted,
+          totalActions: totalActionsTotal,
+        },
       });
       if (outcome === "recovered" || outcome === "partial_recovery") {
         auditEvents.push({
@@ -192,6 +225,11 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
             revenueAtRisk: before.revenueAtRisk || null,
             outcome,
             finalAmount: finalAmount != null ? finalAmount : null,
+            // PR 132a — same timing on revenue_recovered so revenue-
+            // weighted aggregates can ignore case_resolved without
+            // losing the data point
+            timeToResolutionSec: resolutionTimingSec,
+            totalResubmissions,
           },
         });
       }
@@ -230,6 +268,13 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
           });
         }
         if (p && p !== String(beforeCause.primary || "")) {
+          // PR 132a — capture whether the prior cause was originally
+          // inferred by PR 128a's keyword map. This lets the future
+          // intelligence layer (PR 132b+) measure inference accuracy
+          // (how often does the system pre-classify correctly?).
+          const wasInferred = Boolean(beforeCause.inferredFromComment);
+          const previousCause = String(beforeCause.primary || "") || null;
+
           causeUpdates["cause.primary"] = p;
           causeUpdates["cause.categorizedBy"] = actorUid;
           causeUpdates["cause.categorizedAt"] = FieldValue.serverTimestamp();
@@ -240,6 +285,21 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
           // PR 129a — auto-transition to `triaged` dropped (state
           // collapsed into `open`). The cause field itself is the
           // signal that triage happened.
+
+          // PR 132a — emit cause_overridden when the operator changes
+          // an existing cause.primary. Fires whether the original came
+          // from inference or from a prior manual entry; the
+          // originallyInferred flag separates the two for intelligence.
+          if (previousCause) {
+            auditEvents.push({
+              type: "cause_overridden",
+              before: { causePrimary: previousCause },
+              after: { causePrimary: p },
+              meta: {
+                originallyInferred: wasInferred,
+              },
+            });
+          }
         }
       }
       if (typeof body.cause.secondary === "string") {

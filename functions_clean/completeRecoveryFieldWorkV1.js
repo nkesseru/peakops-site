@@ -35,6 +35,8 @@ const { TERMINAL_STATUSES } = require("./recoveryState");
 const { writeRecoveryAudit } = require("./_recoveryAudit");
 const { tryAutoFlipToReadyToResubmit } = require("./_recoveryAutoFlip");
 const { FIELD_WORK_ROLES, isVisibleToActor } = require("./listRecoveryActionsForIncidentV1");
+// PR 132a — Recovery Intelligence enrichments on action_completed.
+const { durationSec } = require("./_recoveryEnrichments");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -169,10 +171,23 @@ exports.completeRecoveryFieldWorkV1 = onRequest({ cors: true }, async (req, res)
         if (newStatus === "done") {
           updates.completedAt = FieldValue.serverTimestamp();
         }
+        // PR 132a — enrich action_completed with timing + evidence
+        // count (same shape as updateRecoveryActionV1). The audit
+        // already carries meta.source="field_work_endpoint" further
+        // below; that's merged with these intelligence keys.
+        const auditMeta = {};
+        if (newStatus === "done") {
+          auditMeta.timeToCompleteSec = durationSec(beforeAction.createdAt, new Date());
+          auditMeta.evidenceAttachedCount = Array.isArray(beforeAction.evidence)
+            ? beforeAction.evidence.length
+            : 0;
+          auditMeta.actionType = String(beforeAction.type || "");
+        }
         auditEvents.push({
           type: newStatus === "done" ? "action_completed" : "action_status_changed",
           before: { status: beforeAction.status },
           after: { status: newStatus },
+          ...(Object.keys(auditMeta).length ? { meta: auditMeta } : {}),
         });
       }
     }

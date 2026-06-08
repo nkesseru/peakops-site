@@ -24,6 +24,18 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
  *     case_resubmitted (operator-driven, via mintResubmissionLinkV1)
  *     case_re_rejected (customer re-rejects an awaiting_customer packet)
  *     packet_version_outcome (every outcome write on a PacketVersionRef)
+ *   PR 132a — Recovery Intelligence event enrichments + new event:
+ *     cause_overridden (operator manually changes cause.primary)
+ *     case_resolved meta:        + timeToResolutionSec,
+ *                                  totalResubmissions,
+ *                                  totalActionsCompleted, totalActions
+ *     revenue_recovered meta:    + timeToResolutionSec,
+ *                                  totalResubmissions
+ *     action_completed meta:     + timeToCompleteSec,
+ *                                  evidenceAttachedCount,
+ *                                  actionType
+ *     packet_version_outcome meta: + timeToOutcomeSec,
+ *                                    templateVersionAtMint
  *   PR 127a1 / 128a (deprecated, no longer emitted):
  *     case_triaged — state collapsed into `open`; the
  *     cause.inferredFromComment + cause.categorizedBy fields carry
