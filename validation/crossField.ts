@@ -1,5 +1,6 @@
 import { IncidentValidated } from "../contracts/validators/incident.zod";
 import { ValidationIssue } from "./types";
+import { normalizeStatusForValidation } from "./_realityAdapter";
 
 export function validateCrossFieldDependencies(
   incident: IncidentValidated
@@ -15,10 +16,14 @@ export function validateCrossFieldDependencies(
     });
   }
 
+  // PR 133A — Compare against the normalized lifecycle value so this
+  // rule fires consistently whether the incoming incident carries
+  // "draft" (production lowercase) or "DRAFT" (rulepack canonical).
+  const normalizedStatus = normalizeStatusForValidation(incident.status as unknown as string);
   if (
     incident.affectedCustomers != null &&
     incident.affectedCustomers > 0 &&
-    incident.status === "DRAFT"
+    normalizedStatus === "DRAFT"
   ) {
     issues.push({
       code: "cross.affected_customers_requires_active",

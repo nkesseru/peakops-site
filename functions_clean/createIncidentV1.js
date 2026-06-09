@@ -122,7 +122,11 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
   }
   const status = statusRaw;
 
-  const filingTypesRequired = Array.isArray(body.filingTypesRequired) ? body.filingTypesRequired : [];
+  // PEAKOPS_FILING_TYPES_V1 (PR 133A) — body-supplied value takes precedence;
+  // when absent, we derive from archetype below (after archetype is parsed).
+  // `let` because the derivation step at line ~205 may replace the default.
+  let filingTypesRequired = Array.isArray(body.filingTypesRequired) ? body.filingTypesRequired : [];
+  const filingTypesSuppliedByCaller = Array.isArray(body.filingTypesRequired);
 
   // PEAKOPS_CREATE_INCIDENT_FIELDS_V1 (2026-04-28)
   // Optional descriptors captured by the inline /incidents Create form.
@@ -199,6 +203,16 @@ exports.createIncidentV1 = onRequest({ cors: true, invoker: "public" }, async (r
   const workType = WORK_TYPE_ENUM.includes(workTypeRaw) ? workTypeRaw : "";
   const archetypeRaw = String(body.archetype || "").trim().toLowerCase();
   const archetype = ARCHETYPE_ENUM.includes(archetypeRaw) ? archetypeRaw : "";
+
+  // PR 133A — derive filing types from archetype when caller didn't
+  // supply any. Conservative: empty `[]` is the correct answer for
+  // verification / inspection / acceptance work (the vast majority of
+  // PeakOps incidents today). Only outage-adjacent archetypes (e.g.
+  // storm_restoration_proof) map to a regulatory filing.
+  if (!filingTypesSuppliedByCaller) {
+    const { deriveFilingTypes } = require("./_filingTypeDerivation");
+    filingTypesRequired = deriveFilingTypes({ archetype, jobType, workType });
+  }
 
   // PEAKOPS_REQUIREMENTS_SNAPSHOT_V1 (PR 89a)
   //
