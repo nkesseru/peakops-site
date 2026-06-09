@@ -17,6 +17,11 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const admin = require("/Users/kesserumini/peakops/my-app/functions_clean/node_modules/firebase-admin");
 
+// PR 133B — passive validation surface (pure compute + readiness hook).
+// Required directly so we can drive the helpers against the emulator
+// Firestore in the same process.
+const readinessMod = require("/Users/kesserumini/peakops/my-app/functions_clean/_readiness");
+
 const PROJECT_ID = process.env.PROJECT_ID || "peakops-emu-smoke";
 const REGION = process.env.REGION || "us-central1";
 const FN_HOST = process.env.FN_HOST || "127.0.0.1:5004";
@@ -2363,6 +2368,246 @@ async function s46_templateGapThresholdAwareness() {
   };
 }
 
+// ── PR 133B — Passive Compliance Validation scenarios (s47-s56) ──────
+//
+// Cover the three flag modes (off / passive_log / passive_persist), the
+// pure compute shape, and failure resilience. None of these scenarios
+// should ever block readinessCache writes — that's the safety property
+// we're protecting in this PR.
+
+const COMP_ORG_ID = "smoke-org-pr133b";
+
+async function seedComplianceOrg() {
+  await db.doc(`orgs/${COMP_ORG_ID}`).set({
+    name: "PR133b Smoke Org",
+    createdAt: FieldValue.serverTimestamp(),
+  });
+}
+
+async function setComplianceMode(mode) {
+  if (mode === null) {
+    // Delete the config doc to test absent-doc behavior.
+    await db.doc(`orgs/${COMP_ORG_ID}/config/validation`).delete().catch(() => {});
+  } else {
+    await db.doc(`orgs/${COMP_ORG_ID}/config/validation`).set({ mode });
+  }
+  // Bust the in-memory TTL cache so the next refresh re-reads.
+  readinessMod.__resetValidationModeCacheForTests();
+}
+
+async function seedComplianceIncident(incidentId, overrides = {}) {
+  const base = {
+    orgId: COMP_ORG_ID,
+    incidentId,
+    title: overrides.title || "PR133b validation smoke",
+    customer: "Comcast Restoration",
+    archetype: "fiber_splice_verification",
+    status: overrides.status || "in_progress",
+    startTime: overrides.startTime || new Date().toISOString(),
+    filingTypesRequired: overrides.filingTypesRequired || [],
+    requirements: {
+      templateKey: "fiber_splice_verification__comcast-restoration",
+      templateVersion: 7,
+      customerLabel: "Comcast Restoration",
+      archetype: "fiber_splice_verification",
+      requiredProof: [],
+      requiredProofDescriptions: [],
+      optionalProof: [],
+      acceptanceCriteria: [],
+      acceptanceChecks: [],
+    },
+    createdAt: FieldValue.serverTimestamp(),
+  };
+  if (overrides.affectedCustomers != null) base.affectedCustomers = overrides.affectedCustomers;
+  if (overrides.location !== undefined) base.location = overrides.location;
+  await db.doc(`orgs/${COMP_ORG_ID}/incidents/${incidentId}`).set(base);
+  // PR 133B legacy-path read targets: the readiness function reads
+  // `incidents/{id}` subcollections (jobs/evidence/notes). The smoke
+  // seeder for s1-s46 already creates `incidents/{id}/jobs/job-1`;
+  // mirror that here so refreshReadinessCache doesn't fail trying to
+  // resolve the incident's legacy mirror.
+  await db.doc(`incidents/${incidentId}`).set({
+    orgId: COMP_ORG_ID, incidentId, status: base.status,
+  });
+}
+
+async function readComplianceIncident(incidentId) {
+  const snap = await db.doc(`orgs/${COMP_ORG_ID}/incidents/${incidentId}`).get();
+  return snap.exists ? snap.data() : null;
+}
+
+async function s47_pureCompute_noFilingTypes_notEvaluated() {
+  const name = "47) PR 133B: pure compute — no filingTypesRequired → state=not_evaluated";
+  const r = readinessMod.computeComplianceReadiness({
+    incident: { title: "x", startTime: new Date().toISOString(), filingTypesRequired: [] },
+    evidence: [],
+  });
+  const pass = r.state === "not_evaluated" && r.ok === true && r.filingTypes.length === 0;
+  return { name, pass, detail: `state=${r.state} ok=${r.ok} filingTypes=${JSON.stringify(r.filingTypes)}` };
+}
+
+async function s48_pureCompute_dirsClean_clear() {
+  const name = "48) PR 133B: pure compute — DIRS active w/ affectedCustomers + LOG evidence → state=clear";
+  const r = readinessMod.computeComplianceReadiness({
+    incident: {
+      title: "DIRS clean",
+      startTime: new Date().toISOString(),
+      status: "active",
+      filingTypesRequired: ["DIRS"],
+      affectedCustomers: 250,
+    },
+    evidence: [{ type: "LOG" }],
+  });
+  const pass = r.state === "clear" && r.ok === true
+    && r.summary.errorCount === 0 && r.summary.warnCount === 0
+    && r.rulepackVersions.DIRS === "v1";
+  return { name, pass, detail: `state=${r.state} ok=${r.ok} err=${r.summary.errorCount} warn=${r.summary.warnCount} packs=${JSON.stringify(r.rulepackVersions)}` };
+}
+
+async function s49_pureCompute_dirsMissingAffected_blocking() {
+  const name = "49) PR 133B: pure compute — DIRS active missing affectedCustomers → state=issues_blocking";
+  const r = readinessMod.computeComplianceReadiness({
+    incident: {
+      title: "DIRS missing affected",
+      startTime: new Date().toISOString(),
+      status: "active",
+      filingTypesRequired: ["DIRS"],
+    },
+    evidence: [{ type: "LOG" }],
+  });
+  const hasErr = r.issues.some((i) => i.code === "dirs.affectedCustomers.required" && i.severity === "ERROR");
+  const pass = r.state === "issues_blocking" && r.ok === false
+    && hasErr && r.summary.missingFields.includes("affectedCustomers");
+  return { name, pass, detail: `state=${r.state} ok=${r.ok} missing=${JSON.stringify(r.summary.missingFields)} topCodes=${JSON.stringify(r.summary.topIssueCodes)}` };
+}
+
+async function s50_pureCompute_dirsMissingEvidence_advisory() {
+  const name = "50) PR 133B: pure compute — DIRS active OK fields, missing LOG evidence → state=issues_advisory (WARN only)";
+  const r = readinessMod.computeComplianceReadiness({
+    incident: {
+      title: "DIRS warn only",
+      startTime: new Date().toISOString(),
+      status: "active",
+      filingTypesRequired: ["DIRS"],
+      affectedCustomers: 5,
+    },
+    evidence: [], // no LOG
+  });
+  const pass = r.state === "issues_advisory" && r.ok === true
+    && r.summary.errorCount === 0 && r.summary.warnCount >= 1;
+  return { name, pass, detail: `state=${r.state} ok=${r.ok} err=${r.summary.errorCount} warn=${r.summary.warnCount}` };
+}
+
+async function s51_pureCompute_oe417_locationAsString_surfacesStateMissing() {
+  const name = "51) PR 133B: pure compute — OE_417 with location=\"QA Yard 103\" (string) → ERROR on location.state";
+  const r = readinessMod.computeComplianceReadiness({
+    incident: {
+      title: "OE_417 string-location",
+      startTime: new Date().toISOString(),
+      status: "active",
+      filingTypesRequired: ["OE_417"],
+      location: "QA Yard 103",
+    },
+    evidence: [{ type: "DOCUMENT" }],
+  });
+  const hasStateErr = r.issues.some((i) => i.code === "oe417.location.state.required" && i.severity === "ERROR");
+  const pass = r.state === "issues_blocking" && hasStateErr
+    && r.summary.missingFields.includes("location.state");
+  return { name, pass, detail: `state=${r.state} hasStateErr=${hasStateErr} missing=${JSON.stringify(r.summary.missingFields)}` };
+}
+
+async function s52_gate_off_noField() {
+  const name = "52) PR 133B: refreshReadinessCache w/ no config doc (off default) → no complianceReadiness write";
+  const incidentId = "comp-incident-52";
+  await seedComplianceOrg();
+  await setComplianceMode(null); // delete the config doc
+  await seedComplianceIncident(incidentId, {
+    status: "active", filingTypesRequired: ["DIRS"], affectedCustomers: 1,
+  });
+  await readinessMod.refreshReadinessCache({ orgId: COMP_ORG_ID, incidentId });
+  const inc = await readComplianceIncident(incidentId);
+  const pass = inc && inc.readinessCache && inc.complianceReadiness === undefined;
+  return { name, pass, detail: `readinessCache=${!!inc?.readinessCache} complianceReadiness=${inc?.complianceReadiness === undefined ? "absent" : "PRESENT"}` };
+}
+
+async function s53_gate_passiveLog_noField() {
+  const name = "53) PR 133B: refreshReadinessCache w/ mode=passive_log → readiness writes, NO complianceReadiness field";
+  const incidentId = "comp-incident-53";
+  await seedComplianceOrg();
+  await setComplianceMode("passive_log");
+  await seedComplianceIncident(incidentId, {
+    status: "active", filingTypesRequired: ["DIRS"], affectedCustomers: 1,
+  });
+  await readinessMod.refreshReadinessCache({ orgId: COMP_ORG_ID, incidentId });
+  const inc = await readComplianceIncident(incidentId);
+  const pass = inc && inc.readinessCache && inc.complianceReadiness === undefined;
+  return { name, pass, detail: `readinessCache=${!!inc?.readinessCache} complianceReadiness=${inc?.complianceReadiness === undefined ? "absent" : "PRESENT"}` };
+}
+
+async function s54_gate_passivePersist_writesField() {
+  const name = "54) PR 133B: refreshReadinessCache w/ mode=passive_persist → complianceReadiness persisted w/ expected shape";
+  const incidentId = "comp-incident-54";
+  await seedComplianceOrg();
+  await setComplianceMode("passive_persist");
+  await seedComplianceIncident(incidentId, {
+    status: "active", filingTypesRequired: ["DIRS"],
+    // intentionally missing affectedCustomers → ERROR
+  });
+  await readinessMod.refreshReadinessCache({ orgId: COMP_ORG_ID, incidentId });
+  const inc = await readComplianceIncident(incidentId);
+  const cr = inc?.complianceReadiness;
+  const pass = !!cr
+    && cr.state === "issues_blocking"
+    && cr.ok === false
+    && Array.isArray(cr.filingTypes) && cr.filingTypes.includes("DIRS")
+    && cr.rulepackVersions && cr.rulepackVersions.DIRS === "v1"
+    && cr.summary && cr.summary.errorCount >= 1
+    && cr.ranAt // server timestamp present
+    && cr.elapsedMs === undefined; // instrumentation stripped
+  return { name, pass, detail: `state=${cr?.state} ok=${cr?.ok} err=${cr?.summary?.errorCount} packs=${JSON.stringify(cr?.rulepackVersions)} ranAt=${!!cr?.ranAt} elapsedStripped=${cr?.elapsedMs === undefined}` };
+}
+
+async function s55_gate_cacheReset() {
+  const name = "55) PR 133B: validation mode is cached; __resetValidationModeCacheForTests busts the cache";
+  const incidentId = "comp-incident-55";
+  await seedComplianceOrg();
+  // Step 1: mode off, fill the cache
+  await setComplianceMode("off");
+  await seedComplianceIncident(incidentId, {
+    status: "active", filingTypesRequired: ["DIRS"],
+  });
+  await readinessMod.refreshReadinessCache({ orgId: COMP_ORG_ID, incidentId });
+  const after1 = await readComplianceIncident(incidentId);
+  // Step 2: flip config to passive_persist but DO NOT reset cache
+  await db.doc(`orgs/${COMP_ORG_ID}/config/validation`).set({ mode: "passive_persist" });
+  await readinessMod.refreshReadinessCache({ orgId: COMP_ORG_ID, incidentId });
+  const after2 = await readComplianceIncident(incidentId);
+  // Step 3: reset cache, re-run
+  readinessMod.__resetValidationModeCacheForTests();
+  await readinessMod.refreshReadinessCache({ orgId: COMP_ORG_ID, incidentId });
+  const after3 = await readComplianceIncident(incidentId);
+  const pass =
+    after1?.complianceReadiness === undefined &&  // off → absent
+    after2?.complianceReadiness === undefined &&  // cache hit, still "off"
+    after3?.complianceReadiness != null;          // after reset, persisted
+  return { name, pass, detail: `step1=${after1?.complianceReadiness === undefined ? "absent" : "PRESENT"} step2(cached)=${after2?.complianceReadiness === undefined ? "absent" : "PRESENT"} step3(reset)=${after3?.complianceReadiness != null ? "PRESENT" : "absent"}` };
+}
+
+async function s56_gate_invalidMode_treatedAsOff() {
+  const name = "56) PR 133B: unrecognized mode value (e.g. \"ENFORCE\") → treated as off; no complianceReadiness write; readinessCache still written";
+  const incidentId = "comp-incident-56";
+  await seedComplianceOrg();
+  await db.doc(`orgs/${COMP_ORG_ID}/config/validation`).set({ mode: "ENFORCE" });
+  readinessMod.__resetValidationModeCacheForTests();
+  await seedComplianceIncident(incidentId, {
+    status: "active", filingTypesRequired: ["DIRS"], affectedCustomers: 1,
+  });
+  await readinessMod.refreshReadinessCache({ orgId: COMP_ORG_ID, incidentId });
+  const inc = await readComplianceIncident(incidentId);
+  const pass = inc && inc.readinessCache && inc.complianceReadiness === undefined;
+  return { name, pass, detail: `readinessCache=${!!inc?.readinessCache} complianceReadiness=${inc?.complianceReadiness === undefined ? "absent" : "PRESENT"}` };
+}
+
 async function main() {
   console.log(`[smoke] PROJECT=${PROJECT_ID} FN_BASE=${FN_BASE}`);
   await sleep(500);
@@ -2432,6 +2677,17 @@ async function main() {
     s44_templateGapAggregatesCases,
     s45_templateGapEndpointWithKeyFilter,
     s46_templateGapThresholdAwareness,
+    // PR 133B — passive compliance validation hook (pure compute + gating)
+    s47_pureCompute_noFilingTypes_notEvaluated,
+    s48_pureCompute_dirsClean_clear,
+    s49_pureCompute_dirsMissingAffected_blocking,
+    s50_pureCompute_dirsMissingEvidence_advisory,
+    s51_pureCompute_oe417_locationAsString_surfacesStateMissing,
+    s52_gate_off_noField,
+    s53_gate_passiveLog_noField,
+    s54_gate_passivePersist_writesField,
+    s55_gate_cacheReset,
+    s56_gate_invalidMode_treatedAsOff,
   ];
 
   const results = [];

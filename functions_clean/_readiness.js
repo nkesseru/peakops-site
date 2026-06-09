@@ -477,6 +477,136 @@ function computeAcceptanceReadiness({ incident, evidence, jobs, notes }) {
 // logged as warnings and swallowed; the caller's mutation is never
 // affected by cache-refresh failure. Returns the freshly computed
 // readiness object on success, or null on any failure path.
+// PR 133B — Passive validation hook constants.
+//
+// Org-level config doc at `orgs/{orgId}/config/validation` with shape
+// `{ mode: "off" | "passive_log" | "passive_persist" }`. Absent doc
+// or unknown mode value is treated as "off". `passive_log` runs the
+// validation engine and logs results to Cloud Logging but does NOT
+// persist anything to the incident doc. `passive_persist` runs +
+// logs + writes `incident.complianceReadiness`. No mode causes
+// blocking behavior anywhere in this PR.
+const VALIDATION_MODE_OFF = "off";
+const VALIDATION_MODE_PASSIVE_LOG = "passive_log";
+const VALIDATION_MODE_PASSIVE_PERSIST = "passive_persist";
+const VALIDATION_MODES_THAT_RUN = new Set([
+  VALIDATION_MODE_PASSIVE_LOG,
+  VALIDATION_MODE_PASSIVE_PERSIST,
+]);
+
+// In-memory cache of the per-org validation mode. Cuts a Firestore read
+// per refreshReadinessCache call. TTL is intentional: 60s is plenty for
+// the safety property (kill-switch within a minute) without hammering
+// the config doc on every state change. Set to 0 to disable caching
+// (used by smoke).
+const __validationModeCache = new Map();
+const VALIDATION_MODE_TTL_MS = 60_000;
+
+async function readValidationMode(db, orgId) {
+  const now = Date.now();
+  const cached = __validationModeCache.get(orgId);
+  if (cached && cached.expiresAt > now) return cached.mode;
+  let mode = VALIDATION_MODE_OFF;
+  try {
+    const cfgSnap = await db.doc(`orgs/${orgId}/config/validation`).get();
+    if (cfgSnap.exists) {
+      const raw = String((cfgSnap.data() || {}).mode || "").trim().toLowerCase();
+      if (VALIDATION_MODES_THAT_RUN.has(raw) || raw === VALIDATION_MODE_OFF) {
+        mode = raw;
+      }
+    }
+  } catch (_e) {
+    // Config read failure → fail closed → off.
+    mode = VALIDATION_MODE_OFF;
+  }
+  __validationModeCache.set(orgId, { mode, expiresAt: now + VALIDATION_MODE_TTL_MS });
+  return mode;
+}
+
+// Test-only: bust the cache so smoke scenarios can flip the flag mid-run.
+function __resetValidationModeCacheForTests() {
+  __validationModeCache.clear();
+}
+
+// PR 133B — Compute passive compliance readiness for an incident.
+// Pure compute + optional persist. Caller (refreshReadinessCache)
+// is responsible for the mode gate and for choosing whether to call
+// this function. This helper is exported so smoke can drive it
+// directly with synthetic incidents.
+//
+// PASSIVE VALIDATION — does NOT gate any operator workflow. Never
+// returns an error that blocks the caller. PR 133B.
+function computeComplianceReadiness({ incident, evidence }) {
+  const { runComplianceCheck } = require("./_complianceValidator");
+  const evidenceTypesPresent = (Array.isArray(evidence) ? evidence : [])
+    .map((e) => String(
+      (e && e.type) ||
+      (e && e.kind) ||
+      (e && e.file && (e.file.contentType || e.file.mimeType)) ||
+      ""
+    ))
+    .map((s) => s.toUpperCase())
+    .filter(Boolean);
+
+  const t0 = Date.now();
+  const result = runComplianceCheck(incident, evidenceTypesPresent);
+  const elapsedMs = Date.now() - t0;
+
+  // Derive the operator-readable state. Critical: do NOT conflate
+  // `ok: true` with "clear" — WARN/INFO issues should surface as
+  // `issues_advisory`, not as a green light.
+  const errorCount = result.issues.filter((i) => i.severity === "ERROR").length;
+  const warnCount = result.issues.filter((i) => i.severity === "WARN").length;
+  const infoCount = result.issues.filter((i) => i.severity === "INFO").length;
+  const filingTypes = Array.isArray(incident && incident.filingTypesRequired)
+    ? incident.filingTypesRequired
+    : [];
+
+  let state;
+  if (filingTypes.length === 0) {
+    state = "not_evaluated";          // nothing to check ≠ green
+  } else if (errorCount > 0) {
+    state = "issues_blocking";
+  } else if (warnCount > 0 || infoCount > 0) {
+    state = "issues_advisory";        // engine OK but signal worth knowing
+  } else {
+    state = "clear";
+  }
+
+  // Cap the issues array at 50 (ERROR + WARN first) so the doc field
+  // never balloons.
+  const SEV_ORDER = { ERROR: 0, WARN: 1, INFO: 2 };
+  const sortedIssues = result.issues
+    .slice()
+    .sort((a, b) => (SEV_ORDER[a.severity] ?? 3) - (SEV_ORDER[b.severity] ?? 3))
+    .slice(0, 50);
+
+  // Missing-fields projection: dedupe `incident.<path>` portions of
+  // issue.path for the rules that use `require.field`.
+  const missingFields = Array.from(new Set(
+    sortedIssues
+      .filter((i) => i.path && i.path.startsWith("incident."))
+      .map((i) => i.path.slice("incident.".length))
+  )).slice(0, 20);
+
+  const topIssueCodes = Array.from(new Set(sortedIssues.map((i) => i.code))).slice(0, 5);
+
+  return {
+    state,
+    ok: result.ok,
+    filingTypes,
+    rulepackVersions: result.rulepackVersionsByType || {},
+    issues: sortedIssues,
+    summary: {
+      errorCount, warnCount, infoCount,
+      topIssueCodes,
+      missingFields,
+    },
+    incidentVersion: incident && typeof incident.version === "number" ? incident.version : null,
+    elapsedMs,
+  };
+}
+
 async function refreshReadinessCache({ orgId, incidentId }) {
   try {
     if (!orgId || !incidentId) {
@@ -526,6 +656,55 @@ async function refreshReadinessCache({ orgId, incidentId }) {
       cachedAt: FieldValue.serverTimestamp(),
     };
     await incRef.set({ readinessCache: cachePayload }, { merge: true });
+
+    // PR 133B — PASSIVE VALIDATION. Runs only when org flag is
+    // explicitly opted in. Never gates the readiness write above;
+    // failures here are swallowed and logged. Three modes:
+    //   off            — no compute, no log, no write
+    //   passive_log    — compute + log; do NOT write field
+    //   passive_persist — compute + log + write incident.complianceReadiness
+    // Default for any org without the config doc is "off".
+    try {
+      const validationMode = await readValidationMode(db, orgId);
+      if (VALIDATION_MODES_THAT_RUN.has(validationMode)) {
+        const compliance = computeComplianceReadiness({ incident, evidence });
+        // Always log (both passive modes log). Keep the log line
+        // compact — full issues + topIssueCodes give enough signal
+        // for the 24-hour observation window.
+        console.log("[refreshReadinessCache] compliance_check", {
+          orgId,
+          incidentId,
+          mode: validationMode,
+          state: compliance.state,
+          ok: compliance.ok,
+          filingTypes: compliance.filingTypes,
+          errorCount: compliance.summary.errorCount,
+          warnCount: compliance.summary.warnCount,
+          infoCount: compliance.summary.infoCount,
+          topIssueCodes: compliance.summary.topIssueCodes,
+          missingFields: compliance.summary.missingFields,
+          elapsedMs: compliance.elapsedMs,
+        });
+        if (validationMode === VALIDATION_MODE_PASSIVE_PERSIST) {
+          // Strip the `elapsedMs` field from the persisted snapshot —
+          // it's instrumentation, not state. Add serverTimestamp.
+          const { elapsedMs: _drop, ...persistedShape } = compliance;
+          await incRef.set({
+            complianceReadiness: {
+              ...persistedShape,
+              ranAt: FieldValue.serverTimestamp(),
+            },
+          }, { merge: true });
+        }
+      }
+    } catch (passiveErr) {
+      // PASSIVE VALIDATION — log and continue. Must not affect
+      // refreshReadinessCache's primary outcome.
+      console.warn("[refreshReadinessCache] passive_validation_failed", {
+        orgId, incidentId, error: String(passiveErr?.message || passiveErr),
+      });
+    }
+
     return readiness;
   } catch (e) {
     console.warn("[refreshReadinessCache] failed", {
@@ -539,4 +718,11 @@ module.exports = {
   computeAcceptanceReadiness,
   refreshReadinessCache,
   slugRequirement,  // exported so tests can verify shared logic
+  // PR 133B — passive validation surface (exported for smoke tests)
+  computeComplianceReadiness,
+  readValidationMode,
+  __resetValidationModeCacheForTests,
+  VALIDATION_MODE_OFF,
+  VALIDATION_MODE_PASSIVE_LOG,
+  VALIDATION_MODE_PASSIVE_PERSIST,
 };
