@@ -2213,9 +2213,14 @@ return () => clearInterval(t);
       };
 
       setTimeline((prev: any) => (Array.isArray(prev) ? [opt, ...prev] : [opt]));
-      router.replace(`/incidents/${incidentId}`, { scroll: false } as any);
+      // Preserve orgId on the post-notesSaved cleanup redirect. Dropping
+      // the query string here lands the user on bare `/incidents/{id}`,
+      // which the missing-orgId guard (PR #24) then renders as
+      // "Incident unavailable" until the user manually re-adds orgId.
+      const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+      router.replace(`/incidents/${incidentId}${qs}`, { scroll: false } as any);
     } catch {}
-  }, [sp, incidentId]);
+  }, [sp, incidentId, orgId]);
 useEffect(() => {
     const v = sp.get("hi");
     if (!v) return;
