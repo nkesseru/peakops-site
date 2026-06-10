@@ -539,8 +539,11 @@ useEffect(() => {
       // satisfaction state is correct if the redirect is interrupted
       // (user taps back, etc.).
       setRefetchTick((t) => t + 1);
-      // Back to incident
-      setTimeout(() => router.push(`/incidents/${incidentId}`), 350);
+      // Back to incident. Preserve orgId so the missing-orgId guard
+      // (PR #24) on the incident page doesn't intercept this navigation
+      // and render "Incident unavailable" after a successful upload.
+      const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
+      setTimeout(() => router.push(`/incidents/${incidentId}${qs}`), 350);
     } catch (e: any) {
       console.error("UPLOAD FAIL", e);
       const m = (e && (e.message || e.toString())) || String(e);
