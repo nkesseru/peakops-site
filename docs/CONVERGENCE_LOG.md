@@ -142,3 +142,15 @@ Checkpoint C2: PASS. No files edited. No deploy, no push.
 - next-app/pnpm-lock.yaml: ours + pnpm install --lockfile-only regen (no drift; 260ms no-op
   = lockfile already satisfies merged manifest).
 - Marker sweep repo-wide: CLEAN. Unresolved: 0.
+
+## Checkpoint E — merge commit + delta audit: PASS (2026-06-12)
+- Merge commit 5e32fb5 on integrate/recovery-backend-133b; tagged converge-rc1.
+- Backend delta vs prod-source-133b = 8 files, ALL attributable:
+  _billing.js + _entitlement.js (spine, main-only) · exportIncidentPacketV1.js (the 35-line
+  gate) · index.js (70-export union) · saveIncidentNotesV1.js (main comment block, hunk-2
+  ours) · teamRecoveryV1.js (main-only; known dead-require rider) · addEvidenceV1.js
+  (+13/-0: main's top-level derivePlatform, pure addition, shadowed in handler scope —
+  known cosmetic item) · env.runtime (+1 key name IDENTITY_TOOLKIT_API_KEY vs prod copy;
+  inert, file slated for deploy-exclusion under Red Flag 1 fix).
+- No unattributable deltas. Frontend = main verbatim. No push, no deploy.
+NEXT: 1R-F gauntlet (gates 1-16; gate 11 clean-install first), then founder review #2 (PR).
