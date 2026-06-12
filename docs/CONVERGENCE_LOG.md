@@ -154,3 +154,9 @@ Checkpoint C2: PASS. No files edited. No deploy, no push.
   inert, file slated for deploy-exclusion under Red Flag 1 fix).
 - No unattributable deltas. Frontend = main verbatim. No push, no deploy.
 NEXT: 1R-F gauntlet (gates 1-16; gate 11 clean-install first), then founder review #2 (PR).
+
+## Class 1B — Orphan consumer cleanup (2026-06-12, founder-approved)
+- Deleted next-app/app/admin/incidents/[id]/page.tsx: sole consumer of five _components
+  modules removed in Class 1 (TimelinePreviewMock, BackendBadge, AdminNav,
+  GuidedWorkflowPanel, ValidationPanel). Same dead admin incident suite; main retained the
+  page but Class 1 deletions orphaned it; Gate 1 (tsc) exposed it.
