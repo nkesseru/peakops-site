@@ -1,4 +1,5 @@
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { FieldValue } = require("firebase-admin/firestore");
+const { resolveIncidentRef } = require("./_incidentPath");
 
 function clean(s, max=120) {
   return String(s || "").trim().slice(0, max);
@@ -15,7 +16,14 @@ function normGps(gps) {
 }
 
 /**
- * Emits a timeline event to incidents/{incidentId}/timeline_events/{autoId}
+ * Emit a timeline event under the canonical incident path.
+ *
+ * Uses resolveIncidentRef to pick the same parent that getTimelineEventsV1
+ * reads from: prefers orgs/{orgId}/incidents/{incidentId}/timeline_events,
+ * falls back to incidents/{incidentId}/timeline_events only for legacy docs
+ * that live at the top-level collection. This keeps emit and read aligned
+ * so the UI's `hasArrival`, `_hasNotes`, `_hasSession`, and `currentStage`
+ * derive from real backend state — localStorage stays a pure fallback.
  *
  * @param {object} args
  * @param {string} args.orgId
@@ -34,13 +42,13 @@ function normGps(gps) {
  *                                 semantics don't change.
  */
 async function emitTimelineEvent(args = {}) {
-  const db = getFirestore();
   const orgId = clean(args.orgId, 64);
   const incidentId = clean(args.incidentId, 128);
   const type = clean(args.type, 64);
   if (!orgId || !incidentId || !type) return null;
 
-  const docRef = db.collection("incidents").doc(incidentId).collection("timeline_events").doc();
+  const { ref: incRef, source } = await resolveIncidentRef(orgId, incidentId);
+  const docRef = incRef.collection("timeline_events").doc();
 
   const payload = {
     orgId,
@@ -53,11 +61,12 @@ async function emitTimelineEvent(args = {}) {
     actor: args.actor ? clean(args.actor, 64) : null,
     actorUid: args.actorUid ? clean(args.actorUid, 64) : null,
     meta: args.meta && typeof args.meta === "object" ? args.meta : null,
-    v: 1
+    v: 1,
+    _pathSource: source,
   };
 
   await docRef.set(payload, { merge: true });
-  return { id: docRef.id };
+  return { id: docRef.id, source };
 }
 
 module.exports = { emitTimelineEvent };

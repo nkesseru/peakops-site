@@ -8,6 +8,7 @@ const {
   ROLES_FIELD_WORK,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+const { refreshReadinessCache } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 const db = getFirestore();
@@ -92,23 +93,28 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
       });
     }
 
-    // Notes content writes to the canonical top-level path
-    // `incidents/{incidentId}/notes/main` to match what the deployed
-    // production `getIncidentNotesV1` reads. The prior org-scoped
-    // path (`orgs/{orgId}/incidents/{incidentId}/notes/main`) was a
-    // dark-write: no reader on production looks there, so saves
-    // silently failed to surface on reload. orgId is preserved in
-    // the auth gate and in the NOTES_SAVED audit emission below.
+    // PEAKOPS_NOTES_CHECKPOINT_V1 (2026-04-29)
+    // Optional bypass fields. Saved verbatim when present so the
+    // Summary / report renderer can surface "No note needed" with
+    // the user-acknowledged reason. Backward compatible — older
+    // clients that don't send these fields are unchanged.
+    const notesStatusRaw = String(b.notesStatus || "").trim().toLowerCase();
+    const notesStatus =
+      notesStatusRaw === "bypassed" || notesStatusRaw === "saved"
+        ? notesStatusRaw
+        : "";
+    const notesBypassReason = String(b.notesBypassReason || "").trim();
+
     const ref = db.doc(`incidents/${incidentId}/notes/main`);
-    await ref.set(
-      {
-        incidentNotes,
-        siteNotes,
-        updatedBy,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    const doc = {
+      incidentNotes,
+      siteNotes,
+      updatedBy,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (notesStatus) doc.notesStatus = notesStatus;
+    if (notesBypassReason) doc.notesBypassReason = notesBypassReason;
+    await ref.set(doc, { merge: true });
 
         // Emit audit timeline event
     try {
@@ -122,11 +128,20 @@ exports.saveIncidentNotesV1 = onRequest({ cors: true }, async (req, res) => {
         meta: {
           incidentNotesLen: incidentNotes.length,
           siteNotesLen: siteNotes.length,
+          notesStatus: notesStatus || undefined,
+          notesBypassReason: notesBypassReason || undefined,
         },
       });
     } catch (e) {
       console.error("NOTES_SAVED emit failed", e);
     }
+
+    // PEAKOPS_READINESS_FRESHNESS_V1 (PR 108) — refresh readinessCache
+    // so the field-notes check flips on the next list/read without
+    // waiting for a Summary view. Helper swallows errors. Note: the
+    // helper loads incidents/{id}/notes/main so the evaluator sees the
+    // value we just wrote.
+    await refreshReadinessCache({ orgId, incidentId });
 
 return j(res, 200, { ok: true, orgId, incidentId });
   } catch (e) {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-const FN_BASE = process.env.FN_BASE || "http://127.0.0.1:5001/peakops-pilot/us-central1";
+const FN_BASE = process.env.FN_BASE || "http://127.0.0.1:5004/peakops-pilot/us-central1";
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const orgId = url.searchParams.get("orgId") || "org_001";

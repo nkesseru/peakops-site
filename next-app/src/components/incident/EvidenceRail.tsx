@@ -122,10 +122,7 @@ export default function EvidenceRail({
               {/* footer */}
               <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between">
                 <div className="text-[10px] text-gray-200 bg-black/50 border border-white/10 rounded px-2 py-0.5 truncate">
-                  {it.file?.originalName || it.id.slice(0, 8)}
-                </div>
-                <div className="text-[10px] text-gray-300 bg-black/50 border border-white/10 rounded px-2 py-0.5">
-                  {it.sessionId ? it.sessionId.slice(-6) : "—"}
+                  {it.file?.originalName || "Photo"}
                 </div>
               </div>
             </button>

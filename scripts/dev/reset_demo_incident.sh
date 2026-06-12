@@ -31,7 +31,7 @@ echo "[reset-demo] Using FIRESTORE_EMULATOR_HOST=${EMU_HOST}:${EMU_PORT}"
 
 PROJECT_ID="${PROJECT_ID:-peakops-pilot}"
 FS_PORT="${FS_PORT:-${EMU_PORT:-8085}}"
-FN_PORT="${FN_PORT:-5002}"
+FN_PORT="${FN_PORT:-5004}"
 ORG_ID="${ORG_ID:-riverbend-electric}"
 INCIDENT_ID="${INCIDENT_ID:-inc_demo}"
 

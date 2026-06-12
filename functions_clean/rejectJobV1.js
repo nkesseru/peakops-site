@@ -2,6 +2,12 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_APPROVE,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -33,7 +39,43 @@ exports.rejectJobV1 = onRequest({ cors: true }, async (req, res) => {
     const incidentId = mustStr(body.incidentId, "incidentId");
     const jobId = mustStr(body.jobId, "jobId");
     const reason = mustStr(body.reason, "reason").slice(0, 400);
-    const rejectedBy = String(body.rejectedBy || "supervisor_ui");
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7: rejecting a job is supervisor-or-admin.
+    // Sibling of approveJobV1; same allow-list, same audit shape.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_APPROVE);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[rejectJobV1] authz_denied", {
+        fn: "rejectJobV1",
+        orgId,
+        incidentId,
+        jobId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_APPROVE,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[rejectJobV1] authz_ok", {
+      fn: "rejectJobV1",
+      orgId,
+      incidentId,
+      jobId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_APPROVE,
+    });
+
+    const rejectedBy = String(actorUid || body.rejectedBy || "supervisor_ui");
 
     const db = getFirestore();
     await assertIncidentOrg(db, orgId, incidentId);

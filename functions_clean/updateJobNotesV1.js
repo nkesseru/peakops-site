@@ -1,7 +1,12 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
-const { resolveActor, requireOrgMember } = require("./jobAuthz");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -15,20 +20,6 @@ function mustStr(v, name) {
   return s;
 }
 
-async function assertNotesAccess({ db, actor, requestOrgId, incidentOrgId, assignedOrgId }) {
-  if (requestOrgId === incidentOrgId) {
-    await requireOrgMember(db, incidentOrgId, actor, { requiredRoles: ["owner", "admin"] });
-    return "incident_admin";
-  }
-  if (assignedOrgId && requestOrgId === assignedOrgId) {
-    await requireOrgMember(db, assignedOrgId, actor, { requiredRoles: [] });
-    return "assigned_org_member";
-  }
-  const err = new Error("forbidden");
-  err.statusCode = 403;
-  throw err;
-}
-
 exports.updateJobNotesV1 = onRequest({ cors: true }, async (req, res) => {
   try {
     if (req.method !== "POST") return j(res, 405, { ok: false, error: "POST required" });
@@ -38,8 +29,46 @@ exports.updateJobNotesV1 = onRequest({ cors: true }, async (req, res) => {
     const jobId = mustStr(body.jobId, "jobId");
     const notes = String(body.notes || "").slice(0, 4000);
 
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7: updating job notes is field-or-above.
+    // Migrated off jobAuthz.js (whose assertNotesAccess required
+    // owner/admin on the incident-owner side and used emulator-
+    // bypass semantics). The new policy: any active member of the
+    // claimed orgId may update notes, AND the claimed orgId must be
+    // either the incident owner or the job's assigned partner.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[updateJobNotesV1] authz_denied", {
+        fn: "updateJobNotesV1",
+        orgId,
+        incidentId,
+        jobId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[updateJobNotesV1] authz_ok", {
+      fn: "updateJobNotesV1",
+      orgId,
+      incidentId,
+      jobId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
     const db = getFirestore();
-    const actor = await resolveActor(req, body);
 
     const incRef = db.collection("incidents").doc(incidentId);
     const incSnap = await incRef.get();
@@ -56,13 +85,18 @@ exports.updateJobNotesV1 = onRequest({ cors: true }, async (req, res) => {
     const job = jobSnap.data() || {};
     const assignedOrgId = String(job.assignedOrgId || "").trim();
 
-    await assertNotesAccess({
-      db,
-      actor,
-      requestOrgId: orgId,
-      incidentOrgId,
-      assignedOrgId,
-    });
+    // PEAKOPS_RESOURCE_INTEGRITY_V1 (2026-05-06)
+    // Caller's claimed orgId must be either the incident owner or
+    // the job's assigned partner. Replaces jobAuthz's
+    // assertNotesAccess cross-org check, without the bypass.
+    const _isIncidentOwner = incidentOrgId && incidentOrgId === orgId;
+    const _isAssignedPartner = assignedOrgId && assignedOrgId === orgId;
+    if (!_isIncidentOwner && !_isAssignedPartner) {
+      console.warn("[updateJobNotesV1] org_not_party_to_job", {
+        orgId, incidentOrgId, assignedOrgId, uid: actorUid,
+      });
+      return j(res, 403, { ok: false, error: "org_not_party_to_job" });
+    }
 
     await jobRef.set(
       {

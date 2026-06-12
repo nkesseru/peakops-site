@@ -2,6 +2,13 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_APPROVE,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
+const { refreshReadinessCache } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -32,7 +39,45 @@ exports.approveJobV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const jobId = mustStr(body.jobId, "jobId");
-    const approvedBy = String(body.approvedBy || "supervisor_ui");
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 4: approve action is admin-or-supervisor only.
+    // Upgraded from the Slice 3 membership-only gate to the role
+    // allow-list. Runs before the incident existence check so non-
+    // members cannot probe whether an incident exists.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_APPROVE);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[approveJobV1] authz_denied", {
+        fn: "approveJobV1",
+        orgId,
+        incidentId,
+        jobId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_APPROVE,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[approveJobV1] authz_ok", {
+      fn: "approveJobV1",
+      orgId,
+      incidentId,
+      jobId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_APPROVE,
+    });
+
+    const approvedBy = String(body.approvedBy || actorUid || "supervisor_ui");
 
     const db = getFirestore();
     await assertIncidentOrg(db, orgId, incidentId);
@@ -80,6 +125,12 @@ exports.approveJobV1 = onRequest({ cors: true }, async (req, res) => {
       actor: approvedBy,
       meta: { from: prev, to: "approved" },
     });
+
+    // PEAKOPS_READINESS_FRESHNESS_V1 (PR 108) — refresh readinessCache
+    // so the supervisor-approval check flips on the next list/read
+    // without waiting for a Summary view. Helper swallows errors.
+    await refreshReadinessCache({ orgId, incidentId });
+
     return j(res, 200, { ok: true, orgId, incidentId, jobId, status: "approved" });
   } catch (e) {
     return j(res, 400, { ok: false, error: String(e?.message || e) });

@@ -11,3 +11,55 @@ img, canvas, video {
 }
 
 /* If your thumb tiles are inside a specific container, this still helps because it overrides inherited rules. */
+
+/* PEAKOPS_MISSION_CONTROL_LAYOUT_V2 (2026-04-30)
+   Mobile collapse for the compact-table rows on /incidents. Below
+   720px the 6-column grid would overflow; switch to a stacked layout
+   (title on top, meta line below) and hide the column-header strip. */
+@media (max-width: 720px) {
+  .peakops-mc-table-header { display: none !important; }
+  .peakops-mc-row {
+    grid-template-columns: 1fr !important;
+    row-gap: 4px;
+  }
+  .peakops-mc-row > .peakops-mc-row-status,
+  .peakops-mc-row > .peakops-mc-row-location,
+  .peakops-mc-row > .peakops-mc-row-counts,
+  .peakops-mc-row > .peakops-mc-row-updated,
+  .peakops-mc-row > .peakops-mc-row-action {
+    font-size: 11px !important;
+  }
+}
+
+/* PEAKOPS_MISSION_CONTROL_LAYOUT_V3 (2026-04-30)
+   Location-column hiding is JSX-conditional in app/incidents/
+   page.tsx — when the column is hidden, neither the header span nor
+   the per-row cell are rendered, so screen readers don't announce
+   an empty column. The previous display:none approach left the DOM
+   in place; the render-or-skip pattern is more accessible. */
+
+/* PEAKOPS_MOBILE_OVERFLOW_FIX_V1 (2026-05-05)
+   Hard-stop horizontal scroll on the Jobs index at phone widths.
+   The page never has horizontally-scrollable content; any overflow
+   below 720px is a layout bug, so clip it at the page wrapper to
+   guarantee no rubber-band scroll on a 390px-wide viewport. The
+   inner sticky bar's negative-margin trick (margin: 0 -8px) and the
+   compact table rows (grid templates with minmax bases) collapse
+   cleanly above this clip; below it, anything that would have
+   forced horizontal scroll is contained by the html/body cap. */
+@media (max-width: 720px) {
+  html, body { overflow-x: hidden; }
+  .peakops-mc-row {
+    /* Ensure each row fits inside its parent at narrow widths even
+       when a column carries an unbreakable token (long vendor name,
+       run-on incidentId). */
+    overflow: hidden;
+  }
+  .peakops-mc-row > .peakops-mc-row-title,
+  .peakops-mc-row > .peakops-mc-row-location,
+  .peakops-mc-row > .peakops-mc-row-counts {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
