@@ -9,13 +9,19 @@
 
 "use client";
 
-import type { ConsumedAction } from "@/lib/customerReview/types";
+import type { ConsumedAction, CustomerReviewPacket } from "@/lib/customerReview/types";
 
 type Props = {
   action: ConsumedAction;
   consumedAtIso?: string | null;
   comment?: string;
   packetTitle?: string;
+  // PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15)
+  // Self-documenting receipt: if the link was version-pinned, the
+  // receipt shows exactly which packet version the customer acted
+  // on. Null for pre-slice-1 links — receipt renders without the
+  // version line.
+  packet?: CustomerReviewPacket | null;
 };
 
 function fmtIso(iso: string | null | undefined): string {
@@ -32,7 +38,12 @@ function fmtIso(iso: string | null | undefined): string {
   }
 }
 
-export function ConsumedTerminalScreen({ action, consumedAtIso, comment, packetTitle }: Props) {
+export function ConsumedTerminalScreen({ action, consumedAtIso, comment, packetTitle, packet }: Props) {
+  // PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15) — derive the version
+  // line if the link carried a pinnedPacket. Slice 3 will replace
+  // this with the link's acceptedPacket field (which records the
+  // exact bytes at consume time, separate from the mint pin).
+  const pinned = packet?.pinned || null;
   const accepted = action === "accepted";
   const headlineColor = accepted ? "emerald" : "amber";
   const headline = accepted
@@ -68,6 +79,22 @@ export function ConsumedTerminalScreen({ action, consumedAtIso, comment, packetT
           <div className="text-sm text-gray-700">
             <span className="text-gray-500">Packet:</span>{" "}
             <span className="font-medium text-gray-800 break-words">{packetTitle}</span>
+          </div>
+        )}
+        {/* PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15) — self-documenting
+            version stamp. Renders only when the link was version-pinned. */}
+        {pinned && (
+          <div className="text-sm text-gray-700">
+            <span className="text-gray-500">{accepted ? "You accepted" : "You requested correction on"} packet</span>{" "}
+            <span className="font-mono font-semibold text-gray-800">v{pinned.version}</span>
+            {pinned.generatedAt && (
+              <span className="text-gray-500"> · generated {fmtIso(pinned.generatedAt)}</span>
+            )}
+            {pinned.hashPrefix && (
+              <div className="text-xs text-gray-500 mt-0.5">
+                Content hash: <span className="font-mono">{pinned.hashPrefix}</span>
+              </div>
+            )}
           </div>
         )}
         {consumedAtIso && (

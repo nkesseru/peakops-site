@@ -437,6 +437,56 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
     const consumed = !!linkData.consumedAt;
     const consumedAction = trimStr(linkData.consumedAction) || null;
 
+    // PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15)
+    // Compose the customer-facing packet block from:
+    //   - linkData.pinnedPacket  (slice 1) — what the link captured at mint
+    //   - incData.packetMeta     (live)    — what's current right now
+    // Used by the customer dossier UI to display the version stamp and
+    // a drift banner when an operator has regenerated since this link
+    // was minted. Pre-slice-1 links don't have pinnedPacket → pinned
+    // is null and isLatest is null (can't compute drift).
+    //
+    // Customer-safe display: NEVER expose full storagePath or bucket
+    // — only version, generatedAt, and a SHORT hash prefix for
+    // forensic identification.
+    function _hashPrefixDisplay(full) {
+      const s = String(full || "").trim();
+      if (!s) return "";
+      // Accept either "sha256:xxxx..." or raw hex. Output "sha256:<8>…<4>".
+      const hexOnly = s.startsWith("sha256:") ? s.slice(7) : s;
+      if (hexOnly.length < 12) return s;
+      return "sha256:" + hexOnly.slice(0, 8) + "…" + hexOnly.slice(-4);
+    }
+    function _packetRefFromPinned(pp) {
+      if (!pp || typeof pp !== "object") return null;
+      const v = Number(pp.version);
+      if (!Number.isFinite(v)) return null;
+      return {
+        version: v,
+        generatedAt: trimStr(pp.generatedAt) || null,
+        hashPrefix: _hashPrefixDisplay(pp.zipSha256),
+      };
+    }
+    function _packetRefFromPacketMeta(pm) {
+      if (!pm || typeof pm !== "object") return null;
+      const v = Number(pm.packetVersion);
+      if (!Number.isFinite(v)) return null;
+      return {
+        version: v,
+        generatedAt: trimStr(pm.exportedAt) || null,
+        hashPrefix: _hashPrefixDisplay(pm.zipSha256),
+      };
+    }
+    const _pinned = _packetRefFromPinned(linkData.pinnedPacket);
+    const _current = _packetRefFromPacketMeta(incData.packetMeta);
+    const packet = {
+      pinned: _pinned,
+      current: _current,
+      isLatest: (_pinned && _current)
+        ? (_pinned.version === _current.version)
+        : null,
+    };
+
     const review = {
       // Provenance — Customer sees the template name + version they
       // were promised. This is the audit anchor across the boundary.
@@ -519,6 +569,9 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
       status: currentStatus,
       consumed,
       consumedAction,
+      // PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15)
+      // Pinned + current packet ref for customer dossier display.
+      packet,
       review,
     });
   } catch (e) {
