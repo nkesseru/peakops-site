@@ -194,6 +194,44 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
       });
     }
 
+    // PEAKOPS_REVIEW_VERSION_PIN_V1 (2026-06-15)
+    // Require a packet exists for this incident before sending it to
+    // a customer for review. The link captures the exact packet
+    // snapshot (version, hashes, storage path) at mint time so a
+    // future acceptance can be tied to specific bytes, not just a
+    // moment in time. The pinned fields are write-once: this slice
+    // adds them at mint; later slices read them in the customer
+    // dossier + record them on the consume transaction.
+    const pm = (incData.packetMeta && typeof incData.packetMeta === "object")
+      ? incData.packetMeta : null;
+    if (!pm
+        || !Number.isFinite(Number(pm.packetVersion))
+        || !trimStr(pm.storagePath)) {
+      console.warn("[createCustomerReviewLinkV1] no_packet_yet", {
+        orgId, incidentId, uid: actorUid,
+        hasPacketMeta: !!pm,
+        packetVersion: pm && pm.packetVersion,
+      });
+      return j(res, 409, {
+        ok: false,
+        error: "no_packet_yet",
+        detail: "Generate a packet before sending this incident to a customer for review.",
+      });
+    }
+    const _storagePathFull = trimStr(pm.storagePath);
+    const pinnedPacket = {
+      version: Number(pm.packetVersion),
+      fileName: _storagePathFull
+        ? (_storagePathFull.split("/").pop() || "")
+        : "",
+      storagePath: _storagePathFull,
+      bucket: trimStr(pm.bucket),
+      zipSha256: trimStr(pm.zipSha256),
+      originalRecordHash: trimStr(pm.originalRecordHash),
+      generatedAt: trimStr(pm.exportedAt),
+      pinnedAt: FieldValue.serverTimestamp(),
+    };
+
     // Mint the token. Cleartext returned once below; only the hash
     // is persisted.
     const token = generateToken();
@@ -244,6 +282,11 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
       // "in_progress" or "closed". Disambiguates legitimate workflow
       // origins in reporting and audit queries.
       sourceStatus,
+      // PEAKOPS_REVIEW_VERSION_PIN_V1 (2026-06-15)
+      // Immutable snapshot of the packet that was current at mint
+      // time. Subsequent slices (UI + accept) read these to display
+      // version drift + record which bytes the customer accepted.
+      pinnedPacket,
     };
     await linkRef.set(linkPayload);
 
