@@ -164,12 +164,38 @@ exports.submitCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
 
         // Mark consumed inside the same transaction so a second
         // request can't claim the link.
-        tx.update(linkRef, {
+        // PEAKOPS_REVIEW_VERSION_PIN_V3 (2026-06-15)
+        // Capture the link's pinnedPacket (written at mint by slice 1)
+        // and durably record it as `reviewedPacket` on the same atomic
+        // write that flips consumedAt. The audit fact "what bytes did
+        // the customer act on" is now stored on the link doc itself
+        // — independent of incident state drift.
+        // Pre-slice-1 links carry no pinnedPacket → reviewedPacket
+        // is omitted from the update (link still consumes cleanly).
+        const _pp = (data && typeof data.pinnedPacket === "object")
+          ? data.pinnedPacket : null;
+        const _reviewedPacket = (_pp && Number.isFinite(Number(_pp.version)))
+          ? {
+              version: Number(_pp.version),
+              fileName: trimStr(_pp.fileName),
+              storagePath: trimStr(_pp.storagePath),
+              bucket: trimStr(_pp.bucket),
+              zipSha256: trimStr(_pp.zipSha256),
+              originalRecordHash: trimStr(_pp.originalRecordHash),
+              generatedAt: trimStr(_pp.generatedAt),
+              pinnedAt: _pp.pinnedAt || null,
+              reviewedAt: FieldValue.serverTimestamp(),
+              action: finalAction,
+            }
+          : null;
+        const _linkUpdates = {
           recentPostTimestamps: recentWithNew,
           consumedAt: FieldValue.serverTimestamp(),
           consumedAction: finalAction,
           consumedComment: comment || null,
-        });
+        };
+        if (_reviewedPacket) _linkUpdates.reviewedPacket = _reviewedPacket;
+        tx.update(linkRef, _linkUpdates);
         linkData = data;
       });
     } catch (e) {
@@ -210,6 +236,14 @@ exports.submitCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
       });
     }
 
+    // PEAKOPS_REVIEW_VERSION_PIN_V3 (2026-06-15)
+    // Mirror the version-pinned identifiers onto the incident doc's
+    // existing customer-acceptance summary fields. Operator-facing
+    // surfaces (slice 4 panel, future reporting) can answer
+    // "which packet did the customer act on?" without a join to
+    // customer_review_links. Pre-slice-1 links → fields omitted.
+    const _ppOut = (linkData && linkData.pinnedPacket && Number.isFinite(Number(linkData.pinnedPacket.version)))
+      ? linkData.pinnedPacket : null;
     const incUpdate = {
       status: targetStatus,
       updatedAt: FieldValue.serverTimestamp(),
@@ -217,13 +251,24 @@ exports.submitCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
     if (finalAction === "accepted") {
       incUpdate.customerAcceptedAt = FieldValue.serverTimestamp();
       incUpdate.customerAcceptanceComment = comment || null;
+      if (_ppOut) {
+        incUpdate.customerAcceptedPacketVersion = Number(_ppOut.version);
+        incUpdate.customerAcceptedPacketHash = trimStr(_ppOut.zipSha256);
+      }
     } else {
       incUpdate.customerRejectedAt = FieldValue.serverTimestamp();
       incUpdate.customerRejectionComment = comment;
+      if (_ppOut) {
+        incUpdate.customerRejectedPacketVersion = Number(_ppOut.version);
+        incUpdate.customerRejectedPacketHash = trimStr(_ppOut.zipSha256);
+      }
     }
     await incRef.set(incUpdate, { merge: true });
 
     // Timeline event (incident-level).
+    // PEAKOPS_REVIEW_VERSION_PIN_V3 — meta.packetVersion + meta.packetHash
+    // so the audit trail records which packet was acted on. Null for
+    // pre-slice-1 links.
     await emitTimelineEvent({
       orgId,
       incidentId,
@@ -234,10 +279,15 @@ exports.submitCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
         userAgentFingerprint: userAgentFingerprint(req),
         ipPrefix: ipPrefixFromRequest(req),
         comment: comment || null,
+        packetVersion: _ppOut ? Number(_ppOut.version) : null,
+        packetHash: _ppOut ? (trimStr(_ppOut.zipSha256) || null) : null,
       },
     });
 
     // Cross-incident audit row.
+    // PEAKOPS_REVIEW_VERSION_PIN_V3 — packetVersion + packetHash in the
+    // audit row so external reporting can answer "which packet did the
+    // customer accept?" without joining customer_review_links.
     try {
       await db
         .collection("orgs").doc(orgId)
@@ -253,6 +303,8 @@ exports.submitCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
           comment: comment || null,
           userAgentFingerprint: userAgentFingerprint(req),
           ipPrefix: ipPrefixFromRequest(req),
+          packetVersion: _ppOut ? Number(_ppOut.version) : null,
+          packetHash: _ppOut ? (trimStr(_ppOut.zipSha256) || null) : null,
           createdAt: FieldValue.serverTimestamp(),
         });
     } catch (e) {
