@@ -1075,13 +1075,39 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           `&incidentId=${encodeURIComponent(incidentId)}`;
       }
 
-      const a = document.createElement("a");
-      a.href = href;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      // PEAKOPS_AUTHED_DOWNLOAD_V1 (2026-06-15)
+      // The /api/reports/{id}/download route gates on a Bearer token
+      // via requireOrgAccess. A bare <a href=...>.click() triggers a
+      // browser-level navigation that does NOT attach the token, so
+      // the route 401s and Chrome surfaces "File wasn't available on
+      // site." Fetch the bytes with authedFetch (which attaches the
+      // Bearer header), then synthesize the download from a same-
+      // origin Blob URL — that path needs no auth at click time.
+      const dlRes = await authedFetch(href, { cache: "no-store" });
+      if (!dlRes.ok) {
+        throw new Error(
+          `Download failed (HTTP ${dlRes.status}) — try Regenerate Packet`,
+        );
+      }
+      const blob = await dlRes.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        // Revoke after a brief delay. Some browsers race the click
+        // against an immediate revoke and the download arrives empty.
+        // 4s is conservative and matches the v4 signed-URL TTL well.
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
+      }
 
+      // Keep the original (non-Blob) href in state — it's the stable
+      // server URL for display / "open again" surfaces. The Blob URL
+      // is ephemeral and would 404 after revoke.
       setArtifactUrl(href);
       setArtifactReady(true);
       setLastArtifactFilename(filename);
