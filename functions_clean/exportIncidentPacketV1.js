@@ -1574,6 +1574,27 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     }
     if (!incSnap.exists) return j(res, 404, { ok: false, error: "incident_not_found" });
 
+    // PEAKOPS_TENANT_ISOLATION_V1 (2026-06-15)
+    // Defense-in-depth: assert the resolved incident actually belongs to the
+    // caller's org. The canonical path (orgs/{orgId}/incidents/{id}) is
+    // structurally org-scoped, but the legacy top-level fallback
+    // (incidents/{id}) resolves by bare incidentId — so without this check an
+    // entitled member of org A could export org B's incident by passing
+    // {orgId: "A", incidentId: "<B's id>"}. We return 404 (not 403) so the
+    // response is indistinguishable from a nonexistent incident and does not
+    // confirm the foreign incident's existence to the caller.
+    const _incOrgId = String((incSnap.data() && incSnap.data().orgId) || "").trim();
+    if (_incOrgId !== orgId) {
+      console.warn("[exportIncidentPacketV1] tenant_mismatch", {
+        fn: "exportIncidentPacketV1",
+        callerOrgId: orgId,
+        incidentDocOrgId: _incOrgId || null,
+        incidentId,
+        uid: actorUid,
+      });
+      return j(res, 404, { ok: false, error: "incident_not_found" });
+    }
+
     // PEAKOPS_EXPORT_PATH_ALIGN_V1
     // Subcollections on this app are split across two parents. Writers that
     // hardcode the legacy top-level path:
