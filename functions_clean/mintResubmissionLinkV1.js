@@ -200,6 +200,46 @@ exports.mintResubmissionLinkV1 = onRequest({ cors: true }, async (req, res) => {
       }
     }
 
+    // PEAKOPS_REVIEW_VERSION_PIN_V1 (2026-06-15) — parity with
+    // createCustomerReviewLinkV1.js:205-233. Without this, resubmission
+    // links carry no packet snapshot, the customer dossier loses its
+    // version stamp + drift detection (slice 2), and the consume
+    // transaction has no `pinnedPacket` to mirror as `reviewedPacket`
+    // on the link or onto incident.customerAcceptedPacketVersion
+    // (slice 3) — which in turn falls the operator Summary panel into
+    // `accepted_legacy` state (slice 4). Same shape as the original
+    // mint so getCustomerReviewV1 / submitCustomerReviewV1 / Summary
+    // panel all work unchanged.
+    const pm = (incData.packetMeta && typeof incData.packetMeta === "object")
+      ? incData.packetMeta : null;
+    if (!pm
+        || !Number.isFinite(Number(pm.packetVersion))
+        || !trimStr(pm.storagePath)) {
+      console.warn("[mintResubmissionLinkV1] no_packet_yet", {
+        orgId, caseId, incidentId, uid: actorUid,
+        hasPacketMeta: !!pm,
+        packetVersion: pm && pm.packetVersion,
+      });
+      return j(res, 409, {
+        ok: false,
+        error: "no_packet_yet",
+        detail: "Regenerate the packet before minting a resubmission link.",
+      });
+    }
+    const _storagePathFull = trimStr(pm.storagePath);
+    const pinnedPacket = {
+      version: Number(pm.packetVersion),
+      fileName: _storagePathFull
+        ? (_storagePathFull.split("/").pop() || "")
+        : "",
+      storagePath: _storagePathFull,
+      bucket: trimStr(pm.bucket),
+      zipSha256: trimStr(pm.zipSha256),
+      originalRecordHash: trimStr(pm.originalRecordHash),
+      generatedAt: trimStr(pm.exportedAt),
+      pinnedAt: FieldValue.serverTimestamp(),
+    };
+
     // Mint token (re-uses PR 126 machinery).
     const token = generateToken();
     const tokenHash = hashToken(token);
@@ -236,6 +276,7 @@ exports.mintResubmissionLinkV1 = onRequest({ cors: true }, async (req, res) => {
       sourceStatus: "resubmission",
       caseId,
       packetOrdinal: ordinal,
+      pinnedPacket,
     });
 
     // Transactional case update: append packetVersion + flip status.
