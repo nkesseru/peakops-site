@@ -3213,8 +3213,10 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
     if (acceptanceReadiness.state === "requirements_missing") {
       readmeLines.push("This packet was exported with REQUIRED acceptance signals");
       readmeLines.push("unsatisfied. The missing signals are listed above. The operator");
-      readmeLines.push("chose to export despite the readiness gap; the audit trail");
-      readmeLines.push("records this decision via the export timeline event.");
+      readmeLines.push("chose to export despite the readiness gap; the audit trail records");
+      readmeLines.push("this decision in this packet's metadata: see packet-manifest.json");
+      readmeLines.push("(acceptanceReadiness.checks + history[], where each export revision");
+      readmeLines.push("is stamped with its generatedAt timestamp and storagePath).");
       readmeLines.push("");
     }
 

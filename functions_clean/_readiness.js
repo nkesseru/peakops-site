@@ -93,6 +93,27 @@ function _normTier(t) {
   return t === "required" ? "required" : "encouraged";
 }
 
+// PEAKOPS_READINESS_CLOSURE_TERMINAL_STATUSES_V1 (2026-06-15)
+// Statuses that satisfy the "incident closure" readiness check.
+// `closed` is the legacy operational terminal; `customer_accepted`
+// is the PR 126a customer-review terminal. `accepted`, `approved`,
+// and `exported` are accepted as aliases for orgs whose lifecycle
+// uses different terminal names. Lowercased + trimmed comparison.
+// Intentionally does NOT include: open, in_progress, draft,
+// submitted_to_customer, customer_rejected — those are mid-flight
+// and the operator should still know the record isn't done.
+const TERMINAL_ACCEPTED_STATUSES = new Set([
+  "closed",
+  "customer_accepted",
+  "accepted",
+  "approved",
+  "exported",
+]);
+function _isTerminalAccepted(rawStatus) {
+  const s = String(rawStatus || "").trim().toLowerCase();
+  return TERMINAL_ACCEPTED_STATUSES.has(s);
+}
+
 // PEAKOPS_CUSTOMER_CHECK_LABELS_V1 (PR 118)
 // Customer-authored check.label / check.description override the
 // evaluator's built-in defaults so the customer's exact acceptance
@@ -218,7 +239,7 @@ function evaluateRequiresFieldNotes(check, { incident, notes }) {
 
 function evaluateRequiresIncidentClosure(check, { incident }) {
   const status = String(incident?.status || "").trim().toLowerCase();
-  const closed = status === "closed";
+  const closed = _isTerminalAccepted(status);
   const description = _resolveDescription(check);
   const row = {
     key: "template_check__incident_closure",
@@ -226,7 +247,7 @@ function evaluateRequiresIncidentClosure(check, { incident }) {
     category: "template_check",
     tier: _normTier(check.tier),
     satisfied: closed,
-    detail: closed ? "Closed" : `Status: ${status || "(unknown)"}`,
+    detail: closed ? `Closed (${status})` : `Status: ${status || "(unknown)"}`,
   };
   if (description) row.description = description;
   return row;
@@ -365,18 +386,21 @@ function computeAcceptanceReadiness({ incident, evidence, jobs, notes }) {
   });
 
   // ─── INCIDENT CLOSURE CHECK ───────────────────────────────────
-  // Satisfied when incident.status === "closed". Sealed packets are
-  // the only ones whose proof contract is final; an open incident
-  // can still accrue new proof.
+  // Satisfied when the incident has reached a terminal-accepted
+  // status — legacy "closed", PR 126a "customer_accepted", or one
+  // of the alias terminal names. See TERMINAL_ACCEPTED_STATUSES.
+  // Mid-flight statuses (open, in_progress, submitted_to_customer,
+  // customer_rejected, draft) remain unsatisfied so the operator
+  // sees the record isn't done.
   const statusRaw = String(incident?.status || "").trim().toLowerCase();
-  const isClosed = statusRaw === "closed";
+  const isClosed = _isTerminalAccepted(statusRaw);
   checks.push({
     key: "incident_closure",
     label: "Incident closure",
     category: "closure",
     tier: "required",
     satisfied: isClosed,
-    detail: isClosed ? "Closed" : `Status: ${statusRaw || "(unknown)"}`,
+    detail: isClosed ? `Closed (${statusRaw})` : `Status: ${statusRaw || "(unknown)"}`,
   });
 
   // ─── LEGACY FALLBACK CHECK ────────────────────────────────────
