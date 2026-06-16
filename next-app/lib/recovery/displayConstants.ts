@@ -98,15 +98,15 @@ export const STATUS_PILL_CLASS: Record<RecoveryStatus, string> = {
 // ── Recovery Action type display (PR 127a3 includes 10th type) ───
 
 export const ACTION_TYPE_DISPLAY: Record<RecoveryActionType, string> = {
-  recapture_proof: "Capture Missing Proof",
-  clarify_with_customer: "Customer Clarification",
-  internal_qc_check: "Supervisor Re-Review",
-  re_submit_to_customer: "Resubmit Packet",
-  documentation_fix: "Upload Missing Documentation",
-  field_revisit: "Schedule Field Revisit",
-  escalate_internal: "Escalate Internal",
-  escalate_to_customer: "Escalate to Customer",
-  provide_test_results: "Provide Test Results",
+  recapture_proof: "Re-shoot photos",
+  clarify_with_customer: "Ask the customer",
+  internal_qc_check: "Supervisor re-review",
+  re_submit_to_customer: "Send updated packet",
+  documentation_fix: "Fix the document",
+  field_revisit: "Send crew back to site",
+  escalate_internal: "Escalate internally",
+  escalate_to_customer: "Escalate to customer",
+  provide_test_results: "Attach test results",
   other: "Other",
 };
 
@@ -145,14 +145,14 @@ export const ACTION_STATUS_PILL_CLASS: Record<RecoveryActionStatus, string> = {
 
 export const CAUSE_DISPLAY: Record<RecoveryCausePrimary, string> = {
   missing_required_proof: "Missing required proof",
-  proof_quality_insufficient: "Proof quality insufficient",
-  wrong_proof_uploaded: "Wrong proof uploaded",
-  documentation_error: "Documentation error",
-  customer_changed_requirements: "Customer changed requirements",
+  proof_quality_insufficient: "Photo unclear",
+  wrong_proof_uploaded: "Wrong file attached",
+  documentation_error: "Doc had errors",
+  customer_changed_requirements: "Customer changed scope",
   scope_dispute: "Scope dispute",
-  compliance_failure: "Compliance failure",
-  unclear_customer_feedback: "Unclear customer feedback",
-  internal_qc_caught: "Internal QC catch",
+  compliance_failure: "Compliance gap",
+  unclear_customer_feedback: "Customer feedback unclear",
+  internal_qc_caught: "Caught in QC",
   missing_test_result: "Missing test result",
   other: "Other",
 };

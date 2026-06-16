@@ -194,7 +194,7 @@ function ListContent() {
       <header>
         <h1 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">Recovery cases</h1>
         <p className="text-[12px] text-gray-400 mt-0.5">
-          Go here. Do this. Get paid.
+          Open cases waiting on action.
         </p>
       </header>
 
