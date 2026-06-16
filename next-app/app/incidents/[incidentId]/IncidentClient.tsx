@@ -23,7 +23,6 @@ import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/li
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
-import RecordNav from "@/components/RecordNav";
 import AppTopBar from "@/components/AppTopBar";
 // PR 130b — surfaces recovery actions assigned to the field user inside
 // the active incident overview as "Extra work needed before this can
@@ -2808,19 +2807,11 @@ useEffect(() => {
 
       </div>
 
-      {/* PEAKOPS_RECORD_NAV_V1
-          Quiet horizontal route bridge between Dashboard · Incident
-          · Summary · Review · File Addendum. Sits directly below
-          the identity-hero masthead, outside the sticky region, so
-          it scrolls with the rest of the body. */}
-      <div className="px-4 pt-3">
-        <RecordNav
-          incidentId={String(incidentId || "")}
-          orgId={String(orgId || "")}
-          current="incident"
-          isSealed={isClosed}
-        />
-      </div>
+      {/* Secondary route-bridge strip removed (was: Dashboard · Incident ·
+          Summary · Review). The main top nav already covers Dashboard;
+          the Incident tab row below covers Overview / Timeline / Proof /
+          Jobs; Summary and Review still render their own RecordNav for
+          inbound traffic from outside. */}
 
       {/* PEAKOPS_CAPTURE_PROOF_NEXT_STEP_V1 (PR 70)
           Next-step banner that fires when the user has just landed
