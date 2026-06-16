@@ -2039,7 +2039,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                     ) : Number.isFinite(acceptedV) ? (
                       <>v{acceptedV}<span className="text-gray-500"> · {fmt(acceptedAtSec)}</span></>
                     ) : (
-                      <span className="text-gray-400">Recorded {fmt(acceptedAtSec)}<span className="text-gray-500"> · version pre-slice-3</span></span>
+                      <span className="text-gray-400">Recorded {fmt(acceptedAtSec)}<span className="text-gray-500"> · version not recorded</span></span>
                     )}
                   </div>
                 </div>
@@ -2062,8 +2062,8 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                 </div>
               ) : state === "accepted_legacy" ? (
                 <div className="text-[12px] text-gray-400 leading-relaxed">
-                  This acceptance was recorded before version tracking shipped (slice 3).
-                  Treat as needing fresh customer signoff if v{Number.isFinite(latestV) ? latestV : "?"} matters.
+                  This acceptance was recorded before packet version tracking was
+                  available. Treat as needing fresh customer signoff if v{Number.isFinite(latestV) ? latestV : "?"} matters.
                 </div>
               ) : state === "rejected" ? (
                 <div className="rounded-lg border border-red-300/20 bg-red-500/[0.06] p-3 space-y-2">
