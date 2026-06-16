@@ -246,7 +246,15 @@ async function main() {
   console.log(`       cause.customerComment: ${autoCase.cause?.customerComment ? `"${String(autoCase.cause.customerComment).slice(0,60)}…"` : "<none>"}`);
   console.log(`       cause.primary: ${autoCase.cause?.primary || "<not inferred>"}`);
 
-  sub("9", "addRecoveryActionV1 (operator adds remediation)");
+  sub("9a", "updateRecoveryCaseV1 (set revenueAtRisk on auto-created case)");
+  r = await post("updateRecoveryCaseV1", {
+    orgId: ORG, actorUid: ADMIN_UID, caseId: autoCase.id,
+    revenueAtRisk: { amount: 12500, type: "estimated", notes: "E2E smoke — verifies recoveredRevenue rollup picks up non-zero amount on recovered cases." },
+  });
+  require200("updateRecoveryCaseV1(revenueAtRisk)", r);
+  console.log("     ✓ revenueAtRisk set to $12,500 (so recovery rollup is verifiable)");
+
+  sub("9b", "addRecoveryActionV1 (operator adds remediation)");
   r = await post("addRecoveryActionV1", {
     orgId: ORG, actorUid: ADMIN_UID,
     caseId: autoCase.id,
