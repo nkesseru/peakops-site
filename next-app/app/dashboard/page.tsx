@@ -679,7 +679,7 @@ export default function Dashboard() {
               No active records in supervisor review.
             </div>
             <div className="mt-1 text-[12px] text-gray-500">
-              The polished demo record is in the hero above. New incidents will appear here as field crews open them.
+              New incidents will appear here as field crews open them.
             </div>
           </section>
         ) : (

@@ -1189,7 +1189,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   const missingItems = useMemo(() => {
     const out: string[] = [];
     if (noReviewablesApproved) return out;
-    if (!hasReviewableJob) out.push("No reviewable jobs (status=complete/review and linked evidence>=1)");
+    if (!hasReviewableJob) out.push("No jobs are waiting for your sign-off.");
     if (!selectedJobReadyState && !selectedJobApproved) out.push("Selected job must be complete or review");
     if (selectedJobEvidenceCount < 1) out.push("Selected job needs at least 1 linked evidence item");
     if (selectedJobApproved) out.push("Selected job is approved (terminal).");
@@ -2296,7 +2296,7 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div>
               <div className="text-xs uppercase tracking-wide text-gray-400">Jobs Review</div>
               <div className="text-xs text-gray-500">
-                Reviewable: {reviewableJobs.length} (status=complete/review and linked evidence&gt;=1)
+                Jobs ready to review: {reviewableJobs.length}
               </div>
               {reviewableJobs.length === 0 ? (
                 <div className="mt-1 text-xs text-amber-200">

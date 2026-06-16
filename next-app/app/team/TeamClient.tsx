@@ -325,7 +325,7 @@ function MemberRow({
             whiteSpace: "nowrap",
           }}
         >
-          {open ? "Close" : "Reset their access"}
+          {open ? "Close" : "Send recovery link"}
         </button>
       </div>
 
