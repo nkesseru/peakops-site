@@ -106,17 +106,19 @@ type ListResp = {
 };
 
 /**
- * Lifecycle → filter membership. Kept deliberately narrow:
+ * Lifecycle → filter membership.
  *   - Active   = draft | open
- *   - Pending  = in_progress
- *   - Accepted = closed
- * "Locked" was considered but dropped pending a data-model signal
- * that distinguishes customer-accepted from sealed (PR 76 plan).
+ *   - Pending  = in_progress | submitted_to_customer | customer_rejected
+ *               (operator action expected — either in progress, waiting on
+ *                customer review, or customer asked for correction)
+ *   - Accepted = closed | customer_accepted
+ *               (closed = operator-accepted; customer_accepted = customer
+ *                signed off on the packet — both are terminal accept states)
  */
 function lifecycleFilter(status: string): FilterKey {
   const s = normalizeIncidentStatusShared(status);
-  if (s === "in_progress") return "pending";
-  if (s === "closed") return "accepted";
+  if (s === "in_progress" || s === "submitted_to_customer" || s === "customer_rejected") return "pending";
+  if (s === "closed" || s === "customer_accepted") return "accepted";
   return "active"; // draft, open, anything else
 }
 
@@ -134,10 +136,10 @@ function rowCTA(row: IncidentRow): { label: string; href: string } {
   const orgQs = row.orgId ? `?orgId=${encodeURIComponent(row.orgId)}` : "";
   const s = normalizeIncidentStatusShared(String(row.status || ""));
 
-  if (s === "in_progress") {
+  if (s === "in_progress" || s === "submitted_to_customer" || s === "customer_rejected") {
     return { label: "Open review →", href: `/incidents/${id}/review${orgQs}` };
   }
-  if (s === "closed") {
+  if (s === "closed" || s === "customer_accepted") {
     return { label: "Open dossier →", href: `/incidents/${id}/summary${orgQs}` };
   }
   if (s === "draft") {
