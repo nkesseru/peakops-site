@@ -327,6 +327,18 @@ function normalizeIncidentStatus(status: any) {
   // incidentStatusLabel/Pill. Lifecycle unchanged — this just
   // surfaces an already-stored status string.
   if (raw === "draft") return "draft";
+  // Customer-review corridor statuses (PR 126+). Without these
+  // passthroughs the catch-all below collapsed customer_accepted,
+  // customer_rejected, and submitted_to_customer to "open" — which
+  // is why the Incident page rendered an "Open" pill and the
+  // "Proof package incomplete" readiness card on records other
+  // screens already showed as Accepted. Dashboard / Records /
+  // Summary call incidentStatusLabel on the raw status and never
+  // hit this normalizer, which is why the inconsistency only
+  // showed on the Incident page.
+  if (raw === "submitted_to_customer") return "submitted_to_customer";
+  if (raw === "customer_accepted") return "customer_accepted";
+  if (raw === "customer_rejected") return "customer_rejected";
   return "open";
 }
 
@@ -1186,6 +1198,17 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }, [selectableFieldJobs, currentJobId]);
 
   const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
+  // Display-only gate for the Overview readiness checklist. Broader
+  // than isClosed so the checklist also hides once the record has
+  // moved into the customer-review corridor (submitted, accepted,
+  // rejected) — at those points the page should not be telling the
+  // operator "Proof package incomplete." isClosed semantics stay
+  // strict ("closed" only) so write-action gates elsewhere on this
+  // page are unaffected.
+  const isSealedOrPostReview =
+    isClosed ||
+    ["customer_accepted", "customer_rejected", "submitted_to_customer"]
+      .includes(String(incidentStatus || "").toLowerCase());
   const isDemoMode = isDemoIncident(incidentId);
   const isIncidentClosedError = (e: any) => {
     const msg = String(e?.message || e || "").toLowerCase();
@@ -3466,7 +3489,7 @@ useEffect(() => {
             audit of whether the incident is ready to close. On a
             closed incident the answer is permanently "yes" and the
             checklist is dead weight beside the sealed banner. */}
-        {activeTab === "overview" && !isClosed ? (
+        {activeTab === "overview" && !isSealedOrPostReview ? (
         <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between">
             {/* PR 85 — readiness reframed as acceptance-readiness so
