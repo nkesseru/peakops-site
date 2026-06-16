@@ -3000,7 +3000,21 @@ useEffect(() => {
 <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-3">
     <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
-    {_notesAgo === "—" ? (
+    {/* Suppress "Action needed: notes" once the record has moved into
+        the customer-review corridor — the operator can't add field
+        notes after submission, so the amber prompt is a stale signal.
+        Show a neutral status chip instead. */}
+    {isSealedOrPostReview ? (
+      <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/15 text-gray-300">
+        {(() => {
+          const s = String(incidentStatus || "").toLowerCase();
+          if (s === "submitted_to_customer") return "Awaiting customer review";
+          if (s === "customer_accepted") return "Customer accepted";
+          if (s === "customer_rejected") return "Customer rejected";
+          return "Submitted";
+        })()}
+      </span>
+    ) : _notesAgo === "—" ? (
       <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-300/25 text-amber-100">
         Action needed: notes
       </span>
@@ -3022,14 +3036,14 @@ useEffect(() => {
     <div
       className={
         "rounded-xl border px-3 py-2 sm:col-span-2 " +
-        (_notesAgo === "—"
+        (_notesAgo === "—" && !isSealedOrPostReview
           ? "bg-amber-500/10 border-amber-300/25"
           : "bg-black/30 border-white/10")
       }>
-      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-amber-200/80" : "text-gray-400")}>
+      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" && !isSealedOrPostReview ? "text-amber-200/80" : "text-gray-400")}>
         Field notes
       </div>
-      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-amber-50" : "text-gray-100")}>
+      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" && !isSealedOrPostReview ? "text-amber-50" : "text-gray-100")}>
         {_notesAgo}
       </div>
     </div>
