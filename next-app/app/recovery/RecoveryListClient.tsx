@@ -76,7 +76,7 @@ function ListContent() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [cases, setCases] = useState<RecoveryCaseListItem[]>([]);
-  const [totals, setTotals] = useState<{ cases: number; openCases: number; openRevenue: number }>({ cases: 0, openCases: 0, openRevenue: 0 });
+  const [totals, setTotals] = useState<{ cases: number; openCases: number; openRevenue: number; recoveredRevenue: number }>({ cases: 0, openCases: 0, openRevenue: 0, recoveredRevenue: 0 });
   const [refreshTick, setRefreshTick] = useState(0);
   const [nextActionByCase, setNextActionByCase] = useState<NextActionCache>({});
 
@@ -96,7 +96,7 @@ function ListContent() {
         if (!res.ok || !out.ok) throw new Error(out.error || `HTTP ${res.status}`);
         if (cancelled) return;
         setCases(Array.isArray(out.cases) ? out.cases : []);
-        setTotals(out.totals || { cases: 0, openCases: 0, openRevenue: 0 });
+        setTotals(out.totals || { cases: 0, openCases: 0, openRevenue: 0, recoveredRevenue: 0 });
         setLoading(false);
       } catch (e: any) {
         if (!cancelled) {
@@ -250,7 +250,7 @@ function ListContent() {
   );
 }
 
-function HeaderStrip({ totals, loading }: { totals: { cases: number; openCases: number; openRevenue: number }; loading: boolean }) {
+function HeaderStrip({ totals, loading }: { totals: { cases: number; openCases: number; openRevenue: number; recoveredRevenue: number }; loading: boolean }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
       <KpiCard
@@ -267,19 +267,19 @@ function HeaderStrip({ totals, loading }: { totals: { cases: number; openCases: 
       />
       <KpiCard
         label="Recovered revenue"
-        value="—"
-        subtext="coming soon"
-        accent="muted"
+        value={loading ? "—" : (totals.recoveredRevenue > 0 ? formatRevenue(totals.recoveredRevenue) : "$0")}
+        subtext={loading ? "loading" : "across recovered cases"}
+        accent="emerald"
       />
     </div>
   );
 }
 
-function KpiCard({ label, value, subtext, accent }: { label: string; value: string; subtext: string; accent: "amber" | "white" | "muted" }) {
+function KpiCard({ label, value, subtext, accent }: { label: string; value: string; subtext: string; accent: "amber" | "white" | "emerald" }) {
   const valueClass = accent === "amber"
     ? "text-amber-200"
-    : accent === "muted"
-      ? "text-gray-500"
+    : accent === "emerald"
+      ? "text-emerald-200"
       : "text-white";
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5">

@@ -188,6 +188,9 @@ exports.listRecoveryCasesV1 = onRequest({ cors: true }, async (req, res) => {
         openRevenue: cases
           .filter((c) => !["recovered", "partial_recovery", "abandoned", "expired"].includes(c.status))
           .reduce((sum, c) => sum + (Number(c.revenueAtRisk.amount) || 0), 0),
+        recoveredRevenue: cases
+          .filter((c) => c.status === "recovered" || c.status === "partial_recovery")
+          .reduce((sum, c) => sum + (Number(c.revenueAtRisk.amount) || 0), 0),
       },
     });
   } catch (e) {
