@@ -362,9 +362,11 @@ function CasesTable({
                     ? <span className="text-gray-500 italic">—</span>
                     : next === "loading"
                       ? <span className="text-gray-500 italic">…</span>
-                      : next === "none" || !next
-                        ? <span className="text-amber-300/80 font-medium">Needs triage</span>
-                        : <span className="text-gray-200">{ACTION_TYPE_DISPLAY[next.type as RecoveryActionType] || next.type}</span>
+                      : (next === "none" || !next) && c.status === "awaiting_customer"
+                        ? <span className="text-gray-300">Waiting on customer review</span>
+                        : next === "none" || !next
+                          ? <span className="text-amber-300/80 font-medium">Needs triage</span>
+                          : <span className="text-gray-200">{ACTION_TYPE_DISPLAY[next.type as RecoveryActionType] || next.type}</span>
                   }
                 </td>
                 <td className="px-3 py-3 text-gray-300 text-[12px] truncate max-w-[120px]">
