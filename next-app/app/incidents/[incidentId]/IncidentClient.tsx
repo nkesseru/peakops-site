@@ -2990,9 +2990,12 @@ useEffect(() => {
 {/* PEAKOPS_NEXTBESTACTION_V1_RENDER */}
 {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
     NextBestAction is the operational cockpit (Arrive / Add Evidence /
-    Open Notes / Submit). Suppressed on sealed records — the sealed
-    state has no "next best action" beyond filing an addendum. */}
-        {activeTab === "overview" && !isClosed ? (
+    Open Notes / Submit). Suppressed on sealed records and on
+    post-review records (submitted_to_customer, customer_accepted,
+    customer_rejected) — the "Capture proof" / "Add proof" prompt
+    surfaces an active mutation CTA, which is misleading once the
+    record is locked from field work. */}
+        {activeTab === "overview" && !isFieldWorkLocked(incidentStatus) ? (
 		<NextBestAction
 	  arrived={arrived}
 	  hasSession={_hasSession}
@@ -3757,40 +3760,46 @@ useEffect(() => {
                 <div className="text-gray-400 text-sm">Loading…</div>
               )}
 
-              {/* PEAKOPS_V2_CAPTION_UI */}
+              {/* Evidence label viewer/editor. On locked records (closed
+                  and post-review), the label is shown read-only — no
+                  input, no Clear button — so the modal continues to
+                  surface the metadata without offering a mutation
+                  surface. */}
               <div className="mt-3">
                 <div className="text-[11px] uppercase tracking-wide text-gray-400">Evidence label</div>
 
-                <div className="mt-2 flex items-center gap-2">
-                  <input
-                    className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200 outline-none placeholder:text-gray-500"
-                    placeholder="e.g., Pole base (wide), conductor break (close), panel label…"
-                    value={getCaption(selectedEvidenceId)}
-                    onChange={(e) => setCaption(selectedEvidenceId, e.target.value)}
-                    onBlur={() => {
-                      try {
-                        persistEvidenceLabel(
-                          String(orgId || ""),
-                          String(incidentId || ""),
-                          String(selectedEvidenceId || ""),
-                          String(getCaption(selectedEvidenceId) || "")
-                        );
-                      } catch {}
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="px-3 py-2 rounded-xl bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-sm"
-                    onClick={() => setCaption(selectedEvidenceId, "")}
-                    title="Clear label"
-                  >
-                    Clear
-                  </button>
-                </div>
-
-                <div className="mt-2 text-[11px] text-gray-500">
-                  v2: stored locally for now. Later we’ll persist to Firestore + enforce naming rules.
-                </div>
+                {isFieldWorkLocked(incidentStatus) ? (
+                  <div className="mt-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200">
+                    {getCaption(selectedEvidenceId) || <span className="text-gray-500">—</span>}
+                  </div>
+                ) : (
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200 outline-none placeholder:text-gray-500"
+                      placeholder="e.g., Pole base (wide), conductor break (close), panel label…"
+                      value={getCaption(selectedEvidenceId)}
+                      onChange={(e) => setCaption(selectedEvidenceId, e.target.value)}
+                      onBlur={() => {
+                        try {
+                          persistEvidenceLabel(
+                            String(orgId || ""),
+                            String(incidentId || ""),
+                            String(selectedEvidenceId || ""),
+                            String(getCaption(selectedEvidenceId) || "")
+                          );
+                        } catch {}
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-xl bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-sm"
+                      onClick={() => setCaption(selectedEvidenceId, "")}
+                      title="Clear label"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
               </div>
 </div>
           </div>
