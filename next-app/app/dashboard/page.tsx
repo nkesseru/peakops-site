@@ -61,16 +61,31 @@ import { incidentStatusLabel, incidentStatusPill, normalizeIncidentStatusShared 
 import { authedFetch } from "@/lib/apiClient";
 import { useAuth } from "@/hooks/useAuth";
 
-// PEAKOPS_DASHBOARD_DEMO_SAFE_V1
-// Polished demo target. Hardcoded for now — when /api/dashboard
-// returns real per-org data, the hero card can lift to the first
-// sealed incident in the actor's claim instead.
-const DEMO_TARGET = {
-  incidentId: "inc_20260508_121451_acnew0",
-  orgId: "peakops-internal-alpha",
-  fallbackTitle: "Fiber splice verification — Internal Alpha Test",
-  fallbackLocation: "Internal Alpha Yard",
-};
+// Demo-safety filter for the hero card. Returns true when an incident
+// looks like real operator data — i.e. its title doesn't match the
+// known smoke/E2E artifact patterns. Used to keep the hero polished
+// during demos without forcing a hardcoded target.
+//
+// Patterns excluded:
+//   - "E2E recovery — loop", "E2E version-pin verification — …"
+//   - "SMOKE PR85-87 · Proof cockpit test"
+//   - "PR108-SMOKE · Readiness Freshness", "PR120-SMOKE · Provenance"
+//   - "dummy-fake" / similar
+//
+// If NO incident passes the filter, the heroItem derivation falls
+// back to the unfiltered list (so cold/early-stage orgs still get a
+// hero card). Records without a title are excluded outright since
+// they'd render as "Untitled record" in the hero — not flattering.
+function looksRealForHero(title: unknown): boolean {
+  const t = String(title || "").trim();
+  if (!t) return false;
+  if (/^e2e[ _-]/i.test(t)) return false;
+  if (/^smoke[ _·-]/i.test(t)) return false;
+  if (/smoke[ _-]?test/i.test(t)) return false;
+  if (/^pr\d+[a-z]?[ _·-]/i.test(t)) return false;
+  if (/^dummy[ _-]?/i.test(t)) return false;
+  return true;
+}
 
 type Incident = {
   incidentId: string;
@@ -506,21 +521,34 @@ export default function Dashboard() {
     }
   };
 
-  // PEAKOPS_DASHBOARD_DEMO_SAFE_V1
-  // Demo-target hero card data. Prefer the live item from /api/dashboard
-  // if it surfaces; fall back to hardcoded copy so the hero renders
-  // even in a cold/empty state.
-  const demoItem = visible.find(
-    (i) =>
-      i.incidentId === DEMO_TARGET.incidentId &&
-      i.orgId === DEMO_TARGET.orgId,
-  );
-  const demoTitle = demoItem?.title || DEMO_TARGET.fallbackTitle;
-  const demoLocation = demoItem?.location || DEMO_TARGET.fallbackLocation;
-  const demoStatus = demoItem?.status || "closed";
-  const demoEvidence = demoItem?.evidenceCount ?? 1;
-  const demoUpdatedAgo = demoItem?.updatedAgo;
-  const demoQs = `?orgId=${encodeURIComponent(DEMO_TARGET.orgId)}`;
+  // Hero card target — derived from the live incident list.
+  // Preference order:
+  //   1. Most recently updated accepted record that passes the
+  //      smoke-artifact filter (looksRealForHero)
+  //   2. Most recently updated record of any status that passes the filter
+  //   3. Most recently updated accepted record from the unfiltered list
+  //   4. Most recently updated record of any status (last resort)
+  //   5. null → hero card hidden entirely (cold org / zero incidents)
+  //
+  // Accepted = status in {closed, customer_accepted}.
+  const heroItem = useMemo(() => {
+    const sorted = visible.slice().sort(
+      (a, b) => Number(b.updatedSec || 0) - Number(a.updatedSec || 0),
+    );
+    const isAccepted = (i: Incident) => {
+      const s = String(i.status || "").toLowerCase();
+      return s === "closed" || s === "customer_accepted";
+    };
+    const isReal = (i: Incident) => looksRealForHero(i.title);
+    return (
+      sorted.find((i) => isReal(i) && isAccepted(i))
+      ?? sorted.find(isReal)
+      ?? sorted.find(isAccepted)
+      ?? sorted[0]
+      ?? null
+    );
+  }, [visible]);
+  const heroQs = heroItem?.orgId ? `?orgId=${encodeURIComponent(heroItem.orgId)}` : "";
 
   return (
     <RequireAuth>
@@ -573,59 +601,47 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* PEAKOPS_DASHBOARD_DEMO_SAFE_V1
-            Continue-your-demo hero card. Always renders the polished
-            sealed-incident entry point regardless of whether the
-            bucket grid has data. First-click path: Summary (primary).
-            Review available as a secondary action. The card pulls
-            live title/location/status from /api/dashboard when the
-            request succeeds; otherwise falls back to hardcoded copy
-            so the card never renders as a broken placeholder. */}
+        {/* Hero card. Surfaces the operator's most recently active
+            accepted record, with a demo-safe filter that prefers
+            real records over E2E/SMOKE/PR-named artifacts. Hidden
+            entirely when the org has no incidents at all. */}
+        {heroItem ? (
         <section className="mb-6 rounded-2xl border border-amber-300/20 bg-amber-500/[0.04] px-5 py-5 sm:px-6 sm:py-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              {/* PEAKOPS_DASHBOARD_POLISH_V1
-                  Two-line eyebrow. The all-caps "CONTINUE YOUR DEMO"
-                  label stays as the prompt; the quieter second line
-                  ("Open the sealed operational record") is the
-                  instruction that tells the user what the card is
-                  asking them to do — same voice as Summary's
-                  "Operational record closed" banner. The previous
-                  inline " · INCIDENT RECORD · {ORGID}" annotation
-                  is dropped; the title + location + chip below
-                  already carry the dossier identity. */}
               <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-                Continue your demo
-              </div>
-              <div className="mt-1 text-[12px] text-gray-300">
-                Open the sealed operational record
+                Pick up where you left off
               </div>
               <h2 className="mt-3 text-xl sm:text-[22px] font-semibold leading-tight tracking-tight text-white truncate">
-                {demoTitle}
+                {heroItem.title || "Untitled record"}
               </h2>
-              {demoLocation ? (
+              {heroItem.location ? (
                 <div className="mt-0.5 text-[12px] text-gray-300">
-                  {demoLocation}
+                  {heroItem.location}
                 </div>
               ) : null}
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-gray-400">
                 <span
                   className={
                     "text-[11px] px-2 py-0.5 rounded-full border " +
-                    incidentStatusPill(demoStatus)
+                    incidentStatusPill(heroItem.status)
                   }
                 >
-                  {incidentStatusLabel(demoStatus)}
+                  {incidentStatusLabel(heroItem.status)}
                 </span>
-                <span className="text-white/20">·</span>
-                <span>
-                  {demoEvidence}{" "}
-                  {demoEvidence === 1 ? "piece of evidence" : "pieces of evidence"}
-                </span>
-                {demoUpdatedAgo && demoUpdatedAgo !== "—" ? (
+                {Number.isFinite(heroItem.evidenceCount as number) ? (
                   <>
                     <span className="text-white/20">·</span>
-                    <span>last activity {demoUpdatedAgo}</span>
+                    <span>
+                      {heroItem.evidenceCount}{" "}
+                      {heroItem.evidenceCount === 1 ? "piece of evidence" : "pieces of evidence"}
+                    </span>
+                  </>
+                ) : null}
+                {heroItem.updatedAgo && heroItem.updatedAgo !== "—" ? (
+                  <>
+                    <span className="text-white/20">·</span>
+                    <span>last activity {heroItem.updatedAgo}</span>
                   </>
                 ) : null}
               </div>
@@ -635,7 +651,7 @@ export default function Dashboard() {
                 type="button"
                 className="px-3 py-1.5 rounded-xl bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 text-sm"
                 onClick={() => {
-                  window.location.href = `/incidents/${encodeURIComponent(DEMO_TARGET.incidentId)}/review${demoQs}`;
+                  window.location.href = `/incidents/${encodeURIComponent(heroItem.incidentId)}/review${heroQs}`;
                 }}
               >
                 Supervisor Review
@@ -644,7 +660,7 @@ export default function Dashboard() {
                 type="button"
                 className="px-3 py-1.5 rounded-xl bg-white text-black border border-white/30 hover:bg-white/90 text-sm font-medium"
                 onClick={() => {
-                  window.location.href = `/incidents/${encodeURIComponent(DEMO_TARGET.incidentId)}/summary${demoQs}`;
+                  window.location.href = `/incidents/${encodeURIComponent(heroItem.incidentId)}/summary${heroQs}`;
                 }}
               >
                 Open dossier (Summary) →
@@ -652,6 +668,7 @@ export default function Dashboard() {
             </div>
           </div>
         </section>
+        ) : null}
 
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           <StatCard title="Needs Review" value={counts.needs_review} tone="border-blue-400/20 bg-blue-500/[0.05]" />
