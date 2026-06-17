@@ -57,7 +57,9 @@ function bucketBlurb(bucket: string) {
 import { useEffect, useMemo, useState } from "react";
 import RequireAuth from "@/components/RequireAuth";
 import AppTopBar from "@/components/AppTopBar";
-import { incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
+import { incidentStatusLabel, incidentStatusPill, normalizeIncidentStatusShared } from "@/lib/incidents/incidentStatus";
+import { authedFetch } from "@/lib/apiClient";
+import { useAuth } from "@/hooks/useAuth";
 
 // PEAKOPS_DASHBOARD_DEMO_SAFE_V1
 // Polished demo target. Hardcoded for now — when /api/dashboard
@@ -120,10 +122,26 @@ function readinessChip(i: Incident): { label: string; tone: string } {
 
 type BucketKey = "needs_review" | "update_requested" | "active" | "approved";
 
+// Status-based bucketing — mirrors Records' lifecycleFilter so the
+// Dashboard KPI counts match the Records page. Previously this read
+// per-job fields (reviewable / approved) that arrived via the
+// /api/dashboard server route, but that route is currently broken
+// (hardcoded single-seed + dev-admin actor 403s — see
+// fix(dashboard): source KPI counts from incidents).
+//
+//   needs_review     = in_progress | submitted_to_customer | customer_rejected
+//                      (operator action expected — work in progress,
+//                       waiting on customer review, or correction asked)
+//   approved         = closed | customer_accepted
+//                      (operator-accepted or customer-signed-off)
+//   active           = draft | open | anything else (catch-all)
+//   update_requested = (unused; bucket key kept for downstream code
+//                      paths that still reference it — always empty
+//                      until a real data source is wired)
 function primaryBucket(i: Incident): BucketKey {
-  if ((i.reviewable || 0) > 0) return "needs_review";
-  if (i.updateRequested) return "update_requested";
-  if ((i.approved || 0) > 0) return "approved";
+  const s = normalizeIncidentStatusShared(i.status);
+  if (s === "in_progress" || s === "submitted_to_customer" || s === "customer_rejected") return "needs_review";
+  if (s === "closed" || s === "customer_accepted") return "approved";
   return "active";
 }
 
@@ -362,6 +380,8 @@ function BucketSection({ title, items }: { title: string; items: Incident[] }) {
 }
 
 export default function Dashboard() {
+  const { claims } = useAuth();
+  const claimsOrgId = (claims?.orgIds || [])[0] || "";
   const [items, setItems] = useState<Incident[]>([]);
   const [orgFilter, setOrgFilter] = useState<string>("all");
   const [orgs, setOrgs] = useState<string[]>([]);
@@ -387,12 +407,32 @@ export default function Dashboard() {
   }, [orgFilter]);
 
   async function load() {
+    // KPI counts now sourced from listIncidentsV1 with the user's
+    // real Bearer token (via authedFetch), mirroring the Records
+    // page. The previous /api/dashboard route fetched ONE hardcoded
+    // seed with a fake "dev-admin" actorUid, which post-auth-retrofit
+    // returns permission-denied for every sub-fetch — leaving the
+    // KPI tiles stuck at 0 while Records correctly showed the org's
+    // real 19 records. Same endpoint + same lifecycle bucketing
+    // pattern Records uses → counts now match Records exactly.
+    if (!claimsOrgId) {
+      setItems([]);
+      setOrgs([]);
+      setLoading(false);
+      setLastSync(Date.now());
+      return;
+    }
     try {
       setLoading(true);
-      const r = await fetch("/api/dashboard", { cache: "no-store" });
+      const url = `/api/fn/listIncidentsV1?orgId=${encodeURIComponent(claimsOrgId)}&limit=50`;
+      const r = await authedFetch(url, { cache: "no-store" });
       const j = await r.json().catch(() => ({}));
-      setItems(Array.isArray(j?.items) ? j.items : []);
-      setOrgs(Array.isArray(j?.orgs) ? j.orgs : []);
+      // listIncidentsV1 returns `incidents` (or `items` on some endpoints) — accept both.
+      const list = Array.isArray(j?.items) ? j.items : (Array.isArray(j?.incidents) ? j.incidents : []);
+      setItems(list);
+      // Single-org scope here — populate the org chip with the claim's org
+      // so the existing filter UI keeps a sensible value.
+      setOrgs(claimsOrgId ? [claimsOrgId] : []);
       setLastSync(Date.now());
     } catch {
       setItems([]);
@@ -409,7 +449,8 @@ export default function Dashboard() {
       void load();
     }, 15000);
     return () => clearInterval(t);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claimsOrgId]);
 
   const visible = useMemo(() => {
     return items.filter((i) => orgFilter === "all" || i.orgId === orgFilter);
@@ -614,7 +655,12 @@ export default function Dashboard() {
 
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           <StatCard title="Needs Review" value={counts.needs_review} tone="border-blue-400/20 bg-blue-500/[0.05]" />
-          <StatCard title="Update Requested" value={counts.update_requested} tone="border-violet-400/20 bg-violet-500/[0.05]" />
+          {/* "Update Requested" tile retired — its data source
+              (SUPERVISOR_REQUEST_UPDATE timeline events) was only
+              available via the broken /api/dashboard route. Replaced
+              with Total Records, which mirrors Records' "All" count
+              and stays honest under the listIncidentsV1 data path. */}
+          <StatCard title="Total Records" value={items.length} tone="border-white/[0.08] bg-white/[0.03]" />
           <StatCard title="Active" value={counts.active} tone="border-white/[0.08] bg-white/[0.03]" />
           <StatCard title="Approved" value={counts.approved} tone="border-emerald-400/20 bg-emerald-500/[0.05]" />
         </section>
@@ -685,7 +731,10 @@ export default function Dashboard() {
         ) : (
           <>
             <BucketSection title="Needs Review" items={grouped.needs_review} />
-            <BucketSection title="Update Requested" items={grouped.update_requested} />
+            {/* Update Requested section retired alongside the matching
+                tile — bucket key kept in `grouped` for downstream
+                compile-safety, but the always-empty section was
+                its own "misleading 0" surface. */}
             <BucketSection title="Active" items={grouped.active} />
             <BucketSection title="Approved" items={grouped.approved} />
           </>
