@@ -2286,11 +2286,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
               <div className={hasSession ? "text-green-300" : "text-gray-500"}>{hasSession ? "✓" : "—"}</div>
             </div>
             <div className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
-              <div className="text-gray-200">Selected job evidence (1+)</div>
+              <div className="text-gray-200">Proof attached</div>
               <div className={selectedJobEvidenceCount >= 1 ? "text-green-300" : "text-gray-500"}>{selectedJobEvidenceCount >= 1 ? "✓" : "—"}</div>
             </div>
             <div className="flex items-center justify-between rounded-lg bg-black/30 border border-white/10 px-3 py-2">
-              <div className="text-gray-200">Selected job state (complete/review)</div>
+              <div className="text-gray-200">Selected job finished</div>
               <div className={selectedJobReadyState ? "text-green-300" : "text-gray-500"}>{selectedJobReadyState ? "✓" : "—"}</div>
             </div>
           </div>
