@@ -1190,9 +1190,9 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
     const out: string[] = [];
     if (noReviewablesApproved) return out;
     if (!hasReviewableJob) out.push("No jobs are waiting for your sign-off.");
-    if (!selectedJobReadyState && !selectedJobApproved) out.push("Selected job must be complete or review");
-    if (selectedJobEvidenceCount < 1) out.push("Selected job needs at least 1 linked evidence item");
-    if (selectedJobApproved) out.push("Selected job is approved (terminal).");
+    if (!selectedJobReadyState && !selectedJobApproved) out.push("Selected job isn't finished yet.");
+    if (selectedJobEvidenceCount < 1) out.push("Selected job has no proof attached yet.");
+    if (selectedJobApproved) out.push("Selected job is already approved.");
     return out;
   }, [noReviewablesApproved, hasReviewableJob, selectedJobReadyState, selectedJobApproved, selectedJobEvidenceCount]);
   const visibleEvidence = useMemo(() => {
@@ -2072,73 +2072,90 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
         </div>
 
               <div className="text-sm text-gray-200">
-                {noReviewablesApproved
-                    ? "No reviewable jobs. Latest decision: approved."
-                    : canApproveNow
-                  ? "Ready to approve."
-                    : "Not ready yet — select a complete/review job with linked evidence."}
+                {hasReviewableJob
+                  ? (noReviewablesApproved
+                      ? "No reviewable jobs. Latest decision: approved."
+                      : canApproveNow
+                        ? "Ready to approve."
+                        : "Not ready yet — pick a finished job with proof attached.")
+                  : "Nothing is waiting for your review."}
               </div>
               {err && canDevLog ? <div className="text-xs text-red-300 mt-1 truncate">Error: {err}</div> : null}
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              <button
-                className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-50"
-                onClick={sendBack}
-                disabled={loading}
-                title="Send back to field with reasons"
-              >
-                ↩︎ Send Back
-              </button>
+              {hasReviewableJob ? (
+                <>
+                  <button
+                    className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-50"
+                    onClick={sendBack}
+                    disabled={loading}
+                    title="Send back to field with reasons"
+                  >
+                    ↩︎ Send Back
+                  </button>
 
-              <div className="flex flex-col items-start">
-                <button
-                  className={
-                    "px-3 py-2 rounded-xl text-sm font-semibold border " +
-                    (canApproveNow
-                      ? "bg-green-700/25 border-green-400/25 text-green-200 hover:bg-green-700/35"
-                      : "bg-white/5 border-white/10 text-gray-500")
-                  }
-                  onClick={async () => {
-                    try {
-                      // Try common state vars
-                      // @ts-ignore
-                      const jid =
-                        (typeof selectedJobId !== "undefined" && selectedJobId) ? String(selectedJobId) :
-                        // @ts-ignore
-                        (typeof activeJobId !== "undefined" && activeJobId) ? String(activeJobId) :
-                        // @ts-ignore
-                        (typeof selectedJob !== "undefined" && selectedJob && (selectedJob.id || selectedJob.jobId)) ? String(selectedJob.id || selectedJob.jobId) :
-                        "";
-                      if (!jid) {
-                        const msg = "Select a job first.";
-                        setErr(msg);
-                        toast(msg, 2200);
-                        console.error("[Approve&Lock] missing selected jobId");
-                        return;
+                  <div className="flex flex-col items-start">
+                    <button
+                      className={
+                        "px-3 py-2 rounded-xl text-sm font-semibold border " +
+                        (canApproveNow
+                          ? "bg-green-700/25 border-green-400/25 text-green-200 hover:bg-green-700/35"
+                          : "bg-white/5 border-white/10 text-gray-500")
                       }
-                      await approveAndLockJob(String(orgId || ""), String(incidentId || ""), jid);
-                      await refreshAfterMutation((rows) => {
-                        const j = (rows || []).find((x: any) => String(x?.id || x?.jobId || "") === String(jid || ""));
-                        const st = String(j?.status || "").toLowerCase();
-                        const rs = String(j?.reviewStatus || "").toLowerCase();
-                        return st === "approved" || rs === "approved" || !!j?.locked;
-                      });
-                      toast("Selected job approved + locked ✓", 1800);
-                    } catch (e: any) {
-                      const msg = String(e?.message || e || "approve_and_lock_failed");
-                      setErr(msg);
-                      toast("Approve & Lock failed: " + msg, 3200);
-                      console.error(e);
-                    }
-                  }}
-                  disabled={!canApproveNow || loading}
-                  title={canApproveNow ? "Approve and lock selected job" : "Not ready yet"}
+                      onClick={async () => {
+                        try {
+                          // Try common state vars
+                          // @ts-ignore
+                          const jid =
+                            (typeof selectedJobId !== "undefined" && selectedJobId) ? String(selectedJobId) :
+                            // @ts-ignore
+                            (typeof activeJobId !== "undefined" && activeJobId) ? String(activeJobId) :
+                            // @ts-ignore
+                            (typeof selectedJob !== "undefined" && selectedJob && (selectedJob.id || selectedJob.jobId)) ? String(selectedJob.id || selectedJob.jobId) :
+                            "";
+                          if (!jid) {
+                            const msg = "Select a job first.";
+                            setErr(msg);
+                            toast(msg, 2200);
+                            console.error("[Approve&Lock] missing selected jobId");
+                            return;
+                          }
+                          await approveAndLockJob(String(orgId || ""), String(incidentId || ""), jid);
+                          await refreshAfterMutation((rows) => {
+                            const j = (rows || []).find((x: any) => String(x?.id || x?.jobId || "") === String(jid || ""));
+                            const st = String(j?.status || "").toLowerCase();
+                            const rs = String(j?.reviewStatus || "").toLowerCase();
+                            return st === "approved" || rs === "approved" || !!j?.locked;
+                          });
+                          toast("Selected job approved + locked ✓", 1800);
+                        } catch (e: any) {
+                          const msg = String(e?.message || e || "approve_and_lock_failed");
+                          setErr(msg);
+                          toast("Approve & Lock failed: " + msg, 3200);
+                          console.error(e);
+                        }
+                      }}
+                      disabled={!canApproveNow || loading}
+                      title={canApproveNow ? "Approve and lock selected job" : "Not ready yet"}
+                    >
+                      🛡 Approve & Lock Selected Job
+                    </button>
+                    <div className="mt-1 text-[11px] text-gray-500">Applies to selected job only.</div>
+                  </div>
+                </>
+              ) : (
+                <button
+                  className="px-4 py-2 rounded-xl bg-emerald-500/15 border border-emerald-300/30 text-emerald-50 hover:bg-emerald-500/25 text-sm font-medium"
+                  onClick={() =>
+                    router.push(
+                      `/incidents/${incidentId}/summary${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`,
+                    )
+                  }
                 >
-                  🛡 Approve & Lock Selected Job
+                  View Summary
                 </button>
-                <div className="mt-1 text-[11px] text-gray-500">Applies to selected job only.</div>
-              </div>
+              )}
             </div>
           </div>
         </section>
