@@ -2996,7 +2996,7 @@ useEffect(() => {
     open-state operational cockpit. On a sealed record nothing more is
     going to happen — the timers just tick beside a closed banner.
     Hidden when isClosed. */}
-{activeTab === "overview" && !isClosed ? (
+{activeTab === "overview" && !isClosed && hasInitialLoad ? (
 <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-3">
     <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
@@ -3494,7 +3494,7 @@ useEffect(() => {
             audit of whether the incident is ready to close. On a
             closed incident the answer is permanently "yes" and the
             checklist is dead weight beside the sealed banner. */}
-        {activeTab === "overview" && !isSealedOrPostReview ? (
+        {activeTab === "overview" && !isSealedOrPostReview && hasInitialLoad ? (
         <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between">
             {/* PR 85 — readiness reframed as acceptance-readiness so
