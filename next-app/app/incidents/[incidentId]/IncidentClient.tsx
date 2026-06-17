@@ -572,7 +572,15 @@ async function markArrived() {
     const org = String(orgId || "").trim();
 
     if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
-    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
+    // Defense-in-depth: refuse before optimistic UI fires. Hides the
+    // 1d → 0s timeline flash even when this function is invoked from
+    // a code path that bypasses the bottom-dock visibility gate.
+    {
+      const _s = String(incidentStatus).toLowerCase();
+      if (_s === "closed" || _s === "customer_accepted" || _s === "customer_rejected" || _s === "submitted_to_customer") {
+        return toast("This record is locked from field work.", 2600);
+      }
+    }
 
     let sid = String(activeSessionId || "").trim();
     if (!sid) {
@@ -671,7 +679,14 @@ async function markArrived() {
 }
 
   async function submitSession() {
-    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
+    // Defense-in-depth: refuse before any server call for sealed or
+    // post-review records, regardless of which UI surface fired this.
+    {
+      const _s = String(incidentStatus).toLowerCase();
+      if (_s === "closed" || _s === "customer_accepted" || _s === "customer_rejected" || _s === "submitted_to_customer") {
+        return toast("This record is locked from field work.", 2600);
+      }
+    }
     const sid = String(activeSessionId || "").trim();
     if (!sid) return toast("No active session yet — add evidence first.", 3000);
     const ok = window.confirm("Submit this session? This locks the field visit for supervisor review.");
@@ -3545,18 +3560,24 @@ useEffect(() => {
 
         {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
             Bottom-dock spacer. Reserves vertical room for the fixed
-            dock below. Hidden when isClosed since the dock itself is
-            hidden. */}
-        {!isClosed ? <div className="h-20" /> : null}
+            dock below. Hidden when the dock itself is hidden — i.e.
+            for sealed records (closed) and post-review records
+            (submitted_to_customer, customer_accepted, customer_rejected). */}
+        {!isSealedOrPostReview ? <div className="h-20" /> : null}
       </div>
 
       {/* Bottom dock */}
       {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
           Bottom dock is the primary operational cockpit (Arrive /
-          Evidence / Notes / Submit). On sealed records every action
-          here either no-ops or 409s server-side. Hidden entirely —
-          no disabled buttons left to confuse the supervisor. */}
-      {!isClosed ? (
+          Evidence / Notes / Submit). On sealed records (closed) and
+          post-review records (submitted_to_customer,
+          customer_accepted, customer_rejected) every action here
+          either no-ops or 409s server-side, and optimistic UI can
+          flash a misleading reset (Site Arrival 1d → 0s) before
+          the server rejects. Hidden entirely — no disabled buttons
+          left to confuse the supervisor and no surface left to
+          mutate a locked record from. */}
+      {!isSealedOrPostReview ? (
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/10">
         <div className="grid grid-cols-4 gap-2">
           {/* Arrive */}
