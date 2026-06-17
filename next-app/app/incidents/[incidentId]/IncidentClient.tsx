@@ -341,6 +341,23 @@ function normalizeIncidentStatus(status: any) {
   return "open";
 }
 
+// Returns true when the incident is in a status where no further
+// field-work mutations should be accepted from the operator UI:
+//   - closed                 (operator-accepted, sealed)
+//   - customer_accepted      (customer signed off — packet is locked)
+//   - customer_rejected      (operator's next move is recovery, not raw field work)
+//   - submitted_to_customer  (review link out — record is frozen until customer responds)
+// Used by the bottom dock visibility gate, the proof/capture/jobs
+// surfaces on the Overview/Jobs/Evidence tabs, and as a defense-in-depth
+// early-return inside every mutation handler — same set, single source.
+function isFieldWorkLocked(status: any) {
+  const s = String(status || "").toLowerCase();
+  return s === "closed"
+      || s === "customer_accepted"
+      || s === "customer_rejected"
+      || s === "submitted_to_customer";
+}
+
 function getLinkedJobId(ev: any) {
   return String(ev?.jobId || ev?.evidence?.jobId || "").trim();
 }
@@ -1303,7 +1320,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function createJob() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const title = String(jobTitle || "").trim();
     if (!title) return toast("Job title is required.", 2200);
     try {
@@ -1336,7 +1353,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function setJobStatus(jobId: string, status: JobStatus) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     try {
       setJobsBusy(true);
       const out: any = await postJson(`/api/fn/updateJobStatusV1`, {
@@ -1376,7 +1393,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignJobOrg(jobId: string, assignedOrgIdRaw: string) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const assignedOrgId = String(assignedOrgIdRaw || "").trim();
     try {
       setJobsBusy(true);
@@ -1447,7 +1464,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function markCurrentJobComplete() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const jid = String(currentJobId || "").trim();
     if (!jid) return toast("Select My job first.", 2200);
     const completeOk = window.confirm("Mark complete?");
@@ -1456,7 +1473,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignAllUnassignedToCurrentJob() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const jid = String(currentJobId || "").trim();
     if (!jid) return toast("Select My job first.", 2200);
 
@@ -1522,7 +1539,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignEvidenceJob(evidenceId: string, jobIdRaw: string) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const nextJobId = String(jobIdRaw || "").trim();
     setEvidence((prev: any[]) =>
       (Array.isArray(prev) ? prev : []).map((ev: any) =>
@@ -2791,24 +2808,19 @@ useEffect(() => {
                   Open job
                 </button>
               ) : null}
-              <button
-                type="button"
-                className={
-                  "px-3 py-2 rounded-xl border text-sm transition " +
-                  (isClosed
-                    ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
-                    : "bg-white/6 border-white/10 hover:bg-white/10 text-gray-100")
-                }
-                onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
-                disabled={isClosed}
-                title={
-                  isClosed
-                    ? "Incident is closed (read-only)"
-                    : "Add proof"
-                }
-              >
-                Add proof
-              </button>
+              {/* Add proof routes into the field-evidence upload flow.
+                  Hidden on closed and post-review records — no proof
+                  mutation should be reachable from a locked record. */}
+              {!isFieldWorkLocked(incidentStatus) ? (
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl border text-sm transition bg-white/6 border-white/10 hover:bg-white/10 text-gray-100"
+                  onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
+                  title="Add proof"
+                >
+                  Add proof
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -2839,7 +2851,7 @@ useEffect(() => {
           banner dismisses without leaving the record. Open-state
           only — sealed records have their own dossier panel and
           don't need a "first step" affordance. */}
-      {!isClosed && sp?.get("next") === "capture-proof" ? (
+      {!isFieldWorkLocked(incidentStatus) && sp?.get("next") === "capture-proof" ? (
         <div className="px-4 pt-3">
           <div className="rounded-2xl border border-amber-300/25 bg-amber-500/[0.05] px-4 py-4 sm:px-5 sm:py-5 space-y-3">
             <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
@@ -3275,7 +3287,7 @@ useEffect(() => {
             for choosing which job a future upload will attach to. On
             sealed records no new evidence can attach, so the section
             has no purpose. The Jobs tab keeps the job list itself. */}
-        {activeTab === "jobs" && !isClosed ? (
+        {activeTab === "jobs" && !isFieldWorkLocked(incidentStatus) ? (
         <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs uppercase tracking-[0.16em] text-gray-400">My Job</div>
@@ -3383,7 +3395,7 @@ useEffect(() => {
             evidence.jobId. On sealed records evidence linkage is
             immutable. Hidden when isClosed. The Evidence gallery
             above this section stays visible as a read-only display. */}
-        {activeTab === "evidence" && !isClosed ? (
+        {activeTab === "evidence" && !isFieldWorkLocked(incidentStatus) ? (
         <section ref={evidenceMappingSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between gap-2">
             <div id="evidence-mapping" className="text-xs uppercase tracking-wide text-gray-400">Evidence to Job Mapping</div>
