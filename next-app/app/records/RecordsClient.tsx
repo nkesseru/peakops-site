@@ -41,6 +41,7 @@ import {
   normalizeIncidentStatusShared,
 } from "@/lib/incidents/incidentStatus";
 import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
+import { isDemoArtifact } from "@/lib/incidents/demoHygiene";
 // PR 103b — Cache-only readiness pill. Renders only when the row
 // carries readinessCache.state from listIncidentsV1 (today: never;
 // forward-compatible for when backend plumbs it through). Omits on
@@ -243,18 +244,27 @@ function Body() {
     };
   }, [orgId]);
 
+  // Hide obvious demo/smoke/test trash from the operator list.
+  // Protected demo records (see lib/incidents/demoHygiene.ts) are
+  // always allowed through. Counts + filtered both source from
+  // visibleRows so the chip counts match what's actually shown.
+  const visibleRows = useMemo(
+    () => rows.filter((r) => !isDemoArtifact(r)),
+    [rows],
+  );
+
   const counts = useMemo(() => {
-    const c: Record<FilterKey, number> = { all: rows.length, pending: 0, active: 0, accepted: 0 };
-    for (const r of rows) {
+    const c: Record<FilterKey, number> = { all: visibleRows.length, pending: 0, active: 0, accepted: 0 };
+    for (const r of visibleRows) {
       const k = lifecycleFilter(String(r.status || ""));
       if (k in c) c[k] += 1;
     }
     return c;
-  }, [rows]);
+  }, [visibleRows]);
 
   const filtered = useMemo(
-    () => rows.filter((r) => matchesFilter(r, filter)),
-    [rows, filter],
+    () => visibleRows.filter((r) => matchesFilter(r, filter)),
+    [visibleRows, filter],
   );
 
   function setFilter(next: FilterKey) {

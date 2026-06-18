@@ -60,6 +60,7 @@ import AppTopBar from "@/components/AppTopBar";
 import { incidentStatusLabel, incidentStatusPill, normalizeIncidentStatusShared } from "@/lib/incidents/incidentStatus";
 import { authedFetch } from "@/lib/apiClient";
 import { useAuth } from "@/hooks/useAuth";
+import { isDemoArtifact } from "@/lib/incidents/demoHygiene";
 
 // Demo-safety filter for the hero card. Returns true when an incident
 // looks like real operator data — i.e. its title doesn't match the
@@ -469,7 +470,12 @@ export default function Dashboard() {
   }, [claimsOrgId]);
 
   const visible = useMemo(() => {
-    return items.filter((i) => orgFilter === "all" || i.orgId === orgFilter);
+    // Filter chain: org scope → demo-hygiene. The latter hides obvious
+    // smoke/test/seed records from operator queues; protected demo
+    // record IDs (see demoHygiene.ts) are always allowed through.
+    return items
+      .filter((i) => orgFilter === "all" || i.orgId === orgFilter)
+      .filter((i) => !isDemoArtifact(i));
   }, [items, orgFilter]);
 
   const grouped = useMemo(() => {
