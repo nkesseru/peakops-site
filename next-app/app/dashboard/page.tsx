@@ -683,7 +683,11 @@ export default function Dashboard() {
               there. "Needs Review" → "In Progress"; "Approved" →
               "Accepted". Bucket math + tones unchanged. */}
           <StatCard title="In Progress" value={counts.needs_review} tone="border-blue-400/20 bg-blue-500/[0.05]" />
-          <StatCard title="Total Records" value={items.length} tone="border-white/[0.08] bg-white/[0.03]" />
+          {/* Total Records counts what the operator can actually see —
+              i.e. items after the org filter AND the demo-hygiene
+              filter (visible.length), not the raw items.length which
+              still includes filtered smoke artifacts. */}
+          <StatCard title="Total Records" value={visible.length} tone="border-white/[0.08] bg-white/[0.03]" />
           <StatCard title="Active" value={counts.active} tone="border-white/[0.08] bg-white/[0.03]" />
           <StatCard title="Accepted" value={counts.approved} tone="border-emerald-400/20 bg-emerald-500/[0.05]" />
         </section>

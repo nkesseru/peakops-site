@@ -31,7 +31,6 @@ import { chromium } from "playwright";
 import { existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import readline from "node:readline";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTH_FILE = path.join(__dirname, ".auth.json");
@@ -46,6 +45,11 @@ const MODE = process.argv.includes("--login") ? "login" : "smoke";
 if (!existsSync(SHOTS_DIR)) mkdirSync(SHOTS_DIR, { recursive: true });
 
 // ─── login mode ────────────────────────────────────────────────────
+//
+// Auto-detect mode: opens headed Chromium on /login, watches the URL,
+// and saves storageState the moment the page reaches any signed-in
+// route (no terminal Enter required). 5-minute timeout is generous;
+// Ctrl-C to abort if you change your mind.
 if (MODE === "login") {
   console.log("Opening Chromium in headed mode for one-time auth capture…");
   const browser = await chromium.launch({ headless: false });
@@ -54,17 +58,42 @@ if (MODE === "login") {
   await page.goto(`${BASE}/login`, { waitUntil: "domcontentloaded" });
   console.log("");
   console.log("──────────────────────────────────────────────────────────");
-  console.log("Log in to PeakOps in the opened browser window.");
-  console.log("Navigate to any signed-in page (e.g. /dashboard).");
-  console.log("Then return here and press Enter to capture + exit.");
+  console.log("Sign in to PeakOps in the opened browser window.");
+  console.log("Auto-detects when you land on a signed-in page");
+  console.log("(/dashboard, /records, /incidents, /recovery, …)");
+  console.log("and saves the auth state to .auth.json automatically.");
   console.log("──────────────────────────────────────────────────────────");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  await new Promise((resolve) => rl.question("", resolve));
-  rl.close();
+
+  try {
+    await page.waitForURL(
+      (url) => {
+        const p = url.pathname || "";
+        if (!p || p === "/" || p.startsWith("/login") || p.startsWith("/auth/")) return false;
+        // Match any known signed-in surface. /admin gates further but
+        // hitting it at all means the auth cookie + IndexedDB token
+        // are populated, which is all we need to capture.
+        return /^\/(dashboard|records|incidents|recovery|team|settings|admin|jobs|my-work|review|summary)/i.test(p);
+      },
+      { timeout: 5 * 60 * 1000 },
+    );
+  } catch (e) {
+    console.error(`\n✗ Timed out waiting for signed-in navigation (5 minutes).`);
+    console.error(`  Current URL: ${page.url()}`);
+    console.error(`  If you signed in but landed somewhere unrecognized, broaden the URL`);
+    console.error(`  matcher in smoke.mjs login mode and re-run.`);
+    await browser.close();
+    process.exit(3);
+  }
+
+  console.log(`\n✓ Detected signed-in page: ${page.url()}`);
+  // Give Firebase a beat to flush refresh-token writes into IndexedDB
+  // before we snapshot storage state.
+  await page.waitForTimeout(2000);
+
   await ctx.storageState({ path: AUTH_FILE });
-  console.log(`\n✓ Saved auth state to ${AUTH_FILE}`);
-  console.log("  Subsequent `npm run smoke` calls will use this state.");
-  console.log("  Re-run --login if your session expires (Firebase refresh token TTL).");
+  console.log(`✓ Saved auth state to ${AUTH_FILE}`);
+  console.log(`  Subsequent \`npm run smoke\` calls will use this state.`);
+  console.log(`  Re-run --login if your session expires (Firebase refresh-token TTL).`);
   await browser.close();
   process.exit(0);
 }
@@ -110,7 +139,15 @@ async function checkPage({ name, url, expected = [], forbidden = [] }) {
     httpStatus = resp?.status() ?? null;
     // Wait for hydration + any client-side fetches to settle.
     await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    // Wait for the hydration-gate placeholder to disappear if present
+    // (the Incident page uses `loading record details…` while
+    // hasInitialLoad === false). Best-effort — content-heavy pages
+    // sometimes never reach idle, so this just gives them a chance.
+    await page
+      .locator("text=loading record details")
+      .waitFor({ state: "hidden", timeout: 15000 })
+      .catch(() => {});
+    await page.waitForTimeout(2500);
   } catch (e) {
     navError = String(e?.message || e);
   }
@@ -122,8 +159,16 @@ async function checkPage({ name, url, expected = [], forbidden = [] }) {
   // Detect login-redirect (auth state expired / cookies stale).
   const looksLikeLogin = /sign in to peakops|continue with google|sign in/i.test(bodyText) && !bodyText.includes("Sign out");
 
-  const expectedMisses = expected.filter((s) => !bodyText.includes(s));
-  const forbiddenHits = forbidden.filter((s) => bodyText.includes(s));
+  // Case-insensitive text matching: Playwright's innerText respects
+  // CSS text-transform, so a label rendered with `uppercase` returns
+  // as ALL-CAPS even when the source string is "Total Records". A
+  // smoke that's asking "is the user-visible text 'Total Records'
+  // present" should pass whether the page chose to uppercase it or
+  // not. Same logic for forbidden strings — we want to catch them
+  // regardless of casing choice.
+  const bodyLower = bodyText.toLowerCase();
+  const expectedMisses = expected.filter((s) => !bodyLower.includes(s.toLowerCase()));
+  const forbiddenHits = forbidden.filter((s) => bodyLower.includes(s.toLowerCase()));
 
   const pass = !navError && !looksLikeLogin && expectedMisses.length === 0 && forbiddenHits.length === 0;
   results.push({
