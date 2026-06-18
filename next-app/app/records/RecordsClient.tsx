@@ -52,7 +52,7 @@ type FilterKey = (typeof FILTER_VALUES)[number];
 
 const FILTER_LABELS: Record<FilterKey, string> = {
   all: "All",
-  pending: "Pending approval",
+  pending: "In Progress",
   active: "Active",
   accepted: "Accepted",
 };
@@ -169,7 +169,7 @@ function lastActivityLabel(row: IncidentRow): string {
 
 const EMPTY_COPY: Record<FilterKey, string> = {
   all: "No field records yet. Open a new field record to get started.",
-  pending: "No records are pending approval right now.",
+  pending: "No records are in progress right now.",
   active: "No active records in proof capture.",
   accepted: "No accepted packets yet. They'll appear here as work is approved.",
 };

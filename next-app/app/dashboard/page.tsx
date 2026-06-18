@@ -671,15 +671,14 @@ export default function Dashboard() {
         ) : null}
 
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <StatCard title="Needs Review" value={counts.needs_review} tone="border-blue-400/20 bg-blue-500/[0.05]" />
-          {/* "Update Requested" tile retired — its data source
-              (SUPERVISOR_REQUEST_UPDATE timeline events) was only
-              available via the broken /api/dashboard route. Replaced
-              with Total Records, which mirrors Records' "All" count
-              and stays honest under the listIncidentsV1 data path. */}
+          {/* Lifecycle vocabulary aligned with Records chips so the
+              same record cannot read as one thing here and another
+              there. "Needs Review" → "In Progress"; "Approved" →
+              "Accepted". Bucket math + tones unchanged. */}
+          <StatCard title="In Progress" value={counts.needs_review} tone="border-blue-400/20 bg-blue-500/[0.05]" />
           <StatCard title="Total Records" value={items.length} tone="border-white/[0.08] bg-white/[0.03]" />
           <StatCard title="Active" value={counts.active} tone="border-white/[0.08] bg-white/[0.03]" />
-          <StatCard title="Approved" value={counts.approved} tone="border-emerald-400/20 bg-emerald-500/[0.05]" />
+          <StatCard title="Accepted" value={counts.approved} tone="border-emerald-400/20 bg-emerald-500/[0.05]" />
         </section>
 
         {/* PEAKOPS_DASHBOARD_SIGNED_IN_POLISH_V1
@@ -747,13 +746,13 @@ export default function Dashboard() {
           </section>
         ) : (
           <>
-            <BucketSection title="Needs Review" items={grouped.needs_review} />
+            <BucketSection title="In Progress" items={grouped.needs_review} />
             {/* Update Requested section retired alongside the matching
                 tile — bucket key kept in `grouped` for downstream
                 compile-safety, but the always-empty section was
                 its own "misleading 0" surface. */}
             <BucketSection title="Active" items={grouped.active} />
-            <BucketSection title="Approved" items={grouped.approved} />
+            <BucketSection title="Accepted" items={grouped.approved} />
           </>
         )}
       </div>

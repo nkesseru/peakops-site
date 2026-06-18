@@ -315,7 +315,7 @@ function normalizeIncidentStatus(status: any) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
-  if (raw === "in-progress" || raw === "inprogress" || raw === "submitted") return "in_progress";
+  if (raw === "in-progress" || raw === "inprogress" || raw === "in_progress" || raw === "submitted") return "in_progress";
   if (raw === "closed") return "closed";
   // PEAKOPS_DRAFT_STATUS_PASSTHROUGH_V1 (PR 73 follow-up)
   // The proof-workflow create flow (PR 70) writes status: "draft" via
