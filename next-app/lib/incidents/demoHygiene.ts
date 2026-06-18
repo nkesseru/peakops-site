@@ -33,6 +33,12 @@ const PROTECTED_DEMO_IDS = new Set<string>([
   "inc_20260508_121451_acnew0",
   // Northgate Mutual Telecom — staged demo for Recovery flow
   "demo_20260616T122606Z_5ax3",
+  // Demo Dataset v1 — three showcase records added to broaden the
+  // operator-queue narrative (active field work / customer rejection
+  // entry to Recovery / clean intake state).
+  "demo_field_work_001",   // Cascade Fiber Networks — in_progress
+  "demo_rejected_001",     // Riverbend Power & Light — customer_rejected
+  "demo_draft_001",        // Pioneer Broadband Cooperative — draft
 ]);
 
 export function isDemoArtifact(incident: {
