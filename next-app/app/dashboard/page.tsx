@@ -302,18 +302,23 @@ function IncidentCard({ i }: { i: Incident }) {
         ) : null}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-[160px_1fr] gap-4 mt-4">
-        <div className="rounded-xl border border-white/[0.08] bg-black/20 overflow-hidden min-h-[120px] flex items-center justify-center">
-          {i.thumbUrl ? (
+      {/* Thumbnail tile renders only when the list source actually
+          carries a thumbUrl. After the dashboard data source moved
+          from /api/dashboard (per-card evidence fetch) to bulk
+          listIncidentsV1 (no thumbnail field), this is always
+          absent in production. Suppressing the tile collapses the
+          grid to full-width metric tiles instead of rendering a
+          permanent "No thumbnail" placeholder on every card. */}
+      <div className={i.thumbUrl ? "grid grid-cols-1 md:grid-cols-[160px_1fr] gap-4 mt-4" : "mt-4"}>
+        {i.thumbUrl ? (
+          <div className="rounded-xl border border-white/[0.08] bg-black/20 overflow-hidden min-h-[120px] flex items-center justify-center">
             <img
               src={i.thumbUrl}
               alt={`${i.incidentId} evidence`}
               className="w-full h-[120px] object-cover"
             />
-          ) : (
-            <div className="text-xs text-gray-500">No thumbnail</div>
-          )}
-        </div>
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2">
