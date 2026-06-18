@@ -1989,11 +1989,16 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           }
 
           const badge = {
-            up_to_date:       { tone: "emerald", label: "UP TO DATE" },
-            out_of_date:      { tone: "amber",   label: "OUT OF DATE" },
-            accepted_legacy:  { tone: "gray",    label: "ACCEPTED (version unknown)" },
-            rejected:         { tone: "red",     label: "REJECTION RECORDED" },
-            awaiting:         { tone: "blue",    label: "AWAITING REVIEW" },
+            // Sentence-case, neutral framing — these badges describe
+            // packet-version drift relative to the customer's acceptance
+            // signal, NOT the incident's lifecycle status. The all-caps
+            // shouting framing competed visually with the top status pill
+            // and read like a second source of truth on the same record.
+            up_to_date:       { tone: "emerald", label: "Up to date" },
+            out_of_date:      { tone: "amber",   label: "Out of date" },
+            accepted_legacy:  { tone: "gray",    label: "Accepted — version unknown" },
+            rejected:         { tone: "red",     label: "Rejection recorded" },
+            awaiting:         { tone: "blue",    label: "Awaiting review" },
           }[state];
           const badgeClass =
             badge.tone === "emerald" ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" :

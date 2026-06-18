@@ -3033,16 +3033,12 @@ useEffect(() => {
     {/* Suppress "Action needed: notes" once the record has moved into
         the customer-review corridor — the operator can't add field
         notes after submission, so the amber prompt is a stale signal.
-        Show a neutral status chip instead. */}
+        Show the canonical lifecycle label so this chip reads the
+        same word as the top status pill on the page, instead of a
+        parallel "Awaiting customer review"-style framing. */}
     {isSealedOrPostReview ? (
       <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/15 text-gray-300">
-        {(() => {
-          const s = String(incidentStatus || "").toLowerCase();
-          if (s === "submitted_to_customer") return "Awaiting customer review";
-          if (s === "customer_accepted") return "Customer accepted";
-          if (s === "customer_rejected") return "Customer rejected";
-          return "Submitted";
-        })()}
+        {incidentStatusLabel(incidentStatus)}
       </span>
     ) : _notesAgo === "—" ? (
       <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-300/25 text-amber-100">

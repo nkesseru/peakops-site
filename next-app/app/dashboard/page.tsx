@@ -122,18 +122,13 @@ function humanizeEvent(v?: string) {
   return map[s] || s.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
-function readinessChip(i: Incident): { label: string; tone: string } {
-  if ((i.approved || 0) > 0) {
-    return { label: "Approved", tone: "border-emerald-400/20 bg-emerald-500/10 text-emerald-200" };
-  }
-  if ((i.reviewable || 0) > 0) {
-    return { label: "Ready for Review", tone: "border-blue-400/20 bg-blue-500/10 text-blue-200" };
-  }
-  if (i.updateRequested) {
-    return { label: "Waiting on Field", tone: "border-violet-400/20 bg-violet-500/10 text-violet-200" };
-  }
-  return { label: "Active", tone: "border-white/10 bg-white/[0.05] text-gray-200" };
-}
+// readinessChip removed. It depended on per-job fields (i.approved /
+// i.reviewable / i.updateRequested) that no longer come from the
+// listIncidentsV1 data source (post-KPI-refactor), so every card
+// fell through to the static "Active" label regardless of true
+// status. Per-card status now uses the canonical lifecycle pill
+// (incidentStatusLabel + incidentStatusPill) directly inside
+// IncidentCard, so the chip tells the truth without an indirection.
 
 type BucketKey = "needs_review" | "update_requested" | "active" | "approved";
 
@@ -239,7 +234,6 @@ async function doExport(i: Incident) {
 function IncidentCard({ i }: { i: Incident }) {
   const tone = bucketTone(String((i as any)?.bucket || ""));
 
-  const chip = readinessChip(i);
   const stale = staleFlag(i);
   const [exporting, setExporting] = useState(false);
 
@@ -289,7 +283,9 @@ function IncidentCard({ i }: { i: Incident }) {
                 reference is still available via the card's title
                 tooltip for audit lookups. */}
             <div className="text-lg font-semibold">{i.title || "Untitled incident"}</div>
-            <span className={`px-2 py-1 rounded-full border text-xs ${chip.tone}`}>{chip.label}</span>
+            <span className={"px-2 py-1 rounded-full border text-xs " + incidentStatusPill(i.status)}>
+              {incidentStatusLabel(i.status)}
+            </span>
             {stale ? (
               <span className={`px-2 py-1 rounded-full border text-xs ${stale.tone}`}>{stale.label}</span>
             ) : null}
