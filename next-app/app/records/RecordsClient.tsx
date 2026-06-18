@@ -290,7 +290,7 @@ function Body() {
             Field records
           </h1>
           <p className="text-[14px] text-gray-400 leading-relaxed max-w-prose">
-            Accepted packets, pending approvals, and active proof capture.
+            Accepted packets, in-progress reviews, and active proof capture.
           </p>
         </header>
 
