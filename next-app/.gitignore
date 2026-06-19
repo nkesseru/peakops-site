@@ -40,3 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 service-account.json
+
+# claude code session artifacts
+.claude/scheduled_tasks.lock
