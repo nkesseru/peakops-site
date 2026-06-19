@@ -113,7 +113,13 @@ const SPEC = {
     customer: "Riverbend Power & Light",
     priority: "normal",
     archetype: "fiber_splice_verification",
-    rejectionComment: "Missing OTDR trace — the packet shows splice photos but no loss measurement printout. Please attach the OTDR end-to-end trace before we can sign off.",
+    // PR — OTDR Story Alignment. Work-package title must agree
+    // with the incident title; demo dry-run flagged the prior
+    // pole-climb job title as a visible inconsistency on the
+    // record's Overview tab.
+    jobTitle: "OTDR validation — East Ring fiber segment",
+    jobDescription: "End-to-end OTDR sweep on the East Ring backhaul. Capture 1310 nm and 1550 nm traces, route photos, and field notes.",
+    rejectionComment: "Missing OTDR 1550 nm test trace — the packet shows the 1310 sweep but no 1550 loss measurement. Please attach the 1550 nm OTDR trace before we can sign off.",
     // "otdr" / "test result" / "missing" all map to missing_test_result
     // via CUSTOMER_COMMENT_CAUSE_KEYWORDS (otdr wins, first match).
     causePrimary: "missing_test_result",
@@ -302,7 +308,7 @@ async function patchIncidentDoc(incidentId, fields) {
   sub(`patched incident fields: ${Object.keys(fields).join(", ")}`);
 }
 
-async function patchFirstJobTitle(incidentId, newTitle) {
+async function patchFirstJobFields(incidentId, fields) {
   // Jobs live under both incidents/{id}/jobs and orgs/{org}/incidents/{id}/jobs
   // (dual-write). Patch whichever exists.
   let jobs = await db.collection(`incidents/${incidentId}/jobs`).limit(1).get();
@@ -313,9 +319,9 @@ async function patchFirstJobTitle(incidentId, newTitle) {
   }
   if (jobs.empty) { sub(`no job found to patch on ${incidentId}`); return; }
   const jobId = jobs.docs[0].id;
-  await db.doc(`incidents/${incidentId}/jobs/${jobId}`).set({ title: newTitle }, { merge: true }).catch(() => {});
-  await db.doc(`orgs/${ORG}/incidents/${incidentId}/jobs/${jobId}`).set({ title: newTitle }, { merge: true }).catch(() => {});
-  sub(`patched first job title (${path} path, jobId=${jobId}): ${newTitle}`);
+  await db.doc(`incidents/${incidentId}/jobs/${jobId}`).set(fields, { merge: true }).catch(() => {});
+  await db.doc(`orgs/${ORG}/incidents/${incidentId}/jobs/${jobId}`).set(fields, { merge: true }).catch(() => {});
+  sub(`patched first job (${path} path, jobId=${jobId}): ${Object.keys(fields).join(", ")}`);
 }
 
 async function patchRecoveryCause(incidentId, comment, causePrimary) {
@@ -343,7 +349,7 @@ async function patchRecordsToSpec() {
     priority: SPEC.A.priority,
     archetype: SPEC.A.archetype,
   });
-  await patchFirstJobTitle(SPEC.A.incidentId, SPEC.A.jobTitle);
+  await patchFirstJobFields(SPEC.A.incidentId, { title: SPEC.A.jobTitle });
 
   await patchIncidentDoc(SPEC.B.incidentId, {
     title: SPEC.B.title,
@@ -353,6 +359,10 @@ async function patchRecordsToSpec() {
     priority: SPEC.B.priority,
     archetype: SPEC.B.archetype,
     customerRejectionComment: SPEC.B.rejectionComment,
+  });
+  await patchFirstJobFields(SPEC.B.incidentId, {
+    title: SPEC.B.jobTitle,
+    description: SPEC.B.jobDescription,
   });
   await patchRecoveryCause(SPEC.B.incidentId, SPEC.B.rejectionComment, SPEC.B.causePrimary);
 
