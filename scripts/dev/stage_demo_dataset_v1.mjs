@@ -94,6 +94,11 @@ async function uploadEvidence({ incidentId, sessionId, jobId, fileName, label })
 }
 
 // ── Spec (single source for both create + patch passes) ─────────
+// PR 133B calibration — per-record filingTypesRequired classification.
+// DIRS is the FCC outage-reporting filing; only records that represent
+// real customer-affecting outages should carry it. Internal maintenance
+// work + test fiber sweeps should NOT, otherwise the passive validator
+// flags missing outage fields on records that aren't outages.
 const SPEC = {
   A: {
     incidentId: "demo_field_work_001",
@@ -104,6 +109,8 @@ const SPEC = {
     priority: "normal",
     archetype: "fiber_splice_verification",
     jobTitle: "Splice verification — Segment 14 cassette A",
+    // Internal maintenance, not an outage → DIRS does not apply.
+    filingTypesRequired: [],
   },
   B: {
     incidentId: "demo_rejected_001",
@@ -123,6 +130,25 @@ const SPEC = {
     // "otdr" / "test result" / "missing" all map to missing_test_result
     // via CUSTOMER_COMMENT_CAUSE_KEYWORDS (otdr wins, first match).
     causePrimary: "missing_test_result",
+    // Fiber-link test work, not an outage → DIRS does not apply.
+    filingTypesRequired: [],
+  },
+  // PR 133B calibration — Northgate is the one record that represents a
+  // real customer-affecting outage ("24th Ave N corridor outage"), so it
+  // SHOULD carry DIRS and SHOULD populate the DIRS-required fields. This
+  // produces the missing leg of the calibration triangle: a validator
+  // event that returns `state: "clear"` on a real positive case.
+  // NB: not part of the create-from-scratch loop — this record was
+  // created earlier outside this script. The patch pass below handles
+  // it idempotently.
+  NORTHGATE: {
+    incidentId: "demo_20260616T122606Z_5ax3",
+    filingTypesRequired: ["DIRS"],
+    // Choose values that match a believable corridor outage:
+    // 142 customers affected, outage began 18h before now (matches the
+    // record's "last activity 3d" + customer-review timing on alpha).
+    startTime: "2026-06-16T08:14:00Z",
+    affectedCustomers: 142,
   },
   C: {
     incidentId: "demo_draft_001",
@@ -324,6 +350,29 @@ async function patchFirstJobFields(incidentId, fields) {
   sub(`patched first job (${path} path, jobId=${jobId}): ${Object.keys(fields).join(", ")}`);
 }
 
+// PR 133B calibration — flip one evidence item to type:"LOG" so the
+// DIRS rulepack's `evidence.outageProof` (LOG-type) WARN check is
+// satisfied. Without this, even a fully-populated DIRS record stays
+// at `issues_advisory`; with it, the record reaches `clear`.
+async function patchFirstEvidenceTypeToLOG(incidentId) {
+  // Evidence lives on the legacy top-level path (computeReadiness reads
+  // it from `incidents/{id}/evidence_locker` per _readiness.js).
+  let ev = await db.collection(`incidents/${incidentId}/evidence_locker`).limit(1).get();
+  if (ev.empty) {
+    // Fall back to org-scoped if the legacy path is empty for this
+    // incident.
+    ev = await db.collection(`orgs/${ORG}/incidents/${incidentId}/evidence_locker`).limit(1).get();
+  }
+  if (ev.empty) {
+    sub(`no evidence on ${incidentId} to flip to LOG type`);
+    return;
+  }
+  const id = ev.docs[0].id;
+  await db.doc(`incidents/${incidentId}/evidence_locker/${id}`).set({ type: "LOG" }, { merge: true }).catch(() => {});
+  await db.doc(`orgs/${ORG}/incidents/${incidentId}/evidence_locker/${id}`).set({ type: "LOG" }, { merge: true }).catch(() => {});
+  sub(`flipped evidence ${id} → type:"LOG" on ${incidentId}`);
+}
+
 async function patchRecoveryCause(incidentId, comment, causePrimary) {
   const casesQ = await db.collection(`orgs/${ORG}/recovery_cases`).where("incidentId", "==", incidentId).limit(1).get();
   if (casesQ.empty) { sub(`no recovery case to patch for ${incidentId}`); return; }
@@ -348,6 +397,7 @@ async function patchRecordsToSpec() {
     customer: SPEC.A.customer,
     priority: SPEC.A.priority,
     archetype: SPEC.A.archetype,
+    filingTypesRequired: SPEC.A.filingTypesRequired,
   });
   await patchFirstJobFields(SPEC.A.incidentId, { title: SPEC.A.jobTitle });
 
@@ -359,12 +409,23 @@ async function patchRecordsToSpec() {
     priority: SPEC.B.priority,
     archetype: SPEC.B.archetype,
     customerRejectionComment: SPEC.B.rejectionComment,
+    filingTypesRequired: SPEC.B.filingTypesRequired,
   });
   await patchFirstJobFields(SPEC.B.incidentId, {
     title: SPEC.B.jobTitle,
     description: SPEC.B.jobDescription,
   });
   await patchRecoveryCause(SPEC.B.incidentId, SPEC.B.rejectionComment, SPEC.B.causePrimary);
+
+  // PR 133B calibration — Northgate. Populate DIRS-required fields so
+  // the validator can observe a passing positive case. Leave the
+  // existing title / customer / status untouched.
+  await patchIncidentDoc(SPEC.NORTHGATE.incidentId, {
+    filingTypesRequired: SPEC.NORTHGATE.filingTypesRequired,
+    startTime: SPEC.NORTHGATE.startTime,
+    affectedCustomers: SPEC.NORTHGATE.affectedCustomers,
+  });
+  await patchFirstEvidenceTypeToLOG(SPEC.NORTHGATE.incidentId);
 
   await patchIncidentDoc(SPEC.C.incidentId, {
     title: SPEC.C.title,
