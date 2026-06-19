@@ -107,7 +107,25 @@ type Incident = {
   updatedSec?: number;
   latestJobTitle?: string;
   thumbUrl?: string;
+  customer?: string;
+  priority?: string;
+  updatedAt?: string;
 };
+
+function humanizeAgo(iso?: string): string {
+  const s = String(iso || "").trim();
+  if (!s) return "—";
+  const t = Date.parse(s);
+  if (!Number.isFinite(t)) return "—";
+  const diffSec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (diffSec < 60) return `${diffSec}s`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 48) return `${diffHr}h`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d`;
+}
 
 function humanizeEvent(v?: string) {
   const s = String(v || "").trim();
@@ -293,14 +311,7 @@ function IncidentCard({ i }: { i: Incident }) {
           </div>
 
           <div className="text-xs text-gray-400 mt-1">{i.orgId}</div>
-          <div className="text-xs text-gray-500 mt-2">Latest job: {i.latestJobTitle || "—"}</div>
         </div>
-
-        {i.updateRequested ? (
-          <span className="px-2 py-1 rounded-full border border-violet-400/20 bg-violet-500/10 text-violet-200 text-xs shrink-0">
-            Update Requested
-          </span>
-        ) : null}
       </div>
 
       {/* Thumbnail tile renders only when the list source actually
@@ -328,18 +339,18 @@ function IncidentCard({ i }: { i: Incident }) {
           </div>
 
           <div className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2">
-            <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Reviewable</div>
-            <div className="mt-1">{i.reviewable || 0}</div>
+            <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Customer</div>
+            <div className="mt-1 truncate">{i.customer || "—"}</div>
           </div>
 
           <div className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2">
-            <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Approved</div>
-            <div className="mt-1">{i.approved || 0}</div>
+            <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Priority</div>
+            <div className="mt-1">{i.priority || "normal"}</div>
           </div>
 
           <div className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2">
             <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Last Activity</div>
-            <div className="mt-1">{humanizeEvent(i.lastEvent)}</div>
+            <div className="mt-1">{humanizeAgo(i.updatedAt)}</div>
           </div>
         </div>
       </div>
@@ -370,8 +381,6 @@ function IncidentCard({ i }: { i: Incident }) {
           {exporting ? "Exporting…" : "Export Packet"}
         </button>
       </div>
-
-      <div className="text-xs text-gray-500 mt-3">updated {i.updatedAgo || "—"}</div>
     </div>
   );
 }
