@@ -41,6 +41,7 @@ import {
   normalizeIncidentStatusShared,
 } from "@/lib/incidents/incidentStatus";
 import { getArchetypeDetails } from "@/lib/incidents/newIncidentDraft";
+import { isDemoArtifact } from "@/lib/incidents/demoHygiene";
 // PR 103b — Cache-only readiness pill. Renders only when the row
 // carries readinessCache.state from listIncidentsV1 (today: never;
 // forward-compatible for when backend plumbs it through). Omits on
@@ -52,7 +53,7 @@ type FilterKey = (typeof FILTER_VALUES)[number];
 
 const FILTER_LABELS: Record<FilterKey, string> = {
   all: "All",
-  pending: "Pending approval",
+  pending: "In Progress",
   active: "Active",
   accepted: "Accepted",
 };
@@ -106,17 +107,19 @@ type ListResp = {
 };
 
 /**
- * Lifecycle → filter membership. Kept deliberately narrow:
+ * Lifecycle → filter membership.
  *   - Active   = draft | open
- *   - Pending  = in_progress
- *   - Accepted = closed
- * "Locked" was considered but dropped pending a data-model signal
- * that distinguishes customer-accepted from sealed (PR 76 plan).
+ *   - Pending  = in_progress | submitted_to_customer | customer_rejected
+ *               (operator action expected — either in progress, waiting on
+ *                customer review, or customer asked for correction)
+ *   - Accepted = closed | customer_accepted
+ *               (closed = operator-accepted; customer_accepted = customer
+ *                signed off on the packet — both are terminal accept states)
  */
 function lifecycleFilter(status: string): FilterKey {
   const s = normalizeIncidentStatusShared(status);
-  if (s === "in_progress") return "pending";
-  if (s === "closed") return "accepted";
+  if (s === "in_progress" || s === "submitted_to_customer" || s === "customer_rejected") return "pending";
+  if (s === "closed" || s === "customer_accepted") return "accepted";
   return "active"; // draft, open, anything else
 }
 
@@ -134,10 +137,10 @@ function rowCTA(row: IncidentRow): { label: string; href: string } {
   const orgQs = row.orgId ? `?orgId=${encodeURIComponent(row.orgId)}` : "";
   const s = normalizeIncidentStatusShared(String(row.status || ""));
 
-  if (s === "in_progress") {
+  if (s === "in_progress" || s === "submitted_to_customer" || s === "customer_rejected") {
     return { label: "Open review →", href: `/incidents/${id}/review${orgQs}` };
   }
-  if (s === "closed") {
+  if (s === "closed" || s === "customer_accepted") {
     return { label: "Open dossier →", href: `/incidents/${id}/summary${orgQs}` };
   }
   if (s === "draft") {
@@ -167,7 +170,7 @@ function lastActivityLabel(row: IncidentRow): string {
 
 const EMPTY_COPY: Record<FilterKey, string> = {
   all: "No field records yet. Open a new field record to get started.",
-  pending: "No records are pending approval right now.",
+  pending: "No records are in progress right now.",
   active: "No active records in proof capture.",
   accepted: "No accepted packets yet. They'll appear here as work is approved.",
 };
@@ -241,18 +244,27 @@ function Body() {
     };
   }, [orgId]);
 
+  // Hide obvious demo/smoke/test trash from the operator list.
+  // Protected demo records (see lib/incidents/demoHygiene.ts) are
+  // always allowed through. Counts + filtered both source from
+  // visibleRows so the chip counts match what's actually shown.
+  const visibleRows = useMemo(
+    () => rows.filter((r) => !isDemoArtifact(r)),
+    [rows],
+  );
+
   const counts = useMemo(() => {
-    const c: Record<FilterKey, number> = { all: rows.length, pending: 0, active: 0, accepted: 0 };
-    for (const r of rows) {
+    const c: Record<FilterKey, number> = { all: visibleRows.length, pending: 0, active: 0, accepted: 0 };
+    for (const r of visibleRows) {
       const k = lifecycleFilter(String(r.status || ""));
       if (k in c) c[k] += 1;
     }
     return c;
-  }, [rows]);
+  }, [visibleRows]);
 
   const filtered = useMemo(
-    () => rows.filter((r) => matchesFilter(r, filter)),
-    [rows, filter],
+    () => visibleRows.filter((r) => matchesFilter(r, filter)),
+    [visibleRows, filter],
   );
 
   function setFilter(next: FilterKey) {
@@ -278,7 +290,7 @@ function Body() {
             Field records
           </h1>
           <p className="text-[14px] text-gray-400 leading-relaxed max-w-prose">
-            Accepted packets, pending approvals, and active proof capture.
+            Accepted packets, in-progress reviews, and active proof capture.
           </p>
         </header>
 

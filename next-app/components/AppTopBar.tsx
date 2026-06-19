@@ -65,7 +65,9 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { key: "dashboard", label: "Dashboard", href: "/dashboard" },
   { key: "records", label: "Records", href: "/records" },
-  { key: "my-work", label: "My Work", href: "/my-work" },
+  // "My Work" hidden from top-level nav while its sections are still
+  // placeholder ("Coming soon"). Route at /my-work still loads if
+  // anyone has the URL bookmarked; only the nav entry is suppressed.
   { key: "team", label: "Team", href: "/team", roles: TEAM_ROLES },
   // PR 119b — Templates editor for customer acceptance requirements.
   // Admin-only per scope decision.

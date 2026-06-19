@@ -6,7 +6,7 @@ export async function GET(req: Request) {
     const qs = url.searchParams.toString();
     const base =
       process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE ||
-      "http://127.0.0.1:5001/peakops-pilot/us-central1";
+      "http://127.0.0.1:5004/peakops-pilot/us-central1";
 
     const r = await fetch(`${base}/getContractsV1?${qs}`, { method: "GET" });
 

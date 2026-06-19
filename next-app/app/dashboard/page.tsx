@@ -57,18 +57,36 @@ function bucketBlurb(bucket: string) {
 import { useEffect, useMemo, useState } from "react";
 import RequireAuth from "@/components/RequireAuth";
 import AppTopBar from "@/components/AppTopBar";
-import { incidentStatusLabel, incidentStatusPill } from "@/lib/incidents/incidentStatus";
+import { incidentStatusLabel, incidentStatusPill, normalizeIncidentStatusShared } from "@/lib/incidents/incidentStatus";
+import { authedFetch } from "@/lib/apiClient";
+import { useAuth } from "@/hooks/useAuth";
+import { isDemoArtifact } from "@/lib/incidents/demoHygiene";
 
-// PEAKOPS_DASHBOARD_DEMO_SAFE_V1
-// Polished demo target. Hardcoded for now — when /api/dashboard
-// returns real per-org data, the hero card can lift to the first
-// sealed incident in the actor's claim instead.
-const DEMO_TARGET = {
-  incidentId: "inc_20260508_121451_acnew0",
-  orgId: "peakops-internal-alpha",
-  fallbackTitle: "Fiber splice verification — Internal Alpha Test",
-  fallbackLocation: "Internal Alpha Yard",
-};
+// Demo-safety filter for the hero card. Returns true when an incident
+// looks like real operator data — i.e. its title doesn't match the
+// known smoke/E2E artifact patterns. Used to keep the hero polished
+// during demos without forcing a hardcoded target.
+//
+// Patterns excluded:
+//   - "E2E recovery — loop", "E2E version-pin verification — …"
+//   - "SMOKE PR85-87 · Proof cockpit test"
+//   - "PR108-SMOKE · Readiness Freshness", "PR120-SMOKE · Provenance"
+//   - "dummy-fake" / similar
+//
+// If NO incident passes the filter, the heroItem derivation falls
+// back to the unfiltered list (so cold/early-stage orgs still get a
+// hero card). Records without a title are excluded outright since
+// they'd render as "Untitled record" in the hero — not flattering.
+function looksRealForHero(title: unknown): boolean {
+  const t = String(title || "").trim();
+  if (!t) return false;
+  if (/^e2e[ _-]/i.test(t)) return false;
+  if (/^smoke[ _·-]/i.test(t)) return false;
+  if (/smoke[ _-]?test/i.test(t)) return false;
+  if (/^pr\d+[a-z]?[ _·-]/i.test(t)) return false;
+  if (/^dummy[ _-]?/i.test(t)) return false;
+  return true;
+}
 
 type Incident = {
   incidentId: string;
@@ -89,7 +107,25 @@ type Incident = {
   updatedSec?: number;
   latestJobTitle?: string;
   thumbUrl?: string;
+  customer?: string;
+  priority?: string;
+  updatedAt?: string;
 };
+
+function humanizeAgo(iso?: string): string {
+  const s = String(iso || "").trim();
+  if (!s) return "—";
+  const t = Date.parse(s);
+  if (!Number.isFinite(t)) return "—";
+  const diffSec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (diffSec < 60) return `${diffSec}s`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 48) return `${diffHr}h`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d`;
+}
 
 function humanizeEvent(v?: string) {
   const s = String(v || "").trim();
@@ -105,25 +141,36 @@ function humanizeEvent(v?: string) {
   return map[s] || s.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
-function readinessChip(i: Incident): { label: string; tone: string } {
-  if ((i.approved || 0) > 0) {
-    return { label: "Approved", tone: "border-emerald-400/20 bg-emerald-500/10 text-emerald-200" };
-  }
-  if ((i.reviewable || 0) > 0) {
-    return { label: "Ready for Review", tone: "border-blue-400/20 bg-blue-500/10 text-blue-200" };
-  }
-  if (i.updateRequested) {
-    return { label: "Waiting on Field", tone: "border-violet-400/20 bg-violet-500/10 text-violet-200" };
-  }
-  return { label: "Active", tone: "border-white/10 bg-white/[0.05] text-gray-200" };
-}
+// readinessChip removed. It depended on per-job fields (i.approved /
+// i.reviewable / i.updateRequested) that no longer come from the
+// listIncidentsV1 data source (post-KPI-refactor), so every card
+// fell through to the static "Active" label regardless of true
+// status. Per-card status now uses the canonical lifecycle pill
+// (incidentStatusLabel + incidentStatusPill) directly inside
+// IncidentCard, so the chip tells the truth without an indirection.
 
 type BucketKey = "needs_review" | "update_requested" | "active" | "approved";
 
+// Status-based bucketing — mirrors Records' lifecycleFilter so the
+// Dashboard KPI counts match the Records page. Previously this read
+// per-job fields (reviewable / approved) that arrived via the
+// /api/dashboard server route, but that route is currently broken
+// (hardcoded single-seed + dev-admin actor 403s — see
+// fix(dashboard): source KPI counts from incidents).
+//
+//   needs_review     = in_progress | submitted_to_customer | customer_rejected
+//                      (operator action expected — work in progress,
+//                       waiting on customer review, or correction asked)
+//   approved         = closed | customer_accepted
+//                      (operator-accepted or customer-signed-off)
+//   active           = draft | open | anything else (catch-all)
+//   update_requested = (unused; bucket key kept for downstream code
+//                      paths that still reference it — always empty
+//                      until a real data source is wired)
 function primaryBucket(i: Incident): BucketKey {
-  if ((i.reviewable || 0) > 0) return "needs_review";
-  if (i.updateRequested) return "update_requested";
-  if ((i.approved || 0) > 0) return "approved";
+  const s = normalizeIncidentStatusShared(i.status);
+  if (s === "in_progress" || s === "submitted_to_customer" || s === "customer_rejected") return "needs_review";
+  if (s === "closed" || s === "customer_accepted") return "approved";
   return "active";
 }
 
@@ -206,7 +253,6 @@ async function doExport(i: Incident) {
 function IncidentCard({ i }: { i: Incident }) {
   const tone = bucketTone(String((i as any)?.bucket || ""));
 
-  const chip = readinessChip(i);
   const stale = staleFlag(i);
   const [exporting, setExporting] = useState(false);
 
@@ -256,35 +302,35 @@ function IncidentCard({ i }: { i: Incident }) {
                 reference is still available via the card's title
                 tooltip for audit lookups. */}
             <div className="text-lg font-semibold">{i.title || "Untitled incident"}</div>
-            <span className={`px-2 py-1 rounded-full border text-xs ${chip.tone}`}>{chip.label}</span>
+            <span className={"px-2 py-1 rounded-full border text-xs " + incidentStatusPill(i.status)}>
+              {incidentStatusLabel(i.status)}
+            </span>
             {stale ? (
               <span className={`px-2 py-1 rounded-full border text-xs ${stale.tone}`}>{stale.label}</span>
             ) : null}
           </div>
 
           <div className="text-xs text-gray-400 mt-1">{i.orgId}</div>
-          <div className="text-xs text-gray-500 mt-2">Latest job: {i.latestJobTitle || "—"}</div>
         </div>
-
-        {i.updateRequested ? (
-          <span className="px-2 py-1 rounded-full border border-violet-400/20 bg-violet-500/10 text-violet-200 text-xs shrink-0">
-            Update Requested
-          </span>
-        ) : null}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-[160px_1fr] gap-4 mt-4">
-        <div className="rounded-xl border border-white/[0.08] bg-black/20 overflow-hidden min-h-[120px] flex items-center justify-center">
-          {i.thumbUrl ? (
+      {/* Thumbnail tile renders only when the list source actually
+          carries a thumbUrl. After the dashboard data source moved
+          from /api/dashboard (per-card evidence fetch) to bulk
+          listIncidentsV1 (no thumbnail field), this is always
+          absent in production. Suppressing the tile collapses the
+          grid to full-width metric tiles instead of rendering a
+          permanent "No thumbnail" placeholder on every card. */}
+      <div className={i.thumbUrl ? "grid grid-cols-1 md:grid-cols-[160px_1fr] gap-4 mt-4" : "mt-4"}>
+        {i.thumbUrl ? (
+          <div className="rounded-xl border border-white/[0.08] bg-black/20 overflow-hidden min-h-[120px] flex items-center justify-center">
             <img
               src={i.thumbUrl}
               alt={`${i.incidentId} evidence`}
               className="w-full h-[120px] object-cover"
             />
-          ) : (
-            <div className="text-xs text-gray-500">No thumbnail</div>
-          )}
-        </div>
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2">
@@ -293,18 +339,18 @@ function IncidentCard({ i }: { i: Incident }) {
           </div>
 
           <div className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2">
-            <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Reviewable</div>
-            <div className="mt-1">{i.reviewable || 0}</div>
+            <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Customer</div>
+            <div className="mt-1 truncate">{i.customer || "—"}</div>
           </div>
 
           <div className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2">
-            <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Approved</div>
-            <div className="mt-1">{i.approved || 0}</div>
+            <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Priority</div>
+            <div className="mt-1">{i.priority || "normal"}</div>
           </div>
 
           <div className="rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2">
             <div className="text-[11px] text-gray-500 uppercase tracking-[0.16em]">Last Activity</div>
-            <div className="mt-1">{humanizeEvent(i.lastEvent)}</div>
+            <div className="mt-1">{humanizeAgo(i.updatedAt)}</div>
           </div>
         </div>
       </div>
@@ -335,8 +381,6 @@ function IncidentCard({ i }: { i: Incident }) {
           {exporting ? "Exporting…" : "Export Packet"}
         </button>
       </div>
-
-      <div className="text-xs text-gray-500 mt-3">updated {i.updatedAgo || "—"}</div>
     </div>
   );
 }
@@ -362,6 +406,8 @@ function BucketSection({ title, items }: { title: string; items: Incident[] }) {
 }
 
 export default function Dashboard() {
+  const { claims } = useAuth();
+  const claimsOrgId = (claims?.orgIds || [])[0] || "";
   const [items, setItems] = useState<Incident[]>([]);
   const [orgFilter, setOrgFilter] = useState<string>("all");
   const [orgs, setOrgs] = useState<string[]>([]);
@@ -387,12 +433,32 @@ export default function Dashboard() {
   }, [orgFilter]);
 
   async function load() {
+    // KPI counts now sourced from listIncidentsV1 with the user's
+    // real Bearer token (via authedFetch), mirroring the Records
+    // page. The previous /api/dashboard route fetched ONE hardcoded
+    // seed with a fake "dev-admin" actorUid, which post-auth-retrofit
+    // returns permission-denied for every sub-fetch — leaving the
+    // KPI tiles stuck at 0 while Records correctly showed the org's
+    // real 19 records. Same endpoint + same lifecycle bucketing
+    // pattern Records uses → counts now match Records exactly.
+    if (!claimsOrgId) {
+      setItems([]);
+      setOrgs([]);
+      setLoading(false);
+      setLastSync(Date.now());
+      return;
+    }
     try {
       setLoading(true);
-      const r = await fetch("/api/dashboard", { cache: "no-store" });
+      const url = `/api/fn/listIncidentsV1?orgId=${encodeURIComponent(claimsOrgId)}&limit=50`;
+      const r = await authedFetch(url, { cache: "no-store" });
       const j = await r.json().catch(() => ({}));
-      setItems(Array.isArray(j?.items) ? j.items : []);
-      setOrgs(Array.isArray(j?.orgs) ? j.orgs : []);
+      // listIncidentsV1 returns `incidents` (or `items` on some endpoints) — accept both.
+      const list = Array.isArray(j?.items) ? j.items : (Array.isArray(j?.incidents) ? j.incidents : []);
+      setItems(list);
+      // Single-org scope here — populate the org chip with the claim's org
+      // so the existing filter UI keeps a sensible value.
+      setOrgs(claimsOrgId ? [claimsOrgId] : []);
       setLastSync(Date.now());
     } catch {
       setItems([]);
@@ -409,10 +475,16 @@ export default function Dashboard() {
       void load();
     }, 15000);
     return () => clearInterval(t);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claimsOrgId]);
 
   const visible = useMemo(() => {
-    return items.filter((i) => orgFilter === "all" || i.orgId === orgFilter);
+    // Filter chain: org scope → demo-hygiene. The latter hides obvious
+    // smoke/test/seed records from operator queues; protected demo
+    // record IDs (see demoHygiene.ts) are always allowed through.
+    return items
+      .filter((i) => orgFilter === "all" || i.orgId === orgFilter)
+      .filter((i) => !isDemoArtifact(i));
   }, [items, orgFilter]);
 
   const grouped = useMemo(() => {
@@ -465,21 +537,34 @@ export default function Dashboard() {
     }
   };
 
-  // PEAKOPS_DASHBOARD_DEMO_SAFE_V1
-  // Demo-target hero card data. Prefer the live item from /api/dashboard
-  // if it surfaces; fall back to hardcoded copy so the hero renders
-  // even in a cold/empty state.
-  const demoItem = visible.find(
-    (i) =>
-      i.incidentId === DEMO_TARGET.incidentId &&
-      i.orgId === DEMO_TARGET.orgId,
-  );
-  const demoTitle = demoItem?.title || DEMO_TARGET.fallbackTitle;
-  const demoLocation = demoItem?.location || DEMO_TARGET.fallbackLocation;
-  const demoStatus = demoItem?.status || "closed";
-  const demoEvidence = demoItem?.evidenceCount ?? 1;
-  const demoUpdatedAgo = demoItem?.updatedAgo;
-  const demoQs = `?orgId=${encodeURIComponent(DEMO_TARGET.orgId)}`;
+  // Hero card target — derived from the live incident list.
+  // Preference order:
+  //   1. Most recently updated accepted record that passes the
+  //      smoke-artifact filter (looksRealForHero)
+  //   2. Most recently updated record of any status that passes the filter
+  //   3. Most recently updated accepted record from the unfiltered list
+  //   4. Most recently updated record of any status (last resort)
+  //   5. null → hero card hidden entirely (cold org / zero incidents)
+  //
+  // Accepted = status in {closed, customer_accepted}.
+  const heroItem = useMemo(() => {
+    const sorted = visible.slice().sort(
+      (a, b) => Number(b.updatedSec || 0) - Number(a.updatedSec || 0),
+    );
+    const isAccepted = (i: Incident) => {
+      const s = String(i.status || "").toLowerCase();
+      return s === "closed" || s === "customer_accepted";
+    };
+    const isReal = (i: Incident) => looksRealForHero(i.title);
+    return (
+      sorted.find((i) => isReal(i) && isAccepted(i))
+      ?? sorted.find(isReal)
+      ?? sorted.find(isAccepted)
+      ?? sorted[0]
+      ?? null
+    );
+  }, [visible]);
+  const heroQs = heroItem?.orgId ? `?orgId=${encodeURIComponent(heroItem.orgId)}` : "";
 
   return (
     <RequireAuth>
@@ -532,59 +617,47 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* PEAKOPS_DASHBOARD_DEMO_SAFE_V1
-            Continue-your-demo hero card. Always renders the polished
-            sealed-incident entry point regardless of whether the
-            bucket grid has data. First-click path: Summary (primary).
-            Review available as a secondary action. The card pulls
-            live title/location/status from /api/dashboard when the
-            request succeeds; otherwise falls back to hardcoded copy
-            so the card never renders as a broken placeholder. */}
+        {/* Hero card. Surfaces the operator's most recently active
+            accepted record, with a demo-safe filter that prefers
+            real records over E2E/SMOKE/PR-named artifacts. Hidden
+            entirely when the org has no incidents at all. */}
+        {heroItem ? (
         <section className="mb-6 rounded-2xl border border-amber-300/20 bg-amber-500/[0.04] px-5 py-5 sm:px-6 sm:py-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              {/* PEAKOPS_DASHBOARD_POLISH_V1
-                  Two-line eyebrow. The all-caps "CONTINUE YOUR DEMO"
-                  label stays as the prompt; the quieter second line
-                  ("Open the sealed operational record") is the
-                  instruction that tells the user what the card is
-                  asking them to do — same voice as Summary's
-                  "Operational record closed" banner. The previous
-                  inline " · INCIDENT RECORD · {ORGID}" annotation
-                  is dropped; the title + location + chip below
-                  already carry the dossier identity. */}
               <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
-                Continue your demo
-              </div>
-              <div className="mt-1 text-[12px] text-gray-300">
-                Open the sealed operational record
+                Pick up where you left off
               </div>
               <h2 className="mt-3 text-xl sm:text-[22px] font-semibold leading-tight tracking-tight text-white truncate">
-                {demoTitle}
+                {heroItem.title || "Untitled record"}
               </h2>
-              {demoLocation ? (
+              {heroItem.location ? (
                 <div className="mt-0.5 text-[12px] text-gray-300">
-                  {demoLocation}
+                  {heroItem.location}
                 </div>
               ) : null}
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-gray-400">
                 <span
                   className={
                     "text-[11px] px-2 py-0.5 rounded-full border " +
-                    incidentStatusPill(demoStatus)
+                    incidentStatusPill(heroItem.status)
                   }
                 >
-                  {incidentStatusLabel(demoStatus)}
+                  {incidentStatusLabel(heroItem.status)}
                 </span>
-                <span className="text-white/20">·</span>
-                <span>
-                  {demoEvidence}{" "}
-                  {demoEvidence === 1 ? "piece of evidence" : "pieces of evidence"}
-                </span>
-                {demoUpdatedAgo && demoUpdatedAgo !== "—" ? (
+                {Number.isFinite(heroItem.evidenceCount as number) ? (
                   <>
                     <span className="text-white/20">·</span>
-                    <span>last activity {demoUpdatedAgo}</span>
+                    <span>
+                      {heroItem.evidenceCount}{" "}
+                      {heroItem.evidenceCount === 1 ? "piece of evidence" : "pieces of evidence"}
+                    </span>
+                  </>
+                ) : null}
+                {heroItem.updatedAgo && heroItem.updatedAgo !== "—" ? (
+                  <>
+                    <span className="text-white/20">·</span>
+                    <span>last activity {heroItem.updatedAgo}</span>
                   </>
                 ) : null}
               </div>
@@ -594,7 +667,7 @@ export default function Dashboard() {
                 type="button"
                 className="px-3 py-1.5 rounded-xl bg-white/8 border border-white/15 text-gray-200 hover:bg-white/12 text-sm"
                 onClick={() => {
-                  window.location.href = `/incidents/${encodeURIComponent(DEMO_TARGET.incidentId)}/review${demoQs}`;
+                  window.location.href = `/incidents/${encodeURIComponent(heroItem.incidentId)}/review${heroQs}`;
                 }}
               >
                 Supervisor Review
@@ -603,7 +676,7 @@ export default function Dashboard() {
                 type="button"
                 className="px-3 py-1.5 rounded-xl bg-white text-black border border-white/30 hover:bg-white/90 text-sm font-medium"
                 onClick={() => {
-                  window.location.href = `/incidents/${encodeURIComponent(DEMO_TARGET.incidentId)}/summary${demoQs}`;
+                  window.location.href = `/incidents/${encodeURIComponent(heroItem.incidentId)}/summary${heroQs}`;
                 }}
               >
                 Open dossier (Summary) →
@@ -611,12 +684,21 @@ export default function Dashboard() {
             </div>
           </div>
         </section>
+        ) : null}
 
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <StatCard title="Needs Review" value={counts.needs_review} tone="border-blue-400/20 bg-blue-500/[0.05]" />
-          <StatCard title="Update Requested" value={counts.update_requested} tone="border-violet-400/20 bg-violet-500/[0.05]" />
+          {/* Lifecycle vocabulary aligned with Records chips so the
+              same record cannot read as one thing here and another
+              there. "Needs Review" → "In Progress"; "Approved" →
+              "Accepted". Bucket math + tones unchanged. */}
+          <StatCard title="In Progress" value={counts.needs_review} tone="border-blue-400/20 bg-blue-500/[0.05]" />
+          {/* Total Records counts what the operator can actually see —
+              i.e. items after the org filter AND the demo-hygiene
+              filter (visible.length), not the raw items.length which
+              still includes filtered smoke artifacts. */}
+          <StatCard title="Total Records" value={visible.length} tone="border-white/[0.08] bg-white/[0.03]" />
           <StatCard title="Active" value={counts.active} tone="border-white/[0.08] bg-white/[0.03]" />
-          <StatCard title="Approved" value={counts.approved} tone="border-emerald-400/20 bg-emerald-500/[0.05]" />
+          <StatCard title="Accepted" value={counts.approved} tone="border-emerald-400/20 bg-emerald-500/[0.05]" />
         </section>
 
         {/* PEAKOPS_DASHBOARD_SIGNED_IN_POLISH_V1
@@ -679,15 +761,18 @@ export default function Dashboard() {
               No active records in supervisor review.
             </div>
             <div className="mt-1 text-[12px] text-gray-500">
-              The polished demo record is in the hero above. New incidents will appear here as field crews open them.
+              New incidents will appear here as field crews open them.
             </div>
           </section>
         ) : (
           <>
-            <BucketSection title="Needs Review" items={grouped.needs_review} />
-            <BucketSection title="Update Requested" items={grouped.update_requested} />
+            <BucketSection title="In Progress" items={grouped.needs_review} />
+            {/* Update Requested section retired alongside the matching
+                tile — bucket key kept in `grouped` for downstream
+                compile-safety, but the always-empty section was
+                its own "misleading 0" surface. */}
             <BucketSection title="Active" items={grouped.active} />
-            <BucketSection title="Approved" items={grouped.approved} />
+            <BucketSection title="Accepted" items={grouped.approved} />
           </>
         )}
       </div>

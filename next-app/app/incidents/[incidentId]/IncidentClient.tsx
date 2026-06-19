@@ -23,7 +23,6 @@ import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/li
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
-import RecordNav from "@/components/RecordNav";
 import AppTopBar from "@/components/AppTopBar";
 // PR 130b — surfaces recovery actions assigned to the field user inside
 // the active incident overview as "Extra work needed before this can
@@ -316,7 +315,7 @@ function normalizeIncidentStatus(status: any) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
-  if (raw === "in-progress" || raw === "inprogress" || raw === "submitted") return "in_progress";
+  if (raw === "in-progress" || raw === "inprogress" || raw === "in_progress" || raw === "submitted") return "in_progress";
   if (raw === "closed") return "closed";
   // PEAKOPS_DRAFT_STATUS_PASSTHROUGH_V1 (PR 73 follow-up)
   // The proof-workflow create flow (PR 70) writes status: "draft" via
@@ -327,7 +326,36 @@ function normalizeIncidentStatus(status: any) {
   // incidentStatusLabel/Pill. Lifecycle unchanged — this just
   // surfaces an already-stored status string.
   if (raw === "draft") return "draft";
+  // Customer-review corridor statuses (PR 126+). Without these
+  // passthroughs the catch-all below collapsed customer_accepted,
+  // customer_rejected, and submitted_to_customer to "open" — which
+  // is why the Incident page rendered an "Open" pill and the
+  // "Proof package incomplete" readiness card on records other
+  // screens already showed as Accepted. Dashboard / Records /
+  // Summary call incidentStatusLabel on the raw status and never
+  // hit this normalizer, which is why the inconsistency only
+  // showed on the Incident page.
+  if (raw === "submitted_to_customer") return "submitted_to_customer";
+  if (raw === "customer_accepted") return "customer_accepted";
+  if (raw === "customer_rejected") return "customer_rejected";
   return "open";
+}
+
+// Returns true when the incident is in a status where no further
+// field-work mutations should be accepted from the operator UI:
+//   - closed                 (operator-accepted, sealed)
+//   - customer_accepted      (customer signed off — packet is locked)
+//   - customer_rejected      (operator's next move is recovery, not raw field work)
+//   - submitted_to_customer  (review link out — record is frozen until customer responds)
+// Used by the bottom dock visibility gate, the proof/capture/jobs
+// surfaces on the Overview/Jobs/Evidence tabs, and as a defense-in-depth
+// early-return inside every mutation handler — same set, single source.
+function isFieldWorkLocked(status: any) {
+  const s = String(status || "").toLowerCase();
+  return s === "closed"
+      || s === "customer_accepted"
+      || s === "customer_rejected"
+      || s === "submitted_to_customer";
 }
 
 function getLinkedJobId(ev: any) {
@@ -561,7 +589,15 @@ async function markArrived() {
     const org = String(orgId || "").trim();
 
     if (!base) return toast("Missing NEXT_PUBLIC_FUNCTIONS_BASE", 3000);
-    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
+    // Defense-in-depth: refuse before optimistic UI fires. Hides the
+    // 1d → 0s timeline flash even when this function is invoked from
+    // a code path that bypasses the bottom-dock visibility gate.
+    {
+      const _s = String(incidentStatus).toLowerCase();
+      if (_s === "closed" || _s === "customer_accepted" || _s === "customer_rejected" || _s === "submitted_to_customer") {
+        return toast("This record is locked from field work.", 2600);
+      }
+    }
 
     let sid = String(activeSessionId || "").trim();
     if (!sid) {
@@ -660,7 +696,14 @@ async function markArrived() {
 }
 
   async function submitSession() {
-    if (String(incidentStatus).toLowerCase() === "closed") return toast("Incident is closed (read-only).", 2600);
+    // Defense-in-depth: refuse before any server call for sealed or
+    // post-review records, regardless of which UI surface fired this.
+    {
+      const _s = String(incidentStatus).toLowerCase();
+      if (_s === "closed" || _s === "customer_accepted" || _s === "customer_rejected" || _s === "submitted_to_customer") {
+        return toast("This record is locked from field work.", 2600);
+      }
+    }
     const sid = String(activeSessionId || "").trim();
     if (!sid) return toast("No active session yet — add evidence first.", 3000);
     const ok = window.confirm("Submit this session? This locks the field visit for supervisor review.");
@@ -1186,6 +1229,17 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }, [selectableFieldJobs, currentJobId]);
 
   const isClosed = String(incidentStatus || "").toLowerCase() === "closed";
+  // Display-only gate for the Overview readiness checklist. Broader
+  // than isClosed so the checklist also hides once the record has
+  // moved into the customer-review corridor (submitted, accepted,
+  // rejected) — at those points the page should not be telling the
+  // operator "Proof package incomplete." isClosed semantics stay
+  // strict ("closed" only) so write-action gates elsewhere on this
+  // page are unaffected.
+  const isSealedOrPostReview =
+    isClosed ||
+    ["customer_accepted", "customer_rejected", "submitted_to_customer"]
+      .includes(String(incidentStatus || "").toLowerCase());
   const isDemoMode = isDemoIncident(incidentId);
   const isIncidentClosedError = (e: any) => {
     const msg = String(e?.message || e || "").toLowerCase();
@@ -1266,7 +1320,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function createJob() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const title = String(jobTitle || "").trim();
     if (!title) return toast("Job title is required.", 2200);
     try {
@@ -1299,7 +1353,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function setJobStatus(jobId: string, status: JobStatus) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     try {
       setJobsBusy(true);
       const out: any = await postJson(`/api/fn/updateJobStatusV1`, {
@@ -1339,7 +1393,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignJobOrg(jobId: string, assignedOrgIdRaw: string) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const assignedOrgId = String(assignedOrgIdRaw || "").trim();
     try {
       setJobsBusy(true);
@@ -1410,7 +1464,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function markCurrentJobComplete() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const jid = String(currentJobId || "").trim();
     if (!jid) return toast("Select My job first.", 2200);
     const completeOk = window.confirm("Mark complete?");
@@ -1419,7 +1473,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignAllUnassignedToCurrentJob() {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const jid = String(currentJobId || "").trim();
     if (!jid) return toast("Select My job first.", 2200);
 
@@ -1485,7 +1539,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignEvidenceJob(evidenceId: string, jobIdRaw: string) {
-    if (isClosed) return toast("Incident is closed (read-only).", 2600);
+    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
     const nextJobId = String(jobIdRaw || "").trim();
     setEvidence((prev: any[]) =>
       (Array.isArray(prev) ? prev : []).map((ev: any) =>
@@ -2754,24 +2808,19 @@ useEffect(() => {
                   Open job
                 </button>
               ) : null}
-              <button
-                type="button"
-                className={
-                  "px-3 py-2 rounded-xl border text-sm transition " +
-                  (isClosed
-                    ? "bg-white/8 border-white/15 text-gray-300 cursor-not-allowed"
-                    : "bg-white/6 border-white/10 hover:bg-white/10 text-gray-100")
-                }
-                onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
-                disabled={isClosed}
-                title={
-                  isClosed
-                    ? "Incident is closed (read-only)"
-                    : "Add proof"
-                }
-              >
-                Add proof
-              </button>
+              {/* Add proof routes into the field-evidence upload flow.
+                  Hidden on closed and post-review records — no proof
+                  mutation should be reachable from a locked record. */}
+              {!isFieldWorkLocked(incidentStatus) ? (
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl border text-sm transition bg-white/6 border-white/10 hover:bg-white/10 text-gray-100"
+                  onClick={() => { try { goAddEvidence(); } catch (e) { console.error(e); } }}
+                  title="Add proof"
+                >
+                  Add proof
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -2785,19 +2834,11 @@ useEffect(() => {
 
       </div>
 
-      {/* PEAKOPS_RECORD_NAV_V1
-          Quiet horizontal route bridge between Dashboard · Incident
-          · Summary · Review · File Addendum. Sits directly below
-          the identity-hero masthead, outside the sticky region, so
-          it scrolls with the rest of the body. */}
-      <div className="px-4 pt-3">
-        <RecordNav
-          incidentId={String(incidentId || "")}
-          orgId={String(orgId || "")}
-          current="incident"
-          isSealed={isClosed}
-        />
-      </div>
+      {/* Secondary route-bridge strip removed (was: Dashboard · Incident ·
+          Summary · Review). The main top nav already covers Dashboard;
+          the Incident tab row below covers Overview / Timeline / Proof /
+          Jobs; Summary and Review still render their own RecordNav for
+          inbound traffic from outside. */}
 
       {/* PEAKOPS_CAPTURE_PROOF_NEXT_STEP_V1 (PR 70)
           Next-step banner that fires when the user has just landed
@@ -2810,7 +2851,7 @@ useEffect(() => {
           banner dismisses without leaving the record. Open-state
           only — sealed records have their own dossier panel and
           don't need a "first step" affordance. */}
-      {!isClosed && sp?.get("next") === "capture-proof" ? (
+      {!isFieldWorkLocked(incidentStatus) && sp?.get("next") === "capture-proof" ? (
         <div className="px-4 pt-3">
           <div className="rounded-2xl border border-amber-300/25 bg-amber-500/[0.05] px-4 py-4 sm:px-5 sm:py-5 space-y-3">
             <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
@@ -2949,9 +2990,12 @@ useEffect(() => {
 {/* PEAKOPS_NEXTBESTACTION_V1_RENDER */}
 {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
     NextBestAction is the operational cockpit (Arrive / Add Evidence /
-    Open Notes / Submit). Suppressed on sealed records — the sealed
-    state has no "next best action" beyond filing an addendum. */}
-        {activeTab === "overview" && !isClosed ? (
+    Open Notes / Submit). Suppressed on sealed records and on
+    post-review records (submitted_to_customer, customer_accepted,
+    customer_rejected) — the "Capture proof" / "Add proof" prompt
+    surfaces an active mutation CTA, which is misleading once the
+    record is locked from field work. */}
+        {activeTab === "overview" && !isFieldWorkLocked(incidentStatus) ? (
 		<NextBestAction
 	  arrived={arrived}
 	  hasSession={_hasSession}
@@ -2982,11 +3026,21 @@ useEffect(() => {
     open-state operational cockpit. On a sealed record nothing more is
     going to happen — the timers just tick beside a closed banner.
     Hidden when isClosed. */}
-{activeTab === "overview" && !isClosed ? (
+{activeTab === "overview" && !isClosed && hasInitialLoad ? (
 <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
   <div className="flex items-center justify-between gap-3">
     <div className="text-[11px] uppercase tracking-wide text-gray-400">Timers</div>
-    {_notesAgo === "—" ? (
+    {/* Suppress "Action needed: notes" once the record has moved into
+        the customer-review corridor — the operator can't add field
+        notes after submission, so the amber prompt is a stale signal.
+        Show the canonical lifecycle label so this chip reads the
+        same word as the top status pill on the page, instead of a
+        parallel "Awaiting customer review"-style framing. */}
+    {isSealedOrPostReview ? (
+      <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/15 text-gray-300">
+        {incidentStatusLabel(incidentStatus)}
+      </span>
+    ) : _notesAgo === "—" ? (
       <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-300/25 text-amber-100">
         Action needed: notes
       </span>
@@ -3008,14 +3062,14 @@ useEffect(() => {
     <div
       className={
         "rounded-xl border px-3 py-2 sm:col-span-2 " +
-        (_notesAgo === "—"
+        (_notesAgo === "—" && !isSealedOrPostReview
           ? "bg-amber-500/10 border-amber-300/25"
           : "bg-black/30 border-white/10")
       }>
-      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" ? "text-amber-200/80" : "text-gray-400")}>
+      <div className={"text-[10px] uppercase tracking-wide " + (_notesAgo === "—" && !isSealedOrPostReview ? "text-amber-200/80" : "text-gray-400")}>
         Field notes
       </div>
-      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" ? "text-amber-50" : "text-gray-100")}>
+      <div className={"mt-1 text-base font-semibold " + (_notesAgo === "—" && !isSealedOrPostReview ? "text-amber-50" : "text-gray-100")}>
         {_notesAgo}
       </div>
     </div>
@@ -3232,7 +3286,7 @@ useEffect(() => {
             for choosing which job a future upload will attach to. On
             sealed records no new evidence can attach, so the section
             has no purpose. The Jobs tab keeps the job list itself. */}
-        {activeTab === "jobs" && !isClosed ? (
+        {activeTab === "jobs" && !isFieldWorkLocked(incidentStatus) ? (
         <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs uppercase tracking-[0.16em] text-gray-400">My Job</div>
@@ -3340,7 +3394,7 @@ useEffect(() => {
             evidence.jobId. On sealed records evidence linkage is
             immutable. Hidden when isClosed. The Evidence gallery
             above this section stays visible as a read-only display. */}
-        {activeTab === "evidence" && !isClosed ? (
+        {activeTab === "evidence" && !isFieldWorkLocked(incidentStatus) ? (
         <section ref={evidenceMappingSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between gap-2">
             <div id="evidence-mapping" className="text-xs uppercase tracking-wide text-gray-400">Evidence to Job Mapping</div>
@@ -3466,7 +3520,7 @@ useEffect(() => {
             audit of whether the incident is ready to close. On a
             closed incident the answer is permanently "yes" and the
             checklist is dead weight beside the sealed banner. */}
-        {activeTab === "overview" && !isClosed ? (
+        {activeTab === "overview" && !isSealedOrPostReview && hasInitialLoad ? (
         <section className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between">
             {/* PR 85 — readiness reframed as acceptance-readiness so
@@ -3517,18 +3571,24 @@ useEffect(() => {
 
         {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
             Bottom-dock spacer. Reserves vertical room for the fixed
-            dock below. Hidden when isClosed since the dock itself is
-            hidden. */}
-        {!isClosed ? <div className="h-20" /> : null}
+            dock below. Hidden when the dock itself is hidden — i.e.
+            for sealed records (closed) and post-review records
+            (submitted_to_customer, customer_accepted, customer_rejected). */}
+        {!isSealedOrPostReview ? <div className="h-20" /> : null}
       </div>
 
       {/* Bottom dock */}
       {/* PEAKOPS_INCIDENT_SEALED_BODY_GATE_V1 (PR 55.5)
           Bottom dock is the primary operational cockpit (Arrive /
-          Evidence / Notes / Submit). On sealed records every action
-          here either no-ops or 409s server-side. Hidden entirely —
-          no disabled buttons left to confuse the supervisor. */}
-      {!isClosed ? (
+          Evidence / Notes / Submit). On sealed records (closed) and
+          post-review records (submitted_to_customer,
+          customer_accepted, customer_rejected) every action here
+          either no-ops or 409s server-side, and optimistic UI can
+          flash a misleading reset (Site Arrival 1d → 0s) before
+          the server rejects. Hidden entirely — no disabled buttons
+          left to confuse the supervisor and no surface left to
+          mutate a locked record from. */}
+      {!isSealedOrPostReview ? (
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/10">
         <div className="grid grid-cols-4 gap-2">
           {/* Arrive */}
@@ -3696,40 +3756,46 @@ useEffect(() => {
                 <div className="text-gray-400 text-sm">Loading…</div>
               )}
 
-              {/* PEAKOPS_V2_CAPTION_UI */}
+              {/* Evidence label viewer/editor. On locked records (closed
+                  and post-review), the label is shown read-only — no
+                  input, no Clear button — so the modal continues to
+                  surface the metadata without offering a mutation
+                  surface. */}
               <div className="mt-3">
                 <div className="text-[11px] uppercase tracking-wide text-gray-400">Evidence label</div>
 
-                <div className="mt-2 flex items-center gap-2">
-                  <input
-                    className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200 outline-none placeholder:text-gray-500"
-                    placeholder="e.g., Pole base (wide), conductor break (close), panel label…"
-                    value={getCaption(selectedEvidenceId)}
-                    onChange={(e) => setCaption(selectedEvidenceId, e.target.value)}
-                    onBlur={() => {
-                      try {
-                        persistEvidenceLabel(
-                          String(orgId || ""),
-                          String(incidentId || ""),
-                          String(selectedEvidenceId || ""),
-                          String(getCaption(selectedEvidenceId) || "")
-                        );
-                      } catch {}
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="px-3 py-2 rounded-xl bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-sm"
-                    onClick={() => setCaption(selectedEvidenceId, "")}
-                    title="Clear label"
-                  >
-                    Clear
-                  </button>
-                </div>
-
-                <div className="mt-2 text-[11px] text-gray-500">
-                  v2: stored locally for now. Later we’ll persist to Firestore + enforce naming rules.
-                </div>
+                {isFieldWorkLocked(incidentStatus) ? (
+                  <div className="mt-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200">
+                    {getCaption(selectedEvidenceId) || <span className="text-gray-500">—</span>}
+                  </div>
+                ) : (
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200 outline-none placeholder:text-gray-500"
+                      placeholder="e.g., Pole base (wide), conductor break (close), panel label…"
+                      value={getCaption(selectedEvidenceId)}
+                      onChange={(e) => setCaption(selectedEvidenceId, e.target.value)}
+                      onBlur={() => {
+                        try {
+                          persistEvidenceLabel(
+                            String(orgId || ""),
+                            String(incidentId || ""),
+                            String(selectedEvidenceId || ""),
+                            String(getCaption(selectedEvidenceId) || "")
+                          );
+                        } catch {}
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="px-3 py-2 rounded-xl bg-white/6 border border-white/12 text-gray-200 hover:bg-white/10 transition text-sm"
+                      onClick={() => setCaption(selectedEvidenceId, "")}
+                      title="Clear label"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
               </div>
 </div>
           </div>

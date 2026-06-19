@@ -4,7 +4,13 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
 const { resolveEvidenceBucket } = require("./evidenceBucket");
 const { normalizeContentType, isHeicEvidence } = require("./evidenceHeic");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
 const { extractActorUid } = require("./_actor");
+const { refreshReadinessCache } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -102,6 +108,44 @@ const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const sessionId = mustStr(body.sessionId, "sessionId");
 
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 5: evidence upload is field-or-above. Field
+    // crews routinely upload photos as part of capture; viewers are
+    // denied. Upgraded from the Slice 2 membership-only gate. Runs
+    // before the emulator object-existence probe / any Firestore
+    // write so a denied caller never even hits Storage.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[addEvidenceV1] authz_denied", {
+        fn: "addEvidenceV1",
+        orgId,
+        incidentId,
+        sessionId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[addEvidenceV1] authz_ok", {
+      fn: "addEvidenceV1",
+      orgId,
+      incidentId,
+      sessionId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
     const phase = cleanLabel(body.phase || "UNSPEC");
     const labelsRaw = Array.isArray(body.labels) ? body.labels : [];
     const labels = labelsRaw.map(cleanLabel).filter(Boolean).slice(0, 8);
@@ -110,17 +154,79 @@ const orgId = mustStr(body.orgId, "orgId");
     const notes = String(body.notes || "").trim().slice(0, 500);
     const jobId = String(body.jobId || "").trim();
 
+    // PEAKOPS_REQUIREMENT_SLOT_FIELDS_V1 (PR 94a)
+    //
+    // Optional explicit-intent fields the client passes when the
+    // operator clicks an adaptive "Capture: <required item>" button
+    // (PR 94b UI). Validates cheaply and persists on the evidence
+    // doc only when non-empty so legacy / general-proof uploads
+    // continue to land with the existing doc shape unchanged.
+    //
+    //   requirementKey    : slug derived from requirementLabel
+    //                       (e.g., "splice-enclosure-photo").
+    //                       Stable for the lifetime of a record
+    //                       (labels are snapshotted at create time
+    //                       per PR 89a; client-side slugger is
+    //                       deterministic).
+    //   requirementLabel  : human-readable label verbatim from the
+    //                       record's snapshotted requirements list.
+    //   requirementSource : which template layer fed the snapshot
+    //                       on the parent incident doc — one of
+    //                       customer_template | org_template |
+    //                       archetype. Anything else is ignored.
+    //   requirementIndex  : ordinal in the snapshot's
+    //                       requiredProof[] array (≥0). Useful for
+    //                       stable ordering when labels collide.
+    //
+    // NOT enforced. NOT validated against the parent incident's
+    // requirements snapshot. The slot tag is operator intent —
+    // a hint for future audit / per-slot satisfaction views, not
+    // a gate. Tampered or stale slot values just sit on the doc
+    // without doing anything.
+    const REQUIREMENT_KEY_MAX = 120;
+    const REQUIREMENT_LABEL_MAX = 200;
+    const REQUIREMENT_SOURCE_ENUM = ["customer_template", "org_template", "archetype"];
+    const reqKeyRaw = String(body.requirementKey || "").trim();
+    const reqLabelRaw = String(body.requirementLabel || "").trim();
+    const reqSrcRaw = String(body.requirementSource || "").trim();
+    const reqIdxRaw = body.requirementIndex;
+    const requirementKey = reqKeyRaw && /^[a-z0-9-]{1,120}$/.test(reqKeyRaw)
+      ? reqKeyRaw.slice(0, REQUIREMENT_KEY_MAX)
+      : "";
+    const requirementLabel = reqLabelRaw
+      ? reqLabelRaw.slice(0, REQUIREMENT_LABEL_MAX)
+      : "";
+    const requirementSource = REQUIREMENT_SOURCE_ENUM.includes(reqSrcRaw) ? reqSrcRaw : "";
+    const requirementIndex =
+      reqIdxRaw !== undefined &&
+      reqIdxRaw !== null &&
+      Number.isFinite(Number(reqIdxRaw)) &&
+      Number(reqIdxRaw) >= 0
+        ? Math.trunc(Number(reqIdxRaw))
+        : null;
+
     // In MVP we store metadata; actual upload can be separate.
     const storagePath = String(body.storagePath || "").trim(); // optional for now
 
   // PEAKOPS_NO_GHOST_EVIDENCE_V1
-  // In emulator, ensure the object exists in Storage before writing Firestore evidence doc.
-  // Add a short retry loop to avoid race conditions right after upload.
+  // In the emulator only, poll the local Storage emulator to ensure the
+  // uploaded object exists before writing the Firestore evidence doc (avoids
+  // "ghost evidence" when the emulator's object-metadata write is slightly
+  // delayed relative to the upload response).
+  //
+  // PEAKOPS_ADDEVIDENCE_EMU_GATE_V2 (2026-04-24)
+  // Tightened the emulator signal: we previously also treated
+  // FIREBASE_STORAGE_EMULATOR_HOST being set as "we're in the emulator".
+  // That was load-bearing on _emu_bootstrap.js's checked-in env.runtime and
+  // fired the emulator probe in production — which then tried to fetch
+  // http://127.0.0.1:9199/... from a deployed Cloud Function and failed with
+  // undici's generic "fetch failed", surfaced to clients as 400. Rely only
+  // on the canonical emulator flags FUNCTIONS_EMULATOR / FIREBASE_EMULATOR_HUB
+  // that the Firebase emulator suite sets and the deployed runtime never sets.
   const _emuHost = process.env.FIREBASE_STORAGE_EMULATOR_HOST;
   const _isEmu =
     String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
-    !!process.env.FIREBASE_EMULATOR_HUB ||
-    !!_emuHost;
+    !!process.env.FIREBASE_EMULATOR_HUB;
 
   if (_isEmu) {
     const host = _emuHost || "127.0.0.1:9199";
@@ -185,18 +291,20 @@ const orgId = mustStr(body.orgId, "orgId");
     }
     const { getEvidenceCollectionRef } = await import("./evidenceRefs.mjs");
 
-    // Ensure session exists (org-scoped)
-    const sesRef = db.collection("orgs").doc(orgId)
-      .collection("incidents").doc(incidentId)
-      .collection("fieldSessions").doc(sessionId);
+    // Ensure session exists (top-level canonical incident path)
+    const sesRef = db.collection("incidents")
+      .doc(incidentId)
+      .collection("fieldSessions")
+      .doc(sessionId);
     let sesSnap = await sesRef.get();
-// --- DEV/EMULATOR SAFETY: auto-create missing field session (correct path) ---
+
+    // --- DEV/EMULATOR SAFETY: auto-create missing field session at canonical path ---
     const isEmu =
       String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true" ||
       String(process.env.FIREBASE_EMULATOR_HUB || "").length > 0;
 
     // IMPORTANT: startFieldSessionV1 writes sessions under:
-    //   orgs/{orgId}/incidents/{incidentId}/fieldSessions/{sessionId}
+    //   incidents/{incidentId}/fieldSessions/{sessionId}
     // so the dev auto-create MUST write to the same location.
     if (isEmu && sessionId && !sesSnap.exists) {
       try {
@@ -205,9 +313,10 @@ const orgId = mustStr(body.orgId, "orgId");
             orgId,
             incidentId,
             sessionId,
+            techUserId: String(body.techUserId || "dev_autocreate"),
             status: "IN_PROGRESS",
             startedAt: FieldValue.serverTimestamp ? FieldValue.serverTimestamp() : admin.firestore.FieldValue.serverTimestamp(),
-            requestedBy: "dev_autocreate_session_correct_path",
+            requestedBy: "dev_autocreate_session_top_level",
             version: 1,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -247,22 +356,33 @@ const orgId = mustStr(body.orgId, "orgId");
       : {};
 
     // PEAKOPS_UPLOADER_IDENTITY_V1 (2026-05-18, PR 40 Phase A)
-    // Resolve the authenticated uploader from the Bearer ID token and
-    // capture coarse device/userAgent metadata for chain-of-custody.
-    // Failure-tolerant — falls back to empty uploaderUid if the token
-    // can't be verified (smoke-test / legacy / proxy paths). Device
-    // metadata only persisted when a non-empty UA was sent.
-    let uploaderUid = "";
-    try {
-      const a = await extractActorUid(req, body);
-      uploaderUid = String((a && a.uid) || "").trim();
-    } catch (_e) {
-      // tolerate — uploaderUid stays empty
-    }
+    // Per-evidence chain-of-custody fields. `actorUid` is already
+    // extracted above (line ~106) for the authz gate; we reuse it as
+    // the uploaderUid persisted on the doc. Device userAgent +
+    // coarse platform are derived from request headers — regex only,
+    // no ua-parser dependency. Both nullable so paths that don't
+    // carry a Bearer token / UA don't fail loudly.
     const userAgentRaw = String((req && req.headers && req.headers["user-agent"]) || "").trim();
     const userAgent = userAgentRaw ? userAgentRaw.slice(0, 256) : "";
+    const derivePlatform = (ua) => {
+      const u = String(ua || "");
+      if (!u) return "";
+      if (/iPhone|iPad|iPod/i.test(u)) return "iOS";
+      if (/Android/i.test(u)) return "Android";
+      return "Web";
+    };
     const platform = userAgent ? derivePlatform(userAgent) : "";
     const deviceMeta = userAgent ? { userAgent, platform } : null;
+
+    // PEAKOPS_REQUIREMENT_SLOT_FIELDS_V1 (PR 94a) — only land the
+    // 4 fields when at least one resolved to a usable value. Spread
+    // pattern keeps the doc shape minimal for the common general-
+    // proof upload (no slot intent).
+    const requirementSlotFields = {};
+    if (requirementKey)      requirementSlotFields.requirementKey      = requirementKey;
+    if (requirementLabel)    requirementSlotFields.requirementLabel    = requirementLabel;
+    if (requirementSource)   requirementSlotFields.requirementSource   = requirementSource;
+    if (requirementIndex !== null) requirementSlotFields.requirementIndex = requirementIndex;
 
     await evidenceRef.set(
       {
@@ -276,11 +396,7 @@ const orgId = mustStr(body.orgId, "orgId");
         gps,
         createdAt: now,
         storedAt: now,
-        // PEAKOPS_UPLOADER_IDENTITY_V1 (2026-05-18, PR 40 Phase A)
-        // Per-evidence chain-of-custody fields. Both nullable so
-        // documents written by paths that don't carry a Bearer token
-        // (smoke tests, legacy migration scripts) don't fail loudly.
-        uploaderUid: uploaderUid || null,
+        uploaderUid: actorUid || null,
         device: deviceMeta,
         file: {
           storagePath: storagePath || null,
@@ -293,15 +409,16 @@ const orgId = mustStr(body.orgId, "orgId");
           exportName,
         },
         ...assignmentFields,
+        ...requirementSlotFields,
         version: 1,
       },
       { merge: true }
     );
 
     // PEAKOPS_TIMELINE_ACTOR_UID_V1 (2026-05-18, PR 40 Phase A)
-    // Keep actor: "field" for backwards compatibility per the locked
-    // PR 40 decisions. actorUid is the new audit-grade field carrying
-    // the verified Bearer-token uid (when available).
+    // Keep actor: "field" for backwards compatibility. actorUid is
+    // the new audit-grade field carrying the verified Bearer-token
+    // uid (already extracted above for the authz gate).
     await emitTimelineEvent({
       orgId,
       incidentId,
@@ -310,8 +427,14 @@ const orgId = mustStr(body.orgId, "orgId");
       refId: evidenceId,
       gps,
       actor: "field",
-      actorUid: uploaderUid || null,
+      actorUid: actorUid || null,
     });
+
+    // PEAKOPS_READINESS_FRESHNESS_V1 (PR 108) — refresh readinessCache
+    // so Records / Summary reflect the new evidence without waiting for
+    // a Summary view. Awaited so the cache lands before we return; the
+    // helper never throws, so cache failure cannot fail this mutation.
+    await refreshReadinessCache({ orgId, incidentId });
 
     // Queue HEIC conversion job for deterministic processing by runConversionJobsV1.
     if (heicCandidate && storagePath) {

@@ -12,37 +12,74 @@ export type TimelineItem = {
   meta?: any;
 };
 
+// PEAKOPS_TIMELINE_HUMANIZE_V1 (2026-04-28)
+// Map both upper- and lower-case event types to human copy. Backend
+// emits a mix (timelineEmit uses lowercase, older paths use upper).
+// Renames "Evidence secured" → "Photos saved" and translates
+// job_* → task_* customer-facing.
 function prettyType(t: string) {
+  const key = String(t || "").toLowerCase();
   const m: Record<string, string> = {
-    NOTES_SAVED: "Notes saved",
-    EVIDENCE_ADDED: "Evidence secured",
-    FIELD_ARRIVED: "Field arrived",
-    FIELD_APPROVED: "Supervisor approved",
-    MATERIAL_ADDED: "Material logged",
-    INCIDENT_OPENED: "Incident opened",
-    SESSION_STARTED: "Field session started",
-    DEBUG_EVENT: "Debug event",
+    notes_saved: "Notes saved",
+    evidence_added: "Photos saved",
+    field_arrived: "Field arrived",
+    field_submitted: "Submitted to supervisor",
+    field_approved: "Supervisor approved",
+    material_added: "Material logged",
+    incident_opened: "Incident opened",
+    incident_closed: "Incident closed",
+    session_started: "Field session started",
+    job_created: "Task created",
+    job_completed: "Task completed",
+    job_approved: "Task approved",
+    job_rejected: "Task sent back",
+    job_locked: "Task locked",
+    supervisor_request_update: "Update requested",
+    debug_event: "Debug event",
   };
-  return (
-    m[t] ||
-    t.replace(/_/g, " ")
-      .toLowerCase()
-      .replace(/(^|\s)\S/g, (x) => x.toUpperCase())
-  );
+  if (m[key]) return m[key];
+  // Fallback: format as sentence case, swap job → task in the label.
+  return key
+    .replace(/^job_/, "task_")
+    .replace(/_/g, " ")
+    .replace(/^./, (x) => x.toUpperCase());
+}
+
+// Clock time, no relative seconds. "8:52 AM" beats "34s" for a real
+// audit log read by an ops user later.
+function fmtClock(sec?: number) {
+  if (!sec) return "";
+  try {
+    return new Date(sec * 1000).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
 }
 
 function iconFor(t: string) {
+  const key = String(t || "").toLowerCase();
   const m: Record<string, string> = {
-    EVIDENCE_ADDED: "📸",
-    FIELD_ARRIVED: "✅",
-    FIELD_APPROVED: "🛡️",
-    MATERIAL_ADDED: "🧱",
-    INCIDENT_OPENED: "🗂️",
-    SESSION_STARTED: "🛰️",
-    NOTES_SAVED: "📝",
-    DEBUG_EVENT: "🧪",
+    evidence_added: "📸",
+    field_arrived: "✅",
+    field_submitted: "📤",
+    field_approved: "🛡️",
+    material_added: "🧱",
+    incident_opened: "🗂️",
+    incident_closed: "✅",
+    session_started: "🛰️",
+    notes_saved: "📝",
+    job_created: "📋",
+    job_completed: "✓",
+    job_approved: "🛡️",
+    job_rejected: "↩︎",
+    job_locked: "🔒",
+    supervisor_request_update: "💬",
+    debug_event: "🧪",
   };
-  return m[t] || "•";
+  return m[key] || "•";
 }
 
 function fmtAgo(sec?: number) {
@@ -284,20 +321,12 @@ const hot = !!(highlightId && ref && highlightId === ref);
                             </span>
                           ) : null}
                                   </div>
-                                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-400">
-                                    {String(r?.actor || "system")}
-                                  </span>
                                 </div>
-                                {ref ? (
-                                  <div className="mt-1 text-[11px] text-gray-500 truncate">
-                                    ref: {ref}
-                                  </div>
-                                ) : null}
                               </div>
 
                               <div className="flex items-center gap-2 shrink-0">
                                 <div className="text-xs text-gray-500">
-                                  {fmtAgo(r?.occurredAt?._seconds)}
+                                  {fmtClock(r?.occurredAt?._seconds) || fmtAgo(r?.occurredAt?._seconds)}
                                 </div>
                                 {canJump ? (
                                   <button
@@ -332,18 +361,17 @@ const hot = !!(highlightId && ref && highlightId === ref);
                           <div className="text-sm font-semibold truncate">
                             {prettyType(String(r?.type || ""))}
                           </div>
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-400">
-                            {String(r?.actor || "system")}
-                          </span>
-                          {ref ? (
-                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-gray-400 font-mono truncate">
-                              ref: {ref}
-                            </span>
-                          ) : null}
+                          {/* PEAKOPS_TIMELINE_HIDE_INTERNAL_V1 (2026-04-28)
+                              Hid the "actor" and "ref:" pills from the
+                              customer-visible timeline. They surfaced
+                              raw "ui" / Firestore doc ids that read as
+                              engineer artifacts. The data is still
+                              available on the underlying row for
+                              support diagnosis (just not rendered). */}
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
-                          <div className="text-xs text-gray-500">{fmtAgo(r?.occurredAt?._seconds)}</div>
+                          <div className="text-xs text-gray-500">{fmtClock(r?.occurredAt?._seconds) || fmtAgo(r?.occurredAt?._seconds)}</div>
                           {canJump ? (
                             <button
                               type="button"

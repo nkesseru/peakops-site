@@ -1,6 +1,12 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -28,10 +34,43 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const techUserId = mustStr(body.techUserId, "techUserId");
-    const requestedBy = String(body.requestedBy || "ui");
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7: starting a field session is field-or-above.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[startFieldSessionV1] authz_denied", {
+        fn: "startFieldSessionV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[startFieldSessionV1] authz_ok", {
+      fn: "startFieldSessionV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
+    const requestedBy = String(actorUid || body.requestedBy || "ui");
 
     const db = getFirestore();
-    const base = db.collection("orgs").doc(orgId).collection("incidents").doc(incidentId);
+    const base = db.collection("incidents").doc(incidentId);
     const incRef = db.collection("incidents").doc(incidentId);
     const incSnap = await incRef.get();
     const inc = incSnap.exists ? (incSnap.data() || {}) : {};
@@ -39,7 +78,17 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     if (curStatus === "closed") {
       return j(res, 409, { ok: false, error: "incident_closed", detail: "Incident is read-only" });
     }
-    if (curStatus && curStatus !== "open" && curStatus !== "in_progress") {
+    // PEAKOPS_DRAFT_SESSION_START_V1 (PR 110)
+    // createIncidentV1 (PR 68) defaults new records to status="draft".
+    // The pre-PR-110 guard only accepted "open" / "in_progress" and so
+    // 409'd on the very first proof-capture attempt. Allow-list extended
+    // to {draft, open, active, in_progress}. "active" is written by
+    // bootstrapPilotOrgV1 (legacy seed). "closed" is still rejected
+    // explicitly above; any other status (submitted, exported, locked,
+    // etc.) is rejected by the allow-list below — preserves sealed
+    // record semantics.
+    const ALLOWED_START_STATUSES = ["draft", "open", "active", "in_progress"];
+    if (curStatus && !ALLOWED_START_STATUSES.includes(curStatus)) {
       return j(res, 409, { ok: false, error: "invalid_transition", detail: `unsupported incident.status=${curStatus}` });
     }
 
@@ -51,7 +100,11 @@ exports.startFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
       { merge: true }
     );
 
-    if (!curStatus || curStatus === "open") {
+    // Flip pre-session statuses (draft / open / active) → in_progress
+    // when starting the first session. Already-in_progress incidents
+    // are not overwritten — re-calling startFieldSession is idempotent
+    // on status.
+    if (!curStatus || curStatus === "open" || curStatus === "draft" || curStatus === "active") {
       await incRef.set(
         {
           orgId,

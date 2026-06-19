@@ -34,6 +34,16 @@ export function incidentStatusLabel(status: unknown): string {
     // strictly the visible word the user sees on the status pill.
     case "closed":
       return "Accepted";
+    // Customer-review corridor statuses. Explicit branches prevent
+    // them from falling through to the default title-case path,
+    // where they'd render with whatever the default pill tone is —
+    // making them visually indistinguishable from unknown statuses.
+    case "submitted_to_customer":
+      return "Submitted to Customer";
+    case "customer_accepted":
+      return "Customer Accepted";
+    case "customer_rejected":
+      return "Customer Rejected";
     default:
       return s
         .split("_")
@@ -63,6 +73,17 @@ export function incidentStatusPill(status: unknown): string {
       return "bg-rose-500/15 border-rose-300/30 text-rose-100";
     case "closed":
       return "bg-white/10 border-white/20 text-gray-200";
+    // Customer-review corridor pill tones — chosen to read as
+    // "still in the operator's queue" (violet, in progress in a
+    // different sense) vs "customer terminal positive" (emerald,
+    // matches the recovered/recovered tones used elsewhere) vs
+    // "customer terminal negative" (rose, matches rejected).
+    case "submitted_to_customer":
+      return "bg-violet-500/15 border-violet-300/30 text-violet-100";
+    case "customer_accepted":
+      return "bg-emerald-500/15 border-emerald-300/30 text-emerald-100";
+    case "customer_rejected":
+      return "bg-rose-500/15 border-rose-300/30 text-rose-100";
     default:
       return "bg-white/10 border-white/20 text-gray-200";
   }

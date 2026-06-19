@@ -8,11 +8,11 @@
 // joinedAt, createdAt, updatedAt, custom claims. These are internal
 // authz / audit fields that have no business reaching the client.
 //
-// Authorization mirrors listJobsV1: resolveActor() reads a verified
-// Bearer ID token (with a body-fallback path that requireOrgMember
-// closes via the membership-doc check). The caller must be an active
-// member of the requested org. Cross-org reads are rejected by
-// requireOrgMember.
+// Authorization mirrors listJobsV1: extractActorUid() reads a verified
+// Bearer ID token (with a body-fallback path that
+// assertActorCanReadOrg closes via the membership-doc check). The
+// caller must be an active member of the requested org. Cross-org
+// reads are rejected by assertActorCanReadOrg.
 //
 // Filter rules:
 //   - status === "archived"  → excluded (operational records should
@@ -31,7 +31,11 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore } = require("firebase-admin/firestore");
-const { resolveActor, requireOrgMember } = require("./jobAuthz");
+const {
+  assertActorCanReadOrg,
+  httpStatusFromAuthzError,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -43,6 +47,7 @@ function toStr(v) {
   return String(v || "").trim();
 }
 
+// GET ?orgId&limit
 exports.listOrgMembersV1 = onRequest({ cors: true }, async (req, res) => {
   try {
     if (req.method !== "GET") {
@@ -55,15 +60,38 @@ exports.listOrgMembersV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 400, { ok: false, error: "orgId required", count: 0, docs: [] });
     }
 
-    const db = getFirestore();
-
     // Auth: caller must be an active member of the requested org.
-    // resolveActor reads the Bearer ID token; requireOrgMember
-    // checks the membership doc. Both gates use the same patterns
-    // as listJobsV1 — no new auth code.
-    const actor = await resolveActor(req, {}, req.query || {});
-    await requireOrgMember(db, orgId, actor, { requiredRoles: [] });
+    // Same gate as listJobsV1 — no new auth code.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, req.query || {}));
+      const gate = await assertActorCanReadOrg(orgId, actorUid);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[listOrgMembersV1] authz_denied", {
+        fn: "listOrgMembersV1",
+        orgId,
+        uid: actorUid,
+        capability: "read",
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+        count: 0,
+        docs: [],
+      });
+    }
+    console.log("[listOrgMembersV1] authz_ok", {
+      fn: "listOrgMembersV1",
+      orgId,
+      uid: actorUid,
+      role: actorRole,
+      capability: "read",
+    });
 
+    const db = getFirestore();
     const snap = await db
       .collection("orgs")
       .doc(orgId)

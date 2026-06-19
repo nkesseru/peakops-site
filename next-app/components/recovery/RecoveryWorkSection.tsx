@@ -125,7 +125,12 @@ export function RecoveryWorkSection({ orgId, incidentId, onWorkChanged }: Props)
 
   // Hidden when empty — the architecture lock requires the foreman to
   // not even know this surface exists when there's nothing to do.
-  if (!loading && !err && items.length === 0) return null;
+  // Also hidden while loading: a pre-fetch flash of the amber "Extra
+  // work needed" header with a Loading spinner is the worst of both
+  // (alarming + unactionable). Errors still render so a failed fetch
+  // is surfaced with a Retry button.
+  if (loading) return null;
+  if (!err && items.length === 0) return null;
 
   return (
     <section className="rounded-2xl border border-amber-300/25 bg-amber-400/[0.06] p-4 space-y-3">

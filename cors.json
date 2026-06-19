@@ -1,0 +1,12 @@
+[
+  {
+    "origin": [
+      "https://app.peakops.app",
+      "http://127.0.0.1:3001",
+      "http://localhost:3001"
+    ],
+    "method": ["GET", "PUT", "POST", "HEAD"],
+    "responseHeader": ["Content-Type", "x-goog-resumable", "x-goog-meta-*"],
+    "maxAgeSeconds": 3600
+  }
+]

@@ -63,7 +63,22 @@ type IncidentDoc = {
     sizeBytes?: number;
     evidenceCount?: number;
     jobCount?: number;
+    // PEAKOPS_REVIEW_VERSION_PIN_V4 (2026-06-15) — operator panel needs
+    // packetVersion for the "Latest: vN" / "Customer Accepted: vM"
+    // comparison.
+    packetVersion?: number;
   };
+  // PEAKOPS_REVIEW_VERSION_PIN_V4 (2026-06-15) — slice-3 summary
+  // fields mirrored from the consumed link's pinnedPacket. Present
+  // for post-slice-3 acceptances; absent for pre-slice-3 ones.
+  customerAcceptedAt?: { _seconds?: number };
+  customerAcceptedPacketVersion?: number;
+  customerAcceptedPacketHash?: string;
+  customerAcceptanceComment?: string | null;
+  customerRejectedAt?: { _seconds?: number };
+  customerRejectedPacketVersion?: number;
+  customerRejectedPacketHash?: string;
+  customerRejectionComment?: string;
 };
 
 type JobDoc = {
@@ -1075,13 +1090,39 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           `&incidentId=${encodeURIComponent(incidentId)}`;
       }
 
-      const a = document.createElement("a");
-      a.href = href;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      // PEAKOPS_AUTHED_DOWNLOAD_V1 (2026-06-15)
+      // The /api/reports/{id}/download route gates on a Bearer token
+      // via requireOrgAccess. A bare <a href=...>.click() triggers a
+      // browser-level navigation that does NOT attach the token, so
+      // the route 401s and Chrome surfaces "File wasn't available on
+      // site." Fetch the bytes with authedFetch (which attaches the
+      // Bearer header), then synthesize the download from a same-
+      // origin Blob URL — that path needs no auth at click time.
+      const dlRes = await authedFetch(href, { cache: "no-store" });
+      if (!dlRes.ok) {
+        throw new Error(
+          `Download failed (HTTP ${dlRes.status}) — try Regenerate Packet`,
+        );
+      }
+      const blob = await dlRes.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        // Revoke after a brief delay. Some browsers race the click
+        // against an immediate revoke and the download arrives empty.
+        // 4s is conservative and matches the v4 signed-URL TTL well.
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
+      }
 
+      // Keep the original (non-Blob) href in state — it's the stable
+      // server URL for display / "open again" surfaces. The Blob URL
+      // is ephemeral and would 404 after revoke.
       setArtifactUrl(href);
       setArtifactReady(true);
       setLastArtifactFilename(filename);
@@ -1903,6 +1944,148 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               : null
           }
         />
+
+        {/* PEAKOPS_REVIEW_VERSION_PIN_V4 (2026-06-15)
+            Customer Acceptance panel. Reads slice-3 summary fields
+            mirrored from the consumed link's pinnedPacket onto the
+            incident doc. Five states, derived from incident.status +
+            packetVersion comparison:
+              UP TO DATE          — accepted version === latest
+              OUT OF DATE         — accepted version < latest
+              ACCEPTED (legacy)   — accepted, but no version recorded
+                                    (pre-slice-3 consume)
+              REJECTION RECORDED  — most recent action was reject
+              AWAITING REVIEW     — link minted, customer hasn't acted
+            Panel suppresses for mid-flight statuses (in_progress,
+            draft) — nothing to show until a customer is in the loop. */}
+        {(() => {
+          const status = String(incident?.status || "").trim().toLowerCase();
+          if (
+            status !== "customer_accepted"
+            && status !== "customer_rejected"
+            && status !== "submitted_to_customer"
+          ) {
+            return null;
+          }
+          const latestV = Number(incident?.packetMeta?.packetVersion ?? NaN);
+          const acceptedV = Number(incident?.customerAcceptedPacketVersion ?? NaN);
+          const rejectedV = Number(incident?.customerRejectedPacketVersion ?? NaN);
+          const acceptedAtSec = Number(incident?.customerAcceptedAt?._seconds || 0);
+          const rejectedAtSec = Number(incident?.customerRejectedAt?._seconds || 0);
+          const fmt = (sec: number) =>
+            sec > 0 ? new Date(sec * 1000).toLocaleString() : "—";
+
+          type State = "up_to_date" | "out_of_date" | "accepted_legacy" | "rejected" | "awaiting";
+          let state: State;
+          if (status === "submitted_to_customer") {
+            state = "awaiting";
+          } else if (status === "customer_rejected") {
+            state = "rejected";
+          } else if (Number.isFinite(acceptedV) && Number.isFinite(latestV)) {
+            state = acceptedV === latestV ? "up_to_date" : "out_of_date";
+          } else {
+            // status is customer_accepted but no version recorded — pre-slice-3
+            state = "accepted_legacy";
+          }
+
+          const badge = {
+            // Sentence-case, neutral framing — these badges describe
+            // packet-version drift relative to the customer's acceptance
+            // signal, NOT the incident's lifecycle status. The all-caps
+            // shouting framing competed visually with the top status pill
+            // and read like a second source of truth on the same record.
+            up_to_date:       { tone: "emerald", label: "Up to date" },
+            out_of_date:      { tone: "amber",   label: "Out of date" },
+            accepted_legacy:  { tone: "gray",    label: "Accepted — version unknown" },
+            rejected:         { tone: "red",     label: "Rejection recorded" },
+            awaiting:         { tone: "blue",    label: "Awaiting review" },
+          }[state];
+          const badgeClass =
+            badge.tone === "emerald" ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200" :
+            badge.tone === "amber"   ? "border-amber-400/40 bg-amber-500/10 text-amber-200" :
+            badge.tone === "red"     ? "border-red-400/40 bg-red-500/10 text-red-200" :
+            badge.tone === "blue"    ? "border-blue-400/40 bg-blue-500/10 text-blue-200" :
+                                       "border-white/15 bg-white/[0.03] text-gray-300";
+
+          return (
+            <section className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-3">
+              <div className="flex items-baseline justify-between gap-3 flex-wrap">
+                <h3 className="text-[13px] font-medium text-gray-200 tracking-wide uppercase">
+                  Customer Acceptance
+                </h3>
+                <span className={"text-[11px] px-2 py-0.5 rounded-full border " + badgeClass}>
+                  {badge.label}
+                </span>
+              </div>
+
+              {/* Two-line ledger: latest packet + customer's act-on packet */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[13px]">
+                <div>
+                  <div className="text-gray-500 text-[11px] uppercase tracking-wide">Latest Packet</div>
+                  <div className="text-gray-100 mt-0.5">
+                    {Number.isFinite(latestV) ? <>v{latestV}</> : <span className="text-gray-500">—</span>}
+                    {incident?.packetMeta?.exportedAt ? (
+                      <span className="text-gray-500"> · {fmt(new Date(incident.packetMeta.exportedAt).getTime() / 1000)}</span>
+                    ) : null}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-gray-500 text-[11px] uppercase tracking-wide">
+                    {state === "rejected" ? "Customer Rejected" :
+                     state === "awaiting" ? "Sent for Review" :
+                     "Customer Accepted"}
+                  </div>
+                  <div className="text-gray-100 mt-0.5">
+                    {state === "awaiting" ? (
+                      <span className="text-gray-400">Awaiting customer action</span>
+                    ) : state === "rejected" ? (
+                      Number.isFinite(rejectedV) ? <>v{rejectedV}<span className="text-gray-500"> · {fmt(rejectedAtSec)}</span></> :
+                      <span className="text-gray-400">Recorded {fmt(rejectedAtSec)}</span>
+                    ) : Number.isFinite(acceptedV) ? (
+                      <>v{acceptedV}<span className="text-gray-500"> · {fmt(acceptedAtSec)}</span></>
+                    ) : (
+                      <span className="text-gray-400">Recorded {fmt(acceptedAtSec)}<span className="text-gray-500"> · version not recorded</span></span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* State-specific operator guidance + action */}
+              {state === "out_of_date" ? (
+                <div className="rounded-lg border border-amber-300/30 bg-amber-500/[0.06] p-3 space-y-2">
+                  <div className="text-[12px] text-amber-100/90 leading-relaxed">
+                    The customer accepted v{acceptedV}, but v{latestV} is the latest packet.
+                    Consider sending an updated review link if the changes matter.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSendToCustomer(true)}
+                    className="px-3 py-1.5 rounded-md text-[12px] font-medium border border-amber-300/40 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25 transition"
+                  >
+                    Send updated packet →
+                  </button>
+                </div>
+              ) : state === "accepted_legacy" ? (
+                <div className="text-[12px] text-gray-400 leading-relaxed">
+                  This acceptance was recorded before packet version tracking was
+                  available. Treat as needing fresh customer signoff if v{Number.isFinite(latestV) ? latestV : "?"} matters.
+                </div>
+              ) : state === "rejected" ? (
+                <div className="rounded-lg border border-red-300/20 bg-red-500/[0.06] p-3 space-y-2">
+                  <div className="text-[12px] text-red-100/90 leading-relaxed">
+                    The customer requested correction. Address feedback, regenerate the
+                    packet, and send a new review link when ready.
+                  </div>
+                  {incident?.customerRejectionComment ? (
+                    <div className="text-[12px] text-gray-300 italic border-l-2 border-red-300/30 pl-3 whitespace-pre-line">
+                      “{incident.customerRejectionComment}”
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </section>
+          );
+        })()}
 
         {/* PR 103c — Legacy "Operational readiness" client-computed
             strip removed. The Acceptance Readiness panel above is

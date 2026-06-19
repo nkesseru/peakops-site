@@ -1,6 +1,12 @@
 const { onRequest } = require("firebase-functions/v2/https");
 const { initializeApp, getApps } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
+const { resolveIncidentRef } = require("./_incidentPath");
+const {
+  assertActorCanReadOrg,
+  httpStatusFromAuthzError,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!getApps().length) initializeApp();
 const db = getFirestore();
@@ -40,19 +46,53 @@ exports.getTimelineEventsV1 = onRequest(async (req, res) => {
 
     if (!orgId || !incidentId) return send(res, 400, { ok: false, error: "Missing orgId/incidentId" });
 
-    const incRef = db.collection("incidents").doc(incidentId);
+    // PEAKOPS_AUTHZ_READ_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 6: timeline read is members-only.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, req.query || {}));
+      const gate = await assertActorCanReadOrg(orgId, actorUid);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[getTimelineEventsV1] authz_denied", {
+        fn: "getTimelineEventsV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        capability: "read",
+        code: e && e.code,
+      });
+      return send(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[getTimelineEventsV1] authz_ok", {
+      fn: "getTimelineEventsV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      capability: "read",
+    });
 
-    // Optional: check org match if the doc exists
-    const incSnap = await incRef.get();
-    if (incSnap.exists) {
+    // Unified resolver — identical to the one emitTimelineEvent uses. The ref
+    // returned here is guaranteed to match the parent that writes target, so
+    // there is no (org) vs (top-level) subcollection drift.
+    const { ref: incRef, exists: incExists, source } = await resolveIncidentRef(orgId, incidentId);
+
+    // Validate org match only when the doc actually exists.
+    if (incExists) {
+      const incSnap = await incRef.get();
       const data = incSnap.data() || {};
       if (!isDemoBypass(req) && data.orgId && String(data.orgId) !== orgId) {
         return send(res, 404, { ok: false, error: "Incident not found" });
       }
     }
 
-    // Pull timelineEvents subcollection if present
-    let q = incRef.collection("timeline_events").orderBy("occurredAt", "asc").limit(limit);
+    const q = incRef.collection("timeline_events").orderBy("occurredAt", "asc").limit(limit);
     const snap = await q.get();
 
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -62,6 +102,7 @@ exports.getTimelineEventsV1 = onRequest(async (req, res) => {
       orgId,
       incidentId,
       count: docs.length,
+      source,
       docs,
     });
   } catch (e) {

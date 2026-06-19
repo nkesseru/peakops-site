@@ -2,6 +2,12 @@ require("./_emu_bootstrap");
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 try { if (!admin.apps.length) admin.initializeApp(); } catch (_) {}
 
@@ -21,7 +27,41 @@ exports.createSupervisorRequestV1 = onRequest({ cors: true }, async (req, res) =
 
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
-    const actorUid = String(body.actorUid || body.actorId || "dev-admin").trim() || "dev-admin";
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7: requesting supervisor attention is field-or-
+    // above. Replaces the previous `actorUid || "dev-admin"` body
+    // fallback. Bare smoke calls without a real or seeded uid now
+    // fail closed.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[createSupervisorRequestV1] authz_denied", {
+        fn: "createSupervisorRequestV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[createSupervisorRequestV1] authz_ok", {
+      fn: "createSupervisorRequestV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
 
     const message = String(body.message || body.note || "").trim();
     const reasons = Array.isArray(body.reasons) ? body.reasons.map((x) => String(x || "").trim()).filter(Boolean) : [];

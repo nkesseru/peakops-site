@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 function pickBase() {
-  return process.env.FN_BASE || "http://127.0.0.1:5001/peakops-pilot/us-central1";
+  return process.env.FN_BASE || "http://127.0.0.1:5004/peakops-pilot/us-central1";
 }
 
 // Emulator base includes /us-central1; Cloud Run base does NOT.

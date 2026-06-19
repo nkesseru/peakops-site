@@ -190,7 +190,7 @@ export type ListRecoveryCasesResponse = {
   ok: boolean;
   orgId?: string;
   cases?: RecoveryCaseListItem[];
-  totals?: { cases: number; openCases: number; openRevenue: number };
+  totals?: { cases: number; openCases: number; openRevenue: number; recoveredRevenue: number };
   error?: string;
 };
 

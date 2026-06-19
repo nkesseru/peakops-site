@@ -1,7 +1,43 @@
+// Incident lifecycle state machine.
+//
+// Legacy flow (pre-PR 126):
+//   open → in_progress → closed
+//
+// PR 126a — Customer Reviewer Link extends the state space with three
+// additive states for the customer-review flow. Legacy `closed` keeps
+// its semantics so existing records and the closeIncidentV1 path are
+// unaffected.
+//
+//   open → in_progress → submitted_to_customer → customer_accepted   (terminal)
+//                                              → customer_rejected
+//                                              → in_progress         (revoke / cancel)
+//          customer_rejected → in_progress           (route to rework)
+//          customer_rejected → submitted_to_customer (re-send after fix)
+//
+// PR 126c — Add one edge so legacy `closed` records can be routed
+// through customer review without breaking the legacy terminal
+// promise for records that are never touched. `closed → closed` stays
+// the default; coordinators explicitly opt in by minting a review
+// link via createCustomerReviewLinkV1. No new state, no migration.
+//
+//   closed → submitted_to_customer (operator-driven; sourceStatus=closed
+//                                   recorded on the link + audit)
+//   closed → closed                (terminal default — unchanged)
+//
+// Operator display strings (PR 126a):
+//   submitted_to_customer = "Awaiting customer review"
+//   customer_accepted     = "Accepted by customer"
+//   customer_rejected     = "Customer requested correction"
+//   closed (legacy)       = "Accepted"
+
 const INCIDENT_STATUS = Object.freeze({
   OPEN: "open",
   IN_PROGRESS: "in_progress",
   CLOSED: "closed",
+  // PR 126a — customer review flow
+  SUBMITTED_TO_CUSTOMER: "submitted_to_customer",
+  CUSTOMER_ACCEPTED: "customer_accepted",
+  CUSTOMER_REJECTED: "customer_rejected",
 });
 
 function normalizeIncidentStatus(status) {
@@ -13,20 +49,70 @@ function normalizeIncidentStatus(status) {
     return INCIDENT_STATUS.IN_PROGRESS;
   }
   if (raw === INCIDENT_STATUS.OPEN) return INCIDENT_STATUS.OPEN;
+  if (raw === INCIDENT_STATUS.IN_PROGRESS) return INCIDENT_STATUS.IN_PROGRESS;
   if (raw === INCIDENT_STATUS.CLOSED) return INCIDENT_STATUS.CLOSED;
+  if (raw === INCIDENT_STATUS.SUBMITTED_TO_CUSTOMER) return INCIDENT_STATUS.SUBMITTED_TO_CUSTOMER;
+  if (raw === INCIDENT_STATUS.CUSTOMER_ACCEPTED) return INCIDENT_STATUS.CUSTOMER_ACCEPTED;
+  if (raw === INCIDENT_STATUS.CUSTOMER_REJECTED) return INCIDENT_STATUS.CUSTOMER_REJECTED;
   return INCIDENT_STATUS.OPEN;
 }
 
 function canTransitionIncident(fromStatus, toStatus) {
   const from = normalizeIncidentStatus(fromStatus);
   const to = normalizeIncidentStatus(toStatus);
-  if (from === INCIDENT_STATUS.CLOSED) return to === INCIDENT_STATUS.CLOSED;
+
+  // customer_accepted is terminal (no transitions out).
+  if (from === INCIDENT_STATUS.CUSTOMER_ACCEPTED) return to === INCIDENT_STATUS.CUSTOMER_ACCEPTED;
+
+  // closed is the legacy terminal — preserved as the default — but
+  // PR 126c allows one explicit transition out: closed → submitted_to_customer
+  // when a coordinator routes a sealed record through customer review.
+  // Any other transition out of closed remains rejected.
+  if (from === INCIDENT_STATUS.CLOSED) {
+    return (
+      to === INCIDENT_STATUS.CLOSED ||
+      to === INCIDENT_STATUS.SUBMITTED_TO_CUSTOMER
+    );
+  }
+
   if (from === INCIDENT_STATUS.OPEN) {
-    return to === INCIDENT_STATUS.OPEN || to === INCIDENT_STATUS.IN_PROGRESS || to === INCIDENT_STATUS.CLOSED;
+    return (
+      to === INCIDENT_STATUS.OPEN ||
+      to === INCIDENT_STATUS.IN_PROGRESS ||
+      to === INCIDENT_STATUS.CLOSED
+    );
   }
+
   if (from === INCIDENT_STATUS.IN_PROGRESS) {
-    return to === INCIDENT_STATUS.IN_PROGRESS || to === INCIDENT_STATUS.CLOSED;
+    return (
+      to === INCIDENT_STATUS.IN_PROGRESS ||
+      to === INCIDENT_STATUS.CLOSED ||
+      // PR 126a — coordinator mints a customer-review link
+      to === INCIDENT_STATUS.SUBMITTED_TO_CUSTOMER
+    );
   }
+
+  if (from === INCIDENT_STATUS.SUBMITTED_TO_CUSTOMER) {
+    return (
+      to === INCIDENT_STATUS.SUBMITTED_TO_CUSTOMER ||
+      // Customer terminal actions
+      to === INCIDENT_STATUS.CUSTOMER_ACCEPTED ||
+      to === INCIDENT_STATUS.CUSTOMER_REJECTED ||
+      // Coordinator revoke / cancel before customer acts
+      to === INCIDENT_STATUS.IN_PROGRESS
+    );
+  }
+
+  if (from === INCIDENT_STATUS.CUSTOMER_REJECTED) {
+    return (
+      to === INCIDENT_STATUS.CUSTOMER_REJECTED ||
+      // Route to rework
+      to === INCIDENT_STATUS.IN_PROGRESS ||
+      // Re-send after rework
+      to === INCIDENT_STATUS.SUBMITTED_TO_CUSTOMER
+    );
+  }
+
   return false;
 }
 
@@ -35,4 +121,3 @@ module.exports = {
   normalizeIncidentStatus,
   canTransitionIncident,
 };
-

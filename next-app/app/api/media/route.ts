@@ -2,8 +2,33 @@ import { NextResponse } from "next/server";
 
 /**
  * /api/media?bucket=...&path=...
- * Streams bytes from the Firebase Storage emulator and forces inline headers so images render in <img>.
+ * Streams bytes from the Firebase Storage EMULATOR and forces inline headers so
+ * images render in <img>. Emulator-only by design — in production the browser
+ * fetches real signed URLs directly from storage.googleapis.com.
+ *
+ * PEAKOPS_MEDIA_EMULATOR_GATE_V1 (2026-04-24)
+ * Gate based on the Cloud Functions base the app is pointed at. If that's a
+ * real cloudfunctions.net URL, this proxy has no legitimate reason to run —
+ * refuse the request with 410 Gone so a stale emulator-URL leak from a
+ * not-yet-redeployed backend doesn't hit 127.0.0.1:9199 from the Next
+ * server-side runtime and surface as a confusing timeout/404.
  */
+function isEmulatorFunctionsBase(): boolean {
+  const base = String(process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "").trim();
+  // Also allow the FIREBASE_STORAGE_EMULATOR_HOST escape hatch when the
+  // Storage emulator is explicitly running (e.g. `firebase emulators:start`
+  // has injected this into the Next dev process via a wrapper script).
+  const storageEmuHost = String(process.env.FIREBASE_STORAGE_EMULATOR_HOST || "").trim();
+  if (storageEmuHost) return true;
+  if (!base) return false;
+  try {
+    const host = new URL(base).hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost";
+  } catch {
+    return false;
+  }
+}
+
 function guessContentType(path: string): string {
   const p = String(path || "").toLowerCase();
   if (p.endsWith(".jpg") || p.endsWith(".jpeg")) return "image/jpeg";
@@ -19,6 +44,24 @@ function guessContentType(path: string): string {
 
 export async function GET(req: Request) {
   try {
+    if (!isEmulatorFunctionsBase()) {
+      // PEAKOPS_MEDIA_410_SANITIZE_V1 (2026-05-01)
+      // Out of emulator, this proxy is intentionally disabled.
+      // Customer-safe response — no internal function names, no URL
+      // hints in the body. Diagnostic detail goes to server logs only.
+      console.warn(
+        "[/api/media] called outside emulator — disabled by design; caller should use a signed URL or /api/reports/<id>/download.",
+      );
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "download_unavailable",
+          message: "This download link is unavailable. Refresh the page and try again.",
+        },
+        { status: 410 },
+      );
+    }
+
     const url = new URL(req.url);
     const bucket = String(url.searchParams.get("bucket") || "").trim();
     const path = String(url.searchParams.get("path") || "").trim();

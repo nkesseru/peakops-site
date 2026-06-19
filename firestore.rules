@@ -1,8 +1,225 @@
 rules_version = '2';
+
+// PEAKOPS_FIRESTORE_RULES_V2 (2026-05-06)
+//
+// Phase 1 Slice 8 — replaces the prior rules' wide-open
+//   match /{document=**} { allow read, write: if true; }
+// emulator-fallback (which shipped to production unchanged) with a
+// default-deny posture and member-doc-based authorization.
+//
+// Source-of-truth model from MULTI_ORG_RELATIONSHIP_MODEL.md:
+//
+//   user → membership → org → relationship → share scope → resource
+//
+// This file owns the user → membership → org segment of the chain at
+// the rules layer. Cross-org relationship and share-scope rules land
+// in the relationship slice (Phase 2).
+//
+// All read/write authorization is anchored on
+// `orgs/{orgId}/members/{request.auth.uid}` rather than a custom
+// claim, mirroring the callable layer in functions_clean/_authz.js.
+// The one place a custom claim is still consulted is the chicken-
+// and-egg member self-seed at create time (a user can't yet read
+// their own member doc to prove membership when they're creating
+// it). Every other rule reads the member doc.
+//
+// What the new posture enforces:
+//   - Default deny: any path not matched explicitly is denied.
+//   - Reads scoped to active members of the resource's owning org.
+//   - Direct writes to lifecycle-critical paths (incidents, jobs
+//     subcollections, evidence, timeline) denied — all callable-only
+//     through functions_clean/*V1.js, which gate via _authz.js.
+//   - One narrow exception: lib/jobVendor.ts updates only the
+//     {vendorId, vendorName, updatedAt} keys on a job from the admin
+//     UI. Allowed for supervisor-or-admin of the incident's org with
+//     a strict diff check; flagged as a Slice 9 callable-migration
+//     candidate.
+//   - No bypass for demo-org. The demo tenant is just a tenant.
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if true; // emulator/dev only
+
+    // ─── Rule helpers ────────────────────────────────────
+
+    function signedIn() {
+      return request.auth != null;
     }
+
+    function memberDocPath(orgId) {
+      return /databases/$(database)/documents/orgs/$(orgId)/members/$(request.auth.uid);
+    }
+
+    function isOrgMember(orgId) {
+      return signedIn() && exists(memberDocPath(orgId));
+    }
+
+    // Backwards-compat: undefined status → treated as active. Mirrors
+    // _authz.js's posture for older member docs that pre-date the
+    // explicit status field.
+    function memberStatus(orgId) {
+      return get(memberDocPath(orgId)).data.get('status', 'active');
+    }
+
+    function memberRole(orgId) {
+      return get(memberDocPath(orgId)).data.get('role', '');
+    }
+
+    function isActiveMember(orgId) {
+      return isOrgMember(orgId) && memberStatus(orgId) == 'active';
+    }
+
+    function isOwnerOrAdmin(orgId) {
+      return isActiveMember(orgId) && (memberRole(orgId) in ['owner', 'admin']);
+    }
+
+    function isSupervisorOrAdmin(orgId) {
+      return isActiveMember(orgId) && (memberRole(orgId) in ['owner', 'admin', 'supervisor']);
+    }
+
+    function isFieldOrAbove(orgId) {
+      return isActiveMember(orgId)
+        && (memberRole(orgId) in ['owner', 'admin', 'supervisor', 'field']);
+    }
+
+    // Look up the owning org of a top-level legacy incident doc.
+    // get() bypasses rules — fine for cross-doc auth checks.
+    function incidentOwnerOrgId(incidentId) {
+      return get(/databases/$(database)/documents/incidents/$(incidentId)).data.orgId;
+    }
+
+    // ─── User-owned ──────────────────────────────────────
+    // Owner-only access; unchanged shape from prior rules.
+
+    match /users/{uid}/settings/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /users/{uid}/savedViews/{viewId} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /users/{uid}/notifications/{notificationId} {
+      allow read, update: if signedIn() && request.auth.uid == uid;
+      // Creates come from Cloud Functions (Admin SDK bypasses rules).
+      // Closing the create surface here prevents a forged client from
+      // injecting fake notifications. Closing delete keeps the audit
+      // trail.
+      allow create, delete: if false;
+    }
+
+    // ─── Org doc + subcollections ────────────────────────
+
+    match /orgs/{orgId} {
+      // Read: active members of this org.
+      allow read: if isActiveMember(orgId);
+
+      // Update: owner/admin only — used by patchOrgFromOnboarding
+      // for name/industry/timezone updates.
+      allow update: if isOwnerOrAdmin(orgId);
+
+      // Org creation/deletion is a privileged operation that should
+      // route through a future bootstrapOrgV1 callable. Direct client
+      // creates are denied today.
+      allow create, delete: if false;
+
+      // ── Members ──
+      match /members/{memberId} {
+        // Self-read OR active-member read (lets the org-switcher
+        // resolve roles even before an admin loads the team page).
+        allow read: if signedIn() && (
+          request.auth.uid == memberId
+            || isActiveMember(orgId)
+        );
+
+        // Create paths:
+        //   1. Self-seed via custom claim — chicken-and-egg
+        //      bootstrap. The user must already hold an orgIds claim
+        //      that includes this orgId, and the role they write must
+        //      match their custom-claim role (self-promotion firewall).
+        //   2. Owner/admin invite — the existing-member admin path.
+        allow create: if signedIn() && (
+          (request.auth.uid == memberId
+            && request.auth.token.orgIds is list
+            && orgId in request.auth.token.orgIds
+            && request.resource.data.role == request.auth.token.role)
+          || isOwnerOrAdmin(orgId)
+        );
+
+        // Updates / deletes after seed are owner/admin-only.
+        allow update, delete: if isOwnerOrAdmin(orgId);
+      }
+
+      // ── Vendors ──
+      match /vendors/{vendorId} {
+        allow read: if isActiveMember(orgId);
+        allow write: if isOwnerOrAdmin(orgId);
+      }
+
+      // ── Onboarding state, drafts ──
+      match /onboarding/{docId} {
+        allow read: if isActiveMember(orgId);
+        allow write: if isOwnerOrAdmin(orgId);
+      }
+
+      match /inviteDrafts/{draftId} {
+        allow read: if isActiveMember(orgId);
+        allow write: if isOwnerOrAdmin(orgId);
+      }
+
+      match /jobDrafts/{draftId} {
+        allow read: if isActiveMember(orgId);
+        allow write: if isOwnerOrAdmin(orgId);
+      }
+
+      // ── Org-scoped incidents (canonical path) ──
+      // Direct writes denied — callables in functions_clean own the
+      // incident write surface.
+      match /incidents/{incidentId} {
+        allow read: if isActiveMember(orgId);
+        allow write: if false;
+      }
+      match /incidents/{incidentId}/{document=**} {
+        allow read: if isActiveMember(orgId);
+        allow write: if false;
+      }
+    }
+
+    // ─── Top-level incidents (legacy path) ───────────────
+    // Some incident writers (createIncidentV1's dual-write,
+    // createJobV1, addEvidenceV1's evidence_locker, etc.) target the
+    // top-level `incidents/{id}/...` path. Reads from that path need
+    // their own rules.
+
+    match /incidents/{incidentId} {
+      // Read gated on the incident doc's stored orgId.
+      allow read: if signedIn()
+        && resource.data.orgId is string
+        && isActiveMember(resource.data.orgId);
+      // Direct writes denied (callables write via Admin SDK).
+      allow write: if false;
+
+      // PEAKOPS_SLICE9_DROP_DIRECT_WRITE_V1 (2026-05-06)
+      // The Slice 8 narrow `match /jobs/{jobId}` block let
+      // supervisor/admin update only {vendorId, vendorName,
+      // updatedAt} on a job — the only direct-client lifecycle
+      // write we permitted. Slice 9 introduced the
+      // assignVendorToJobV1 callable, which writes those same
+      // fields server-side via the Admin SDK with proper role +
+      // resource-integrity gates. The narrow allowance is therefore
+      // gone: every subcollection under a top-level incident
+      // (jobs, evidence_locker, timeline_events, fieldSessions,
+      // supervisor_requests, conversion_jobs, notes, filings) is
+      // now read-only for active members and deny-all on writes.
+      match /{subcoll}/{document=**} {
+        allow read: if signedIn()
+          && isActiveMember(incidentOwnerOrgId(incidentId));
+        allow write: if false;
+      }
+    }
+
+    // ─── Default deny ────────────────────────────────────
+    // Everything not matched above is denied. The prior rules' wide-
+    // open `match /{document=**} { allow read, write: if true; }`
+    // wildcard is intentionally absent.
   }
 }

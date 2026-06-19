@@ -2,6 +2,12 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_FIELD_WORK,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -40,7 +46,43 @@ exports.markArrivedV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const sessionId = mustStr(body.sessionId, "sessionId");
-    const requestedBy = String(body.requestedBy || "ui");
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 7: field arrival is field-or-above. Runs before
+    // the incident-existence read so non-members cannot probe.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_FIELD_WORK);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[markArrivedV1] authz_denied", {
+        fn: "markArrivedV1",
+        orgId,
+        incidentId,
+        sessionId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_FIELD_WORK,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[markArrivedV1] authz_ok", {
+      fn: "markArrivedV1",
+      orgId,
+      incidentId,
+      sessionId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_FIELD_WORK,
+    });
+
+    const requestedBy = String(actorUid || body.requestedBy || "ui");
     const gps = normGps(body.gps);
 
     const db = getFirestore();
@@ -54,8 +96,7 @@ exports.markArrivedV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 409, { ok: false, error: "invalid_transition", detail: `unsupported incident.status=${incStatus}` });
     }
     const sessionRef =
-      db.collection("orgs").doc(orgId)
-        .collection("incidents").doc(incidentId)
+      db.collection("incidents").doc(incidentId)
         .collection("fieldSessions").doc(sessionId);
 
     // Only set arrival once (idempotent-ish)

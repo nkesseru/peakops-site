@@ -7,13 +7,38 @@ function trimTrailingSlash(v: string) {
   return v.replace(/\/+$/, "");
 }
 
+function normalizeLocalFunctionsBase(v: string) {
+  const b = trimTrailingSlash(String(v || "").trim());
+  if (!b || !isLocalDev()) return b;
+  return b
+    .replace("://127.0.0.1:5001/", "://127.0.0.1:5004/")
+    .replace("://localhost:5001/", "://localhost:5004/");
+}
+
 function isLocalDev() {
   return process.env.NODE_ENV !== "production" || process.env.NEXT_PUBLIC_ENV === "local";
 }
 
+// PEAKOPS_FUNCTIONS_BASE_RESOLVE_V1 (2026-05-08) — Slice Start Job 1.1.
+// Match the env-resolution order used by app/api/fn/_proxy.ts (Slice 17
+// hotfix a085f7e). Vercel Production has NEXT_PUBLIC_PEAKOPS_FN_BASE
+// set as the canonical name; older deploys / local dev may carry
+// NEXT_PUBLIC_FUNCTIONS_BASE. Reading them in this order means every
+// consumer of getFunctionsBase() — IncidentClient.refresh(),
+// IncidentClient.markArrived(), and similar guards elsewhere — picks
+// up the production value and stops short-circuiting their own data
+// loads / mutations. Without this, production refresh() bails at
+// `if (!base) return` and the detail page never fetches the incident
+// or its jobs, which is what produced "Untitled incident" + the
+// missing arrival timestamp + the "Task uqxWDo" fallback in the
+// Slice 17C First Job production smoke.
 export function getEnvFunctionsBase() {
-  const envBase = String(process.env.NEXT_PUBLIC_FUNCTIONS_BASE || "").trim();
-  return envBase ? trimTrailingSlash(envBase) : "";
+  const envBase = String(
+    process.env.NEXT_PUBLIC_PEAKOPS_FN_BASE ||
+    process.env.NEXT_PUBLIC_FUNCTIONS_BASE ||
+    "",
+  ).trim();
+  return envBase ? normalizeLocalFunctionsBase(envBase) : "";
 }
 
 export function hasEnvBase() {
@@ -26,7 +51,7 @@ export function getFunctionsBase() {
   if (isLocalDev() && typeof window !== "undefined") {
     try {
       const ss = String(window.sessionStorage.getItem(SESSION_BASE_KEY) || "").trim();
-      if (ss) return trimTrailingSlash(ss);
+      if (ss) return normalizeLocalFunctionsBase(ss);
     } catch {}
   }
   return isLocalDev() ? DEV_FUNCTIONS_BASE : "";
@@ -37,7 +62,7 @@ export function getFunctionsBaseDebugInfo() {
   let overrideBase = "";
   if (isLocalDev() && typeof window !== "undefined") {
     try {
-      overrideBase = trimTrailingSlash(String(window.sessionStorage.getItem(SESSION_BASE_KEY) || "").trim());
+      overrideBase = normalizeLocalFunctionsBase(String(window.sessionStorage.getItem(SESSION_BASE_KEY) || "").trim());
     } catch {}
   }
   const activeBase = getFunctionsBase();
@@ -50,7 +75,7 @@ export function getFunctionsBaseFallback(_base: string) {
 
 export async function verifyFunctionsBase(base: string): Promise<boolean> {
   if (!isLocalDev() || typeof window === "undefined") return false;
-  const b = trimTrailingSlash(String(base || ""));
+  const b = normalizeLocalFunctionsBase(String(base || ""));
   if (!b) return false;
   const ctrl = new AbortController();
   const t = window.setTimeout(() => ctrl.abort(), 1200);
@@ -67,7 +92,7 @@ export async function verifyFunctionsBase(base: string): Promise<boolean> {
 export async function rememberFunctionsBase(base: string): Promise<boolean> {
   if (!isLocalDev() || typeof window === "undefined") return false;
   if (hasEnvBase()) return false;
-  const b = trimTrailingSlash(String(base || ""));
+  const b = normalizeLocalFunctionsBase(String(base || ""));
   if (!b) return false;
   const ok = await verifyFunctionsBase(b);
   if (!ok) return false;
@@ -102,7 +127,7 @@ export function warnFunctionsBaseIfSuspicious(base: string) {
   const b = trimTrailingSlash(String(base || ""));
   if (!b) return;
   warnedPortMismatch = true;
-  if (!b.includes(":5002/")) {
-    console.warn(`[functionsBase] using ${b}. Expected local emulator proxy is :5002.`);
+  if (!b.includes(":5004/")) {
+    console.warn(`[functionsBase] using ${b}. Expected local emulator proxy is :5004.`);
   }
 }

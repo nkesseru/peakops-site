@@ -16,6 +16,7 @@ import { RejectForm } from "@/components/customer/RejectForm";
 import { ConsumedTerminalScreen } from "@/components/customer/ConsumedTerminalScreen";
 import type {
   CustomerReviewDossierData,
+  CustomerReviewPacket,
   GetCustomerReviewResponse,
   SubmitCustomerReviewResponse,
   ConsumedAction,
@@ -27,7 +28,7 @@ type Props = {
 
 type LoadState =
   | { kind: "loading" }
-  | { kind: "loaded"; data: CustomerReviewDossierData; status: string; consumed: boolean; consumedAction: ConsumedAction | null }
+  | { kind: "loaded"; data: CustomerReviewDossierData; status: string; consumed: boolean; consumedAction: ConsumedAction | null; packet: CustomerReviewPacket | null }
   | { kind: "not_found" }
   | { kind: "revoked" }
   | { kind: "rate_limited" }
@@ -82,6 +83,9 @@ export default function CustomerReviewClient({ token }: Props) {
         status: json.status || "",
         consumed: Boolean(json.consumed),
         consumedAction: (json.consumedAction || null) as ConsumedAction | null,
+        // PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15) — null for
+        // pre-slice-1 links; dossier/terminal render accordingly.
+        packet: json.packet || null,
       });
 
       // If the link has already been consumed (revisit), show the terminal screen.
@@ -195,7 +199,7 @@ export default function CustomerReviewClient({ token }: Props) {
         )}
 
         {loadState.kind === "loaded" && actionState.kind !== "done" && (
-          <CustomerReviewDossier data={loadState.data} />
+          <CustomerReviewDossier data={loadState.data} packet={loadState.packet} />
         )}
 
         {loadState.kind === "loaded" && actionState.kind === "done" && (
@@ -204,6 +208,7 @@ export default function CustomerReviewClient({ token }: Props) {
             consumedAtIso={actionState.recordedAt || null}
             comment={actionState.comment || undefined}
             packetTitle={loadState.data.title || undefined}
+            packet={loadState.packet}
           />
         )}
       </div>

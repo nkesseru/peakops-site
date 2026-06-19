@@ -2,7 +2,15 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { emitTimelineEvent } = require("./timelineEmit");
+const { resolveIncidentRef } = require("./_incidentPath");
 const { INCIDENT_STATUS, normalizeIncidentStatus, canTransitionIncident } = require("./incidentState");
+const {
+  assertActorRole,
+  httpStatusFromAuthzError,
+  ROLES_APPROVE,
+} = require("./_authz");
+const { extractActorUid } = require("./_actor");
+const { refreshReadinessCache } = require("./_readiness");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -98,15 +106,56 @@ exports.closeIncidentV1 = onRequest({ cors: true }, async (req, res) => {
     const orgId = mustStr(body.orgId, "orgId");
     const incidentId = mustStr(body.incidentId, "incidentId");
     const db = getFirestore();
-    const actor = await resolveActor(req, body);
-    await assertClosePermission({ db, orgId, actor, req });
-    const closedBy = String(body.closedBy || actor.uid || "ui");
+
+    // PEAKOPS_AUTHZ_ROLE_RETROFIT_V1 (2026-05-06)
+    // Phase 1 Slice 5: close action is admin-or-supervisor only.
+    // Upgraded from the Slice 2 membership-only gate. The legacy
+    // resolveActor / assertClosePermission helpers below remain in
+    // this file as unused references; they are not on the request
+    // path.
+    let actorUid = "";
+    let actorRole = null;
+    try {
+      ({ uid: actorUid } = await extractActorUid(req, body));
+      const gate = await assertActorRole(orgId, actorUid, ROLES_APPROVE);
+      actorRole = (gate.membership && gate.membership.role) || null;
+    } catch (e) {
+      console.warn("[closeIncidentV1] authz_denied", {
+        fn: "closeIncidentV1",
+        orgId,
+        incidentId,
+        uid: actorUid,
+        role: (e && e.details && e.details.role) || null,
+        requiredRoles: (e && e.details && e.details.allowedRoles) || ROLES_APPROVE,
+        code: e && e.code,
+      });
+      return j(res, httpStatusFromAuthzError(e), {
+        ok: false,
+        error: (e && e.code) || "permission-denied",
+      });
+    }
+    console.log("[closeIncidentV1] authz_ok", {
+      fn: "closeIncidentV1",
+      orgId,
+      incidentId,
+      uid: actorUid,
+      role: actorRole,
+      requiredRoles: ROLES_APPROVE,
+    });
+
+    const closedBy = String(body.closedBy || actorUid || "ui");
     const forceClose = String(body.forceClose || "").toLowerCase() === "true" || body.forceClose === true;
     const isDevLike =
       String(process.env.NODE_ENV || "").toLowerCase() !== "production" ||
       String(process.env.FUNCTIONS_EMULATOR || "").toLowerCase() === "true";
 
-    const incRef = db.collection("incidents").doc(incidentId);
+    // PEAKOPS_STATUS_WRITE_ALIGN_V1
+    // Status must land on the parent that getIncidentV1 reads from (canonical
+    // when it exists, legacy otherwise). Jobs pre-check stays on legacy because
+    // createJobV1 and the rest of the job writers hardcode that path.
+    const { ref: incRef } = await resolveIncidentRef(orgId, incidentId);
+    const legacyIncRef = db.collection("incidents").doc(incidentId);
+
     const snap = await incRef.get();
     const data = snap.exists ? (snap.data() || {}) : {};
     const status = normalizeIncidentStatus(data.status);
@@ -129,7 +178,7 @@ exports.closeIncidentV1 = onRequest({ cors: true }, async (req, res) => {
       return j(res, 403, { ok: false, error: "force_close_not_allowed_in_production" });
     }
     if (!forceClose) {
-      const jobsSnap = await incRef.collection("jobs").limit(500).get();
+      const jobsSnap = await legacyIncRef.collection("jobs").limit(500).get();
       const blocked = jobsSnap.docs
         .map((d) => ({ id: d.id, ...(d.data() || {}) }))
         .filter((job) => {
@@ -168,6 +217,12 @@ exports.closeIncidentV1 = onRequest({ cors: true }, async (req, res) => {
     );
 
     await emitTimelineEvent({ orgId, incidentId, type: "incident_closed", actor: "ui" });
+
+    // PEAKOPS_READINESS_FRESHNESS_V1 (PR 108) — refresh readinessCache
+    // so the incident-closure check flips on the next list/read without
+    // waiting for a Summary view. Helper swallows errors.
+    await refreshReadinessCache({ orgId, incidentId });
+
     return j(res, 200, { ok: true, orgId, incidentId, status: "closed" });
   } catch (e) {
     const status = Number(e?.statusCode || 400);

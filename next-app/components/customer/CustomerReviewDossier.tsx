@@ -18,11 +18,15 @@
 //   - Readiness state (derived in PR 126e)
 //   - Evidence list (metadata only — thumbnails are Phase 1)
 
-import type { CustomerReviewDossierData } from "@/lib/customerReview/types";
+import type { CustomerReviewDossierData, CustomerReviewPacket } from "@/lib/customerReview/types";
 import { REQUIREMENTS_SOURCE_DISPLAY } from "@/lib/customerReview/types";
 
 type Props = {
   data: CustomerReviewDossierData;
+  // PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15)
+  // Optional pinned/current/isLatest block. Null for pre-slice-1
+  // links — in that case, no version-stamp box and no drift banner.
+  packet?: CustomerReviewPacket | null;
 };
 
 function fmtIso(iso: string | null): string {
@@ -39,13 +43,70 @@ function fmtIso(iso: string | null): string {
   }
 }
 
-export function CustomerReviewDossier({ data }: Props) {
+export function CustomerReviewDossier({ data, packet }: Props) {
   const archetypeDisplay = data.archetype
     ? data.archetype.split("_").map((s) => s.charAt(0).toUpperCase() + s.slice(1)).join(" ")
     : "";
 
+  // PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15) — drift banner data
+  const pinned = packet?.pinned || null;
+  const current = packet?.current || null;
+  const showDriftBanner = !!(
+    pinned && current && packet?.isLatest === false
+  );
+
   return (
     <div className="space-y-6 text-gray-800">
+      {/* PEAKOPS_REVIEW_VERSION_PIN_V2 — calm drift banner. Renders
+          only when the link's pinned version is older than the
+          incident's current packet version. Informational, not
+          blocking — the customer can still accept. Wording is the
+          audit anchor: explicit version numbers + "applies only to
+          vN" so a reviewer can read the receipt later and know
+          exactly what the customer agreed to. */}
+      {showDriftBanner && (
+        <div
+          className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 space-y-1"
+          role="status"
+        >
+          <div className="font-semibold flex items-center gap-2">
+            <span aria-hidden>⚠</span>
+            <span>A newer packet exists.</span>
+          </div>
+          <p className="leading-relaxed">
+            You are reviewing packet <span className="font-mono">v{pinned!.version}</span>
+            {pinned!.generatedAt ? <> (generated {fmtIso(pinned!.generatedAt)})</> : null}.
+            The team has since generated <span className="font-mono">v{current!.version}</span>.
+            Contact your project team if you would like to review the latest
+            before deciding. Acceptance below applies only to v{pinned!.version}.
+          </p>
+        </div>
+      )}
+
+      {/* PEAKOPS_REVIEW_VERSION_PIN_V2 — version stamp. Renders
+          whenever the link is version-pinned (slice 1 onward). Pre-
+          slice-1 links carry no `pinned` and skip this entirely. */}
+      {pinned && (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700">
+          <div>
+            <span className="text-gray-500">Reviewing packet</span>{" "}
+            <span className="font-mono font-semibold">v{pinned.version}</span>
+            {pinned.generatedAt && (
+              <>
+                {" · "}
+                <span className="text-gray-500">generated</span>{" "}
+                <span className="font-mono">{fmtIso(pinned.generatedAt)}</span>
+              </>
+            )}
+          </div>
+          {pinned.hashPrefix && (
+            <div className="text-gray-500 mt-0.5">
+              Content hash: <span className="font-mono">{pinned.hashPrefix}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Header / provenance ──────────────────────────────── */}
       <header className="space-y-2 pb-4 border-b border-gray-200">
         {data.title && (

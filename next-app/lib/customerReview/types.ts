@@ -72,12 +72,34 @@ export type CustomerReviewDossierData = {
   coordinatorDisplayName: string;
 };
 
+// PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15)
+// Customer-facing packet ref. Carries only what's safe to show the
+// customer — version + generation time + a short hash prefix for
+// forensic identification. Never the full storagePath or bucket.
+export type CustomerReviewPacketRef = {
+  version: number;
+  generatedAt: string | null;
+  hashPrefix: string;
+};
+
+// PEAKOPS_REVIEW_VERSION_PIN_V2 (2026-06-15)
+// The `packet` block on the review response. `pinned` is what the
+// review link captured at mint (slice 1's pinnedPacket); `current`
+// is what's on the incident right now. `isLatest` is the comparison
+// boolean — null when either side is missing (pre-slice-1 links).
+export type CustomerReviewPacket = {
+  pinned: CustomerReviewPacketRef | null;
+  current: CustomerReviewPacketRef | null;
+  isLatest: boolean | null;
+};
+
 export type GetCustomerReviewResponse = {
   ok: boolean;
   tokenHashPrefix?: string;
   status?: string;
   consumed?: boolean;
   consumedAction?: ConsumedAction | null;
+  packet?: CustomerReviewPacket;
   review?: CustomerReviewDossierData;
   error?: string;
 };

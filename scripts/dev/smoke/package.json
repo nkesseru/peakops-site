@@ -1,0 +1,14 @@
+{
+  "name": "peakops-smoke",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Production demo-flow smoke test for PeakOps. Standalone install so it doesn't pull on the main app's dependency tree.",
+  "type": "module",
+  "scripts": {
+    "smoke": "node smoke.mjs",
+    "login": "node smoke.mjs --login"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
