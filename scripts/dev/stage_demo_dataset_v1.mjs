@@ -3,13 +3,20 @@
 // telecom prospect exploring the org sees realistic variety beyond
 // the Northgate Mutual + Internal Alpha Test pair.
 //
-// Idempotent: hardcoded incident IDs. Re-running skips already-
-// created records (createIncidentV1 returns 409 — caught + ignored).
+// Idempotent in two senses:
+//   1. createIncidentV1 returns 409 on existing IDs → caught + skipped.
+//   2. After create-or-skip, a patch pass unconditionally upserts the
+//      title/notes/location/customer fields (canonical + legacy) plus
+//      Record A's job title and Record B's rejection comment +
+//      derived recovery cause. Re-running converges to spec.
 //
 // Records:
 //   A — demo_field_work_001       Cascade Fiber Networks      in_progress
+//                                 Fiber splice verification — Segment 14
 //   B — demo_rejected_001         Riverbend Power & Light     customer_rejected
+//                                 OTDR validation — East Ring  (missing OTDR)
 //   C — demo_draft_001            Pioneer Broadband Coop      draft (open intake)
+//                                 Cabinet inspection — North Spokane
 
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
@@ -86,28 +93,64 @@ async function uploadEvidence({ incidentId, sessionId, jobId, fileName, label })
   need(`addEvidenceV1(${fileName})`, r);
 }
 
+// ── Spec (single source for both create + patch passes) ─────────
+const SPEC = {
+  A: {
+    incidentId: "demo_field_work_001",
+    title: "Fiber splice verification — Segment 14",
+    notes: "Splice loss reading pending OTDR trace. Cleaned and re-spliced cassette in cabinet; awaiting end-to-end loss measurement before submission.",
+    location: "Segment 14 splice cabinet, Burnside Loop, Portland OR",
+    customer: "Cascade Fiber Networks",
+    priority: "normal",
+    archetype: "fiber_splice_verification",
+    jobTitle: "Splice verification — Segment 14 cassette A",
+  },
+  B: {
+    incidentId: "demo_rejected_001",
+    title: "OTDR validation — East Ring",
+    notes: "End-to-end OTDR validation on the East Ring backhaul. Re-spliced two vaults, ran loss measurement, photographed labels.",
+    location: "East Ring vault E-14, Spokane Valley WA",
+    customer: "Riverbend Power & Light",
+    priority: "normal",
+    archetype: "fiber_splice_verification",
+    rejectionComment: "Missing OTDR trace — the packet shows splice photos but no loss measurement printout. Please attach the OTDR end-to-end trace before we can sign off.",
+    // "otdr" / "test result" / "missing" all map to missing_test_result
+    // via CUSTOMER_COMMENT_CAUSE_KEYWORDS (otdr wins, first match).
+    causePrimary: "missing_test_result",
+  },
+  C: {
+    incidentId: "demo_draft_001",
+    title: "Cabinet inspection — North Spokane",
+    notes: null,
+    location: "Cabinet 4187, N Maple St, Spokane WA",
+    customer: "Pioneer Broadband Cooperative",
+    priority: "high",
+    archetype: "fiber_splice_verification",
+  },
+};
+
 // ── RECORD A — in_progress, partial proof captured, notes ────────
 async function stageRecordA() {
   head("RECORD A — Cascade Fiber Networks (in_progress)");
-  const incidentId = "demo_field_work_001";
+  const incidentId = SPEC.A.incidentId;
   sub(`incidentId = ${incidentId}`);
 
   let r = await post("createIncidentV1", {
     orgId: ORG, actorUid: OWNER_UID, incidentId,
-    title: "Splice cabinet repair — North Loop cabinet 14",
+    title: SPEC.A.title,
     status: "open",
-    archetype: "fiber_splice_verification",
+    archetype: SPEC.A.archetype,
     filingTypesRequired: ["DIRS"],
-    location: "1820 Burnside St, Portland OR",
-    customer: "Cascade Fiber Networks",
-    priority: "normal",
-    notes: "Damage from buried-cable strike. Replaced spliced fiber sleeve; pending splice loss measurement (OTDR) before submission.",
+    location: SPEC.A.location,
+    customer: SPEC.A.customer,
+    priority: SPEC.A.priority,
+    notes: SPEC.A.notes,
   });
   if (!need("createIncidentV1(A)", r, true)) return incidentId;
 
   r = await post("createJobV1", {
     orgId: ORG, incidentId, actorUid: OWNER_UID,
-    title: "Splice repair — segment 4",
+    title: SPEC.A.jobTitle,
   });
   need("createJobV1(A)", r);
   const jobId = r.body.job?.jobId || r.body.jobId;
@@ -156,18 +199,18 @@ async function stageRecordB() {
 
   let r = await post("createIncidentV1", {
     orgId: ORG, actorUid: OWNER_UID, incidentId,
-    title: "Pole inspection — Highline crossing route 7",
+    title: SPEC.B.title,
     status: "open",
-    archetype: "pole_inspection",
+    archetype: SPEC.B.archetype,
     filingTypesRequired: ["DIRS"],
-    location: "Highline Service Road, Mile 12, Spokane Valley WA",
-    customer: "Riverbend Power & Light",
-    priority: "normal",
-    notes: "Annual contracted pole inspection on the Highline 12kv crossing. Climbed, photographed, tested.",
+    location: SPEC.B.location,
+    customer: SPEC.B.customer,
+    priority: SPEC.B.priority,
+    notes: SPEC.B.notes,
   });
   if (!need("createIncidentV1(B)", r, true)) return { incidentId, caseId: null };
 
-  r = await post("createJobV1", { orgId: ORG, incidentId, actorUid: OWNER_UID, title: "Pole #4892 climb + condition photos" });
+  r = await post("createJobV1", { orgId: ORG, incidentId, actorUid: OWNER_UID, title: "OTDR pass — East Ring backhaul" });
   need("createJobV1(B)", r);
   const jobId = r.body.job?.jobId || r.body.jobId;
 
@@ -208,7 +251,7 @@ async function stageRecordB() {
 
   r = await post("submitCustomerReviewV1", {
     token: tokenB, action: "reject",
-    comment: "Need OSHA fall-protection signoff photo before we can accept. Photo 2 shows climber without secondary lanyard — that's not compliant with our contractor PPE addendum. Please reshoot with both lanyards visible.",
+    comment: SPEC.B.rejectionComment,
   });
   need("submitCustomerReviewV1-reject(B)", r);
 
@@ -229,18 +272,97 @@ async function stageRecordC() {
 
   let r = await post("createIncidentV1", {
     orgId: ORG, actorUid: OWNER_UID, incidentId,
-    title: "Aerial fiber pull — Westport to Mill District backhaul",
+    title: SPEC.C.title,
     status: "draft",
-    archetype: "fiber_splice_verification",
+    archetype: SPEC.C.archetype,
     filingTypesRequired: ["DIRS"],
-    location: "Westport Substation Yard, Eugene OR",
-    customer: "Pioneer Broadband Cooperative",
-    priority: "high",
+    location: SPEC.C.location,
+    customer: SPEC.C.customer,
+    priority: SPEC.C.priority,
   });
   if (!need("createIncidentV1(C)", r, true)) return incidentId;
 
   sub("final state: draft — no jobs, no sessions, no evidence (clean intake)");
   return incidentId;
+}
+
+// ── Patch pass — converge spec-drifting fields on existing docs ──
+// Runs after stageRecord{A,B,C} regardless of create-or-skip. Spec
+// lives in the SPEC object above; this function unconditionally
+// upserts the visible fields so a refined demo brief just needs the
+// new strings in SPEC + a re-run.
+
+async function patchIncidentDoc(incidentId, fields) {
+  const update = { ...fields, updatedAt: FieldValue.serverTimestamp() };
+  // Canonical (orgs/{org}/incidents/{id}) is the source of truth
+  // post-PR 97. Legacy (incidents/{id}) is dual-written by createIncidentV1
+  // — patch both so getIncident fallbacks read the same shape.
+  await db.doc(`orgs/${ORG}/incidents/${incidentId}`).set(update, { merge: true });
+  await db.doc(`incidents/${incidentId}`).set(update, { merge: true }).catch(() => {});
+  sub(`patched incident fields: ${Object.keys(fields).join(", ")}`);
+}
+
+async function patchFirstJobTitle(incidentId, newTitle) {
+  // Jobs live under both incidents/{id}/jobs and orgs/{org}/incidents/{id}/jobs
+  // (dual-write). Patch whichever exists.
+  let jobs = await db.collection(`incidents/${incidentId}/jobs`).limit(1).get();
+  let path = "incidents";
+  if (jobs.empty) {
+    jobs = await db.collection(`orgs/${ORG}/incidents/${incidentId}/jobs`).limit(1).get();
+    path = "orgs";
+  }
+  if (jobs.empty) { sub(`no job found to patch on ${incidentId}`); return; }
+  const jobId = jobs.docs[0].id;
+  await db.doc(`incidents/${incidentId}/jobs/${jobId}`).set({ title: newTitle }, { merge: true }).catch(() => {});
+  await db.doc(`orgs/${ORG}/incidents/${incidentId}/jobs/${jobId}`).set({ title: newTitle }, { merge: true }).catch(() => {});
+  sub(`patched first job title (${path} path, jobId=${jobId}): ${newTitle}`);
+}
+
+async function patchRecoveryCause(incidentId, comment, causePrimary) {
+  const casesQ = await db.collection(`orgs/${ORG}/recovery_cases`).where("incidentId", "==", incidentId).limit(1).get();
+  if (casesQ.empty) { sub(`no recovery case to patch for ${incidentId}`); return; }
+  const ref = casesQ.docs[0].ref;
+  await ref.set({
+    cause: {
+      primary: causePrimary,
+      customerComment: comment,
+    },
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  sub(`patched recovery case ${ref.id}: cause.primary=${causePrimary}`);
+}
+
+async function patchRecordsToSpec() {
+  head("PATCH PASS — converge to current SPEC");
+
+  await patchIncidentDoc(SPEC.A.incidentId, {
+    title: SPEC.A.title,
+    notes: SPEC.A.notes,
+    location: SPEC.A.location,
+    customer: SPEC.A.customer,
+    priority: SPEC.A.priority,
+    archetype: SPEC.A.archetype,
+  });
+  await patchFirstJobTitle(SPEC.A.incidentId, SPEC.A.jobTitle);
+
+  await patchIncidentDoc(SPEC.B.incidentId, {
+    title: SPEC.B.title,
+    notes: SPEC.B.notes,
+    location: SPEC.B.location,
+    customer: SPEC.B.customer,
+    priority: SPEC.B.priority,
+    archetype: SPEC.B.archetype,
+    customerRejectionComment: SPEC.B.rejectionComment,
+  });
+  await patchRecoveryCause(SPEC.B.incidentId, SPEC.B.rejectionComment, SPEC.B.causePrimary);
+
+  await patchIncidentDoc(SPEC.C.incidentId, {
+    title: SPEC.C.title,
+    location: SPEC.C.location,
+    customer: SPEC.C.customer,
+    priority: SPEC.C.priority,
+    archetype: SPEC.C.archetype,
+  });
 }
 
 // ── main ─────────────────────────────────────────────────────────
@@ -249,6 +371,7 @@ async function main() {
   const aId = await stageRecordA();
   const bResult = await stageRecordB();
   const cId = await stageRecordC();
+  await patchRecordsToSpec();
 
   console.log("\n══ Created incidents ══════════════════════════════════════════");
   console.log(`  A: ${aId}`);
