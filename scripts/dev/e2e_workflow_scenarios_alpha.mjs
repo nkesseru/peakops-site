@@ -192,12 +192,16 @@ async function scenarioA() {
   const finalStatus = incSnap.data()?.status;
   check("incident.status === 'customer_accepted'", finalStatus === "customer_accepted", `actual=${finalStatus}`);
 
-  // Verify notification was fanned out (look for a customer_accepted notification doc
-  // landing under the creator's uid).
-  const notifsSnap = await db.collection("users").doc(OWNER_UID).collection("notifications")
+  // Verify notification was fanned out. The customer_accepted fan-out
+  // audience is recipientRoles=["admin","supervisor"] PLUS additionalUids
+  // containing linkData.createdBy. In this script the link is minted by
+  // ADMIN_UID (see createCustomerReviewLinkV1 call above), so we check
+  // ADMIN_UID's feed — that uid is both the createdBy and an "admin"
+  // role recipient.
+  const notifsSnap = await db.collection("users").doc(ADMIN_UID).collection("notifications")
     .where("incidentId", "==", incidentId).limit(10).get();
   const haveAccepted = notifsSnap.docs.some((d) => (d.data() || {}).type === "customer_accepted");
-  check("customer_accepted notification doc landed in creator's feed", haveAccepted, `feed count=${notifsSnap.size}`);
+  check("customer_accepted notification doc landed in admin feed", haveAccepted, `feed count=${notifsSnap.size}`);
 }
 
 async function scenarioB() {
