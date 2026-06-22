@@ -244,14 +244,19 @@ async function scenarioB() {
 
   // Transition recovery case READY_TO_RESUBMIT so mintResubmissionLinkV1 accepts.
   // First, advance status open → in_progress → ready_to_resubmit. Use updateRecoveryCaseV1.
-  await post("updateRecoveryCaseV1", {
+  // The parameter name is `status` (not targetStatus) per the callable's body parser.
+  let transitionR = await post("updateRecoveryCaseV1", {
     orgId: ORG, caseId, actorUid: ADMIN_UID,
-    targetStatus: "in_progress",
+    status: "in_progress",
   });
-  await post("updateRecoveryCaseV1", {
+  check("recovery case → in_progress", transitionR.body.ok === true,
+    transitionR.body.ok === true ? "" : `error=${transitionR.body.error || JSON.stringify(transitionR.body).slice(0, 100)}`);
+  transitionR = await post("updateRecoveryCaseV1", {
     orgId: ORG, caseId, actorUid: ADMIN_UID,
-    targetStatus: "ready_to_resubmit",
+    status: "ready_to_resubmit",
   });
+  check("recovery case → ready_to_resubmit", transitionR.body.ok === true,
+    transitionR.body.ok === true ? "" : `error=${transitionR.body.error || JSON.stringify(transitionR.body).slice(0, 100)}`);
 
   // Mint resubmission link.
   r = await post("mintResubmissionLinkV1", {
