@@ -102,6 +102,17 @@ safeExport("listOrgMembersV1", "./listOrgMembersV1");
 // owner member doc atomically. Production blocker §5.1 from the
 // Production Readiness Plan.
 safeExport("bootstrapPilotOrgV1", "./bootstrapPilotOrgV1");
+// PEAKOPS_CREATE_ORG_V1 (Chunk 3B-1, 2026-06-22)
+// Single-call customer org provisioning: find-or-create Auth user,
+// mint owner claims, bootstrap org + owner member + audit. Replaces
+// the 5-step manual founder CLI dance documented in
+// docs/checkpoints/chunk3a-customer-activation-audit.md.
+safeExport("createOrgV1", "./createOrgV1");
+// PEAKOPS_INVITE_ORG_MEMBER_V1 (Chunk 3B-1, 2026-06-22)
+// Single-call teammate invitation: find-or-create Auth user, append
+// orgId to claims.orgIds, write member doc + audit, return magic
+// link. Caller must be admin/owner of the target org.
+safeExport("inviteOrgMemberV1", "./inviteOrgMemberV1");
 safeExport("debugEvidenceV1", "./debugEvidenceV1");
 safeExport("debugOrgsV1", "./debugOrgsV1");
 
