@@ -87,15 +87,23 @@ const DEFAULT_PERMISSIONS_BY_ROLE = {
 };
 
 function buildActionCodeSettings(req) {
+  // PEAKOPS_PROD_ORIGIN_PRIORITY_V1 (Chunk 3B-1 follow-up, 2026-06-22)
+  // See createOrgV1.js for the full rationale. Short version: prefer
+  // PEAKOPS_APP_ORIGIN env var over request-derived headers so direct-
+  // to-function-URL callers don't construct an action URL with the
+  // Cloud Run hostname (which isn't allowlisted in Firebase Auth).
+  const envOrigin = String(process.env.PEAKOPS_APP_ORIGIN || "").trim();
+  if (envOrigin) {
+    const cleaned = envOrigin.replace(/\/+$/, "");
+    return { url: `${cleaned}/auth/action`, handleCodeInApp: true };
+  }
   const xfp = String(req.headers["x-forwarded-proto"] || "https");
   const xfh = String(req.headers["x-forwarded-host"] || req.headers.host || "");
   let origin = "";
   if (xfh) {
     origin = `${xfp}://${xfh}`;
   } else {
-    origin =
-      String(process.env.PEAKOPS_APP_ORIGIN || "").trim() ||
-      "https://app.peakops.app";
+    origin = "https://app.peakops.app";
   }
   origin = origin.replace(/\/+$/, "");
   return {

@@ -91,15 +91,33 @@ function deriveOrgId(orgName) {
 }
 
 function buildActionCodeSettings(req) {
+  // PEAKOPS_PROD_ORIGIN_PRIORITY_V1 (Chunk 3B-1 follow-up, 2026-06-22)
+  //
+  // Prefer the explicit PEAKOPS_APP_ORIGIN env var over any request-
+  // derived host. Required because direct-to-function-URL callers
+  // (e.g. scripts/activateCustomerOrg.cjs hitting the Cloud Run host)
+  // would otherwise see `req.headers.host` equal to the function's own
+  // Cloud Run hostname (e.g. "createorgv1-…-uc.a.run.app"), which is
+  // NOT in Firebase Auth's Authorized Domains list and produces
+  // `auth/unauthorized-continue-uri: "Domain not allowlisted by project"`
+  // when generatePasswordResetLink is called below.
+  //
+  // The fallback chain (env var → x-forwarded-host → req.headers.host →
+  // hardcoded default) keeps emulator + proxy-routed traffic working
+  // when the env var isn't set. In production the env var is set via
+  // functions_clean/.env.peakops-pilot (PEAKOPS_APP_ORIGIN=https://app.peakops.app).
+  const envOrigin = String(process.env.PEAKOPS_APP_ORIGIN || "").trim();
+  if (envOrigin) {
+    const cleaned = envOrigin.replace(/\/+$/, "");
+    return { url: `${cleaned}/auth/action`, handleCodeInApp: true };
+  }
   const xfp = String(req.headers["x-forwarded-proto"] || "https");
   const xfh = String(req.headers["x-forwarded-host"] || req.headers.host || "");
   let origin = "";
   if (xfh) {
     origin = `${xfp}://${xfh}`;
   } else {
-    origin =
-      String(process.env.PEAKOPS_APP_ORIGIN || "").trim() ||
-      "https://app.peakops.app";
+    origin = "https://app.peakops.app";
   }
   origin = origin.replace(/\/+$/, "");
   return {
