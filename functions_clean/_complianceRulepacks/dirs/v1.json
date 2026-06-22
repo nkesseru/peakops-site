@@ -1,21 +1,103 @@
 {
-  "version": "v1",
+  "version": "v1.1",
   "filingType": "DIRS",
+  "displayName": "FCC Disaster Information Reporting System (DIRS)",
+  "regulatorySource": {
+    "primary": "47 CFR Part 4 (Disruptions to Communications) — NORS infrastructure",
+    "primaryUrl": "https://www.law.cornell.edu/cfr/text/47/part-4",
+    "secondary": "FCC DIRS public guidance — voluntary disaster reporting activated event-by-event",
+    "secondaryUrl": "https://www.fcc.gov/network-outage-reporting-system-nors",
+    "notes": "DIRS is a voluntary FCC reporting program activated during major disasters. The data fields below are sourced from the underlying NORS infrastructure (47 CFR § 4.9, § 4.11) which DIRS leverages, plus DIRS-specific content emphasized in FCC public guidance. Every rule cites the section it derives from. This rulepack reflects substance v1.1; downstream incident snapshots taken under v1 remain frozen at their original ruleset (audit-preserved)."
+  },
+  "engineLimitations": {
+    "note": "The PeakOps compliance engine (functions_clean/_complianceValidator.js) only supports field-presence checks today. Threshold rules (e.g. 900,000 user-minutes for E911 per § 4.9), format checks (ISO-8601 timestamps), and cross-field math (resolvedTime - startTime ≥ 30 min) cannot be expressed in this rulepack. They are explicitly OUT OF SCOPE for v1.1 and tracked as engine-enhancement work."
+  },
   "rules": [
     {
-      "code": "dirs.affectedCustomers.required",
+      "code": "dirs.entity.identification.required",
+      "source": "47 CFR § 4.11 — Notification content: Entity name",
+      "description": "Every FCC outage submission must identify the reporting provider. PeakOps uses the incident's `customer` field as the reporting-entity label (the operator's customer-of-record, which functions as the regulatory identifier in the packet header).",
+      "rationale": "First content element listed in § 4.11. Without it, FCC staff cannot route the report to the correct file or hold a specific provider accountable.",
+      "when": { "statusIn": ["ACTIVE", "MITIGATED", "CLOSED"] },
+      "require": { "field": "customer" },
+      "message": "DIRS submission must identify the reporting entity (47 CFR § 4.11). Set the incident's customer/reporting-provider label.",
+      "severity": "ERROR"
+    },
+    {
+      "code": "dirs.geographic_area.required",
+      "source": "47 CFR § 4.11 — Notification content: Geographic area affected",
+      "description": "Geographic area affected is explicit § 4.11 content for both initial notifications and final reports. PeakOps requires the `location.raw` field be non-empty; DIRS-specific guidance often asks for county-level granularity, which operators currently capture in the free-text location string. Engine note: `location.raw` is the normalized landing-zone for the string operators type into createIncidentV1's location field; the engine's normalizer always materializes `location` itself as at least an empty object, so checking the parent path would never trigger.",
+      "rationale": "FCC needs to know which jurisdiction was impacted to coordinate inter-agency response and to verify against FEMA / state EOC reports.",
+      "when": { "statusIn": ["ACTIVE", "MITIGATED", "CLOSED"] },
+      "require": { "field": "location.raw" },
+      "message": "DIRS submission must identify the geographic area affected (47 CFR § 4.11). Populate the location field; include county-level detail where possible.",
+      "severity": "ERROR"
+    },
+    {
+      "code": "dirs.affected_population.required",
+      "source": "47 CFR § 4.9 — Outage reporting thresholds; § 4.11 — Service effects",
+      "description": "Count of customers/users affected. Drives the user-minutes calculation that determines whether outage exceeds NORS reporting thresholds (e.g. 900,000 user-minutes for E911 service per § 4.9). PeakOps does not auto-compute user-minutes today; operator supplies a customer-count estimate at incident start.",
+      "rationale": "Originally the only DIRS rule (v1). Retained in v1.1 with citation. The actual threshold math is OUT OF SCOPE for the current engine (see engineLimitations) but presence of the field is the necessary precondition.",
       "when": { "statusIn": ["ACTIVE", "MITIGATED", "CLOSED"] },
       "require": { "field": "affectedCustomers" },
-      "message": "DIRS requires affectedCustomers",
+      "message": "DIRS submission must report the count of affected users/customers (47 CFR § 4.9, § 4.11). Set affectedCustomers.",
       "severity": "ERROR"
+    },
+    {
+      "code": "dirs.problem_description.required",
+      "source": "47 CFR § 4.11 — Notification content: Brief description of the problem",
+      "description": "A brief problem description is explicit § 4.11 notification content. PeakOps uses the incident's `notes` field as the operator-supplied free-text description (mirroring the FCC's expectation of a narrative summary alongside the structured fields).",
+      "rationale": "Without a narrative, the structured field values are ambiguous (e.g. 'affectedCustomers: 142' alone doesn't tell FCC staff whether this is voice, data, or 911 impact).",
+      "when": { "statusIn": ["ACTIVE", "MITIGATED", "CLOSED"] },
+      "require": { "field": "notes" },
+      "message": "DIRS submission must include a brief description of the problem (47 CFR § 4.11). Use the incident notes field for the narrative.",
+      "severity": "WARN"
+    },
+    {
+      "code": "dirs.service_category.recommended",
+      "source": "47 CFR § 4.5 (provider categories) + § 4.9 (per-category thresholds)",
+      "description": "Service category (wireline/wireless/cable/satellite/SS7/VoIP) determines which § 4.9 threshold applies and routes the FCC's downstream review. PeakOps uses `archetype` as the proxy: fiber_splice_verification → wireline impact, pole_inspection → physical-plant impact, etc. Not a perfect 1:1 with regulatory provider categories but the best signal the operator supplies today.",
+      "rationale": "WARN rather than ERROR because the archetype defaults to a sensible value at incident creation, but mis-categorization (e.g. labeling a wireless incident as wireline) silently routes to the wrong threshold check downstream. Surfacing presence forces operator attention to category correctness.",
+      "when": { "statusIn": ["ACTIVE", "MITIGATED", "CLOSED"] },
+      "require": { "field": "archetype" },
+      "message": "DIRS submission should categorize the service type (proxy: archetype field). Required for FCC threshold routing under 47 CFR § 4.9.",
+      "severity": "WARN"
+    },
+    {
+      "code": "dirs.priority.recommended",
+      "source": "FCC public guidance on DIRS triage prioritization",
+      "description": "Operators flag high-priority incidents (e.g. 911-impacting, hospital-impacting, multi-county) so FCC + downstream agencies can triage. PeakOps incident `priority` is a free-text field (typically low/normal/high).",
+      "rationale": "Not strictly a regulatory requirement but DIRS workflows in practice depend on priority signaling. Soft requirement.",
+      "when": { "statusIn": ["ACTIVE", "MITIGATED", "CLOSED"] },
+      "require": { "field": "priority" },
+      "message": "DIRS submission should set a priority level for FCC triage routing.",
+      "severity": "INFO"
     }
   ],
   "evidenceRequirements": [
     {
       "code": "dirs.evidence.outageProof",
+      "source": "47 CFR § 4.11 — Pertinent information; FCC DIRS guidance on substantiation",
+      "description": "Some form of operational log substantiating the outage (network alarm capture, OSS event log, NOC ticket). LOG is the PeakOps evidence-type tag for these documents. WARN severity because not every event has a clean log artifact (e.g. physical damage discovered visually) but FCC expects substantiation where available.",
       "type": "LOG",
-      "message": "DIRS requires outage proof evidence (LOG)",
+      "message": "DIRS submission should include an operational log substantiating the outage (47 CFR § 4.11).",
       "severity": "WARN"
+    },
+    {
+      "code": "dirs.evidence.situationReport",
+      "source": "FCC DIRS public guidance on situation reporting",
+      "description": "Operator's situation report — a narrative document summarizing impact, geographic scope, restoration status, and outage cause. Distinct from the LOG (which is machine-generated) — this is the human-authored summary the FCC uses for coordination.",
+      "type": "DOCUMENT",
+      "message": "DIRS submissions benefit from an operator-authored situation report (DOCUMENT). Recommended for multi-day events.",
+      "severity": "INFO"
+    },
+    {
+      "code": "dirs.evidence.restorationProof",
+      "source": "47 CFR § 4.11 — Final report attestation requirements",
+      "description": "When an incident reaches CLOSED status, FCC final reports must include documentation of restoration: photos of repaired equipment, post-restoration test logs, or a closure write-up. Evidence type LOG covers post-restoration test artifacts (e.g. OTDR sweep showing splice loss within spec).",
+      "type": "LOG",
+      "message": "Closed-status DIRS incidents should include restoration-proof evidence (post-repair test log or similar) per § 4.11 final report requirements.",
+      "severity": "INFO"
     }
   ]
 }
