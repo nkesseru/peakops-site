@@ -376,6 +376,36 @@ exports.mintResubmissionLinkV1 = onRequest({ cors: true }, async (req, res) => {
       meta: { reason: "resubmission_link_minted", packetVersionId: tokenHashPrefix },
     });
 
+    // PEAKOPS_REVIEW_LINK_NOTIFY_V1 (Chunk 2, 2026-06-22)
+    // Same fan-out as createCustomerReviewLinkV1 — best-effort; never
+    // blocks the mint. Operators should see resubmission mints in
+    // their in-app feed alongside first-mint events.
+    try {
+      let _notify = null;
+      try { _notify = require("./_notify"); } catch (_) { /* optional */ }
+      if (_notify && typeof _notify.fanOutOrgNotification === "function") {
+        const _displayCustomer = customerLabel || "the customer";
+        const result = await _notify.fanOutOrgNotification({
+          orgId,
+          recipientRoles: ["admin", "supervisor"],
+          additionalUids: actorUid ? [actorUid] : [],
+          payload: {
+            type: "customer_review_link_created",
+            title: "Resubmission link sent",
+            message: `Resubmission link for ${_displayCustomer} (attempt #${txnResult.ordinal}) is awaiting customer response.`,
+            incidentId,
+            orgId,
+            targetUrl: `/incidents/${encodeURIComponent(incidentId)}/summary?orgId=${encodeURIComponent(orgId)}`,
+          },
+        });
+        const wrote = typeof result === "number" ? result : (result?.wrote || 0);
+        const recipients = typeof result === "number" ? result : (result?.recipients || result?.wrote || 0);
+        console.log(`[notify] resubmission_link_created recipients=${recipients} wrote=${wrote}`);
+      }
+    } catch (e) {
+      console.warn("[mintResubmissionLinkV1] notify failed", e && e.message);
+    }
+
     console.log("[mintResubmissionLinkV1] minted", {
       orgId, caseId, incidentId, tokenHashPrefix,
       ordinal: txnResult.ordinal, actorUid, actorRole,

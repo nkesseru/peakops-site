@@ -325,6 +325,43 @@ exports.submitCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
       orgId, incidentId, tokenHashPrefix, finalAction, targetStatus,
     });
 
+    // PEAKOPS_CUSTOMER_DECISION_NOTIFY_V1 (Chunk 2: Workflow Completion, 2026-06-22)
+    // When the customer acts on the review link, fan out an in-app
+    // notification so the operator team sees the decision immediately
+    // instead of polling /summary. Reject path is especially important
+    // — a recovery case has just been auto-created and the operator
+    // needs to know rework is required. Best-effort; never blocks
+    // the customer response.
+    try {
+      let _notify = null;
+      try { _notify = require("./_notify"); } catch (_) { /* optional */ }
+      if (_notify && typeof _notify.fanOutOrgNotification === "function") {
+        const _displayCustomer = (linkData && linkData.customerLabel) || "the customer";
+        const _creatorUid = (linkData && linkData.createdBy) || "";
+        const isAccept = finalAction === "accepted";
+        const result = await _notify.fanOutOrgNotification({
+          orgId,
+          recipientRoles: ["admin", "supervisor"],
+          additionalUids: _creatorUid ? [_creatorUid] : [],
+          payload: {
+            type: isAccept ? "customer_accepted" : "customer_rejected",
+            title: isAccept ? "Customer accepted" : "Customer requested correction",
+            message: isAccept
+              ? `${_displayCustomer} accepted the packet. Record is complete.`
+              : `${_displayCustomer} requested a correction. Recovery case opened.`,
+            incidentId,
+            orgId,
+            targetUrl: `/incidents/${encodeURIComponent(incidentId)}/summary?orgId=${encodeURIComponent(orgId)}`,
+          },
+        });
+        const wrote = typeof result === "number" ? result : (result?.wrote || 0);
+        const recipients = typeof result === "number" ? result : (result?.recipients || result?.wrote || 0);
+        console.log(`[notify] ${isAccept ? "customer_accepted" : "customer_rejected"} recipients=${recipients} wrote=${wrote}`);
+      }
+    } catch (e) {
+      console.warn("[submitCustomerReviewV1] notify failed", e && e.message);
+    }
+
     // PR 127a — Inline recovery handling. Best-effort; never fails the
     // customer-side action. Two paths:
     //   reject → auto-create new case OR extend existing one
