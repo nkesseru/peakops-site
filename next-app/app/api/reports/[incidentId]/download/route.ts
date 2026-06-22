@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 // PEAKOPS_REPORT_DOWNLOAD_OPAQUE_V1 (2026-05-01)
 // Relative imports (not the @/ alias) because the project's
 // tsconfig paths resolve `@/lib/*` to `src/lib/*` first, and
@@ -8,6 +9,92 @@ import { adminDb, adminStorage } from "../../../../../lib/firebaseAdmin";
 import { requireOrgAccess, AuthError } from "../../../../../lib/verifyAuth";
 
 export const runtime = "nodejs";
+
+// PEAKOPS_REPORT_DOWNLOAD_AUDIT_V1 (Chunk 1: Trust Foundation, 2026-06-22)
+// Returns the truncated IP prefix from a Next.js Request without leaking
+// PII into the audit trail. Mirrors functions_clean/_customerReviewToken.js
+// ipPrefixFromRequest, but adapted for the Web-standard Request shape.
+function ipPrefixFromRequest(req: Request): string {
+  const fwd = String(req.headers.get("x-forwarded-for") || "").split(",")[0].trim();
+  if (!fwd) return "";
+  if (fwd.includes(":")) return fwd.split(":").slice(0, 4).join(":");
+  const parts = fwd.split(".");
+  if (parts.length === 4) return parts.slice(0, 3).join(".");
+  return fwd.slice(0, 24);
+}
+
+// PEAKOPS_REPORT_DOWNLOAD_AUDIT_V1 (Chunk 1: Trust Foundation, 2026-06-22)
+// Emit a `packet_downloaded` timeline event after a successful download
+// signal. Best-effort: a write failure here MUST NOT block the download
+// (we've already streamed bytes or issued the redirect). All errors are
+// caught and logged to server-side console only.
+//
+// The audit shape mirrors functions_clean/timelineEmit.js so the operator
+// timeline UI renders it consistently. Field `actorUid` carries the
+// verified Bearer-token uid; `actor` carries the role-style "coordinator_ui"
+// string. We also denorm the packetMeta version + hash from the incident
+// doc so the audit row is self-contained.
+//
+// Path resolution mirrors functions_clean/_incidentPath.js: prefer
+// orgs/{orgId}/incidents/{incidentId} (canonical), fall back to
+// incidents/{incidentId} (legacy top-level).
+async function emitDownloadAuditEvent(args: {
+  orgId: string;
+  incidentId: string;
+  actorUid: string;
+  actorEmail: string;
+  packetMeta: { bucket: string; storagePath: string };
+  ipPrefix: string;
+  outcome: "signed_url" | "streamed";
+}): Promise<void> {
+  try {
+    const { orgId, incidentId, actorUid, actorEmail, packetMeta, ipPrefix, outcome } = args;
+    if (!orgId || !incidentId) return;
+
+    // Resolve the parent incident path the same way emitTimelineEvent does.
+    let parentPath = `orgs/${orgId}/incidents/${incidentId}`;
+    const orgScopedSnap = await adminDb.doc(parentPath).get();
+    if (!orgScopedSnap.exists) {
+      parentPath = `incidents/${incidentId}`;
+    }
+
+    // Denormalize packetVersion + zipSha256 from the incident's packetMeta
+    // so the audit row stands alone even if the underlying ZIP is later
+    // regenerated.
+    const incData = orgScopedSnap.exists ? (orgScopedSnap.data() || {}) : (
+      (await adminDb.doc(`incidents/${incidentId}`).get()).data() || {}
+    );
+    const pm: any = incData.packetMeta || {};
+    const packetVersion = Number.isFinite(Number(pm.version)) ? Number(pm.version) : null;
+    const zipSha256 = String(pm.zipSha256 || pm.packetHash || "").trim() || null;
+
+    await adminDb.collection(`${parentPath}/timeline_events`).add({
+      type: "packet_downloaded",
+      actor: "coordinator_ui",
+      actorUid,
+      occurredAt: FieldValue.serverTimestamp(),
+      meta: {
+        orgId,
+        incidentId,
+        actorEmail: actorEmail || null,
+        ipPrefix: ipPrefix || null,
+        outcome,                     // "signed_url" (302) or "streamed" (200 bytes)
+        packetVersion,
+        zipSha256,
+        bucketHash: packetMeta.bucket
+          ? require("node:crypto").createHash("sha256")
+              .update(packetMeta.bucket, "utf8")
+              .digest("hex")
+              .slice(0, 12)
+          : null,
+      },
+    });
+  } catch (e) {
+    // Audit emit must NEVER affect the customer-facing response.
+    // eslint-disable-next-line no-console
+    console.warn("[report-download] audit emit failed", (e as any)?.message || e);
+  }
+}
 
 /**
  * PEAKOPS_REPORT_DOWNLOAD_OPAQUE_V1 (2026-05-01)
@@ -219,11 +306,23 @@ export async function GET(
   }
   devLog("report path found", { incidentId, zipName: info.zipName });
 
+  // PEAKOPS_REPORT_DOWNLOAD_AUDIT_V1 — emit a single audit row per
+  // successful download response. Best-effort, non-blocking on the
+  // customer response (we fire-and-await the timeline write before
+  // returning so the timeline row lands; the function clock budget is
+  // generous enough that we don't need to background it). All errors
+  // are swallowed by emitDownloadAuditEvent itself.
+  const ipPrefix = ipPrefixFromRequest(req);
+
   // Local/dev/emulator path — stream through this route.
   if (isEmu()) {
     const emuRes = await streamFromEmulator(info);
     if (emuRes) {
       devLog("bytes streamed (emulator)", { zipName: info.zipName });
+      await emitDownloadAuditEvent({
+        orgId: authCtx.orgId, incidentId, actorUid: authCtx.uid, actorEmail: authCtx.email,
+        packetMeta: info, ipPrefix, outcome: "streamed",
+      });
       devLog("response sent");
       return emuRes;
     }
@@ -232,6 +331,10 @@ export async function GET(
     const adminRes = await streamFromAdmin(info);
     if (adminRes) {
       devLog("bytes streamed (admin fallback)", { zipName: info.zipName });
+      await emitDownloadAuditEvent({
+        orgId: authCtx.orgId, incidentId, actorUid: authCtx.uid, actorEmail: authCtx.email,
+        packetMeta: info, ipPrefix, outcome: "streamed",
+      });
       devLog("response sent");
       return adminRes;
     }
@@ -251,12 +354,20 @@ export async function GET(
   const signedUrl = await trySignedUrl(info);
   if (signedUrl) {
     devLog("signed url created");
+    await emitDownloadAuditEvent({
+      orgId: authCtx.orgId, incidentId, actorUid: authCtx.uid, actorEmail: authCtx.email,
+      packetMeta: info, ipPrefix, outcome: "signed_url",
+    });
     devLog("response sent");
     return NextResponse.redirect(signedUrl, 302);
   }
   const adminRes = await streamFromAdmin(info);
   if (adminRes) {
     devLog("bytes streamed (prod fallback)", { zipName: info.zipName });
+    await emitDownloadAuditEvent({
+      orgId: authCtx.orgId, incidentId, actorUid: authCtx.uid, actorEmail: authCtx.email,
+      packetMeta: info, ipPrefix, outcome: "streamed",
+    });
     devLog("response sent");
     return adminRes;
   }

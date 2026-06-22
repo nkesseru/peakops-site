@@ -270,10 +270,78 @@ async function assertActorCanReadOrg(orgId, uid) {
   return assertActorRole(orgId, uid, ROLES_ALL_MEMBERS);
 }
 
+/**
+ * PEAKOPS_TENANT_ISOLATION_V1 (Chunk 1: Trust Foundation, 2026-06-22)
+ *
+ * Defense-in-depth guard that asserts the resolved incident actually
+ * belongs to the caller's org. Required wherever the legacy top-level
+ * `incidents/{incidentId}` path is consulted as a fallback to the
+ * canonical `orgs/{orgId}/incidents/{incidentId}`: without this check,
+ * an entitled member of org A could read/mutate/export org B's incident
+ * by passing { orgId: "A", incidentId: "<B's id>" }.
+ *
+ * Returns 404 (not 403) on mismatch so the response is indistinguishable
+ * from a nonexistent incident and does not confirm the foreign incident's
+ * existence to the caller.
+ *
+ * Legacy compatibility: returns `match: true` when the incident doc has
+ * no orgId field (very old records pre-dating multi-tenant rollout).
+ * Modern writes always populate orgId, so this branch will quiesce over
+ * time. Callers may upgrade to strict-mode (false on missing orgId) once
+ * a verified-clean audit confirms the legacy bucket is empty.
+ *
+ * @param {FirebaseFirestore.DocumentSnapshot} incSnap   Snapshot of the
+ *                                                       incident doc.
+ * @param {string} callerOrgId                           The orgId the
+ *                                                       caller is acting under.
+ * @param {object} [ctx]                                 Optional logging
+ *                                                       context.
+ * @param {string} [ctx.fn]
+ * @param {string} [ctx.incidentId]
+ * @param {string} [ctx.actorUid]
+ *
+ * @returns {{ match: boolean, incidentOrgId: string|null }}
+ */
+function assertIncidentBelongsToOrg(incSnap, callerOrgId, ctx) {
+  const callerOrg = String(callerOrgId || "").trim();
+  if (!incSnap || typeof incSnap.exists !== "boolean") {
+    return { match: false, incidentOrgId: null };
+  }
+  if (!incSnap.exists) {
+    return { match: false, incidentOrgId: null };
+  }
+  const data = incSnap.data() || {};
+  const incidentOrgId = String(data.orgId || "").trim() || null;
+
+  // Legacy records without an orgId field are grandfathered. Once the
+  // post-pilot audit confirms no such records remain, flip this to
+  // `return { match: false }` to deny ambiguity.
+  if (!incidentOrgId) {
+    return { match: true, incidentOrgId: null };
+  }
+
+  if (incidentOrgId !== callerOrg) {
+    // Log structured event for security-trail review. Never include the
+    // foreign incident's contents — only its orgId, which the caller can't
+    // see in the response.
+    // eslint-disable-next-line no-console
+    console.warn("[PEAKOPS_TENANT_ISOLATION_V1] tenant_mismatch", {
+      fn: (ctx && ctx.fn) || "unknown",
+      callerOrgId: callerOrg,
+      incidentDocOrgId: incidentOrgId,
+      incidentId: (ctx && ctx.incidentId) || incSnap.id || null,
+      uid: (ctx && ctx.actorUid) || null,
+    });
+    return { match: false, incidentOrgId };
+  }
+  return { match: true, incidentOrgId };
+}
+
 module.exports = {
   assertActorMember,
   assertActorRole,
   assertActorCanReadOrg,
+  assertIncidentBelongsToOrg,
   httpStatusFromAuthzError,
   // Role identity predicates
   isAdmin,

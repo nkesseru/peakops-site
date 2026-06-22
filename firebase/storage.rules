@@ -1,9 +1,57 @@
 rules_version = '2';
+
+// PEAKOPS_STORAGE_RULES_V2 (Chunk 1: Trust Foundation, 2026-06-22)
+//
+// All Cloud Storage access in PeakOps flows through one of these
+// server-side surfaces — never via the client SDK:
+//
+//   READS
+//     - Evidence images:      createEvidenceReadUrlV1 mints a v4
+//                             signed URL ({action: "read"}); browser
+//                             fetches storage.googleapis.com directly.
+//     - Packet downloads:     /api/reports/[incidentId]/download
+//                             validates orgId membership server-side,
+//                             then either redirects to a 5-minute
+//                             signed URL or streams via Admin SDK.
+//     - Customer review:      getCustomerReviewV1 does NOT return
+//                             image URLs in the dossier — the
+//                             customer sees evidence metadata only.
+//     - Emulator media proxy: /api/media (gated to emulator hosts
+//                             only; returns 410 Gone in production).
+//
+//   WRITES
+//     - Evidence upload:      createEvidenceUploadUrlV1 mints a v4
+//                             signed URL ({action: "write"}); browser
+//                             PUTs to storage.googleapis.com directly.
+//     - Packet generation:    exportIncidentPacketV1 uses Admin SDK
+//                             writes from the function runtime.
+//     - HEIC conversion:      Cloud Function runtime via Admin SDK.
+//
+// Signed URLs carry their own authorization via the signature and do
+// NOT consult these rules. Admin SDK writes bypass rules entirely.
+// Therefore the correct stance for client-SDK access is: deny all.
+//
+// If a future feature adds direct client-side read or write, this
+// file must be updated explicitly AND the access pattern must be
+// scoped to org membership via custom claims. There is no path here
+// that opens the bucket without that review.
+//
+// Prior version (`allow read, write: if true`) was commented "DEV
+// ONLY" but was the file `firebase.json` actually deploys. This
+// version is safe for both production and emulator: the emulator
+// admin/signed-URL endpoints bypass rules the same way production
+// does.
+
 service firebase.storage {
   match /b/{bucket}/o {
-    // DEV ONLY: allow emulator reads/writes
     match /{allPaths=**} {
-      allow read, write: if true;
+      // Client SDK reads → denied. Use signed URLs from
+      // createEvidenceReadUrlV1 or /api/reports/<id>/download.
+      allow read: if false;
+
+      // Client SDK writes → denied. Use signed URLs from
+      // createEvidenceUploadUrlV1.
+      allow write: if false;
     }
   }
 }

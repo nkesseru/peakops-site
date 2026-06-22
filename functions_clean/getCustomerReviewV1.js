@@ -58,6 +58,7 @@ const {
   hashPrefix,
   ipPrefixFromRequest,
   userAgentFingerprint,
+  isExpired,
 } = require("./_customerReviewToken");
 // PR 126d — legacy-record fallbacks for records that predate the
 // PR 89a/104 snapshot contract. Template lookup + readiness recompute
@@ -182,6 +183,13 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
     if (linkData.revokedAt) {
       return j(res, 410, { ok: false, error: "token_revoked", tokenHashPrefix });
     }
+    // PEAKOPS_CUSTOMER_REVIEW_TOKEN_TTL_V1 (Chunk 1, 2026-06-22)
+    // Expiration check, before we touch the link doc. Legacy tokens
+    // with expiresAt: null are grandfathered (isExpired returns false)
+    // until the backfill migration sets a real expiresAt on them.
+    if (isExpired(linkData.expiresAt)) {
+      return j(res, 410, { ok: false, error: "token_expired", tokenHashPrefix });
+    }
 
     // Rate limiting + access counter — transactional so racing browsers
     // can't both slip under the limit on the same window.
@@ -200,6 +208,12 @@ exports.getCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
         // Re-check inside the txn — revocation may have happened mid-read.
         if (data.revokedAt) {
           const err = new Error("token_revoked");
+          err.statusCode = 410;
+          throw err;
+        }
+        // PEAKOPS_CUSTOMER_REVIEW_TOKEN_TTL_V1 — re-check inside txn.
+        if (isExpired(data.expiresAt)) {
+          const err = new Error("token_expired");
           err.statusCode = 410;
           throw err;
         }

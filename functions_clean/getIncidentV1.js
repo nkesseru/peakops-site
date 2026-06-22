@@ -2,6 +2,7 @@ const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const {
   assertActorCanReadOrg,
+  assertIncidentBelongsToOrg,
   httpStatusFromAuthzError,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
@@ -67,12 +68,22 @@ exports.getIncidentV1 = onRequest({ cors: true }, async (req, res) => {
 
     if (!snap.exists) return send(res, 404, { ok: false, error: "Incident not found" });
 
-    const data = snap.data() || {};
-    const incOrgId = String(data.orgId || "").trim();
-    if (!isDemoBypass(req) && incOrgId && incOrgId !== orgId) {
-      return send(res, 409, { ok: false, error: "org_mismatch" });
+    // PEAKOPS_TENANT_ISOLATION_V1 (Chunk 1, 2026-06-22)
+    // Centralized org-isolation guard. Returns 404 (was 409 — leaked
+    // existence of foreign incident). Demo bypass preserved for emulator-
+    // only cross-org reads triggered by `x-peakops-demo: 1`.
+    if (!isDemoBypass(req)) {
+      const iso = assertIncidentBelongsToOrg(snap, orgId, {
+        fn: "getIncidentV1",
+        incidentId,
+        actorUid,
+      });
+      if (!iso.match) {
+        return send(res, 404, { ok: false, error: "Incident not found" });
+      }
     }
 
+    const data = snap.data() || {};
     const doc = { id: snap.id, ...data };
     return send(res, 200, { ok: true, orgId, incidentId, source, doc });
   } catch (e) {

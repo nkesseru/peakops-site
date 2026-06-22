@@ -59,6 +59,8 @@ const {
   generateToken,
   hashToken,
   hashPrefix,
+  computeExpiresAt,
+  TOKEN_TTL_DAYS,
 } = require("./_customerReviewToken");
 const {
   RECOVERY_STATUS,
@@ -251,12 +253,18 @@ exports.mintResubmissionLinkV1 = onRequest({ cors: true }, async (req, res) => {
     // Persist the link doc. Same shape as PR 126a so getCustomerReviewV1
     // / submitCustomerReviewV1 work unchanged.
     const linkRef = db.doc(`customer_review_links/${tokenHash}`);
+    // PEAKOPS_CUSTOMER_REVIEW_TOKEN_TTL_V1 (Chunk 1, 2026-06-22)
+    // Resubmission links share the link-doc shape with the first-mint
+    // flow and run through the same getCustomerReviewV1 / submitCustomerReviewV1
+    // surfaces, so they get the same 90-day TTL.
+    const _expiresAt = computeExpiresAt();
     await linkRef.set({
       incidentId,
       orgId,
       createdAt: FieldValue.serverTimestamp(),
       createdBy: actorUid,
-      expiresAt: null,
+      expiresAt: _expiresAt,
+      expiresInDays: TOKEN_TTL_DAYS,
       revokedAt: null,
       revokedBy: null,
       firstAccessedAt: null,

@@ -54,6 +54,8 @@ const {
   generateToken,
   hashToken,
   hashPrefix,
+  computeExpiresAt,
+  TOKEN_TTL_DAYS,
 } = require("./_customerReviewToken");
 const { emitTimelineEvent } = require("./timelineEmit");
 // PR 127a — when a review link is minted against an incident with an
@@ -256,13 +258,25 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
     // The audit collection (`orgs/{orgId}/customer_review_audit`) stays
     // org-nested because audit reads are operator-facing.
     const linkRef = db.doc(`customer_review_links/${tokenHash}`);
+    // PEAKOPS_CUSTOMER_REVIEW_TOKEN_TTL_V1 (Chunk 1, 2026-06-22)
+    // Compute expiresAt at mint time using a deterministic 90-day
+    // window (TOKEN_TTL_DAYS). createdAt is a serverTimestamp
+    // sentinel and unreadable client-side, so we compute the
+    // expiration from the function's clock (which is in turn
+    // verified by Firestore's clock on persistence). Drift between
+    // function-clock and Firestore-clock is bounded and inconsequential
+    // for a 90-day TTL.
+    const _expiresAt = computeExpiresAt();
     const linkPayload = {
       incidentId,
       orgId,
       createdAt: FieldValue.serverTimestamp(),
       createdBy: actorUid,
-      // Phase 0 — no TTL; Phase 1 will populate this.
-      expiresAt: null,
+      // PEAKOPS_CUSTOMER_REVIEW_TOKEN_TTL_V1 — populated.
+      // Format: Firestore Timestamp (Date converted on write).
+      // Backstop only; operators can revoke earlier via revokedAt.
+      expiresAt: _expiresAt,
+      expiresInDays: TOKEN_TTL_DAYS,
       revokedAt: null,
       revokedBy: null,
       firstAccessedAt: null,

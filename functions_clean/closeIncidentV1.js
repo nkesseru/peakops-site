@@ -6,6 +6,7 @@ const { resolveIncidentRef } = require("./_incidentPath");
 const { INCIDENT_STATUS, normalizeIncidentStatus, canTransitionIncident } = require("./incidentState");
 const {
   assertActorRole,
+  assertIncidentBelongsToOrg,
   httpStatusFromAuthzError,
   ROLES_APPROVE,
 } = require("./_authz");
@@ -163,8 +164,16 @@ exports.closeIncidentV1 = onRequest({ cors: true }, async (req, res) => {
     if (status === INCIDENT_STATUS.CLOSED) {
       return j(res, 200, { ok: true, orgId, incidentId, status: "closed", already: true });
     }
-    if (String(data.orgId || "").trim() && String(data.orgId || "").trim() !== orgId) {
-      return j(res, 409, { ok: false, error: "org_mismatch" });
+    // PEAKOPS_TENANT_ISOLATION_V1 (Chunk 1, 2026-06-22)
+    // Centralized guard. Returns 404 on mismatch (was 409 — leaked
+    // existence of foreign incident).
+    const _iso = assertIncidentBelongsToOrg(snap, orgId, {
+      fn: "closeIncidentV1",
+      incidentId,
+      actorUid,
+    });
+    if (!_iso.match) {
+      return j(res, 404, { ok: false, error: "incident_not_found" });
     }
     if (!canTransitionIncident(status, INCIDENT_STATUS.CLOSED)) {
       return j(res, 409, {

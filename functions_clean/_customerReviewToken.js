@@ -66,13 +66,83 @@ function userAgentFingerprint(req) {
   return crypto.createHash("sha256").update(ua, "utf8").digest("hex").slice(0, 8);
 }
 
+// PEAKOPS_CUSTOMER_REVIEW_TOKEN_TTL_V1 (Chunk 1: Trust Foundation, 2026-06-22)
+//
+// Token expiration policy. New tokens get an explicit expiresAt set
+// to TOKEN_TTL_DAYS days after mint. Legacy tokens (minted before this
+// constant existed) carry expiresAt: null — those are grandfathered
+// via the backfill migration script (see scripts/dev/backfill_review_token_ttl.mjs)
+// rather than being rejected at request time.
+//
+// 90 days matches the typical "customer signoff window" plus a buffer.
+// Operators can revoke earlier via revokedAt; the TTL is a backstop,
+// not the primary lifecycle signal.
+const TOKEN_TTL_DAYS = 90;
+const TOKEN_TTL_MS = TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * Returns true when the link doc's expiresAt has passed.
+ *
+ * Accepts a few timestamp shapes safely:
+ *   - Firestore Timestamp ({_seconds, _nanoseconds} or .toMillis())
+ *   - JS Date
+ *   - epoch millis number
+ *   - ISO string
+ *   - null/undefined → returns false (never-expires; legacy grandfathered)
+ *
+ * Returning false on null is intentional: legacy null-TTL tokens stay
+ * valid until the backfill migration sets a real expiresAt on them.
+ * Once backfilled, the same check enforces expiration.
+ *
+ * @param {*} expiresAt
+ * @param {number} [nowMs=Date.now()]
+ * @returns {boolean}
+ */
+function isExpired(expiresAt, nowMs) {
+  if (expiresAt == null) return false;
+  const now = Number.isFinite(nowMs) ? Number(nowMs) : Date.now();
+  // Firestore Timestamp (server-side shape)
+  if (typeof expiresAt === "object") {
+    if (typeof expiresAt.toMillis === "function") {
+      try { return expiresAt.toMillis() <= now; } catch (_) { /* fall through */ }
+    }
+    const sec = Number(expiresAt._seconds);
+    if (Number.isFinite(sec)) return sec * 1000 <= now;
+  }
+  if (expiresAt instanceof Date) return expiresAt.getTime() <= now;
+  if (typeof expiresAt === "number" && Number.isFinite(expiresAt)) return expiresAt <= now;
+  if (typeof expiresAt === "string") {
+    const t = Date.parse(expiresAt);
+    if (Number.isFinite(t)) return t <= now;
+  }
+  // Unknown shape → fail safe (treat as not-expired so we don't
+  // accidentally lock customers out due to a malformed write).
+  return false;
+}
+
+/**
+ * Builds the expiresAt JS Date for a new token mint. Callers should
+ * convert to a Firestore Timestamp when writing to the link doc.
+ *
+ * @param {number} [nowMs=Date.now()]
+ * @returns {Date}
+ */
+function computeExpiresAt(nowMs) {
+  const now = Number.isFinite(nowMs) ? Number(nowMs) : Date.now();
+  return new Date(now + TOKEN_TTL_MS);
+}
+
 module.exports = {
   TOKEN_PREFIX,
   EXPECTED_TOKEN_LEN,
+  TOKEN_TTL_DAYS,
+  TOKEN_TTL_MS,
   generateToken,
   isWellFormed,
   hashToken,
   hashPrefix,
   ipPrefixFromRequest,
   userAgentFingerprint,
+  isExpired,
+  computeExpiresAt,
 };

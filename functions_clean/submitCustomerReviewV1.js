@@ -50,6 +50,7 @@ const {
   hashPrefix,
   ipPrefixFromRequest,
   userAgentFingerprint,
+  isExpired,
 } = require("./_customerReviewToken");
 const { emitTimelineEvent } = require("./timelineEmit");
 // PR 127a — inline call to recovery auto-create on reject + auto-resolve on accept.
@@ -129,6 +130,15 @@ exports.submitCustomerReviewV1 = onRequest({ cors: true }, async (req, res) => {
 
         if (data.revokedAt) {
           const err = new Error("token_revoked");
+          err.statusCode = 410;
+          throw err;
+        }
+        // PEAKOPS_CUSTOMER_REVIEW_TOKEN_TTL_V1 (Chunk 1, 2026-06-22)
+        // Expired tokens cannot submit a decision. 410 Gone matches
+        // the revoked-token shape so customer-side error handling is
+        // uniform; the discriminator is the `error` field.
+        if (isExpired(data.expiresAt)) {
+          const err = new Error("token_expired");
           err.statusCode = 410;
           throw err;
         }
