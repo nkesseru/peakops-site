@@ -2,6 +2,32 @@ import { NextResponse } from "next/server";
 import { proxy } from "./_proxy";
 import { requireOrgAccess } from "../../../lib/verifyAuth";
 
+// PEAKOPS_PROXY_TOKEN_ONLY_ALLOWLIST_V1 (Chunk 2 verification hotfix, 2026-06-22)
+//
+// A small allowlist of upstream Cloud Functions that take a single-use
+// token as their credential and intentionally run WITHOUT a Bearer
+// header. The customer-facing review flow is the canonical example —
+// a customer opens /review/{token} in a browser with no login and the
+// page calls these endpoints unauthenticated.
+//
+// Each allowlisted function MUST do its own token validation server-
+// side (see _customerReviewToken.js + getCustomerReviewV1 /
+// submitCustomerReviewV1 source). The proxy's only job for these
+// routes is to forward the request without applying the Bearer-token
+// gate. actorUid / actorRole are still stripped from inbound query +
+// body so a client can't smuggle identity in via the request.
+//
+// Without this list, /api/fn/getCustomerReviewV1 returns
+// 401 "Missing Authorization header" before the upstream function
+// ever sees the token. Production customers saw "Couldn't load this
+// packet — Missing Authorization header" on every review-link visit
+// since PR #159 landed. Discovered during the post-deploy verification
+// run for Chunks 1+2.
+const UNAUTH_TOKEN_ROUTES = new Set<string>([
+  "getCustomerReviewV1",
+  "submitCustomerReviewV1",
+]);
+
 /**
  * Phase 3 enforcement gate for every /api/fn/* route. Pulls orgId out of
  * the request (query first, then JSON body), verifies the bearer token
@@ -37,6 +63,43 @@ export async function enforceOrgAndProxy(
         bodyObj = null;
       }
     }
+  }
+
+  // PEAKOPS_PROXY_TOKEN_ONLY_ALLOWLIST_V1 — token-only unauth routes
+  // bypass the Bearer-token / orgId-membership gate and forward
+  // directly. They still get actorUid / actorRole stripped from the
+  // outbound request body so clients can't smuggle identity in.
+  if (UNAUTH_TOKEN_ROUTES.has(functionName)) {
+    url.searchParams.delete("actorUid");
+    url.searchParams.delete("actorRole");
+    let outBody: string | undefined;
+    if (method !== "GET" && method !== "HEAD") {
+      if (bodyObj && typeof bodyObj === "object") {
+        delete bodyObj.actorUid;
+        delete bodyObj.actorRole;
+        outBody = JSON.stringify(bodyObj);
+      } else {
+        outBody = bodyText;
+      }
+    }
+    const outHeadersUnauth = new Headers(req.headers);
+    // Strip the trusted identity advisory headers — they should not
+    // be present for unauth routes (token IS the identity).
+    outHeadersUnauth.delete("x-peakops-uid");
+    outHeadersUnauth.delete("x-peakops-email");
+    outHeadersUnauth.delete("x-peakops-org");
+    outHeadersUnauth.delete("x-peakops-role");
+    if (outBody !== undefined && bodyObj && typeof bodyObj === "object") {
+      outHeadersUnauth.set("content-type", "application/json");
+      outHeadersUnauth.delete("content-length");
+    }
+    const initUnauth: RequestInit = { method, headers: outHeadersUnauth };
+    if (outBody !== undefined) {
+      (initUnauth as any).body = outBody;
+    }
+    const newReqUnauth = new Request(url.toString(), initUnauth);
+    console.log(`[${functionName}] unauth-token-route`);
+    return proxy(newReqUnauth, functionName);
   }
 
   // orgId precedence: query param wins; fall back to body.
