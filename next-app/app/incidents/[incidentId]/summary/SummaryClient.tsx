@@ -2051,6 +2051,44 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               </div>
 
               {/* State-specific operator guidance + action */}
+              {/* PEAKOPS_AWAITING_REVIEW_GUIDANCE_V1 (Chunk 2: Workflow Completion, 2026-06-22)
+                  Until this block was added, the "awaiting" state showed only
+                  the badge + "Awaiting customer action" line — no guidance on
+                  what to do if the customer doesn't respond, no way to remint
+                  a new link, no time-since-send indicator. Operators had no
+                  visible path forward, which surfaced as silent stuck records
+                  in pilot dry-runs. The block below mirrors the rejected /
+                  out_of_date guidance blocks already present on this page. */}
+              {state === "awaiting" ? (() => {
+                const submittedAtSec = Number((incident as any)?.submittedToCustomerAt?._seconds || 0);
+                const daysSince = submittedAtSec > 0
+                  ? Math.floor((Date.now() / 1000 - submittedAtSec) / 86400)
+                  : null;
+                const reminderTone = daysSince !== null && daysSince >= 3
+                  ? "border-amber-300/30 bg-amber-500/[0.06] text-amber-100/90"
+                  : "border-blue-300/20 bg-blue-500/[0.04] text-blue-100/85";
+                return (
+                  <div className={"rounded-lg border p-3 space-y-2 " + reminderTone}>
+                    <div className="text-[12px] leading-relaxed">
+                      {daysSince === null
+                        ? "The review link is out and the customer hasn't responded yet."
+                        : daysSince === 0
+                          ? "Review link sent today. Waiting on the customer."
+                          : daysSince === 1
+                            ? "Sent 1 day ago. Still waiting on the customer."
+                            : daysSince < 3
+                              ? `Sent ${daysSince} days ago. Still waiting on the customer.`
+                              : `Sent ${daysSince} days ago — consider following up with the customer.`}
+                    </div>
+                    <div className="text-[11px] text-gray-400 leading-relaxed">
+                      The review URL was displayed once at mint time and is the credential.
+                      The link stays valid for 90 days or until the customer acts on it.
+                      If the customer lost the link, contact PeakOps support to revoke the
+                      current link and mint a replacement.
+                    </div>
+                  </div>
+                );
+              })() : null}
               {state === "out_of_date" ? (
                 <div className="rounded-lg border border-amber-300/30 bg-amber-500/[0.06] p-3 space-y-2">
                   <div className="text-[12px] text-amber-100/90 leading-relaxed">

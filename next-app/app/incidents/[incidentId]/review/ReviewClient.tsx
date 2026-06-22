@@ -1284,9 +1284,21 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
   }
 }
 
-  async function sendBack() {
-    alert("TODO: wire send-back endpoint (sendBackIncidentV1). For now, this is a stub.");
-  }
+  // PEAKOPS_REVIEW_SEND_BACK_REMOVED_V1 (Chunk 2: Workflow Completion, 2026-06-22)
+  // The "Send Back" button on this page was wired to a stub callable
+  // (sendBackIncidentV1) that was never implemented. Three working
+  // alternatives already exist for returning work to the field crew:
+  //   1. Per-job — the "Reject" button below (rejectJobV1, requires a
+  //      reason; sends the job back into the field-work loop).
+  //   2. Per-incident — the supervisor request-update flow
+  //      (createSupervisorRequestV1; emits SUPERVISOR_REQUEST_UPDATE
+  //      timeline event; surfaces on the field record as an amber
+  //      banner asking the crew to address the request).
+  //   3. Per-record post-review — when the customer rejects via the
+  //      customer-review link, a recovery case is auto-created and the
+  //      incident transitions to customer_rejected for rework.
+  // The stub button is removed below; the three working paths cover
+  // every legitimate "send back" scenario.
 
   async function approveJob(jobId: string) {
     try {
@@ -2086,14 +2098,11 @@ export default function ReviewClient({ incidentId }: { incidentId: string }) {
             <div className="flex items-center gap-2 shrink-0">
               {hasReviewableJob ? (
                 <>
-                  <button
-                    className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10 disabled:opacity-50"
-                    onClick={sendBack}
-                    disabled={loading}
-                    title="Send back to field with reasons"
-                  >
-                    ↩︎ Send Back
-                  </button>
+                  {/* PEAKOPS_REVIEW_SEND_BACK_REMOVED_V1 (Chunk 2, 2026-06-22)
+                      "Send Back" stub button removed. Use per-job Reject
+                      (below) or supervisor Request Update (on the
+                      incident page) — see sendBack-equivalent comment
+                      above the approveJob function. */}
 
                   <div className="flex flex-col items-start">
                     <button

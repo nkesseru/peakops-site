@@ -347,6 +347,40 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
       sourceStatus,
     });
 
+    // PEAKOPS_REVIEW_LINK_NOTIFY_V1 (Chunk 2: Workflow Completion, 2026-06-22)
+    // Fan out an in-app notification so other supervisors see that a
+    // review link is now outstanding. Without this, two operators could
+    // mint two links in parallel (the second silently overrides the
+    // first's effect on incident status). Notification is visible via
+    // the NotificationsBell. Best-effort: errors logged + swallowed —
+    // a notify failure must NEVER block the mint, which has already
+    // landed.
+    try {
+      let _notify = null;
+      try { _notify = require("./_notify"); } catch (_) { /* optional */ }
+      if (_notify && typeof _notify.fanOutOrgNotification === "function") {
+        const _displayCustomer = customerLabel || "the customer";
+        const result = await _notify.fanOutOrgNotification({
+          orgId,
+          recipientRoles: ["admin", "supervisor"],
+          additionalUids: actorUid ? [actorUid] : [],
+          payload: {
+            type: "customer_review_link_created",
+            title: "Review link sent",
+            message: `Review link for ${_displayCustomer} is awaiting customer response.`,
+            incidentId,
+            orgId,
+            targetUrl: `/incidents/${encodeURIComponent(incidentId)}/summary?orgId=${encodeURIComponent(orgId)}`,
+          },
+        });
+        const wrote = typeof result === "number" ? result : (result?.wrote || 0);
+        const recipients = typeof result === "number" ? result : (result?.recipients || result?.wrote || 0);
+        console.log(`[notify] customer_review_link_created recipients=${recipients} wrote=${wrote}`);
+      }
+    } catch (e) {
+      console.warn("[createCustomerReviewLinkV1] notify failed", e && e.message);
+    }
+
     // PR 127a — If an active recovery case exists for this incident,
     // append the new PacketVersionRef and transition the case to
     // awaiting_customer. Best-effort; mint always succeeds even if

@@ -100,6 +100,38 @@ export function SendToCustomerModal({
     }
   }
 
+  // PEAKOPS_REVIEW_MAILTO_HANDOFF_V1 (Chunk 2: Workflow Completion, 2026-06-22)
+  // Build a pre-filled mailto: link so the operator can open their
+  // email client with one click instead of pasting the URL into a
+  // fresh draft manually. The URL stays inline in the body so the
+  // customer can copy/paste it on email clients that strip raw URLs.
+  // Customer email is not stored on the link doc — the operator
+  // supplies the recipient in their own mail client.
+  function openInEmailClient(url: string, customerLabel?: string | null) {
+    const subject = "Review request — PeakOps field record";
+    const body =
+      `Hi${customerLabel ? ` ${customerLabel}` : ""},` +
+      `\n\n` +
+      `Your PeakOps field record is ready for your review:` +
+      `\n\n` +
+      `${url}` +
+      `\n\n` +
+      `The link opens in any browser — no login required. Please review and either accept the packet or let us know what needs correction.` +
+      `\n\n` +
+      `Thank you,` +
+      `\nPeakOps`;
+    const href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    // Use the location-assign path rather than window.open so the
+    // user's email client opens in place rather than a popup that
+    // some browsers may block.
+    try {
+      window.location.href = href;
+    } catch {
+      // Last-resort fallback: copy the URL and tell the operator.
+      void copyToClipboard(url);
+    }
+  }
+
   const isResult = step.kind === "result";
   const fullUrl = isResult
     ? (typeof window !== "undefined"
@@ -150,18 +182,33 @@ export function SendToCustomerModal({
                   {fullUrl}
                 </div>
               </div>
-              <button
-                type="button"
-                className={
-                  "w-full px-4 py-2.5 rounded-full text-[12px] font-semibold transition " +
-                  (copied
-                    ? "bg-emerald-600 text-white"
-                    : "bg-white text-black hover:bg-white/90")
-                }
-                onClick={() => copyToClipboard(fullUrl)}
-              >
-                {copied ? "✓ Copied" : "Copy to clipboard"}
-              </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  className={
+                    "px-4 py-2.5 rounded-full text-[12px] font-semibold transition " +
+                    (copied
+                      ? "bg-emerald-600 text-white"
+                      : "bg-white text-black hover:bg-white/90")
+                  }
+                  onClick={() => copyToClipboard(fullUrl)}
+                >
+                  {copied ? "✓ Copied" : "Copy to clipboard"}
+                </button>
+                {/* PEAKOPS_REVIEW_MAILTO_HANDOFF_V1 (Chunk 2, 2026-06-22)
+                    One-click hand-off: opens the operator's default
+                    mail client with the subject + body pre-filled and
+                    the URL inline. Operator types the recipient and
+                    hits send. */}
+                <button
+                  type="button"
+                  className="px-4 py-2.5 rounded-full text-[12px] font-semibold border border-white/15 bg-white/[0.06] text-white hover:bg-white/[0.12]"
+                  onClick={() => openInEmailClient(fullUrl, step.response.customerLabel)}
+                  title="Open in your email client with the review link pre-filled"
+                >
+                  ✉ Open in email
+                </button>
+              </div>
               <div className="rounded-lg border border-amber-300/25 bg-amber-500/[0.05] px-3 py-2 text-[11px] text-amber-200/90 leading-relaxed">
                 ⚠ This URL is the credential. Anyone with it can review the packet. Don&apos;t post it to a public channel.
               </div>

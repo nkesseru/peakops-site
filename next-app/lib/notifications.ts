@@ -25,7 +25,19 @@ import { db } from "./firebaseClient";
 // "test" is the diagnostic type written by the dev-only
 // /api/dev/createTestNotification endpoint. Renders in the bell
 // via notificationHref's fallback (uses targetUrl when present).
-export type NotificationType = "report_ready" | "awaiting_review" | "test";
+//
+// PEAKOPS_NOTIFICATIONS_V2 (Chunk 2: Workflow Completion, 2026-06-22)
+// Added customer-review lifecycle types — emitted by
+// createCustomerReviewLinkV1, mintResubmissionLinkV1,
+// submitCustomerReviewV1, and _recoveryAutoCreate respectively.
+export type NotificationType =
+  | "report_ready"
+  | "awaiting_review"
+  | "test"
+  | "customer_review_link_created"
+  | "customer_accepted"
+  | "customer_rejected"
+  | "recovery_case_opened";
 
 export type Notification = {
   id: string;
@@ -46,7 +58,16 @@ export type Notification = {
 export const NOTIFICATIONS_LIST_LIMIT = 20;
 
 function isNotificationType(v: unknown): v is NotificationType {
-  return v === "report_ready" || v === "awaiting_review" || v === "test";
+  return (
+    v === "report_ready" ||
+    v === "awaiting_review" ||
+    v === "test" ||
+    // PEAKOPS_NOTIFICATIONS_V2 (Chunk 2, 2026-06-22)
+    v === "customer_review_link_created" ||
+    v === "customer_accepted" ||
+    v === "customer_rejected" ||
+    v === "recovery_case_opened"
+  );
 }
 
 function coerceNotification(id: string, raw: any): Notification | null {
@@ -138,5 +159,13 @@ export function notificationHref(n: Notification, orgIdHint?: string): string {
   if (!iid) return `/incidents${orgQs}`;
   if (n.type === "report_ready") return `/incidents/${encodeURIComponent(iid)}/summary${orgQs}`;
   if (n.type === "awaiting_review") return `/incidents/${encodeURIComponent(iid)}/review${orgQs}`;
+  // PEAKOPS_NOTIFICATIONS_V2 (Chunk 2: Workflow Completion, 2026-06-22)
+  // Customer review lifecycle types — all route to /summary, which is
+  // the operator's working view of the outstanding link, customer
+  // decision, and recovery case (if any).
+  if (n.type === "customer_review_link_created") return `/incidents/${encodeURIComponent(iid)}/summary${orgQs}`;
+  if (n.type === "customer_accepted") return `/incidents/${encodeURIComponent(iid)}/summary${orgQs}`;
+  if (n.type === "customer_rejected") return `/incidents/${encodeURIComponent(iid)}/summary${orgQs}`;
+  if (n.type === "recovery_case_opened") return `/incidents/${encodeURIComponent(iid)}/summary${orgQs}`;
   return `/incidents/${encodeURIComponent(iid)}${orgQs}`;
 }

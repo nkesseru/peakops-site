@@ -431,6 +431,39 @@ async function autoCreateOrExtendCase(args) {
       orgId, incidentId, caseId, source, priority,
       inferredCause: inferredCause || "(none)",
     });
+
+    // PEAKOPS_RECOVERY_CASE_NOTIFY_V1 (Chunk 2: Workflow Completion, 2026-06-22)
+    // Fan out an in-app notification only when a NEW case is opened.
+    // Pre-existing cases that just got extended with a new packet ref
+    // don't notify — the operator already saw the prior case in their
+    // queue. Best-effort: errors logged + swallowed.
+    try {
+      let _notify = null;
+      try { _notify = require("./_notify"); } catch (_) { /* optional */ }
+      if (_notify && typeof _notify.fanOutOrgNotification === "function") {
+        const _causeDisplay = inferredCause
+          ? String(inferredCause).replace(/_/g, " ")
+          : "unknown cause";
+        const result2 = await _notify.fanOutOrgNotification({
+          orgId,
+          recipientRoles: ["admin", "supervisor"],
+          additionalUids: actorUid && !actorUid.startsWith("pending_") ? [actorUid] : [],
+          payload: {
+            type: "recovery_case_opened",
+            title: "Recovery case opened",
+            message: `New recovery case for incident — ${_causeDisplay}.`,
+            incidentId,
+            orgId,
+            targetUrl: `/recovery/${encodeURIComponent(caseId)}?orgId=${encodeURIComponent(orgId)}`,
+          },
+        });
+        const wrote = typeof result2 === "number" ? result2 : (result2?.wrote || 0);
+        const recipients = typeof result2 === "number" ? result2 : (result2?.recipients || result2?.wrote || 0);
+        console.log(`[notify] recovery_case_opened caseId=${caseId} recipients=${recipients} wrote=${wrote}`);
+      }
+    } catch (e) {
+      console.warn("[_recoveryAutoCreate] notify failed", e && e.message);
+    }
   }
 
   return { caseId, created: !result.existed, actionId: result.actionId };
