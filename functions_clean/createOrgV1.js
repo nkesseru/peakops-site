@@ -151,6 +151,103 @@ async function findOrCreateAuthUser({ ownerEmail, ownerName }) {
   return { uid: created.uid, created: true };
 }
 
+// PEAKOPS_STARTER_TEMPLATES_V1 (Chunk 3B-2, 2026-06-22)
+//
+// Per-industry starter template content. Seeded into a brand-new
+// org's templates subcollection at provisioning time so the first
+// incident doesn't render with a bare archetype proof checklist.
+// Operators can override by writing their own template later via
+// /admin/templates; the starter is never overwritten (see
+// seedStarterTemplate below).
+//
+// Telecom is the only industry with a real starter template in this
+// chunk. Other industries are placeholders that get skipped — the
+// operator authors templates manually via the admin UI until the
+// next chunk adds their starters. Single industry done well >
+// five industries done shallowly.
+//
+// Schema mirrors orgs/{orgId}/templates/{archetype} written by
+// seedCustomerTemplate.cjs / saveOrgTemplateV1: archetype,
+// requiredProof[], optionalProof[], acceptanceCriteria[],
+// acceptanceChecks[], version, label, updatedBy.
+const STARTER_TEMPLATES_BY_INDUSTRY = Object.freeze({
+  telecom: {
+    docId: "fiber_splice_verification",
+    data: Object.freeze({
+      archetype: "fiber_splice_verification",
+      label: "Fiber splice verification (starter)",
+      requiredProof: Object.freeze([
+        "Site arrival photo",
+        "Splice enclosure — before photo",
+        "Splice enclosure — after photo",
+        "Equipment / fiber label photo",
+        "GPS-tagged completion photo",
+      ]),
+      optionalProof: Object.freeze([
+        "Splice tray close-up",
+        "OTDR trace screenshot",
+        "Loss-reading printout",
+      ]),
+      acceptanceCriteria: Object.freeze([
+        "All required photos uploaded and GPS-tagged",
+        "Supervisor approval recorded",
+        "Field notes captured",
+      ]),
+      // Drives _readiness.js deterministic checks. tier="required"
+      // gates packet readiness; "encouraged" surfaces a soft signal
+      // without blocking.
+      acceptanceChecks: Object.freeze([
+        { type: "requires_minimum_proof_count", tier: "required", params: { minCount: 4 } },
+        { type: "requires_supervisor_approval", tier: "required" },
+        { type: "requires_at_least_one_gps_proof", tier: "required" },
+        { type: "requires_field_notes", tier: "encouraged" },
+        { type: "requires_incident_closure", tier: "required" },
+      ]),
+      version: 1,
+      updatedBy: "createOrgV1:starter-template",
+    }),
+  },
+});
+
+// PEAKOPS_STARTER_TEMPLATES_V1 (Chunk 3B-2)
+// Idempotent best-effort seed. Writes the industry-specific starter
+// template at orgs/{orgId}/templates/{docId} IFF no template doc
+// exists at that path. Never overwrites operator-authored content.
+// Never blocks org creation — wrap caller in try/catch.
+async function seedStarterTemplate(db, orgId, industry) {
+  const starter = STARTER_TEMPLATES_BY_INDUSTRY[industry];
+  if (!starter) {
+    console.log(`[createOrgV1] starter_template_skipped`, {
+      orgId, industry, reason: "no_starter_defined_for_industry",
+    });
+    return { seeded: false, reason: "no_starter_defined_for_industry" };
+  }
+  const templateRef = db.doc(`orgs/${orgId}/templates/${starter.docId}`);
+  const existing = await templateRef.get();
+  if (existing.exists) {
+    console.log(`[createOrgV1] starter_template_skipped`, {
+      orgId, industry, reason: "template_already_exists",
+      templateKey: starter.docId,
+    });
+    return { seeded: false, reason: "template_already_exists" };
+  }
+  await templateRef.set({
+    ...starter.data,
+    // Materialize the frozen arrays as plain JS arrays for the write.
+    requiredProof: [...starter.data.requiredProof],
+    optionalProof: [...starter.data.optionalProof],
+    acceptanceCriteria: [...starter.data.acceptanceCriteria],
+    acceptanceChecks: starter.data.acceptanceChecks.map((c) => ({ ...c })),
+    seededAt: FieldValue.serverTimestamp(),
+    seededBy: "createOrgV1:starter-template",
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  console.log(`[createOrgV1] starter_template_seeded`, {
+    orgId, industry, templateKey: starter.docId,
+  });
+  return { seeded: true, templateKey: starter.docId };
+}
+
 // Merge orgId, role, and orgIds=[orgId] onto the user's existing
 // custom claims. Preserves peakopsInternalAdmin and anything else
 // already set.
@@ -398,6 +495,21 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
 
     await batch.commit();
 
+    // PEAKOPS_STARTER_TEMPLATES_V1 (Chunk 3B-2, 2026-06-22)
+    // Best-effort starter template seed. Runs AFTER the atomic org+
+    // owner-member batch commits so that a template-seed failure
+    // never tears down the org/owner records. Idempotent: existing
+    // template content is never overwritten (see seedStarterTemplate).
+    let starterTemplate = null;
+    try {
+      starterTemplate = await seedStarterTemplate(db, orgId, industry);
+    } catch (e) {
+      console.warn("[createOrgV1] starter_template_seed_failed", {
+        orgId, industry, msg: String(e && e.message || e),
+      });
+      starterTemplate = { seeded: false, reason: "seed_threw_exception" };
+    }
+
     return j(res, 200, {
       ok: true,
       orgId,
@@ -406,6 +518,7 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
       ownerName: ownerName || null,
       industry,
       authUserCreated: authResult.created,
+      starterTemplate,
       firstLoginUrl: firstLoginUrl || null,
       createdAt: new Date().toISOString(),
       already: false,
