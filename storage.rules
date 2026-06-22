@@ -1,10 +1,25 @@
 rules_version = '2';
+
+// PEAKOPS_STORAGE_RULES_V2 (Chunk 1: Trust Foundation, 2026-06-22)
+//
+// This file is NOT the file Firebase CLI deploys — see firebase.json:
+//   "storage": { "rules": "firebase/storage.rules" }
+//
+// It is kept in sync with `firebase/storage.rules` so that an
+// accidental deploy from the wrong path can't backslide the bucket's
+// posture. If you are modifying the rules, modify both files (or
+// remove this one and update firebase.json accordingly).
+//
+// See `firebase/storage.rules` for the full rationale + access-path
+// inventory. Short version: all Cloud Storage access flows through
+// server-side signed URLs or Admin SDK, so client-SDK reads/writes
+// are denied.
+
 service firebase.storage {
   match /b/{bucket}/o {
-    // Ingest bucket rules (tighten by path if you want)
     match /{allPaths=**} {
-      allow read: if request.auth != null;   // or false for fully private
-      allow write: if false;                 // no public writes
+      allow read: if false;
+      allow write: if false;
     }
   }
 }

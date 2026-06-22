@@ -1,52 +1,64 @@
-// Targeted unit test for PEAKOPS_TENANT_ISOLATION_V1 in
-// functions_clean/exportIncidentPacketV1.js.
+// Drift guard for PEAKOPS_TENANT_ISOLATION_V1 — exportIncidentPacketV1
 //
-// No emulator. No Firebase. No imports beyond fs.
-// Pulls the verbatim block out of the live source file and evaluates it
-// in an isolated scope with stubbed locals. If the source block ever
-// drifts, this test fails to extract or fails to assert — either way,
-// drift becomes visible.
+// Chunk 1: Trust Foundation, 2026-06-22 — UPDATED.
+// Originally extracted the inline isolation block from the source file
+// and re-ran it in a sandbox. The inline block has since been hoisted
+// to functions_clean/_authz.js as `assertIncidentBelongsToOrg`. This
+// test was rewritten to assert two simpler facts:
+//
+//   1. exportIncidentPacketV1.js imports the centralized helper.
+//   2. exportIncidentPacketV1.js calls the helper with explicit
+//      context that includes `fn: "exportIncidentPacketV1"`.
+//   3. Mismatch path returns 404 (not 409) and a stable error code.
+//
+// The helper's own behavior is covered exhaustively by
+// scripts/dev/test_tenant_isolation_centralized.mjs. This file
+// exists specifically to detect drift on the export endpoint's wiring,
+// because export is the most-sensitive cross-tenant attack surface.
 
 import fs from "node:fs";
 
-const SRC_PATH = "functions_clean/exportIncidentPacketV1.js";
+const SRC_PATH = "/Users/kesserumini/peakops/my-app/functions_clean/exportIncidentPacketV1.js";
 const src = fs.readFileSync(SRC_PATH, "utf8");
 
-// Extract from the comment header through the closing brace at 4-space
-// indent (the if block's close).
-const m = src.match(/\/\/ PEAKOPS_TENANT_ISOLATION_V1[\s\S]*?\n {4}\}\n/);
-if (!m) {
-  console.error(`FAIL: PEAKOPS_TENANT_ISOLATION_V1 block not found in ${SRC_PATH}`);
+let failed = 0;
+const fail = (msg) => { console.error(`  ❌ ${msg}`); failed++; };
+const pass = (msg) => { console.log(`  ✅ ${msg}`); };
+
+console.log("=== Helper import is present ===");
+if (/require\(["']\.\/_authz["']\)/.test(src) && /assertIncidentBelongsToOrg/.test(src)) {
+  pass("imports assertIncidentBelongsToOrg from ./_authz");
+} else {
+  fail("missing assertIncidentBelongsToOrg import from ./_authz");
+}
+
+console.log("\n=== Helper is invoked with explicit ctx.fn ===");
+// Look for assertIncidentBelongsToOrg(incSnap, orgId, { fn: "exportIncidentPacketV1", ... })
+const callPattern = /assertIncidentBelongsToOrg\([^)]*?fn:\s*["']exportIncidentPacketV1["']/s;
+if (callPattern.test(src)) {
+  pass("assertIncidentBelongsToOrg is called with fn: 'exportIncidentPacketV1'");
+} else {
+  fail("assertIncidentBelongsToOrg call site missing — or fn: ctx not 'exportIncidentPacketV1'");
+}
+
+console.log("\n=== Mismatch returns 404 incident_not_found (not 409 org_mismatch) ===");
+// Find the if (!_iso.match) { ... return j(res, 404, ... incident_not_found ... ); } block.
+const notFoundReturn = /if\s*\(!\s*_iso\.match\s*\)[\s\S]*?return\s+j\(res,\s*404,[^)]*?incident_not_found/;
+if (notFoundReturn.test(src)) {
+  pass("404 incident_not_found is returned on mismatch (no existence-leak)");
+} else {
+  fail("expected 404 incident_not_found return on isolation mismatch — pattern not found");
+}
+
+console.log("\n=== No remaining 'org_mismatch' string in export endpoint ===");
+if (!/org_mismatch/.test(src)) {
+  pass("no org_mismatch literal — endpoint speaks only in 404 incident_not_found");
+} else {
+  fail("export endpoint still contains 'org_mismatch' literal — leaks existence of foreign incidents");
+}
+
+if (failed) {
+  console.error(`\n❌ tenant_isolation export-endpoint drift: ${failed} failure(s)`);
   process.exit(1);
 }
-const block = m[0];
-
-// Build a runner that supplies the locals the block reads. The block
-// uses: incSnap, orgId, actorUid, incidentId, j, res, console.
-function runBlock(incSnap, orgId, actorUid, incidentId) {
-  let captured = null;
-  const j = (_res, status, body) => { captured = { status, body }; };
-  const res = {};
-  const console_ = { warn: () => {} };
-  // eslint-disable-next-line no-new-func
-  const runner = new Function(
-    "incSnap, orgId, actorUid, incidentId, j, res, console",
-    block,
-  );
-  runner(incSnap, orgId, actorUid, incidentId, j, res, console_);
-  return captured;
-}
-
-// CASE 1 — matching orgIds → no 404; captured stays null.
-const c1 = runBlock({ data: () => ({ orgId: "orgA" }) }, "orgA", "uidX", "incId");
-const c1Pass = c1 === null;
-
-// CASE 2 — cross-tenant → returns 404 incident_not_found.
-const c2 = runBlock({ data: () => ({ orgId: "orgB" }) }, "orgA", "uidX", "incId");
-const c2Pass = c2 && c2.status === 404 && c2.body?.error === "incident_not_found";
-
-console.log(`CASE 1 (orgA === orgA, expect pass):  ${c1Pass ? "PASS" : "FAIL"}  captured=${JSON.stringify(c1)}`);
-console.log(`CASE 2 (orgA !== orgB, expect 404):   ${c2Pass ? "PASS" : "FAIL"}  captured=${JSON.stringify(c2)}`);
-
-if (c1Pass && c2Pass) { console.log("\n✅ tenant_isolation: both cases pass"); process.exit(0); }
-console.log("\n❌ tenant_isolation: one or more cases failed"); process.exit(1);
+console.log("\n✅ all export-endpoint isolation assertions pass");
