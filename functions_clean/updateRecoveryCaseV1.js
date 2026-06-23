@@ -30,7 +30,7 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const {
   assertActorRole,
   httpStatusFromAuthzError,
-  ROLES_ADMIN_ONLY,
+  ROLES_APPROVE,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
 const {
@@ -81,17 +81,25 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
     if (!caseId) return j(res, 400, { ok: false, error: "caseId required" });
 
     // Authz
+    //
+    // PEAKOPS_RECOVERY_SUPERVISOR_UNLOCK_V1 (PR 133A, 2026-06-23)
+    // Gate is supervisor-or-higher; the per-mutation scope check below
+    // narrows supervisors to the single open → in_progress transition
+    // (no other field mutations). All other mutations — terminal
+    // transitions, priority, cause, ownership, resolution,
+    // revenueAtRisk — remain admin/owner-only.
     let actorUid = "";
     let actorRole = null;
     try {
       ({ uid: actorUid } = await extractActorUid(req, body));
-      const gate = await assertActorRole(orgId, actorUid, ROLES_ADMIN_ONLY);
+      const gate = await assertActorRole(orgId, actorUid, ROLES_APPROVE);
       actorRole = (gate.membership && gate.membership.role) || null;
     } catch (e) {
       return j(res, httpStatusFromAuthzError(e), {
         ok: false, error: (e && e.code) || "permission-denied",
       });
     }
+    const isAdmin = actorRole === "owner" || actorRole === "admin";
 
     const db = getFirestore();
     const caseRef = db.collection("orgs").doc(orgId).collection("recovery_cases").doc(caseId);
@@ -101,6 +109,32 @@ exports.updateRecoveryCaseV1 = onRequest({ cors: true }, async (req, res) => {
     }
     const before = snap.data() || {};
     const currentStatus = normalizeRecoveryStatus(before.status);
+
+    // PEAKOPS_RECOVERY_SUPERVISOR_UNLOCK_V1 (PR 133A) — supervisor scope
+    // check. A supervisor (non-admin actor) may only advance the case
+    // from open → in_progress with no other field mutations. Any other
+    // mutation (terminal transition, ready_to_resubmit, priority, cause,
+    // ownership, resolution, revenueAtRisk) requires admin/owner.
+    if (!isAdmin) {
+      const requestedStatus = typeof body.status === "string"
+        ? normalizeRecoveryStatus(body.status)
+        : null;
+      const isNarrowOpenToInProgress = (
+        currentStatus === RECOVERY_STATUS.OPEN &&
+        requestedStatus === RECOVERY_STATUS.IN_PROGRESS
+      );
+      const hasOtherMutations = Boolean(
+        body.priority || body.cause || body.ownership ||
+        body.resolution || body.revenueAtRisk
+      );
+      if (!isNarrowOpenToInProgress || hasOtherMutations) {
+        return j(res, 403, {
+          ok: false,
+          error: "permission-denied",
+          detail: "Supervisors may only transition recovery cases from open to in_progress. Other recovery-case mutations require admin or owner.",
+        });
+      }
+    }
 
     // Build update payload + audit deltas.
     const updates = {
