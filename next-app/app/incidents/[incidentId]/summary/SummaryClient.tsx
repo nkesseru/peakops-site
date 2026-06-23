@@ -34,6 +34,14 @@ import { authedFetch } from "@/lib/apiClient";
 // driven here; both the panel + the export-warning line read from
 // the same `readinessData` state (no duplicate requests).
 import { AcceptanceReadinessPanel, type PanelData } from "@/components/AcceptanceReadinessPanel";
+// PR 133B — Operator visibility for compliance findings.
+import { ComplianceFindingsPanel } from "@/components/ComplianceFindingsPanel";
+import { ComplianceGuardModal, type GuardAction } from "@/components/ComplianceGuardModal";
+import type {
+  ComplianceReadiness,
+  ComplianceBlockResponse,
+  AcceptanceReadinessState,
+} from "@/lib/compliance/types";
 import type { AcceptanceReadiness } from "@/lib/incidents/acceptanceReadinessTypes";
 // PR 126b — coordinator-side mint UI for the customer-review corridor.
 // Single CTA on this page; modal handles the one-time URL display.
@@ -662,6 +670,20 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
   // PR 126b — coordinator-side modal for minting a customer review link.
   // Gated to admin/owner roles + records in in_progress or closed status.
   const [showSendToCustomer, setShowSendToCustomer] = useState(false);
+  // PR 133B — pre-flight / post-flight compliance guard modal state.
+  // Pre-flight: populated when the click handler detects blocking
+  // findings on incident.complianceReadiness BEFORE calling the backend.
+  // Post-flight: populated when a backend call returns 412 compliance_block.
+  // onConfirm decides what to do with the override reason.
+  const [complianceGuard, setComplianceGuard] = useState<null | {
+    action: GuardAction;
+    codes: Array<{ code: string; severity: "ERROR" | "WARN" | "INFO"; source?: string }>;
+    mode?: string;
+    overridable?: boolean;
+    ackError?: ComplianceBlockResponse["ackError"];
+    overrideHint?: string;
+    onConfirm?: (override: { reason: string } | null) => void;
+  }>(null);
   // PR 127b — coordinator-side modal for opening a Recovery Case.
   // Visible when no active case exists for this incident.
   const [showOpenRecoveryCase, setShowOpenRecoveryCase] = useState(false);
@@ -1006,23 +1028,75 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
   
 
-  async function handleArtifactDownload() {
+  // PR 133B — open the send-to-customer modal, but pre-flight
+  // compliance first. If blocking issues exist, show the guard modal;
+  // its "Continue with override" callback opens the SendToCustomerModal
+  // (the modal will pass acknowledgeViolations through to the mint call).
+  function openSendToCustomerWithGuard() {
+    if (maybeBlockOnPreflight("review_link", (_override) => {
+      // For send-to-customer, after the operator confirms the override
+      // in the guard modal, hand off to SendToCustomerModal — it will
+      // request the URL and propagate the override (handled in that
+      // modal's own state in PR 133B).
+      setShowSendToCustomer(true);
+    })) {
+      return;
+    }
+    setShowSendToCustomer(true);
+  }
+
+  // PR 133B — pre-flight compliance check. If the persisted
+  // complianceReadiness has ERROR-severity findings, open the guard
+  // modal BEFORE hitting the backend so the operator sees what would
+  // fail (and, if admin, can add an override reason in the same
+  // dialog). Returns true if blocking; caller must not proceed.
+  function maybeBlockOnPreflight(action: GuardAction, retry: (override: { reason: string } | null) => void): boolean {
+    const cr = (incident as any)?.complianceReadiness as ComplianceReadiness | undefined;
+    const blockers = (cr?.issues || []).filter((i) => i.severity === "ERROR");
+    if (blockers.length === 0) return false;
+    setComplianceGuard({
+      action,
+      codes: blockers.map((i) => ({ code: i.code, severity: i.severity, source: i.source })),
+      overridable: true,
+      actorRole: String(getActorRole?.() || ""),
+      onConfirm: (override: { reason: string } | null) => {
+        setComplianceGuard(null);
+        retry(override);
+      },
+    } as any);
+    return true;
+  }
+
+  async function handleArtifactDownload(override?: { reason: string } | null) {
     if (!activeOrgId || !incidentId) return;
+
+    // PR 133B pre-flight gate. Only fires when override is undefined
+    // (first call). Modal's onConfirm re-invokes this with override
+    // set to {reason} or null.
+    if (override === undefined && maybeBlockOnPreflight("export", (ov) => { void handleArtifactDownload(ov); })) {
+      return;
+    }
+
     setArtifactBusy(true);
     setArtifactToast("");
     setErr("");
 
     try {
+      const exportBody: Record<string, unknown> = {
+        orgId: activeOrgId,
+        incidentId,
+        requestedBy: getActorUid?.() || "summary_ui",
+        actorUid: getActorUid?.() || "summary_ui",
+        actorRole: getActorRole?.() || "admin",
+      };
+      if (override && override.reason) {
+        exportBody.acknowledgeViolations = true;
+        exportBody.violationAcknowledgmentReason = override.reason;
+      }
       const exportRes = await authedFetch("/api/fn/exportIncidentPacketV1", {
         method: "POST",
         headers: { "content-type": "application/json", ...demoHeaders },
-        body: JSON.stringify({
-          orgId: activeOrgId,
-          incidentId,
-          requestedBy: getActorUid?.() || "summary_ui",
-          actorUid: getActorUid?.() || "summary_ui",
-          actorRole: getActorRole?.() || "admin",
-        }),
+        body: JSON.stringify(exportBody),
       });
 
       const exportTxt = await exportRes.text();
@@ -1038,6 +1112,29 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           reason: String(out?.error || ""),
           featureKey: String(out?.featureKey || "riskDefenseModule"),
         });
+        return;
+      }
+
+      // PR 133B — post-flight 412 compliance_block handling. Swap the
+      // generic error into the same ComplianceGuardModal populated
+      // with the codes the backend returned. Admin/owner can supply
+      // an override reason and re-fire; non-admin sees a read-only
+      // explanation.
+      if (exportRes.status === 412 && out?.error === "compliance_block") {
+        const payload = out as ComplianceBlockResponse;
+        setComplianceGuard({
+          action: "export",
+          codes: payload.codes || [],
+          mode: payload.mode,
+          overridable: payload.overridable,
+          actorRole: String(getActorRole?.() || ""),
+          ackError: payload.ackError,
+          overrideHint: payload.overrideHint,
+          onConfirm: (ov: { reason: string } | null) => {
+            setComplianceGuard(null);
+            if (ov) void handleArtifactDownload(ov);
+          },
+        } as any);
         return;
       }
 
@@ -1768,7 +1865,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
               <button
                 type="button"
                 className="px-4 py-2 rounded-full text-[12px] font-semibold text-black bg-white hover:bg-white/90 shrink-0"
-                onClick={() => setShowSendToCustomer(true)}
+                onClick={() => openSendToCustomerWithGuard()}
               >
                 Send to customer review
               </button>
@@ -1945,6 +2042,20 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
           }
         />
 
+        {/* PR 133B — Operator-facing compliance status chip + findings.
+            Renders persisted incident.complianceReadiness (populated
+            server-side when org's validation.mode is passive_persist
+            or block). Falls back gracefully when absent. */}
+        <ComplianceFindingsPanel
+          compliance={(incident as any)?.complianceReadiness as ComplianceReadiness | undefined}
+          acceptanceState={
+            (readinessData.kind === "ok"
+              ? (readinessData.readiness.state as AcceptanceReadinessState)
+              : null)
+          }
+          className="mt-3"
+        />
+
         {/* PEAKOPS_REVIEW_VERSION_PIN_V4 (2026-06-15)
             Customer Acceptance panel. Reads slice-3 summary fields
             mirrored from the consumed link's pinnedPacket onto the
@@ -2097,7 +2208,7 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
                   </div>
                   <button
                     type="button"
-                    onClick={() => setShowSendToCustomer(true)}
+                    onClick={() => openSendToCustomerWithGuard()}
                     className="px-3 py-1.5 rounded-md text-[12px] font-medium border border-amber-300/40 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25 transition"
                   >
                     Send updated packet →
@@ -3345,7 +3456,27 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         orgId={orgId}
         incidentId={String(incidentId)}
         actorUid={getActorUid?.() || undefined}
+        actorRole={String(getActorRole?.() || "")}
         onClose={() => setShowSendToCustomer(false)}
+      />
+    ) : null}
+
+    {/* PR 133B — Compliance guard modal. Pre-flight (driven by the
+        export / send-to-customer click handlers when persisted
+        complianceReadiness shows blocking findings) AND post-flight
+        (driven by 412 compliance_block responses). Same component for
+        both paths. */}
+    {complianceGuard ? (
+      <ComplianceGuardModal
+        action={complianceGuard.action}
+        codes={complianceGuard.codes}
+        mode={complianceGuard.mode}
+        overridable={complianceGuard.overridable}
+        actorRole={String(getActorRole?.() || "")}
+        ackError={complianceGuard.ackError}
+        overrideHint={complianceGuard.overrideHint}
+        onCancel={() => setComplianceGuard(null)}
+        onConfirm={complianceGuard.onConfirm}
       />
     ) : null}
 

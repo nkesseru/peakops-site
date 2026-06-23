@@ -18,6 +18,9 @@ import type {
   CreateCustomerReviewLinkResponse,
   SourceStatus,
 } from "@/lib/customerReview/types";
+// PR 133B — recognize 412 compliance_block and surface code-level detail.
+import type { ComplianceBlockResponse } from "@/lib/compliance/types";
+import { explainCode } from "@/lib/compliance/complianceCopy";
 
 type Props = {
   orgId: string;
@@ -26,35 +29,70 @@ type Props = {
   // Bearer token path doesn't match (mirrors createCustomerReviewLinkV1
   // _actor.js intentional dual path).
   actorUid?: string;
+  // PR 133B — caller passes the actor's role so the modal can decide
+  // whether to render the admin-only override reason input on a
+  // compliance_block response.
+  actorRole?: string;
   onClose: () => void;
 };
+
+const OVERRIDE_REASON_MIN = 20;
+const OVERRIDE_REASON_MAX = 500;
 
 type StepState =
   | { kind: "confirm" }
   | { kind: "minting" }
   | { kind: "result"; response: CreateCustomerReviewLinkResponse }
-  | { kind: "error"; message: string; detail?: string; reasons?: CreateCustomerReviewLinkResponse["reasons"] };
+  | { kind: "error"; message: string; detail?: string; reasons?: CreateCustomerReviewLinkResponse["reasons"] }
+  // PR 133B — dedicated compliance_block state. Carries the codes the
+  // backend returned + (when admin) lets the operator type an override
+  // reason and re-fire the mint.
+  | { kind: "compliance_block"; payload: ComplianceBlockResponse; reason: string };
 
 export function SendToCustomerModal({
   orgId,
   incidentId,
   actorUid,
+  actorRole,
   onClose,
 }: Props) {
   const [step, setStep] = useState<StepState>({ kind: "confirm" });
   const [copied, setCopied] = useState(false);
+  const isAdmin = actorRole === "owner" || actorRole === "admin";
 
-  async function handleMint() {
+  async function handleMint(overrideReason?: string) {
     setStep({ kind: "minting" });
     try {
       const body: Record<string, unknown> = { orgId, incidentId };
       if (actorUid) body.actorUid = actorUid;
+      // PR 133B — propagate admin override when supplied by the
+      // compliance_block branch's "Send anyway" button.
+      const trimmedReason = (overrideReason || "").trim();
+      if (trimmedReason) {
+        body.acknowledgeViolations = true;
+        body.violationAcknowledgmentReason = trimmedReason;
+      }
 
       const res = await authedFetch(`/api/fn/createCustomerReviewLinkV1`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
+
+      // PR 133B — recognize 412 compliance_block and route into the
+      // dedicated state. Backend response shape from PR 133C.
+      if (res.status === 412) {
+        const raw = await res.json().catch(() => null);
+        if (raw && raw.error === "compliance_block") {
+          setStep({
+            kind: "compliance_block",
+            payload: raw as ComplianceBlockResponse,
+            reason: trimmedReason || "",
+          });
+          return;
+        }
+      }
+
       const json: CreateCustomerReviewLinkResponse = await res.json().catch(() => ({ ok: false } as CreateCustomerReviewLinkResponse));
 
       if (res.status === 200 && json.ok) {
@@ -260,6 +298,68 @@ export function SendToCustomerModal({
               )}
             </div>
           )}
+
+          {step.kind === "compliance_block" && (
+            <div className="space-y-3" data-testid="sendmodal-compliance-block">
+              <div className="rounded-lg border border-red-300/30 bg-red-500/[0.06] px-3 py-2.5 text-[12px] text-red-100 leading-relaxed">
+                <div className="font-medium">PeakOps blocked this customer review link.</div>
+                <div className="text-red-200/80 text-[11px] mt-1">
+                  Mode: <span className="font-mono">{step.payload.mode}</span>. {step.payload.codes.length} finding{step.payload.codes.length === 1 ? "" : "s"} unresolved.
+                </div>
+              </div>
+              <ul className="space-y-2">
+                {step.payload.codes.map((c, i) => {
+                  const copy = explainCode(c.code);
+                  const tone = c.severity === "ERROR" ? "border-red-400/30 bg-red-500/[0.05]" : "border-amber-400/30 bg-amber-500/[0.05]";
+                  return (
+                    <li key={`${c.code}_${i}`} className={"rounded-lg border px-3 py-2 " + tone}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] uppercase tracking-[0.18em] font-semibold text-white">{c.severity === "ERROR" ? "BLOCKING" : "WARNING"}</span>
+                        <span className="text-[12px] text-white font-medium">{copy.title}</span>
+                        <span className="text-[10px] font-mono text-gray-500">{c.code}</span>
+                      </div>
+                      <p className="mt-1 text-[12px] text-gray-300 leading-relaxed">{copy.explanation}</p>
+                      {copy.action && (
+                        <p className="mt-1 text-[11px] text-amber-200/85">
+                          <span className="text-amber-300/90 font-semibold">Action:</span> {copy.action}
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+
+              {!isAdmin && (
+                <div data-testid="sendmodal-compliance-nonadmin" className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2.5 text-[12px] text-gray-300">
+                  You don&apos;t have permission to override. Resolve the items above, or ask an admin/owner on your team.
+                </div>
+              )}
+
+              {isAdmin && step.payload.overridable && (
+                <div data-testid="sendmodal-compliance-override" className="rounded-lg border border-amber-300/30 bg-amber-500/[0.06] px-3 py-3 space-y-2">
+                  <label className="block text-[11px] uppercase tracking-[0.18em] font-semibold text-amber-200">
+                    Admin override — acknowledge violations
+                  </label>
+                  <p className="text-[11px] text-amber-100/80 leading-relaxed">
+                    Type a meaningful reason ({OVERRIDE_REASON_MIN}-{OVERRIDE_REASON_MAX} chars). Recorded in the audit trail and packet manifest. Not shown to the customer.
+                  </p>
+                  <textarea
+                    data-testid="sendmodal-compliance-reason"
+                    rows={3}
+                    maxLength={OVERRIDE_REASON_MAX}
+                    placeholder="e.g. Customer pre-approved out-of-band; missing fields filed under interim status."
+                    className="w-full rounded-md border border-white/15 bg-black/40 px-3 py-2 text-[12px] text-white placeholder-gray-500 focus:outline-none focus:border-amber-300/50"
+                    value={step.reason}
+                    onChange={(e) => setStep({ kind: "compliance_block", payload: step.payload, reason: e.target.value })}
+                  />
+                  <div className="text-[10px] text-amber-100/70">{step.reason.trim().length} / {OVERRIDE_REASON_MAX}</div>
+                  {step.payload.ackError === "override_reason_invalid" && (
+                    <div className="text-[11px] text-red-300">Backend rejected the prior reason as too short or too long.</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="px-5 py-4 border-t border-white/10 bg-white/[0.02] flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3">
@@ -275,10 +375,35 @@ export function SendToCustomerModal({
               <button
                 type="button"
                 className="px-4 py-2.5 rounded-full text-[12px] font-semibold text-black bg-white hover:bg-white/90"
-                onClick={handleMint}
+                onClick={() => handleMint()}
               >
                 Mint review link
               </button>
+            </>
+          )}
+          {step.kind === "compliance_block" && (
+            <>
+              <button
+                type="button"
+                className="px-4 py-2.5 rounded-full text-[12px] text-gray-300 hover:bg-white/[0.06]"
+                onClick={onClose}
+              >
+                Cancel
+              </button>
+              {isAdmin && step.payload.overridable && (
+                <button
+                  type="button"
+                  data-testid="sendmodal-compliance-override-submit"
+                  className="px-4 py-2.5 rounded-full text-[12px] font-semibold text-black bg-amber-300 hover:bg-amber-200 disabled:bg-amber-300/40"
+                  disabled={
+                    step.reason.trim().length < OVERRIDE_REASON_MIN ||
+                    step.reason.trim().length > OVERRIDE_REASON_MAX
+                  }
+                  onClick={() => handleMint(step.reason.trim())}
+                >
+                  Send with admin override
+                </button>
+              )}
             </>
           )}
           {(step.kind === "result" || step.kind === "error") && (
