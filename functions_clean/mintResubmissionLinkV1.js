@@ -55,6 +55,14 @@ const {
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
 const { resolveIncidentRef } = require("./_incidentPath");
+// PR 133C — enforcement / blocking mode for compliance violations.
+const {
+  evaluateEnforcement,
+  parseOverride,
+  recordBlockTriggered,
+  recordBlockOverridden,
+  _evidenceTypesFromList,
+} = require("./_enforcement");
 const {
   generateToken,
   hashToken,
@@ -168,6 +176,48 @@ exports.mintResubmissionLinkV1 = onRequest({ cors: true }, async (req, res) => {
       : null;
     const customerLabel = trimStr(requirements.customerLabel) || trimStr(incData.customer);
     const archetype = trimStr(requirements.archetype) || trimStr(incData.archetype);
+
+    // PEAKOPS_ENFORCEMENT_V1 (PR 133C) — block-mode gate. Resubmission
+    // sends a *new* packet to the customer; same blocking semantics as
+    // the original send. Admin/owner override via acknowledgeViolations
+    // + violationAcknowledgmentReason. Override is recorded in audit
+    // + Cloud Logging + incident timeline (INTERNAL only).
+    {
+      const _legacyIncRef = db.collection("incidents").doc(incidentId);
+      const _evidenceSnap = await _legacyIncRef.collection("evidence_locker").limit(500).get().catch(() => ({ docs: [] }));
+      const _evidenceTypes = _evidenceTypesFromList(_evidenceSnap.docs || []);
+      const _incidentForEnforcement = { id: incidentId, ...(incData || {}) };
+      const _acceptanceState = (incData && incData.readinessCache && incData.readinessCache.state) || null;
+      const _enforcement = await evaluateEnforcement({
+        db, orgId,
+        incident: _incidentForEnforcement,
+        evidenceTypes: _evidenceTypes,
+        acceptanceReadinessState: _acceptanceState,
+      });
+      if (_enforcement.action === "block") {
+        const _ack = parseOverride(body, actorRole);
+        if (!_ack.ok) {
+          await recordBlockTriggered({
+            db, orgId, incidentId, callable: "mintResubmissionLinkV1",
+            evaluation: _enforcement, actorUid, actorRole,
+          });
+          return j(res, _ack.status || 412, {
+            ok: false,
+            error: "compliance_block",
+            mode: _enforcement.mode,
+            codes: _enforcement.codes,
+            overridable: _enforcement.overridable,
+            rulepackVersionsByType: _enforcement.rulepackVersionsByType,
+            overrideHint: _ack.detail || "Admin/owner may bypass with acknowledgeViolations=true and violationAcknowledgmentReason (20-500 chars).",
+            ackError: _ack.error,
+          });
+        }
+        await recordBlockOverridden({
+          db, orgId, incidentId, callable: "mintResubmissionLinkV1",
+          evaluation: _enforcement, actorUid, actorRole, reason: _ack.reason,
+        });
+      }
+    }
 
     // Guard against double-mint races. If a prior packetVersion is
     // still "pending" in the chain, refuse — the operator should

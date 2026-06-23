@@ -69,6 +69,7 @@ const findings = {
   phase4: { observations: [], events: [] },
   phase5: { coverage: [], records: {} },
   phase6: { founderDeps: [] },
+  phase7: { observations: [], cases: [] },
   errors: [],
 };
 function obs(phase, severity, text) {
@@ -694,6 +695,153 @@ for (const dep of findings.phase6.founderDeps) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// PHASE 7 — Enforcement (block) mode (PR 133C)
+// ══════════════════════════════════════════════════════════════════
+console.log(`\n══ PHASE 7 — Enforcement (block) mode ════════════════════════`);
+
+try {
+  if (!cleanup.orgId || !adminToken || !supToken) throw new Error("missing prerequisites from earlier phases");
+
+  // Flip the org into enforcement mode + bust the function-side cache
+  // by waiting 60s OR by recreating the doc — simplest is to wait and
+  // use a fresh incident so the first read hits the new value.
+  await db.doc(`orgs/${cleanup.orgId}/config/validation`).set({
+    mode: "block",
+    setBy: "butler_full_dry_run:phase7",
+    setAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  obs("phase7", "OK", `Set orgs/${cleanup.orgId}/config/validation.mode = "block"`);
+
+  // Wait 60s for the in-memory mode cache on the Cloud Function to expire.
+  obs("phase7", "INFO", `Waiting 65s for validation-mode cache (60s TTL) to expire on the function side…`);
+  await new Promise(r => setTimeout(r, 65000));
+
+  // Build a fresh blocking-shape incident: DIRS-tagged, missing customer/affectedCustomers
+  // (two ERROR-severity DIRS findings). Drive through to "ready to send to customer."
+  const incId = `dryrun_p7_${tag}_${stamp}`;
+  cleanup.incidentIds.add(incId);
+  let r = await call("createIncidentV1", {
+    orgId: cleanup.orgId, actorUid: adminUid, incidentId: incId,
+    title: "Phase 7 — DIRS-incomplete shape",
+    status: "open",
+    archetype: "fiber_splice_verification",
+    filingTypesRequired: ["DIRS"],
+    location: "Highway 4 mile 12, Spokane Valley WA",
+    customer: "",                       // ERROR: dirs.entity.identification.required
+    notes: "Phase 7 deliberately incomplete (no customer label, no affectedCustomers).",
+    // affectedCustomers omitted        // ERROR: dirs.affected_population.required
+  }, adminToken);
+  if (r.body.ok !== true) throw new Error(`createIncidentV1: ${JSON.stringify(r.body)}`);
+  obs("phase7", "OK", `Created blocking-shape incident ${incId}`);
+
+  r = await call("createJobV1", {
+    orgId: cleanup.orgId, incidentId: incId, actorUid: adminUid, title: "Phase 7 job",
+  }, adminToken);
+  const p7JobId = r.body.job?.jobId || r.body.jobId;
+
+  r = await call("startFieldSessionV1", { orgId: cleanup.orgId, incidentId: incId, actorUid: fieldUid, techUserId: fieldUid }, fieldToken);
+  const p7SessionId = r.body.sessionId;
+  await call("markArrivedV1", { orgId: cleanup.orgId, incidentId: incId, sessionId: p7SessionId, actorUid: fieldUid, gps: { lat: 47.66, lng: -117.24, accuracyM: 6 } }, fieldToken);
+  for (const [fn, lbl] of [["arr.png","ARRIVAL"],["b.png","BEFORE"],["a.png","AFTER"],["e.png","EQUIPMENT"],["log.png","LOG"]]) {
+    await uploadOneEvidence({ orgId: cleanup.orgId, incidentId: incId, sessionId: p7SessionId, jobId: p7JobId, fileName: fn, label: lbl, fieldToken, actorUid: fieldUid });
+  }
+  await call("submitFieldSessionV1", { orgId: cleanup.orgId, incidentId: incId, sessionId: p7SessionId, actorUid: fieldUid }, fieldToken);
+  await call("markJobCompleteV1", { orgId: cleanup.orgId, incidentId: incId, jobId: p7JobId, actorUid: fieldUid }, fieldToken);
+  await call("updateJobStatusV1", { orgId: cleanup.orgId, incidentId: incId, jobId: p7JobId, actorUid: supUid, status: "review" }, supToken);
+  await call("approveJobV1", { orgId: cleanup.orgId, incidentId: incId, jobId: p7JobId, actorUid: supUid }, supToken);
+  await call("closeIncidentV1", { orgId: cleanup.orgId, incidentId: incId, actorUid: supUid }, supToken);
+  obs("phase7", "OK", `Lifecycle through close — ready to test enforcement gates`);
+
+  // ── Case A: export without override → expect 412 compliance_block
+  let caseA = await call("exportIncidentPacketV1", { orgId: cleanup.orgId, incidentId: incId, actorUid: adminUid }, adminToken);
+  findings.phase7.cases.push({ name: "exportA_noOverride", status: caseA.status, error: caseA.body.error, codes: caseA.body.codes });
+  if (caseA.status === 412 && caseA.body.error === "compliance_block" && Array.isArray(caseA.body.codes) && caseA.body.codes.length > 0) {
+    obs("phase7", "OK", `Case A — export refused: 412 compliance_block, ${caseA.body.codes.length} codes (${caseA.body.codes.map(c=>c.code).join(", ").slice(0,80)})`);
+  } else {
+    obs("phase7", "BLOCK", `Case A — expected 412/compliance_block, got status=${caseA.status} body=${JSON.stringify(caseA.body).slice(0,200)}`);
+  }
+
+  // ── Case B: export as field role with ack → expect 403 override_role_required
+  let caseB = await call("exportIncidentPacketV1", {
+    orgId: cleanup.orgId, incidentId: incId, actorUid: adminUid,
+    acknowledgeViolations: true,
+    violationAcknowledgmentReason: "Field tech ack — should be rejected by role gate",
+  }, fieldToken);   // <-- intentionally fieldToken; will fail authz role gate (ROLES_GENERATE_REPORT)
+  findings.phase7.cases.push({ name: "exportB_fieldRoleOverride", status: caseB.status, error: caseB.body.error });
+  if (caseB.status === 403) {
+    obs("phase7", "OK", `Case B — field role denied at authz layer (403 permission-denied) before reaching override path`);
+  } else {
+    obs("phase7", "BLOCK", `Case B — expected 403, got status=${caseB.status} body=${JSON.stringify(caseB.body).slice(0,200)}`);
+  }
+
+  // ── Case C: export as admin with override missing reason → expect 400 override_reason_invalid
+  let caseC = await call("exportIncidentPacketV1", {
+    orgId: cleanup.orgId, incidentId: incId, actorUid: adminUid,
+    acknowledgeViolations: true,
+    violationAcknowledgmentReason: "short",
+  }, adminToken);
+  findings.phase7.cases.push({ name: "exportC_shortReason", status: caseC.status, error: caseC.body.error, ackError: caseC.body.ackError });
+  if (caseC.status === 400 && caseC.body.ackError === "override_reason_invalid") {
+    obs("phase7", "OK", `Case C — admin override with too-short reason rejected (400 override_reason_invalid)`);
+  } else {
+    obs("phase7", "BLOCK", `Case C — expected 400/override_reason_invalid, got status=${caseC.status} body=${JSON.stringify(caseC.body).slice(0,200)}`);
+  }
+
+  // ── Case D: export as admin with valid override → expect 200, override recorded
+  let caseD = await call("exportIncidentPacketV1", {
+    orgId: cleanup.orgId, incidentId: incId, actorUid: adminUid,
+    acknowledgeViolations: true,
+    violationAcknowledgmentReason: "Operator review confirms missing fields are non-applicable to this internal test scenario.",
+  }, adminToken);
+  findings.phase7.cases.push({ name: "exportD_validOverride", status: caseD.status, packetVersion: caseD.body.packetVersion });
+  if (caseD.status === 200 && caseD.body.ok === true) {
+    obs("phase7", "OK", `Case D — admin override with valid reason succeeded (200, packetVersion=${caseD.body.packetVersion || "?"})`);
+  } else {
+    obs("phase7", "BLOCK", `Case D — expected 200, got status=${caseD.status} body=${JSON.stringify(caseD.body).slice(0,200)}`);
+  }
+
+  // ── Case E: same flow for createCustomerReviewLinkV1 → 412 without override
+  let caseE = await call("createCustomerReviewLinkV1", { orgId: cleanup.orgId, incidentId: incId, actorUid: adminUid }, adminToken);
+  findings.phase7.cases.push({ name: "reviewLinkE_noOverride", status: caseE.status, error: caseE.body.error });
+  if (caseE.status === 412 && caseE.body.error === "compliance_block") {
+    obs("phase7", "OK", `Case E — createCustomerReviewLinkV1 refused: 412 compliance_block`);
+  } else {
+    obs("phase7", "BLOCK", `Case E — expected 412/compliance_block, got status=${caseE.status} body=${JSON.stringify(caseE.body).slice(0,200)}`);
+  }
+
+  // ── Case F: createCustomerReviewLinkV1 with valid admin override → 200
+  let caseF = await call("createCustomerReviewLinkV1", {
+    orgId: cleanup.orgId, incidentId: incId, actorUid: adminUid,
+    acknowledgeViolations: true,
+    violationAcknowledgmentReason: "Operator review confirms missing fields are non-applicable to this internal test scenario.",
+  }, adminToken);
+  findings.phase7.cases.push({ name: "reviewLinkF_validOverride", status: caseF.status, hasToken: !!caseF.body.token });
+  if (caseF.status === 200 && caseF.body.ok === true && caseF.body.token) {
+    obs("phase7", "OK", `Case F — createCustomerReviewLinkV1 with valid admin override succeeded (200, token issued)`);
+  } else {
+    obs("phase7", "BLOCK", `Case F — expected 200 with token, got status=${caseF.status} body=${JSON.stringify(caseF.body).slice(0,200)}`);
+  }
+
+  // ── Audit verification: should see at least one compliance_block_triggered and one _overridden in the audit subcollection
+  await new Promise(r => setTimeout(r, 1500));
+  const auditSnap = await db.collection(`orgs/${cleanup.orgId}/audit`)
+    .where("incidentId", "==", incId).get();
+  const auditTypes = auditSnap.docs.map(d => d.data().type).filter(Boolean);
+  const hasTriggered = auditTypes.includes("compliance_block_triggered");
+  const hasOverridden = auditTypes.includes("compliance_block_overridden");
+  obs("phase7", (hasTriggered && hasOverridden) ? "OK" : "BLOCK",
+    `Audit subcollection: compliance_block_triggered=${hasTriggered}, compliance_block_overridden=${hasOverridden} (types=[${[...new Set(auditTypes)].join(", ")}])`);
+
+  // Flip mode back to off for cleanliness.
+  await db.doc(`orgs/${cleanup.orgId}/config/validation`).set({
+    mode: "off", setBy: "butler_full_dry_run:phase7_cleanup",
+    setAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+} catch (e) {
+  logErr("phase7", "enforcement", e);
+}
+
+// ══════════════════════════════════════════════════════════════════
 // CLEANUP
 // ══════════════════════════════════════════════════════════════════
 console.log(`\n── Cleanup ──`);
@@ -719,7 +867,7 @@ try {
   }
   // Delete org subcollections + org doc
   if (cleanup.orgId) {
-    for (const sub of ["members", "audit", "templates", "recovery_cases"]) {
+    for (const sub of ["members", "audit", "templates", "recovery_cases", "billing", "config", "customer_review_links", "customer_review_audit"]) {
       const snap = await db.collection(`orgs/${cleanup.orgId}/${sub}`).get();
       if (snap.size) { const b = db.batch(); snap.forEach(d => b.delete(d.ref)); await b.commit(); }
     }
