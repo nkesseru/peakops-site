@@ -430,10 +430,11 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
       });
     }
 
-    // ── Atomic org + owner-member + audit batch ──────────────────
+    // ── Atomic org + owner-member + billing + audit batch ───────
     const now = FieldValue.serverTimestamp();
     const batch = db.batch();
     const ownerMemberRef = db.doc(`orgs/${orgId}/members/${ownerUid}`);
+    const billingStateRef = db.doc(`orgs/${orgId}/billing/state`);
     const auditId = `create_org_${Date.now()}`;
     const auditRef = db.doc(`orgs/${orgId}/audit/${auditId}`);
 
@@ -475,6 +476,24 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
       },
       createdAt: now,
       updatedAt: now,
+    });
+
+    // PEAKOPS_PILOT_ENTITLEMENT_DEFAULT_V1 (PR 133A, 2026-06-23)
+    // A new org with entitlements={} cannot use the gated callables
+    // (exportIncidentPacketV1, createCustomerReviewLinkV1, mintResubmissionLinkV1)
+    // because _entitlement.js denies-by-default. That bricks the customer
+    // workflow at "send to customer" until an internal admin manually flips
+    // riskDefenseModule via /admin/orgs/{orgId}/billing — the #1 founder
+    // dependency surfaced by the Butler dry-run (Action 2). Seed the
+    // pilot-default billing state inside the same atomic batch so new orgs
+    // can complete the full workflow from day 0.
+    batch.set(billingStateRef, {
+      status: "active",
+      plan: "pilot",
+      entitlements: { riskDefenseModule: true },
+      lastUpdatedAt: now,
+      lastUpdatedBy: `createOrgV1:${callerUid}`,
+      seededBy: "createOrgV1:pilot-default",
     });
 
     batch.set(auditRef, {
