@@ -19,6 +19,14 @@ const {
 // readiness state embedded in the packet matches what the operator
 // saw on the Summary page seconds earlier.
 const { computeAcceptanceReadiness } = require("./_readiness");
+// PR 133C — enforcement / blocking mode for compliance violations.
+const {
+  evaluateEnforcement,
+  parseOverride,
+  recordBlockTriggered,
+  recordBlockOverridden,
+  _evidenceTypesFromList,
+} = require("./_enforcement");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -2258,6 +2266,48 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       jobs,
     });
 
+    // PEAKOPS_ENFORCEMENT_V1 (PR 133C) — block-mode gate. When the org
+    // has opted into validation.mode === "block" AND the incident has
+    // DIRS ERROR-severity findings or unsatisfied required acceptance
+    // proof, refuse the packet export. Admin/owner may bypass with
+    // acknowledgeViolations + violationAcknowledgmentReason in the
+    // body; the override is recorded in audit, Cloud Logging, the
+    // incident timeline, and embedded into packet-manifest.json
+    // (INTERNAL surfaces only — not surfaced to the customer in this
+    // PR; policy decision deferred to a later PR after pilot feedback).
+    const _evidenceTypes = _evidenceTypesFromList(evidence);
+    const _incidentForEnforcement = { id: incidentId, ...(incident || {}) };
+    const _enforcement = await evaluateEnforcement({
+      db, orgId,
+      incident: _incidentForEnforcement,
+      evidenceTypes: _evidenceTypes,
+      acceptanceReadinessState: acceptanceReadiness && acceptanceReadiness.state,
+    });
+    let _complianceOverride = null;
+    if (_enforcement.action === "block") {
+      const _ack = parseOverride(body, actorRole);
+      if (!_ack.ok) {
+        await recordBlockTriggered({
+          db, orgId, incidentId, callable: "exportIncidentPacketV1",
+          evaluation: _enforcement, actorUid, actorRole,
+        });
+        return j(res, _ack.status || 412, {
+          ok: false,
+          error: "compliance_block",
+          mode: _enforcement.mode,
+          codes: _enforcement.codes,
+          overridable: _enforcement.overridable,
+          rulepackVersionsByType: _enforcement.rulepackVersionsByType,
+          overrideHint: _ack.detail || "Admin/owner may bypass with acknowledgeViolations=true and violationAcknowledgmentReason (20-500 chars).",
+          ackError: _ack.error,
+        });
+      }
+      _complianceOverride = await recordBlockOverridden({
+        db, orgId, incidentId, callable: "exportIncidentPacketV1",
+        evaluation: _enforcement, actorUid, actorRole, reason: _ack.reason,
+      });
+    }
+
     // PR 99 — Cover-doc data structures.
     //
     // tasksWithEvidence: kept for the TASKS section, but its `photos`
@@ -3043,6 +3093,18 @@ exports.exportIncidentPacketV1 = onRequest({ cors: true }, async (req, res) => {
       acceptanceReadiness: {
         ...acceptanceReadiness,
         packetRevisionAtComputation: reportRevision,
+      },
+      // PR 133C — compliance enforcement record. Always present (even
+      // when mode != "block") so downstream readers can see the mode
+      // the packet was generated under. Override block only present
+      // when an admin/owner used acknowledgeViolations. INTERNAL
+      // surface only — never rendered in README.txt or
+      // CUSTOMER_SUMMARY.html in this PR (policy decision deferred).
+      compliance: {
+        mode: _enforcement.mode,
+        rulepackVersionsByType: _enforcement.rulepackVersionsByType,
+        codes: _enforcement.codes,
+        override: _complianceOverride || null,
       },
       topLevelHash: _topLevelHash,
       history: reportHistory,

@@ -45,6 +45,14 @@ const {
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
 const { resolveIncidentRef } = require("./_incidentPath");
+// PR 133C — enforcement / blocking mode for compliance violations.
+const {
+  evaluateEnforcement,
+  parseOverride,
+  recordBlockTriggered,
+  recordBlockOverridden,
+  _evidenceTypesFromList,
+} = require("./_enforcement");
 const {
   INCIDENT_STATUS,
   normalizeIncidentStatus,
@@ -194,6 +202,52 @@ exports.createCustomerReviewLinkV1 = onRequest({ cors: true }, async (req, res) 
         reasons: blocked,
         hint: "All jobs must be approved before sending to customer.",
       });
+    }
+
+    // PEAKOPS_ENFORCEMENT_V1 (PR 133C) — block-mode gate. Reads org's
+    // validation mode + computes DIRS compliance against incident +
+    // evidence. When mode === "block" AND blocking conditions exist
+    // (DIRS ERROR-severity findings or acceptance requirements missing),
+    // refuses the link mint. Admin/owner override via
+    // acknowledgeViolations + violationAcknowledgmentReason.
+    // Override is recorded in audit + Cloud Logging + incident
+    // timeline (INTERNAL — never surfaced to the customer or in the
+    // review-link payload). The customer-facing /review/<token> page
+    // is unaware that an override happened in this PR.
+    {
+      const _evidenceSnap = await legacyIncRef.collection("evidence_locker").limit(500).get().catch(() => ({ docs: [] }));
+      const _evidenceTypes = _evidenceTypesFromList(_evidenceSnap.docs || []);
+      const _incidentForEnforcement = { id: incidentId, ...(incData || {}) };
+      const _acceptanceState = (incData && incData.readinessCache && incData.readinessCache.state) || null;
+      const _enforcement = await evaluateEnforcement({
+        db, orgId,
+        incident: _incidentForEnforcement,
+        evidenceTypes: _evidenceTypes,
+        acceptanceReadinessState: _acceptanceState,
+      });
+      if (_enforcement.action === "block") {
+        const _ack = parseOverride(body, actorRole);
+        if (!_ack.ok) {
+          await recordBlockTriggered({
+            db, orgId, incidentId, callable: "createCustomerReviewLinkV1",
+            evaluation: _enforcement, actorUid, actorRole,
+          });
+          return j(res, _ack.status || 412, {
+            ok: false,
+            error: "compliance_block",
+            mode: _enforcement.mode,
+            codes: _enforcement.codes,
+            overridable: _enforcement.overridable,
+            rulepackVersionsByType: _enforcement.rulepackVersionsByType,
+            overrideHint: _ack.detail || "Admin/owner may bypass with acknowledgeViolations=true and violationAcknowledgmentReason (20-500 chars).",
+            ackError: _ack.error,
+          });
+        }
+        await recordBlockOverridden({
+          db, orgId, incidentId, callable: "createCustomerReviewLinkV1",
+          evaluation: _enforcement, actorUid, actorRole, reason: _ack.reason,
+        });
+      }
     }
 
     // PEAKOPS_REVIEW_VERSION_PIN_V1 (2026-06-15)

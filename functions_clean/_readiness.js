@@ -513,9 +513,17 @@ function computeAcceptanceReadiness({ incident, evidence, jobs, notes }) {
 const VALIDATION_MODE_OFF = "off";
 const VALIDATION_MODE_PASSIVE_LOG = "passive_log";
 const VALIDATION_MODE_PASSIVE_PERSIST = "passive_persist";
+// PR 133C — enforcement mode. Recognized by readValidationMode so the
+// in-memory cache normalizes it correctly, and treated as a "runs the
+// engine" mode for refreshReadinessCache's compliance-result writing
+// path (block mode wants the same persisted findings as
+// passive_persist so the operator UI can show them). Actual
+// blocking happens in _enforcement.js at the three gated callables.
+const VALIDATION_MODE_BLOCK = "block";
 const VALIDATION_MODES_THAT_RUN = new Set([
   VALIDATION_MODE_PASSIVE_LOG,
   VALIDATION_MODE_PASSIVE_PERSIST,
+  VALIDATION_MODE_BLOCK,
 ]);
 
 // In-memory cache of the per-org validation mode. Cuts a Firestore read
@@ -709,7 +717,10 @@ async function refreshReadinessCache({ orgId, incidentId }) {
           missingFields: compliance.summary.missingFields,
           elapsedMs: compliance.elapsedMs,
         });
-        if (validationMode === VALIDATION_MODE_PASSIVE_PERSIST) {
+        if (validationMode === VALIDATION_MODE_PASSIVE_PERSIST ||
+            validationMode === VALIDATION_MODE_BLOCK) {
+          // PR 133C — block mode persists too, so the operator UI can
+          // surface findings and explain WHY the gated callable refused.
           // Strip the `elapsedMs` field from the persisted snapshot —
           // it's instrumentation, not state. Add serverTimestamp.
           const { elapsedMs: _drop, ...persistedShape } = compliance;
@@ -749,4 +760,5 @@ module.exports = {
   VALIDATION_MODE_OFF,
   VALIDATION_MODE_PASSIVE_LOG,
   VALIDATION_MODE_PASSIVE_PERSIST,
+  VALIDATION_MODE_BLOCK,
 };
