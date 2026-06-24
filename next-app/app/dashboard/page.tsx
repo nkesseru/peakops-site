@@ -61,6 +61,8 @@ import { incidentStatusLabel, incidentStatusPill, normalizeIncidentStatusShared 
 import { authedFetch } from "@/lib/apiClient";
 import { useAuth } from "@/hooks/useAuth";
 import { isDemoArtifact } from "@/lib/incidents/demoHygiene";
+// PR 134A.1 — first-run welcome surface for new customer admins.
+import { WelcomeFirstRun } from "@/components/WelcomeFirstRun";
 
 // Demo-safety filter for the hero card. Returns true when an incident
 // looks like real operator data — i.e. its title doesn't match the
@@ -685,6 +687,14 @@ export default function Dashboard() {
           </div>
         </section>
         ) : null}
+
+        {/* PR 134A.1 — Welcome surface for first-time customer admins.
+            Reads onboarding state from /api/onboarding-status; the
+            component auto-hides once the org has any incidents OR
+            the admin clicks "Got it" (localStorage flag scoped to
+            this orgId). Renders nothing when claimsOrgId is empty
+            (multi-org "all" view). */}
+        {claimsOrgId ? <WelcomeFirstRun orgId={claimsOrgId} /> : null}
 
         <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           {/* Lifecycle vocabulary aligned with Records chips so the
