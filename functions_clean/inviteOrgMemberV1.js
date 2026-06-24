@@ -397,7 +397,7 @@ exports.inviteOrgMemberV1 = onRequest({ cors: true }, async (req, res) => {
         subject: tpl.subject,
         html: tpl.html,
         text: tpl.text,
-        tag: "inviteOrgMemberV1:invite",
+        tag: "inviteOrgMemberV1_invite",
       });
       inviteEmail = { attempted: true, ...result };
       const auditEmailId = `invite_email_${Date.now()}_${inviteeUid.slice(0, 8)}`;

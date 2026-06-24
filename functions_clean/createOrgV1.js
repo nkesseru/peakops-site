@@ -558,7 +558,7 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
         subject: tpl.subject,
         html: tpl.html,
         text: tpl.text,
-        tag: "createOrgV1:welcome",
+        tag: "createOrgV1_welcome",
       });
       welcomeEmail = { attempted: true, ...result };
       const auditEmailId = `welcome_email_${Date.now()}`;

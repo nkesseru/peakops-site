@@ -70,7 +70,10 @@ async function sendEmail({ to, subject, html, text, tag, headers }) {
         html,
         text,
         reply_to: replyTo,
-        tags: tag ? [{ name: "peakops_tag", value: String(tag).slice(0, 64) }] : undefined,
+        // Resend tag values must match /^[A-Za-z0-9_-]+$/. Sanitize
+        // defensively so a caller that passes "fn:event" doesn't get
+        // rejected with a validation 400 (PR 134B hotfix, 2026-06-24).
+        tags: tag ? [{ name: "peakops_tag", value: String(tag).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) }] : undefined,
       }),
     });
     const json = await res.json().catch(() => ({}));
