@@ -74,6 +74,16 @@ export function ComplianceGuardModal({
 }: Props) {
   const isAdmin = actorRole === "owner" || actorRole === "admin";
   const isBlockMode = mode === "block";
+  // PR 133B (verify-fix) — pre-flight callers pass mode=undefined (we
+  // don't know the org's validation.mode at click time). Treat that
+  // as POTENTIALLY block: surface the admin override input so an
+  // admin can pre-emptively type a reason. The backend's enforcement
+  // module only consumes the override fields when its computed action
+  // is "block" (see functions_clean/_enforcement.js parseOverride
+  // call site), so the reason is harmless when the org is actually
+  // in a passive mode.
+  const modeUnknown = mode === undefined;
+  const offerOverridePath = isAdmin && !!overridable && (isBlockMode || modeUnknown);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -153,7 +163,7 @@ export function ComplianceGuardModal({
             </div>
           )}
 
-          {isBlockMode && isAdmin && overridable && (
+          {offerOverridePath && (
             <div data-testid="compliance-guard-override" className="rounded-lg border border-amber-300/30 bg-amber-500/[0.06] px-3 py-3 space-y-2">
               <label htmlFor="violation-ack-reason" className="block text-[11px] uppercase tracking-[0.18em] font-semibold text-amber-200">
                 Admin override — acknowledge violations
@@ -207,7 +217,7 @@ export function ComplianceGuardModal({
               {busy ? "Sending…" : `Continue with ${ACTION_LABEL[action].toLowerCase()}`}
             </button>
           )}
-          {isBlockMode && isAdmin && overridable && onConfirm && (
+          {offerOverridePath && onConfirm && (
             <button
               type="button"
               className="px-4 py-2.5 rounded-full text-[12px] font-semibold text-black bg-amber-300 hover:bg-amber-200 disabled:bg-amber-300/40"

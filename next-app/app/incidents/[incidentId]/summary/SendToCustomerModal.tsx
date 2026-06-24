@@ -11,7 +11,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { authedFetch } from "@/lib/apiClient";
 import type {
@@ -33,6 +33,13 @@ type Props = {
   // whether to render the admin-only override reason input on a
   // compliance_block response.
   actorRole?: string;
+  // PR 133B (verify-fix) — admin override reason collected by the
+  // upstream ComplianceGuardModal in the pre-flight gate. When set,
+  // the modal skips the confirm step and immediately calls
+  // createCustomerReviewLinkV1 with the override fields populated.
+  // Prevents the operator from being prompted for the reason twice
+  // (once in the guard, again here after a 412 round-trip).
+  pendingOverride?: { reason: string } | null;
   onClose: () => void;
 };
 
@@ -54,11 +61,29 @@ export function SendToCustomerModal({
   incidentId,
   actorUid,
   actorRole,
+  pendingOverride,
   onClose,
 }: Props) {
   const [step, setStep] = useState<StepState>({ kind: "confirm" });
   const [copied, setCopied] = useState(false);
   const isAdmin = actorRole === "owner" || actorRole === "admin";
+  // Guard against StrictMode double-invocation of the mount effect —
+  // we must only auto-mint the pending override once per modal open.
+  const autoMintedRef = useRef(false);
+
+  // PR 133B (verify-fix) — if a pending override was handed in by the
+  // upstream pre-flight ComplianceGuardModal, auto-skip the confirm
+  // step and propagate the reason into the mint call. This is the
+  // single source of truth for the override reason — the operator
+  // should never have to type it twice.
+  useEffect(() => {
+    if (autoMintedRef.current) return;
+    if (pendingOverride && pendingOverride.reason && pendingOverride.reason.trim().length > 0) {
+      autoMintedRef.current = true;
+      void handleMint(pendingOverride.reason);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOverride]);
 
   async function handleMint(overrideReason?: string) {
     setStep({ kind: "minting" });

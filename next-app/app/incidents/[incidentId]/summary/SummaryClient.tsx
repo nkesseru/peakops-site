@@ -1028,20 +1028,26 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
 
   
 
+  // PR 133B (verify-fix) — if the upstream guard modal collected an
+  // admin override reason during pre-flight, hold it here so the
+  // SendToCustomerModal mount-effect can auto-fire the mint with the
+  // override populated. Cleared whenever the modal closes so a stale
+  // reason can never silently leak into a subsequent open.
+  const [sendToCustomerOverride, setSendToCustomerOverride] = useState<{ reason: string } | null>(null);
+
   // PR 133B — open the send-to-customer modal, but pre-flight
   // compliance first. If blocking issues exist, show the guard modal;
-  // its "Continue with override" callback opens the SendToCustomerModal
-  // (the modal will pass acknowledgeViolations through to the mint call).
+  // the guard's onConfirm passes the (optional) override reason
+  // through into SendToCustomerModal via pendingOverride so the
+  // operator is never asked for the same reason twice.
   function openSendToCustomerWithGuard() {
-    if (maybeBlockOnPreflight("review_link", (_override) => {
-      // For send-to-customer, after the operator confirms the override
-      // in the guard modal, hand off to SendToCustomerModal — it will
-      // request the URL and propagate the override (handled in that
-      // modal's own state in PR 133B).
+    if (maybeBlockOnPreflight("review_link", (override) => {
+      setSendToCustomerOverride(override);
       setShowSendToCustomer(true);
     })) {
       return;
     }
+    setSendToCustomerOverride(null);
     setShowSendToCustomer(true);
   }
 
@@ -3457,7 +3463,11 @@ export default function SummaryClient({ incidentId }: { incidentId: string }) {
         incidentId={String(incidentId)}
         actorUid={getActorUid?.() || undefined}
         actorRole={String(getActorRole?.() || "")}
-        onClose={() => setShowSendToCustomer(false)}
+        pendingOverride={sendToCustomerOverride}
+        onClose={() => {
+          setShowSendToCustomer(false);
+          setSendToCustomerOverride(null);
+        }}
       />
     ) : null}
 

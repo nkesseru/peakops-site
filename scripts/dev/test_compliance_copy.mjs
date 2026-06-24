@@ -103,7 +103,44 @@ ok("SummaryClient forwards override fields in export body",
 ok("SummaryClient gates send-to-customer via openSendToCustomerWithGuard",
    /openSendToCustomerWithGuard/.test(summarySource));
 ok("SummaryClient passes actorRole into SendToCustomerModal",
-   /<SendToCustomerModal[\s\S]{0,300}actorRole=/.test(summarySource));
+   /<SendToCustomerModal[\s\S]{0,400}actorRole=/.test(summarySource));
+
+// ── 7. PR 133B verify-fix: override reason flow-through ───────────
+// Concern 2 (verify): an override reason collected by the pre-flight
+// guard must propagate into SendToCustomerModal and from there into
+// createCustomerReviewLinkV1. Below ensures the structural plumbing
+// stays intact.
+ok("SendToCustomerModal accepts pendingOverride prop",
+   /pendingOverride\??\s*:\s*\{\s*reason:\s*string\s*\}\s*\|\s*null/.test(sendSource));
+ok("SendToCustomerModal auto-mints on pendingOverride via effect",
+   /useEffect[\s\S]{0,500}pendingOverride[\s\S]{0,200}handleMint\(pendingOverride\.reason\)/.test(sendSource));
+ok("SendToCustomerModal guards against StrictMode double-fire",
+   /autoMintedRef|autoMinted\s*=/.test(sendSource));
+ok("SummaryClient captures override in openSendToCustomerWithGuard",
+   /maybeBlockOnPreflight\("review_link",\s*\(override\)\s*=>/.test(summarySource));
+ok("SummaryClient stores override in sendToCustomerOverride state",
+   /setSendToCustomerOverride\(override\)/.test(summarySource));
+ok("SummaryClient passes pendingOverride into SendToCustomerModal",
+   /<SendToCustomerModal[\s\S]{0,500}pendingOverride=\{sendToCustomerOverride\}/.test(summarySource));
+ok("SummaryClient clears sendToCustomerOverride on modal close",
+   /setSendToCustomerOverride\(null\)/.test(summarySource));
+
+// ── 8. PR 133B verify: Concern 1 — block-mode never permits no-override ──
+// ComplianceGuardModal's no-override proceed button must be gated on !isBlockMode.
+// Admin override button must be gated on offerOverridePath (admin + overridable
+// + (block mode or unknown mode for pre-flight defensive UX)) AND require a
+// valid 20-500 char reason via the disabled={!reasonValid} guard.
+ok("ComplianceGuardModal no-override Continue button gated on !isBlockMode",
+   /\{!isBlockMode\s*&&\s*onConfirm\s*&&\s*\(/.test(guardSource));
+ok("ComplianceGuardModal admin override input gated on offerOverridePath",
+   /\{offerOverridePath\s*&&\s*\(/.test(guardSource));
+ok("ComplianceGuardModal offerOverridePath requires admin + overridable",
+   /offerOverridePath\s*=\s*isAdmin\s*&&\s*!!overridable\s*&&\s*\(isBlockMode\s*\|\|\s*modeUnknown\)/.test(guardSource));
+ok("ComplianceGuardModal override submit calls handleProceedWithOverride",
+   /onClick=\{handleProceedWithOverride\}/.test(guardSource));
+ok("ComplianceGuardModal block-mode body sends override fields",
+   // handleProceedWithOverride requires reasonValid before firing onConfirm({reason}).
+   /handleProceedWithOverride[\s\S]{0,300}if\s*\(!reasonValid\)\s*return/.test(guardSource));
 
 console.log("\n" + "═".repeat(70));
 if (failed === 0) {
