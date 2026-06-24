@@ -59,6 +59,16 @@ export async function GET(req: Request) {
     }
 
     const org = orgSnap.data() || {};
+    // PR 134A.2 — script-activation provenance. createOrgV1 stamps
+    // bootstrappedBy + bootstrappedAt inside its atomic batch (Chunk
+    // 3B-1). When both are present, this org came in through the
+    // CS activation pipeline, not the legacy demo/self-serve route.
+    const bootstrappedBy = String(org.bootstrappedBy || "");
+    const bootstrappedAt = org.bootstrappedAt
+      ? (typeof (org.bootstrappedAt as { toDate?: () => Date }).toDate === "function"
+          ? (org.bootstrappedAt as { toDate: () => Date }).toDate().toISOString()
+          : null)
+      : null;
     const members = membersSnap.docs.map((d) => {
       const m = (d.data() || {}) as OrgMemberDoc;
       return {
@@ -92,11 +102,23 @@ export async function GET(req: Request) {
     const incCountSnap = await db.collection(`orgs/${orgId}/incidents`).limit(1).get();
     const hasIncidents = !incCountSnap.empty;
 
+    // PR 134A.2 — script-activation detection. Conjunction so a partial
+    // / hand-bootstrapped org doesn't get the activated branch and
+    // miss out on the wizard. All three signals together mean the
+    // CS activation pipeline ran end-to-end.
+    const scriptActivated = Boolean(
+      bootstrappedBy && templates.length > 0 && org.kind === "customer"
+    );
+
     return NextResponse.json({
       ok: true,
       orgId,
       orgName: String(org.name || orgId),
       industry: String(org.industry || ""),
+      kind: String(org.kind || ""),
+      bootstrappedBy: bootstrappedBy || null,
+      bootstrappedAt,
+      scriptActivated,
       members,
       teammateCount: members.filter((m) => m.role !== "owner").length,
       ownerCount: members.filter((m) => m.role === "owner").length,
