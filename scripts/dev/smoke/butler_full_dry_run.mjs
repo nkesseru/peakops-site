@@ -334,11 +334,27 @@ try {
   obs("phase2", !ofHasIncidents ? "OK" : "INFO",
     `Welcome surface — auto-hide gate: hasIncidents=${ofHasIncidents} (card renders when false; auto-disappears once first incident exists)`);
   obs("phase2", "OK", `WelcomeFirstRun data dependencies all present — card will render on /dashboard with correct content`);
+
+  // PR 134A.2 verification — script-activation signals on the org doc.
+  // /api/onboarding-status derives scriptActivated from
+  // bootstrappedBy + templates.length > 0 + kind === "customer".
+  // When true, OnboardingClient renders the OnboardingActivatedNotice
+  // instead of the wizard, protecting the org doc from
+  // patchOrgFromOnboarding overwrites.
+  const ofOrgData = ofOrgSnap.data() || {};
+  const ofBootstrappedBy = String(ofOrgData.bootstrappedBy || "");
+  const ofKind = String(ofOrgData.kind || "");
+  const ofHasTemplates = ofTemplatesSnap.docs.length > 0;
+  const ofScriptActivated = !!ofBootstrappedBy && ofHasTemplates && ofKind === "customer";
+  obs("phase2", ofBootstrappedBy ? "OK" : "BLOCK",
+    `Onboarding reconciliation — org.bootstrappedBy present: ${ofBootstrappedBy.slice(0, 24) || "(missing)"}`);
+  obs("phase2", ofKind === "customer" ? "OK" : "BLOCK",
+    `Onboarding reconciliation — org.kind === "customer": ${ofKind}`);
+  obs("phase2", ofScriptActivated ? "OK" : "BLOCK",
+    `Onboarding reconciliation — scriptActivated derives to TRUE → /onboarding will skip the 7-step wizard and render the activated-notice branch`);
 } catch (e) {
   obs("phase2", "BLOCK", `Welcome-surface data-path check failed: ${e.message}`);
 }
-
-obs("phase2", "INFO", `Customer admin who visits /onboarding manually sees a 7-step wizard, but the wizard's persisted state is independent of what activateCustomerOrg.cjs created (different code paths). Risk: wizard could overwrite admin-set values. (Deferred to PR 134B.)`);
 
 // ══════════════════════════════════════════════════════════════════
 // PHASE 3 — Telecom incident lifecycle (happy path)
@@ -719,6 +735,8 @@ findings.phase6.founderDeps = [
   { tier: "LOW", item: "Lost/expired magic link recovery", required: "teamRecoveryV1 callable or Firebase Console password-reset" },
   // PR 134A.1-shipped: customer admin first-screen orientation now exists.
   { tier: "RESOLVED", item: "[PR 134A.1] Customer admin first-screen orientation (welcome message, starter template confirmation, team-invite visibility)", required: "(none — WelcomeFirstRun card now renders on /dashboard for zero-incident orgs)" },
+  // PR 134A.2-shipped: /onboarding wizard no longer clobbers activated-org state.
+  { tier: "RESOLVED", item: "[PR 134A.2] /onboarding wizard could overwrite CS-set org name / industry / kind for activated orgs", required: "(none — OnboardingClient detects scriptActivated and renders OnboardingActivatedNotice instead of the wizard)" },
 ];
 
 for (const dep of findings.phase6.founderDeps) {

@@ -55,6 +55,9 @@ import {
   type OrgAddress,
   type OpsFocusState,
 } from "@/lib/onboarding/onboardingPersistence";
+// PR 134A.2 — script-activated-org branch.
+import { OnboardingActivatedNotice } from "@/components/OnboardingActivatedNotice";
+import { authedFetch } from "@/lib/apiClient";
 
 type StepKey =
   | "welcome"
@@ -267,6 +270,52 @@ export default function OnboardingClient() {
   // after the first user-driven save so it doesn't linger across
   // an entire session.
   const [resumed, setResumed] = useState<boolean>(false);
+
+  // PR 134A.2 — script-activation detection. Reads /api/onboarding-status
+  // on mount. When the org was activated via the CS pipeline
+  // (createOrgV1 + starter template seed + customer kind), render
+  // the OnboardingActivatedNotice instead of the 7-step wizard so
+  // the wizard's patchOrgFromOnboarding can't overwrite CS-set
+  // values (name, industry, kind). Operator may explicitly opt
+  // back into the wizard via the notice's escape hatch.
+  const [activationCheck, setActivationCheck] = useState<{
+    loading: boolean;
+    data:
+      | {
+          scriptActivated: boolean;
+          orgName: string;
+          industry?: string;
+          bootstrappedBy?: string | null;
+          bootstrappedAt?: string | null;
+          members: Array<{ uid: string; role: string; displayName: string; email: string }>;
+          starterTemplate?: { key: string; label: string; requiredProofCount: number; acceptanceCheckCount: number } | null;
+        }
+      | null;
+  }>({ loading: true, data: null });
+  const [forceWizard, setForceWizard] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!orgId || orgId === "demo-org") {
+      setActivationCheck({ loading: false, data: null });
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authedFetch(`/api/onboarding-status?orgId=${encodeURIComponent(orgId)}`, { cache: "no-store" });
+        const j = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (j && j.ok) {
+          setActivationCheck({ loading: false, data: j });
+        } else {
+          setActivationCheck({ loading: false, data: null });
+        }
+      } catch {
+        if (!cancelled) setActivationCheck({ loading: false, data: null });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId]);
   // Tracks which step actually reached Firestore — drives the
   // honest Ready-screen copy ("PeakOps is ready" vs. "Your
   // deployment plan is ready").
@@ -1257,6 +1306,42 @@ export default function OnboardingClient() {
   // Welcome and Ready are full-bleed transitions — the rest are
   // working steps that get the eyebrow + step title above the body.
   const showStepHeader = step.key !== "welcome" && step.key !== "ready";
+
+  // PR 134A.2 — script-activated branch. Render the notice (and NOT
+  // the wizard) when the activation probe confirms the org was set
+  // up via the CS pipeline. The `forceWizard` toggle is the operator
+  // escape hatch surfaced in the notice — keeps the legacy path
+  // available for the rare reconfigure case.
+  if (activationCheck.loading) {
+    return (
+      <main
+        data-testid="onboarding-activation-loading"
+        style={{
+          minHeight: "100vh",
+          background: TOKENS.bg,
+          color: TOKENS.text,
+          padding: "48px 16px",
+          textAlign: "center",
+        }}
+      >
+        <div style={{ color: TOKENS.textMuted, fontSize: 12 }}>Checking onboarding state…</div>
+      </main>
+    );
+  }
+  if (activationCheck.data?.scriptActivated && !forceWizard) {
+    return (
+      <OnboardingActivatedNotice
+        orgId={orgId}
+        orgName={activationCheck.data.orgName}
+        industry={activationCheck.data.industry}
+        bootstrappedBy={activationCheck.data.bootstrappedBy}
+        bootstrappedAt={activationCheck.data.bootstrappedAt}
+        members={activationCheck.data.members}
+        starterTemplate={activationCheck.data.starterTemplate}
+        onForceWizard={() => setForceWizard(true)}
+      />
+    );
+  }
 
   return (
     <main
