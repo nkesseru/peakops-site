@@ -42,6 +42,9 @@ const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { httpStatusFromAuthzError } = require("./_authz");
 const { extractActorUid } = require("./_actor");
 const { toCustomerSlug } = require("./_customerSlug");
+// PR 134B — optional auto-email for the first-login URL.
+const { sendEmail } = require("./_emailer");
+const { welcomeOwnerEmail } = require("./_emailTemplates");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -529,6 +532,57 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
       starterTemplate = { seeded: false, reason: "seed_threw_exception" };
     }
 
+    // PEAKOPS_AUTO_EMAIL_V1 (PR 134B, 2026-06-24) — optional first-
+    // login email send. Opt-in via body.sendWelcomeEmail (default
+    // false to preserve the existing manual copy-paste flow). Send
+    // is strictly best-effort and runs AFTER the atomic batch
+    // commits — a delivery failure can never roll back the org.
+    // Status is recorded in the response AND in an audit row so
+    // the CS person sees the outcome and can fall back to manual
+    // delivery on failure without losing visibility.
+    let welcomeEmail = { attempted: false, ok: false };
+    const sendWelcome = body && body.sendWelcomeEmail === true;
+    if (sendWelcome && firstLoginUrl) {
+      const csName = body.csName ? String(body.csName).slice(0, 64) : "";
+      const csEmail = body.csEmail ? String(body.csEmail).slice(0, 128) : "";
+      const tpl = welcomeOwnerEmail({
+        ownerName: ownerName || "",
+        orgName,
+        firstLoginUrl,
+        orgId,
+        csName,
+        csEmail,
+      });
+      const result = await sendEmail({
+        to: ownerEmail,
+        subject: tpl.subject,
+        html: tpl.html,
+        text: tpl.text,
+        tag: "createOrgV1:welcome",
+      });
+      welcomeEmail = { attempted: true, ...result };
+      const auditEmailId = `welcome_email_${Date.now()}`;
+      try {
+        await db.doc(`orgs/${orgId}/audit/${auditEmailId}`).set({
+          id: auditEmailId,
+          type: "welcome_email_attempted",
+          orgId,
+          recipient: ownerEmail,
+          ok: !!result.ok,
+          skipped: !!result.skipped,
+          reason: result.reason || null,
+          deliveryId: result.deliveryId || null,
+          callerUid,
+          occurredAt: FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        console.warn("[createOrgV1] welcome_email_audit_failed", { msg: String(e && e.message) });
+      }
+      console.log("[createOrgV1] welcome_email", {
+        orgId, recipient: ownerEmail, ok: result.ok, skipped: result.skipped, reason: result.reason || null,
+      });
+    }
+
     return j(res, 200, {
       ok: true,
       orgId,
@@ -539,6 +593,7 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
       authUserCreated: authResult.created,
       starterTemplate,
       firstLoginUrl: firstLoginUrl || null,
+      welcomeEmail,
       createdAt: new Date().toISOString(),
       already: false,
     });

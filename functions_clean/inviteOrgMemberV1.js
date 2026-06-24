@@ -52,6 +52,9 @@ const {
   ROLES_ADMIN_ONLY,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+// PR 134B — optional auto-email for invite magic links.
+const { sendEmail } = require("./_emailer");
+const { inviteTeammateEmail } = require("./_emailTemplates");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -372,6 +375,54 @@ exports.inviteOrgMemberV1 = onRequest({ cors: true }, async (req, res) => {
 
     await batch.commit();
 
+    // PEAKOPS_AUTO_EMAIL_V1 (PR 134B, 2026-06-24) — optional invite
+    // email. Opt-in via body.sendInviteEmail (default false to
+    // preserve the manual copy-paste flow). Runs AFTER the atomic
+    // batch commits so a delivery failure can never roll back the
+    // invite. Status is recorded in the response + audit row.
+    let inviteEmail = { attempted: false, ok: false };
+    const sendInvite = body && body.sendInviteEmail === true;
+    if (sendInvite && magicLink) {
+      const orgName = String((orgSnap.data() || {}).name || orgId);
+      const inviterName = body.inviterName ? String(body.inviterName).slice(0, 96) : "";
+      const tpl = inviteTeammateEmail({
+        teammateName: displayName || "",
+        orgName,
+        role,
+        magicLink,
+        inviterName,
+      });
+      const result = await sendEmail({
+        to: email,
+        subject: tpl.subject,
+        html: tpl.html,
+        text: tpl.text,
+        tag: "inviteOrgMemberV1:invite",
+      });
+      inviteEmail = { attempted: true, ...result };
+      const auditEmailId = `invite_email_${Date.now()}_${inviteeUid.slice(0, 8)}`;
+      try {
+        await db.doc(`orgs/${orgId}/audit/${auditEmailId}`).set({
+          id: auditEmailId,
+          type: "invite_email_attempted",
+          orgId,
+          recipient: email,
+          role,
+          ok: !!result.ok,
+          skipped: !!result.skipped,
+          reason: result.reason || null,
+          deliveryId: result.deliveryId || null,
+          callerUid,
+          occurredAt: FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        console.warn("[inviteOrgMemberV1] invite_email_audit_failed", { msg: String(e && e.message) });
+      }
+      console.log("[inviteOrgMemberV1] invite_email", {
+        orgId, recipient: email, role, ok: result.ok, skipped: result.skipped, reason: result.reason || null,
+      });
+    }
+
     return j(res, 200, {
       ok: true,
       orgId,
@@ -381,6 +432,7 @@ exports.inviteOrgMemberV1 = onRequest({ cors: true }, async (req, res) => {
       displayName: displayName || null,
       authUserCreated: authResult.created,
       magicLink: magicLink || null,
+      inviteEmail,
       invitedAt: new Date().toISOString(),
       already: false,
     });

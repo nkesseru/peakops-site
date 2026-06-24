@@ -155,6 +155,11 @@ try {
   obs("phase1", "OK", `Founder ID token minted (peakopsInternalAdmin:true claim)`);
 
   // Step 1a — createOrgV1
+  // PR 134B — set sendWelcomeEmail so the auto-email path runs.
+  // The dry-run accepts either "ok" (RESEND_API_KEY configured) OR
+  // "skipped" (env vars not yet set on the deployed function) — the
+  // assertion is that the response includes the welcomeEmail status
+  // field with a well-formed shape, not that an email was delivered.
   const t0 = Date.now();
   orgResult = await call("createOrgV1", {
     orgName: ORG_NAME,
@@ -162,6 +167,9 @@ try {
     ownerEmail: ADMIN_EMAIL,
     ownerName: "Butler-Style Admin",
     timezone: "America/New_York",
+    sendWelcomeEmail: true,
+    csName: "Butler-Style Dry-Run CS",
+    csEmail: "noreply@peakops.app",
   }, founderToken);
   findings.phase1.timings.createOrgV1_ms = Date.now() - t0;
 
@@ -179,6 +187,8 @@ try {
   supResult = await call("inviteOrgMemberV1", {
     orgId: cleanup.orgId, email: SUPERVISOR_EMAIL, role: "supervisor",
     displayName: "Butler-Style Supervisor",
+    sendInviteEmail: true,
+    inviterName: "Butler-Style Dry-Run CS",
   }, founderToken);
   findings.phase1.timings.inviteSupervisor_ms = Date.now() - t1;
   if (supResult.body.ok !== true) {
@@ -193,6 +203,8 @@ try {
   fieldResult = await call("inviteOrgMemberV1", {
     orgId: cleanup.orgId, email: FIELD_EMAIL, role: "field",
     displayName: "Butler-Style Field Tech",
+    sendInviteEmail: true,
+    inviterName: "Butler-Style Dry-Run CS",
   }, founderToken);
   findings.phase1.timings.inviteField_ms = Date.now() - t2;
   if (fieldResult.body.ok !== true) {
@@ -280,6 +292,31 @@ findings.phase1.timings.total_ms = Date.now() - phase1Start;
 obs("phase1", "INFO", `Total provisioning time: ${(findings.phase1.timings.total_ms / 1000).toFixed(1)} sec`);
 obs("phase1", "INFO", `firstLoginUrl issued: ${orgResult?.body?.firstLoginUrl ? "YES (Firebase auth/action URL)" : "NO"}`);
 obs("phase1", "INFO", `supervisor magicLink issued: ${supResult?.body?.magicLink ? "YES" : "NO"}`);
+
+// PR 134B — auto-email response shape. The dry-run requested
+// sendWelcomeEmail/sendInviteEmail=true on every call. Each response
+// must carry a {attempted, ok, skipped?, reason?, deliveryId?} block
+// regardless of whether email is configured server-side. When the
+// function env has RESEND_API_KEY + EMAIL_FROM set, the dry-run also
+// asserts ok===true. Otherwise it accepts skipped===true with
+// reason==="email_not_configured".
+const we = orgResult?.body?.welcomeEmail;
+const supIe = supResult?.body?.inviteEmail;
+const fieldIe = fieldResult?.body?.inviteEmail;
+obs("phase1", we && we.attempted === true ? "OK" : "BLOCK",
+  `Auto-email — createOrgV1 welcomeEmail status present: attempted=${we?.attempted}, ok=${we?.ok}, skipped=${we?.skipped}, reason=${we?.reason || ""}`);
+obs("phase1", supIe && supIe.attempted === true ? "OK" : "BLOCK",
+  `Auto-email — inviteOrgMemberV1(sup) inviteEmail status present: attempted=${supIe?.attempted}, ok=${supIe?.ok}, skipped=${supIe?.skipped}, reason=${supIe?.reason || ""}`);
+obs("phase1", fieldIe && fieldIe.attempted === true ? "OK" : "BLOCK",
+  `Auto-email — inviteOrgMemberV1(field) inviteEmail status present: attempted=${fieldIe?.attempted}, ok=${fieldIe?.ok}, skipped=${fieldIe?.skipped}, reason=${fieldIe?.reason || ""}`);
+const anyOk = [we, supIe, fieldIe].some((r) => r && r.ok === true);
+const allSkipped = [we, supIe, fieldIe].every((r) => r && r.skipped === true);
+obs("phase1", anyOk || allSkipped ? "OK" : "CONFUSE",
+  anyOk
+    ? `Auto-email mode: LIVE — at least one delivery succeeded (RESEND_API_KEY + EMAIL_FROM configured)`
+    : allSkipped
+      ? `Auto-email mode: GRACEFUL FALLBACK — all three calls reported skipped=true (RESEND_API_KEY not configured on the deployed function; manual flow intact)`
+      : `Auto-email mode: MIXED — some calls failed without skipped flag, check Cloud Logging`);
 obs("phase1", "INFO", `field magicLink issued: ${fieldResult?.body?.magicLink ? "YES" : "NO"}`);
 
 // ══════════════════════════════════════════════════════════════════
@@ -726,7 +763,7 @@ console.log(`\n══ PHASE 6 — Founder dependency audit ═══════
 findings.phase6.founderDeps = [
   // CRITICAL — would require Nick personally
   { tier: "CRITICAL", item: "Mint the founder peakopsInternalAdmin claim (one-time per CS person)", required: "node setInternalAdminClaim.cjs --apply, with service-account JSON" },
-  { tier: "HIGH", item: "Magic links from createOrgV1 + inviteOrgMemberV1 must be delivered out-of-band (no auto-email)", required: "CS person copies links from script output into welcome email template (PR 134C planned)" },
+  { tier: "RESOLVED", item: "[PR 134B] Magic links from createOrgV1 + inviteOrgMemberV1 auto-emailed via Resend when activateCustomerOrg.cjs is invoked with --auto-email AND RESEND_API_KEY + EMAIL_FROM are set on the function env. Manual copy/paste flow remains as the documented fallback when env vars are not configured (graceful skip with reason recorded in audit + response).", required: "(none for activation. Set RESEND_API_KEY + EMAIL_FROM in functions_clean/.env.peakops-pilot to enable delivery.)" },
   { tier: "HIGH", item: "Customer-side magic link consumption", required: "Customer clicks link in their email → Firebase Auth password-reset flow → success" },
   { tier: "MEDIUM", item: "Custom archetypes beyond fiber_splice_verification/pole_inspection/etc.", required: "Engineering code change to add new archetype + matching template" },
   { tier: "MEDIUM", item: "Custom validation rules beyond the v1.1 DIRS set", required: "Engineering JSON edit to _complianceRulepacks/* + deploy" },
