@@ -61,6 +61,15 @@ function parseArgs(argv) {
     teammates: [],
     apply: false,
     help: false,
+    // PR 134B — auto-email controls. When --auto-email is set the
+    // script forwards sendWelcomeEmail=true to createOrgV1 and
+    // sendInviteEmail=true to each inviteOrgMemberV1 call.
+    // --cs-name / --cs-email populate the welcome email's signature.
+    // Default off to preserve the legacy manual copy-paste flow.
+    autoEmail: false,
+    csName: "",
+    csEmail: "",
+    inviterName: "",
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -71,6 +80,10 @@ function parseArgs(argv) {
     if (a.startsWith("--admin-email=")) { out.adminEmail = a.slice(14).toLowerCase(); continue; }
     if (a.startsWith("--admin-name=")) { out.adminName = a.slice(13); continue; }
     if (a.startsWith("--timezone=")) { out.timezone = a.slice(11); continue; }
+    if (a === "--auto-email") { out.autoEmail = true; continue; }
+    if (a.startsWith("--cs-name=")) { out.csName = a.slice(10); continue; }
+    if (a.startsWith("--cs-email=")) { out.csEmail = a.slice(11).toLowerCase(); continue; }
+    if (a.startsWith("--inviter-name=")) { out.inviterName = a.slice(15); continue; }
     if (a.startsWith("--teammate=")) {
       const v = a.slice(11);
       const [email, role] = v.split(":");
@@ -100,6 +113,13 @@ Usage:
     [--teammate=<email>:<${VALID_ROLES.join("|")}>] \\
     [--teammate=...]   (repeatable)
     [--apply]          (default: dry-run; print plan without executing)
+    [--auto-email]     (default: off; when set, deliver welcome + invite emails via Resend.
+                        Requires RESEND_API_KEY + EMAIL_FROM in the function env. When the
+                        env vars are not configured the email step is skipped and the
+                        script falls back to printing the magic links for manual delivery.)
+    [--cs-name="..."]   (display name on the welcome email's signature, optional)
+    [--cs-email="..."]  (reply-to address on the welcome email, optional)
+    [--inviter-name="..."] (display name in invite email subject line, optional)
 
 Examples:
   # Dry-run preview (recommended first):
@@ -262,6 +282,13 @@ async function main() {
     ownerEmail: args.adminEmail,
     ...(args.adminName ? { ownerName: args.adminName } : {}),
     timezone: args.timezone,
+    // PR 134B — auto-email opt-in. Falls back to legacy manual flow
+    // when --auto-email is not set.
+    ...(args.autoEmail ? {
+      sendWelcomeEmail: true,
+      ...(args.csName ? { csName: args.csName } : {}),
+      ...(args.csEmail ? { csEmail: args.csEmail } : {}),
+    } : {}),
   };
   process.stdout.write(`  POST /createOrgV1 ... `);
   const t0 = Date.now();
@@ -278,13 +305,30 @@ async function main() {
   console.log(`  ${green("✓")} ownerUid:        ${ownerUid}`);
   console.log(`  ${green("✓")} Auth user:       ${authUserCreated ? "created new" : "already existed"}`);
   console.log(`  ${green("✓")} Already exists:  ${already ? "yes" : "no"}`);
+  // PR 134B — surface the welcome-email outcome (when --auto-email was set).
+  const we = r.body && r.body.welcomeEmail;
+  if (we && we.attempted) {
+    if (we.ok) {
+      console.log(`  ${green("✓")} Welcome email:   sent to ${args.adminEmail}${we.deliveryId ? ` (id ${we.deliveryId})` : ""}`);
+    } else if (we.skipped) {
+      console.log(`  ${yellow("⚠")} Welcome email:   skipped — ${we.reason} (fall back to manual copy/paste)`);
+    } else {
+      console.log(`  ${red("✗")} Welcome email:   FAILED — ${we.reason || "(no reason)"}; fall back to manual copy/paste`);
+    }
+  }
 
   // ── Steps 2..N: inviteOrgMemberV1 per teammate ────────────────
   const inviteResults = [];
   for (let i = 0; i < args.teammates.length; i++) {
     const t = args.teammates[i];
     console.log(bold(`\n── Step ${i + 2}: inviteOrgMemberV1  (${t.email} as ${t.role})`));
-    const inviteBody = { orgId, email: t.email, role: t.role };
+    const inviteBody = {
+      orgId, email: t.email, role: t.role,
+      ...(args.autoEmail ? {
+        sendInviteEmail: true,
+        ...(args.inviterName ? { inviterName: args.inviterName } : {}),
+      } : {}),
+    };
     process.stdout.write(`  POST /inviteOrgMemberV1 ... `);
     const t1 = Date.now();
     const ir = await callFn("inviteOrgMemberV1", inviteBody, idToken);
@@ -306,6 +350,17 @@ async function main() {
     console.log(`  ${green("✓")} uid:             ${ir.body.uid}`);
     console.log(`  ${green("✓")} Auth user:       ${ir.body.authUserCreated ? "created new" : "already existed"}`);
     console.log(`  ${green("✓")} Already member:  ${ir.body.already ? "yes" : "no"}`);
+    // PR 134B — surface the invite-email outcome.
+    const ie = ir.body && ir.body.inviteEmail;
+    if (ie && ie.attempted) {
+      if (ie.ok) {
+        console.log(`  ${green("✓")} Invite email:    sent to ${t.email}${ie.deliveryId ? ` (id ${ie.deliveryId})` : ""}`);
+      } else if (ie.skipped) {
+        console.log(`  ${yellow("⚠")} Invite email:    skipped — ${ie.reason} (fall back to manual copy/paste)`);
+      } else {
+        console.log(`  ${red("✗")} Invite email:    FAILED — ${ie.reason || "(no reason)"}; fall back to manual copy/paste`);
+      }
+    }
   }
 
   // ── Summary ──────────────────────────────────────────────────
