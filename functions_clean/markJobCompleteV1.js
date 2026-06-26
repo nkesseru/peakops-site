@@ -8,6 +8,13 @@ const {
   ROLES_FIELD_WORK,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+// PR 135A — capture-gate: refuse mark-complete when required proof missing.
+const {
+  evaluateCaptureGate,
+  parseOverride: parseCaptureOverride,
+  recordCaptureGateBlocked,
+  recordCaptureGateOverridden,
+} = require("./_captureGate");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -110,6 +117,48 @@ exports.markJobCompleteV1 = onRequest({ cors: true }, async (req, res) => {
     }
     if (!["open", "assigned", "in_progress"].includes(prev)) {
       return j(res, 409, { ok: false, error: "invalid_transition", detail: `${prev} -> complete not allowed` });
+    }
+
+    // PEAKOPS_CAPTURE_GATE_V1 (PR 135A) — same gate as
+    // submitFieldSessionV1. Fires per-incident (required-proof
+    // template applies at incident scope, not per-job). Fail-CLOSED
+    // semantics: evaluator throwing falls through to legacy behavior.
+    {
+      const [evSnap, jobsSnap2] = await Promise.all([
+        incRef.collection("evidence_locker").limit(500).get().catch(() => ({ docs: [] })),
+        incRef.collection("jobs").limit(500).get().catch(() => ({ docs: [] })),
+      ]);
+      const evidence = (evSnap.docs || []).map((d) => ({ id: d.id, ...(d.data() || {}) }));
+      const jobsList = (jobsSnap2.docs || []).map((d) => ({ id: d.id, ...(d.data() || {}) }));
+      const incidentForGate = { id: incidentId, ...incident };
+      let gateEval = null;
+      try {
+        gateEval = await evaluateCaptureGate({ db, orgId, incident: incidentForGate, evidence, jobs: jobsList });
+      } catch (e) {
+        console.warn("[markJobCompleteV1] capture_gate_evaluation_failed", { orgId, incidentId, msg: String(e && e.message) });
+      }
+      if (gateEval && gateEval.action === "block") {
+        const ack = parseCaptureOverride(body, actorRole);
+        if (!ack.ok) {
+          await recordCaptureGateBlocked({
+            db, orgId, incidentId, callable: "markJobCompleteV1",
+            evaluation: gateEval, actorUid, actorRole,
+          });
+          return j(res, ack.status || 412, {
+            ok: false,
+            error: "capture_gate_blocked",
+            mode: gateEval.mode,
+            missing: gateEval.missing,
+            overridable: gateEval.overridable,
+            ackError: ack.error,
+            detail: ack.detail || "Required field evidence not captured. Admin/owner may bypass with acknowledgeCaptureGap=true and captureGapReason (20-500 chars).",
+          });
+        }
+        await recordCaptureGateOverridden({
+          db, orgId, incidentId, callable: "markJobCompleteV1",
+          evaluation: gateEval, actorUid, actorRole, reason: ack.reason,
+        });
+      }
     }
 
     await jobRef.set(

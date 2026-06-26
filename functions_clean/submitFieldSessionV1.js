@@ -9,6 +9,13 @@ const {
   ROLES_FIELD_WORK,
 } = require("./_authz");
 const { extractActorUid } = require("./_actor");
+// PR 135A — capture-gate: refuse session submit when required proof missing.
+const {
+  evaluateCaptureGate,
+  parseOverride: parseCaptureOverride,
+  recordCaptureGateBlocked,
+  recordCaptureGateOverridden,
+} = require("./_captureGate");
 
 // PEAKOPS_NOTIFICATIONS_V1 (2026-05-05)
 // Lazy-loaded so notification fan-out failures can never block the
@@ -125,6 +132,57 @@ exports.submitFieldSessionV1 = onRequest({ cors: true }, async (req, res) => {
     }
     if (incStatus && !["open","in_progress","submitted"].includes(String(incStatus).toLowerCase())) {
       return j(res, 409, { ok:false, error:"invalid_transition", detail:`unsupported incident.status=${incStatus}` });
+    }
+
+    // PEAKOPS_CAPTURE_GATE_V1 (PR 135A) — refuse submit when the
+    // incident's required-proof checks are unsatisfied AND the org
+    // is in "block" mode. Admin/owner may bypass with
+    // acknowledgeCaptureGap=true + captureGapReason (20-500 chars).
+    // Evidence + jobs come from the legacy top-level paths because
+    // that's where createJobV1 / addEvidenceV1 write. Evaluation
+    // failure is fail-CLOSED — if we can't compute readiness for
+    // some reason, the gate falls through and the submit proceeds
+    // as before, so the gate never silently breaks the lifecycle.
+    {
+      const legacyIncRefSF = db.collection("incidents").doc(incidentId);
+      const [evSnap, jobSnap] = await Promise.all([
+        legacyIncRefSF.collection("evidence_locker").limit(500).get().catch(() => ({ docs: [] })),
+        legacyIncRefSF.collection("jobs").limit(500).get().catch(() => ({ docs: [] })),
+      ]);
+      const evidence = (evSnap.docs || []).map((d) => ({ id: d.id, ...(d.data() || {}) }));
+      const jobs = (jobSnap.docs || []).map((d) => ({ id: d.id, ...(d.data() || {}) }));
+      const incidentForGate = {
+        id: incidentId,
+        ...(incSnap.exists ? (incSnap.data() || {}) : {}),
+      };
+      let gateEval = null;
+      try {
+        gateEval = await evaluateCaptureGate({ db, orgId, incident: incidentForGate, evidence, jobs });
+      } catch (e) {
+        console.warn("[submitFieldSessionV1] capture_gate_evaluation_failed", { orgId, incidentId, msg: String(e && e.message) });
+      }
+      if (gateEval && gateEval.action === "block") {
+        const ack = parseCaptureOverride(body, actorRole);
+        if (!ack.ok) {
+          await recordCaptureGateBlocked({
+            db, orgId, incidentId, callable: "submitFieldSessionV1",
+            evaluation: gateEval, actorUid, actorRole,
+          });
+          return j(res, ack.status || 412, {
+            ok: false,
+            error: "capture_gate_blocked",
+            mode: gateEval.mode,
+            missing: gateEval.missing,
+            overridable: gateEval.overridable,
+            ackError: ack.error,
+            detail: ack.detail || "Required field evidence not captured. Admin/owner may bypass with acknowledgeCaptureGap=true and captureGapReason (20-500 chars).",
+          });
+        }
+        await recordCaptureGateOverridden({
+          db, orgId, incidentId, callable: "submitFieldSessionV1",
+          evaluation: gateEval, actorUid, actorRole, reason: ack.reason,
+        });
+      }
     }
 
     const now = FieldValue.serverTimestamp();

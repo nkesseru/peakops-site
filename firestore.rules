@@ -149,6 +149,52 @@ service cloud.firestore {
         allow update, delete: if isOwnerOrAdmin(orgId);
       }
 
+      // ── Audit subcollections (provably append-only from clients) ──
+      //
+      // PEAKOPS_AUDIT_IMMUTABILITY_V1 (2026-06-24)
+      //
+      // Three subcollections carry the regulator-defensible audit trail:
+      //   - audit/                  general lifecycle + auto-email +
+      //                             compliance_block_(triggered|overridden)
+      //                             rows written by createOrgV1,
+      //                             inviteOrgMemberV1, _enforcement.js,
+      //                             and the email-attempt audit writes
+      //                             in PR 134B
+      //   - customer_review_audit/  customer review-link mint + accept
+      //                             + reject decisions (Chunk 2)
+      //   - recovery_audit/         recovery-case state transitions +
+      //                             action edits (PR 127a)
+      //
+      // All three are server-side-only write surfaces. They are
+      // populated exclusively by Cloud Functions via the Firebase
+      // Admin SDK, which bypasses these rules entirely — so the rule
+      // CHANGE has no effect on the lifecycle write paths.
+      //
+      // From the CLIENT side (browser, mobile, user-ID-token REST):
+      //   - create:  denied (server appends only)
+      //   - update:  denied (immutability — change "if false" only
+      //              after a designed migration path exists)
+      //   - delete:  denied (immutability)
+      //   - read:    denied for now (the operator UI does not surface
+      //              raw audit rows yet; flip to isActiveMember(orgId)
+      //              when an audit-viewer surface ships)
+      //
+      // Auditor question — why "if false" instead of relying on the
+      // file-level default-deny? Because the immutability claim is a
+      // first-class compliance assertion. Default-deny is correct but
+      // implicit; explicit denies make the claim visible at the rule
+      // layer for anyone reading firestore.rules, including external
+      // reviewers.
+      match /audit/{auditId} {
+        allow read, create, update, delete: if false;
+      }
+      match /customer_review_audit/{auditId} {
+        allow read, create, update, delete: if false;
+      }
+      match /recovery_audit/{auditId} {
+        allow read, create, update, delete: if false;
+      }
+
       // ── Vendors ──
       match /vendors/{vendorId} {
         allow read: if isActiveMember(orgId);

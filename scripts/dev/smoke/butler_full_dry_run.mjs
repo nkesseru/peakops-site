@@ -548,14 +548,18 @@ try {
   // Create incident — DELIBERATELY incomplete (no archetype set, no notes)
   let r = await call("createIncidentV1", {
     orgId: cleanup.orgId, actorUid: adminUid, incidentId: incId,
-    title: "Pole inspection — Riverside corridor",
+    title: "Fiber splice — Riverside corridor",
     status: "open",
-    archetype: "pole_inspection",
+    // PR 135A — use fiber_splice_verification so the org's seeded
+    // starter template applies; the pole_inspection archetype has
+    // no template, which causes acceptance-readiness to evaluate as
+    // not_available (correct, but bypasses the capture-gate test).
+    archetype: "fiber_splice_verification",
     filingTypesRequired: ["DIRS"],
     location: "Riverside corridor mile-marker 8, Spokane WA",
     customer: "Riverside Municipal Utility",
     priority: "normal",
-    notes: "Routine pole inspection on Riverside backhaul corridor.",
+    notes: "Routine fiber splice on Riverside backhaul corridor.",
   }, adminToken);
   if (r.body.ok !== true) { logErr("phase4", "createIncidentV1", JSON.stringify(r.body)); throw new Error("createIncident failed"); }
   incid4 = incId;
@@ -585,13 +589,99 @@ try {
   }
   obs("phase4", "OK", `Uploaded only 2 evidence items (below starter template's 4-item required-proof minimum)`);
 
-  await call("submitFieldSessionV1", {
-    orgId: cleanup.orgId, incidentId: incid4, sessionId: sessionId4, actorUid: fieldUid,
-  }, fieldToken);
+  // PR 135A — capture-gate validation. New orgs default to block, so
+  // submitFieldSessionV1 with the field role on an under-evidenced
+  // session MUST 412 capture_gate_blocked. Field cannot bypass.
+  // Admin must override with a valid reason for the recovery flow
+  // to proceed.
+  {
+    const blockedSubmit = await call("submitFieldSessionV1", {
+      orgId: cleanup.orgId, incidentId: incid4, sessionId: sessionId4, actorUid: fieldUid,
+    }, fieldToken);
+    const codes = (blockedSubmit.body?.missing || []).length;
+    if (blockedSubmit.status === 412 && blockedSubmit.body?.error === "capture_gate_blocked" && codes > 0) {
+      obs("phase4", "OK", `[PR 135A] field-role submitFieldSessionV1 BLOCKED by capture gate (412, ${codes} missing requirements)`);
+    } else {
+      logErr("phase4", "capture_gate_field_submit_did_not_block",
+        `status=${blockedSubmit.status} body=${JSON.stringify(blockedSubmit.body).slice(0, 240)}`);
+    }
 
-  await call("markJobCompleteV1", {
-    orgId: cleanup.orgId, incidentId: incid4, jobId: jobId4, actorUid: fieldUid,
-  }, fieldToken);
+    // Field role attempting an override → 403 override_role_required
+    const fieldOverride = await call("submitFieldSessionV1", {
+      orgId: cleanup.orgId, incidentId: incid4, sessionId: sessionId4, actorUid: fieldUid,
+      acknowledgeCaptureGap: true,
+      captureGapReason: "Field role attempt — should be denied by role gate",
+    }, fieldToken);
+    if (fieldOverride.status === 403 && fieldOverride.body?.ackError === "override_role_required") {
+      obs("phase4", "OK", `[PR 135A] field-role override DENIED (403 override_role_required)`);
+    } else {
+      logErr("phase4", "capture_gate_field_override_path",
+        `status=${fieldOverride.status} body=${JSON.stringify(fieldOverride.body).slice(0, 240)}`);
+    }
+
+    // Admin override with a too-short reason → 400 override_reason_invalid
+    const shortReason = await call("submitFieldSessionV1", {
+      orgId: cleanup.orgId, incidentId: incid4, sessionId: sessionId4, actorUid: adminUid,
+      acknowledgeCaptureGap: true,
+      captureGapReason: "too short",
+    }, adminToken);
+    if (shortReason.status === 400 && shortReason.body?.ackError === "override_reason_invalid") {
+      obs("phase4", "OK", `[PR 135A] admin override with short reason REJECTED (400 override_reason_invalid)`);
+    } else {
+      logErr("phase4", "capture_gate_short_reason",
+        `status=${shortReason.status} body=${JSON.stringify(shortReason.body).slice(0, 240)}`);
+    }
+
+    // Admin override with a valid reason → 200; recovery flow may proceed
+    const adminSubmit = await call("submitFieldSessionV1", {
+      orgId: cleanup.orgId, incidentId: incid4, sessionId: sessionId4, actorUid: adminUid,
+      acknowledgeCaptureGap: true,
+      captureGapReason: "Recovery scenario — known-incomplete intentional for rejection-loop dry-run.",
+    }, adminToken);
+    if (adminSubmit.status === 200 && adminSubmit.body?.ok === true) {
+      obs("phase4", "OK", `[PR 135A] admin override with valid reason ACCEPTED (submit proceeded)`);
+    } else {
+      logErr("phase4", "capture_gate_admin_submit_should_succeed",
+        `status=${adminSubmit.status} body=${JSON.stringify(adminSubmit.body).slice(0, 240)}`);
+    }
+  }
+
+  // markJobCompleteV1 — same gate at the job-complete boundary.
+  // Field role blocked; admin override proceeds.
+  {
+    const blockedComplete = await call("markJobCompleteV1", {
+      orgId: cleanup.orgId, incidentId: incid4, jobId: jobId4, actorUid: fieldUid,
+    }, fieldToken);
+    if (blockedComplete.status === 412 && blockedComplete.body?.error === "capture_gate_blocked") {
+      obs("phase4", "OK", `[PR 135A] field-role markJobCompleteV1 BLOCKED by capture gate (412)`);
+    } else {
+      logErr("phase4", "capture_gate_complete_did_not_block",
+        `status=${blockedComplete.status} body=${JSON.stringify(blockedComplete.body).slice(0, 240)}`);
+    }
+
+    const adminComplete = await call("markJobCompleteV1", {
+      orgId: cleanup.orgId, incidentId: incid4, jobId: jobId4, actorUid: adminUid,
+      acknowledgeCaptureGap: true,
+      captureGapReason: "Recovery scenario — same admin override as session-submit.",
+    }, adminToken);
+    if (adminComplete.status === 200 && adminComplete.body?.ok === true) {
+      obs("phase4", "OK", `[PR 135A] admin override → markJobCompleteV1 succeeded`);
+    } else {
+      logErr("phase4", "capture_gate_admin_complete_should_succeed",
+        `status=${adminComplete.status} body=${JSON.stringify(adminComplete.body).slice(0, 240)}`);
+    }
+  }
+
+  // Audit verification — both capture_gate_blocked and
+  // capture_gate_overridden rows must exist in orgs/{orgId}/audit
+  await new Promise(r => setTimeout(r, 1500));
+  const gateAudit = await db.collection(`orgs/${cleanup.orgId}/audit`)
+    .where("incidentId", "==", incid4).get();
+  const auditTypes = gateAudit.docs.map(d => d.data().type).filter(Boolean);
+  const hasBlocked = auditTypes.includes("capture_gate_blocked");
+  const hasOverridden = auditTypes.includes("capture_gate_overridden");
+  obs("phase4", hasBlocked && hasOverridden ? "OK" : "BLOCK",
+    `[PR 135A] audit subcollection: capture_gate_blocked=${hasBlocked}, capture_gate_overridden=${hasOverridden}`);
   await call("updateJobStatusV1", {
     orgId: cleanup.orgId, incidentId: incid4, jobId: jobId4, actorUid: supUid, status: "review",
   }, supToken);
