@@ -433,11 +433,12 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
       });
     }
 
-    // ── Atomic org + owner-member + billing + audit batch ───────
+    // ── Atomic org + owner-member + billing + capture-gate + audit batch ───
     const now = FieldValue.serverTimestamp();
     const batch = db.batch();
     const ownerMemberRef = db.doc(`orgs/${orgId}/members/${ownerUid}`);
     const billingStateRef = db.doc(`orgs/${orgId}/billing/state`);
+    const captureGateConfigRef = db.doc(`orgs/${orgId}/config/captureGate`);
     const auditId = `create_org_${Date.now()}`;
     const auditRef = db.doc(`orgs/${orgId}/audit/${auditId}`);
 
@@ -496,6 +497,19 @@ exports.createOrgV1 = onRequest({ cors: true }, async (req, res) => {
       entitlements: { riskDefenseModule: true },
       lastUpdatedAt: now,
       lastUpdatedBy: `createOrgV1:${callerUid}`,
+      seededBy: "createOrgV1:pilot-default",
+    });
+
+    // PEAKOPS_CAPTURE_GATE_V1 (PR 135A, 2026-06-26)
+    // New orgs default to "block" so a field tech cannot submit a
+    // session or mark a job complete until the template's required
+    // proof is captured. EXISTING orgs without this doc default to
+    // "passive_log" via _captureGate.js's readCaptureGateMode —
+    // safe-by-default, no retroactive flip.
+    batch.set(captureGateConfigRef, {
+      mode: "block",
+      setBy: `createOrgV1:${callerUid}`,
+      setAt: now,
       seededBy: "createOrgV1:pilot-default",
     });
 
