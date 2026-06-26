@@ -20,6 +20,10 @@ import {
   warnFunctionsBaseIfSuspicious,
 } from "@/lib/functionsBase";
 import { ensureDemoActor, getActorRole, getActorUid, isDemoIncident } from "@/lib/demoActor";
+// PR 135B — capture-gate UI affordance.
+import { CaptureGateNotice } from "@/components/CaptureGateNotice";
+import { captureGateShouldDisable } from "@/lib/captureGate/captureGateClient";
+import type { ReadinessCache, CaptureGateBlockResponse } from "@/lib/captureGate/types";
 import { getBestEvidenceImageRef, getThumbExpiresSec, logThumbEvent, mintEvidenceReadUrl, probeMintedThumbUrl } from "@/lib/evidence/signedThumb";
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
@@ -466,6 +470,13 @@ useEffect(() => {
   // when the value is a legacy enum key the curated UI doesn't
   // know how to render.
   const [incidentArchetype, setIncidentArchetype] = useState<string>("");
+  // PR 135B — readinessCache drives the capture-gate notice + button-disable.
+  // captureGateOverride is set by the notice when admin types a valid reason.
+  // serverMissing + serverAckError surface a post-flight 412 capture_gate_blocked.
+  const [incidentReadinessCache, setIncidentReadinessCache] = useState<ReadinessCache | null>(null);
+  const [captureGateOverride, setCaptureGateOverride] = useState<{ reason: string } | null>(null);
+  const [captureGateServerMissing, setCaptureGateServerMissing] = useState<CaptureGateBlockResponse["missing"] | null>(null);
+  const [captureGateAckError, setCaptureGateAckError] = useState<CaptureGateBlockResponse["ackError"] | null>(null);
 
   // PEAKOPS_INCIDENT_HERO_HYDRATION_V1 (tiny PR)
   // First-load gate. Without it, the meta line briefly renders
@@ -710,12 +721,48 @@ async function markArrived() {
     if (!ok) return;
     try {
       setSubmitting(true);
-      const out: any = await postJson("/api/fn/submitFieldSessionV1", { orgId: orgId,
+      // PR 135B — include capture-gate override fields when admin
+      // has typed a valid reason in the inline notice. The parent
+      // (this component) owns the button; the notice supplies the
+      // reason via onOverrideChange.
+      const submitBody: Record<string, unknown> = {
+        orgId,
         incidentId,
         sessionId: sid,
         updatedBy: "ui",
+      };
+      if (captureGateOverride?.reason) {
+        submitBody.acknowledgeCaptureGap = true;
+        submitBody.captureGapReason = captureGateOverride.reason;
+      }
+      // PR 135B — use authedFetch directly here (not postJson) so we
+      // can inspect a 412 response body. postJson throws on non-2xx
+      // and would swallow the capture_gate_blocked detail.
+      const sfRes = await authedFetch("/api/fn/submitFieldSessionV1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(submitBody),
       });
+      const sfTxt = await sfRes.text();
+      const out: any = sfTxt ? JSON.parse(sfTxt) : {};
+      // PR 135B — recognize 412 capture_gate_blocked defensively. The
+      // disabled button should usually prevent this; if it fires
+      // anyway (stale readiness cache, race), surface the missing
+      // list inline via the notice and let the admin retry with an
+      // override.
+      if (out?.error === "capture_gate_blocked") {
+        setCaptureGateServerMissing(Array.isArray(out.missing) ? out.missing : null);
+        setCaptureGateAckError(out.ackError || null);
+        // Refresh the readiness cache from the server so the notice
+        // gets accurate state on next render.
+        toast("Capture requirements not met — see notice above the button.", 3500);
+        return;
+      }
       if (!out?.ok) throw new Error(out?.error || "submit failed");
+      // Successful submit clears any stale gate state.
+      setCaptureGateServerMissing(null);
+      setCaptureGateAckError(null);
+      setCaptureGateOverride(null);
       toast("Session submitted ✓", 2200);
     } catch (e: any) {
       const msg = (e && (e.message || String(e))) || "submit failed";
@@ -1692,6 +1739,10 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
         setIncidentTitle(String(inc?.doc?.title || "").trim());
         setIncidentLocation(String(inc?.doc?.location || "").trim());
         setIncidentArchetype(String(inc?.doc?.archetype || "").trim());
+        // PR 135B — surface incident.readinessCache to the CaptureGateNotice.
+        // Same field server-side persists via _readiness.refreshReadinessCache;
+        // null when no checks have been evaluated yet (legacy incidents).
+        setIncidentReadinessCache(inc?.doc?.readinessCache || null);
         const nextOrg = String(inc?.doc?.orgId || "").trim();
         if (nextOrg) requestOrgId = nextOrg;
       }
@@ -3590,6 +3641,21 @@ useEffect(() => {
           mutate a locked record from. */}
       {!isSealedOrPostReview ? (
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/80 border-t border-white/10">
+        {/* PR 135B — capture-gate notice rendered above the dock.
+            Auto-hides when no capture-relevant requirements are
+            missing AND no post-flight 412 has fired. Admin override
+            input (when admin/owner role) flows the reason via
+            setCaptureGateOverride; the Submit button below reads
+            that state to decide whether to enable + what body
+            fields to send. */}
+        <CaptureGateNotice
+          action="submit_field_session"
+          readiness={incidentReadinessCache}
+          serverMissing={captureGateServerMissing}
+          ackError={captureGateAckError}
+          actorRole={getActorRole?.() || ""}
+          onOverrideChange={setCaptureGateOverride}
+        />
         <div className="grid grid-cols-4 gap-2">
           {/* Arrive */}
           <button
@@ -3653,16 +3719,26 @@ useEffect(() => {
               // the longer phrase on one line at 375px viewport (4-col
               // grid gives ~80px per cell).
               "w-full py-3 rounded-xl text-[11px] sm:text-sm font-semibold border transition " +
-              ((arrived && _hasEvidence && _hasNotes && !submitting && !isClosed)
+              ((arrived && _hasEvidence && _hasNotes && !submitting && !isClosed
+                && (!captureGateShouldDisable(incidentReadinessCache) || !!captureGateOverride))
                 ? "bg-emerald-600/20 border-emerald-300/25 text-emerald-50 hover:bg-emerald-600/25"
                 : "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed")
             }
-            disabled={submitting || !arrived || !_hasEvidence || !_hasNotes || isClosed}
+            disabled={
+              submitting || !arrived || !_hasEvidence || !_hasNotes || isClosed
+              // PR 135B — disable when capture-relevant requirements
+              // missing UNLESS admin has typed a valid override reason
+              // in the notice above. captureGateOverride is null until
+              // 20-500 char reason is in the textarea.
+              || (captureGateShouldDisable(incidentReadinessCache) && !captureGateOverride)
+            }
             title={
               isClosed
                 ? "Incident is closed (read-only)"
+                : captureGateShouldDisable(incidentReadinessCache) && !captureGateOverride
+                ? "Capture requirements not met — see notice above"
                 : (arrived && _hasEvidence && _hasNotes)
-                ? "Submit for approval"
+                ? (captureGateOverride ? "Submit with admin override" : "Submit for approval")
                 : "Complete Arrive + Proof + Notes first"
             }
             onClick={(e) => {
