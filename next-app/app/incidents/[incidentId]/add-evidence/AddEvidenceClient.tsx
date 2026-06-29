@@ -120,6 +120,45 @@ useEffect(() => {
   // "✓ 3 items captured" even though items.length is now 0.
   const [uploadConfirmation, setUploadConfirmation] = useState<{ count: number } | null>(null);
 
+  // PR 136D — desktop-aware primary capture button.
+  //
+  // The Phase 1 audit flagged the file-picker button as visually
+  // de-emphasized (dashed border, lighter contrast) which made the
+  // desktop sales-demo path feel like a second-class option. Field
+  // operators on mobile want the camera primary — that's unchanged.
+  // Sales demos run on desktop laptops, where the file-picker is
+  // the only practical capture path even when getUserMedia is
+  // exposed (Chrome on macOS exposes it but there's no usable rear
+  // camera).
+  //
+  // Detection uses TWO signals (not just getUserMedia per the
+  // literal spec, because desktop Chrome with a webcam exposes
+  // getUserMedia and would otherwise stay camera-primary):
+  //   - hasUserMedia      — navigator.mediaDevices.getUserMedia exists
+  //   - coarsePointer     — primary input is touch (matchMedia
+  //                         "(pointer: coarse)") → strong mobile signal
+  //
+  // Camera stays primary IFF both signals are true (mobile field
+  // surface). Anything else (desktop, no camera, no touch) → file
+  // picker becomes the primary styled button + appears first.
+  //
+  // Runtime fallback: cameraFailedAtRuntime is one-way; once a
+  // getUserMedia attempt fails, file-picker stays primary for the
+  // rest of the session (no flapping if the operator retries).
+  const [filePickerPrimaryFlag, setFilePickerPrimaryFlag] = useState(false);
+  const [cameraFailedAtRuntime, setCameraFailedAtRuntime] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hasUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const coarsePointer = (() => {
+      try { return !!window.matchMedia?.("(pointer: coarse)")?.matches; }
+      catch { return false; }
+    })();
+    // File-picker primary unless BOTH mobile signals fire.
+    setFilePickerPrimaryFlag(!(hasUserMedia && coarsePointer));
+  }, []);
+  const filePickerPrimary = filePickerPrimaryFlag || cameraFailedAtRuntime;
+
   // Env / context
   const functionsBase = getFunctionsBase();
   const fnProxyBase = "/api/fn";
@@ -414,6 +453,12 @@ useEffect(() => {
       console.error(e);
       setCameraError(e?.message || String(e));
       setCameraOpen(false);
+      // PR 136D — runtime fallback: once getUserMedia has failed
+      // (permission denied, no camera attached, etc.), swap the
+      // surface to file-picker-primary for the rest of the session
+      // so the operator doesn't keep tapping a primary that won't
+      // open. One-way flip — never reverts even on later retries.
+      setCameraFailedAtRuntime(true);
     }
   }
 
@@ -672,6 +717,18 @@ useEffect(() => {
       captureButtonLabel = `Capture: ${nextTargetLabel}`;
     } else {
       captureButtonLabel = "Capture more proof";
+    }
+  }
+
+  // PR 136D — slot-aware label for the file-picker button so the
+  // desktop sales-demo primary action carries the same operator
+  // guidance the camera button currently does on mobile.
+  let pickButtonLabel = "Upload photos";
+  if (resolvedRequirements.requiredProof.length > 0) {
+    if (nextTargetLabel) {
+      pickButtonLabel = `Upload: ${nextTargetLabel}`;
+    } else {
+      pickButtonLabel = "Upload more proof";
     }
   }
 
@@ -984,27 +1041,71 @@ useEffect(() => {
       ) : null}
 
       {/* PICK / QUEUE */}
-      {!cameraOpen && (
-        <div className="space-y-3">
-          {/* PR 88 — calm white-on-dark primary (replaced the orange-
-              to-slate gradient). PR 93 — adaptive label that names
-              the next-needed proof item when there is one. Click
-              behavior unchanged: opens the camera. The label is a
-              hint, not a constraint. */}
+      {!cameraOpen && (() => {
+        // PR 136D — extract both capture buttons into JSX consts so
+        // the parent can swap their order based on filePickerPrimary.
+        // The hidden <input> stays in a stable position (its DOM
+        // location doesn't affect fileInputRef.current behavior).
+        const inputsBusy = busy || sessionBusy || !sessionId;
+        const primaryClass =
+          "w-full py-4 rounded-xl text-[14px] font-semibold transition " +
+          (inputsBusy
+            ? "bg-white/10 text-gray-400 cursor-not-allowed"
+            : "bg-white text-black hover:bg-white/90");
+        // Secondary style: less visual weight than primary, more than
+        // the legacy dashed treatment. Matches the "secondary action"
+        // pattern used elsewhere in the operator dock.
+        const secondaryClass =
+          "w-full py-4 rounded-xl text-[14px] font-semibold border transition " +
+          (inputsBusy
+            ? "bg-white/5 border-white/10 text-gray-500 cursor-not-allowed"
+            : "bg-white/8 border-white/15 text-gray-200 hover:bg-white/12");
+
+        const cameraButtonJSX = (
           <button
-            className={
-              "w-full py-4 rounded-xl text-[14px] font-semibold transition " +
-              (busy || sessionBusy || !sessionId
-                ? "bg-white/10 text-gray-400 cursor-not-allowed"
-                : "bg-white text-black hover:bg-white/90")
-            }
+            key="camera-btn"
+            data-testid="capture-camera-button"
+            data-primary={!filePickerPrimary}
+            className={filePickerPrimary ? secondaryClass : primaryClass}
             onClick={selectSlotAndOpen}
-            disabled={busy || sessionBusy || !sessionId}
+            disabled={inputsBusy}
           >
             {captureButtonLabel}
           </button>
+        );
 
+        const filePickerButtonJSX = (
+          <button
+            key="pick-btn"
+            data-testid="capture-pick-button"
+            data-primary={filePickerPrimary}
+            type="button"
+            className={filePickerPrimary ? primaryClass : secondaryClass}
+            disabled={inputsBusy}
+            onClick={() => {
+              if (process.env.NODE_ENV !== "production") {
+                console.warn("[add-evidence]", {
+                  step: "click",
+                  disabled: inputsBusy,
+                  hasInput: !!fileInputRef.current,
+                  isUserGesture: true,
+                  ts: Date.now(),
+                });
+              }
+              if (inputsBusy) return;
+              fileInputRef.current?.click();
+              if (process.env.NODE_ENV !== "production") {
+                console.warn("[add-evidence]", { step: "input_click", ts: Date.now() });
+              }
+            }}
+          >
+            {filePickerPrimary ? pickButtonLabel : "Pick multiple photos/videos"}
+          </button>
+        );
+
+        const hiddenInputJSX = (
           <input
+            key="pick-input"
             id="pick"
             ref={fileInputRef}
             type="file"
@@ -1017,33 +1118,34 @@ useEffect(() => {
               addPickedFiles(e.target.files);
             }}
             className="hidden"
-            disabled={busy || sessionBusy || !sessionId}
+            disabled={inputsBusy}
           />
-          <button
-            type="button"
-            className="w-full py-5 flex items-center justify-center border-2 border-dashed border-white/20 rounded-xl text-gray-200 active:border-white/40"
-            disabled={busy || sessionBusy || !sessionId}
-            onClick={() => {
-              if (process.env.NODE_ENV !== "production") {
-                console.warn("[add-evidence]", {
-                  step: "click",
-                  disabled: busy || sessionBusy || !sessionId,
-                  hasInput: !!fileInputRef.current,
-                  isUserGesture: true,
-                  ts: Date.now(),
-                });
-              }
-              if (busy || sessionBusy || !sessionId) return;
-              fileInputRef.current?.click();
-              if (process.env.NODE_ENV !== "production") {
-                console.warn("[add-evidence]", { step: "input_click", ts: Date.now() });
-              }
-            }}
-          >
-            Pick multiple photos/videos
-          </button>
+        );
 
-          {items.length ? (
+        return (
+          <div data-testid="capture-buttons-row" data-file-picker-primary={filePickerPrimary} className="space-y-3">
+            {/* PR 136D — order swap. Primary action sits at the top
+                (consistent with the operator dock pattern: top action
+                is the first thing the eye lands on). Desktop demo →
+                file-picker is the primary so the buyer sees the
+                expected "click to upload" affordance front-and-center.
+                Mobile field path → camera primary (unchanged from
+                pre-136D behavior). */}
+            {filePickerPrimary ? (
+              <>
+                {filePickerButtonJSX}
+                {hiddenInputJSX}
+                {cameraButtonJSX}
+              </>
+            ) : (
+              <>
+                {cameraButtonJSX}
+                {hiddenInputJSX}
+                {filePickerButtonJSX}
+              </>
+            )}
+
+            {items.length ? (
             <div className="rounded-xl border border-white/10 bg-white/5 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm text-gray-200">
@@ -1112,7 +1214,8 @@ useEffect(() => {
             </p>
           )}
         </div>
-      )}
+        );
+      })()}
       </div>
     </main>
   );
