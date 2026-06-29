@@ -837,20 +837,59 @@ useEffect(() => {
           {/* PR 94b — Active proof-slot banner. Renders only when the
               operator entered the camera via a "Capture: X" button.
               Communicates that the next photo(s) will be attached to
-              this specific requirement. */}
-          {currentSlot ? (
-            <div className="rounded-xl border border-amber-300/25 bg-amber-500/[0.06] px-4 py-3">
-              <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-200/70">
-                Capturing for
+              this specific requirement.
+
+              PR 136A — Augmented with a per-slot capture counter so
+              the operator gets immediate feedback when a photo
+              registers. The queue + checklist below are hidden in
+              camera mode (the !cameraOpen guard below); without this
+              counter, the operator can't see that their taps are
+              actually recording captures. Counts items in the local
+              queue whose slot matches the currentSlot's key. */}
+          {currentSlot ? (() => {
+            const slotItemCount = items.filter(
+              (it) => it.slot?.requirementKey === currentSlot.requirementKey
+            ).length;
+            return (
+              <div data-testid="capture-mode-active-slot-banner" className="rounded-xl border border-amber-300/25 bg-amber-500/[0.06] px-4 py-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] uppercase tracking-[0.14em] font-semibold text-amber-200/70">
+                      Capturing for
+                    </div>
+                    <div className="text-[14px] font-semibold text-amber-50 mt-0.5">
+                      {currentSlot.requirementLabel}
+                    </div>
+                  </div>
+                  <div
+                    data-testid="capture-mode-slot-counter"
+                    className={
+                      "shrink-0 text-[11px] font-semibold uppercase tracking-[0.10em] rounded-full border px-2 py-0.5 " +
+                      (slotItemCount > 0
+                        ? "border-emerald-300/40 bg-emerald-500/15 text-emerald-100"
+                        : "border-white/15 bg-white/[0.04] text-gray-300")
+                    }
+                    title="Photos captured for this requirement in this session"
+                  >
+                    {slotItemCount === 0
+                      ? "0 captured"
+                      : `${slotItemCount} captured ✓`}
+                  </div>
+                </div>
+                <div className="text-[11px] text-gray-400 mt-1">
+                  Multiple photos in this session will be attached to this requirement.
+                </div>
               </div>
-              <div className="text-[14px] font-semibold text-amber-50 mt-0.5">
-                {currentSlot.requirementLabel}
-              </div>
-              <div className="text-[11px] text-gray-400 mt-1">
-                Multiple photos in this session will be attached to this requirement.
-              </div>
-            </div>
-          ) : null}
+            );
+          })() : null}
+          {/* PR 136A — Above-video hint. Disambiguates the camera UX
+              for first-time non-technical operators who otherwise
+              read "Done" as "I'm finished entirely" and abandon the
+              page before uploading. */}
+          <p data-testid="capture-mode-hint" className="text-[11px] text-gray-400 leading-relaxed">
+            Tap <span className="text-white font-medium">Capture photo</span> for each shot.
+            Tap <span className="text-white font-medium">Close camera</span> when finished — your photos stay queued for upload below.
+          </p>
           <video
             ref={videoRef}
             playsInline
@@ -866,12 +905,17 @@ useEffect(() => {
             >
               Capture Photo
             </button>
+            {/* PR 136A — "Done" was ambiguous (read by first-timers as
+                "I'm finished with the whole session") and led some
+                operators to abandon the page before uploading.
+                "Close camera" makes the action's scope explicit. */}
             <button
+              data-testid="capture-mode-close-camera"
               className="w-full py-4 bg-gray-800 active:bg-gray-700 rounded-xl font-semibold"
               onClick={closeCamera}
               disabled={busy}
             >
-              Done
+              Close camera
             </button>
           </div>
           {cameraError ? <div className="text-xs text-red-300">Camera error: {cameraError}</div> : null}
