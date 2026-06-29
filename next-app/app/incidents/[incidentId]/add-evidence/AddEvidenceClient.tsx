@@ -112,6 +112,13 @@ useEffect(() => {
   // before the redirect fires.
   const [refetchTick, setRefetchTick] = useState(0);
   const [sealedAfterMutation, setSealedAfterMutation] = useState(false);
+  // PR 136B — post-upload confirmation panel state. Replaces the
+  // prior 350ms auto-redirect (which gave the operator no time to
+  // notice that their proof had been secured nor any guidance on
+  // what to do next). Captured count is frozen at upload-success
+  // time before the queue clear, so the panel reads e.g.
+  // "✓ 3 items captured" even though items.length is now 0.
+  const [uploadConfirmation, setUploadConfirmation] = useState<{ count: number } | null>(null);
 
   // Env / context
   const functionsBase = getFunctionsBase();
@@ -448,6 +455,10 @@ useEffect(() => {
         // closes the camera and the live currentSlot resets.
         const slot = currentSlot || undefined;
         setItems((prev) => [{ id, file: f, url, slot }, ...prev]);
+        // PR 136B — dismiss the post-upload confirmation panel as
+        // soon as a new capture activity starts; the panel is for
+        // the just-completed upload, not the next one.
+        setUploadConfirmation(null);
         // keep camera open for rapid multi-capture
       },
       "image/jpeg",
@@ -476,6 +487,8 @@ useEffect(() => {
       next.push({ id: makeId(), file: f, url, slot });
     }
     setItems((prev) => [...next, ...prev]);
+    // PR 136B — dismiss confirmation panel; new capture activity starts here.
+    setUploadConfirmation(null);
   }
 
   function removeItem(id: string) {
@@ -526,6 +539,9 @@ useEffect(() => {
         setStatus(`Uploading ${items.length - i}/${items.length}…`);
         await uploadOne(it);
       }
+      // PR 136B — capture the count BEFORE the queue clear so the
+      // confirmation panel can show "✓ N items captured" honestly.
+      const uploadedCount = items.length;
       setStatus("Secured ✔️");
       // Clear queue
       setItems((prev) => {
@@ -534,16 +550,16 @@ useEffect(() => {
       });
       // PR 96 — Bump refetchTick so the listEvidenceLocker effect
       // re-runs and the checklist reflects the proofs we just
-      // persisted. Fires before the redirect timeout so the brief
-      // "Secured ✔️" moment shows the updated counter, and so the
-      // satisfaction state is correct if the redirect is interrupted
-      // (user taps back, etc.).
+      // persisted. Same as before — the satisfaction state is fresh
+      // by the time the operator sees the confirmation panel.
       setRefetchTick((t) => t + 1);
-      // Back to incident. Preserve orgId so the missing-orgId guard
-      // (PR #24) on the incident page doesn't intercept this navigation
-      // and render "Incident unavailable" after a successful upload.
-      const qs = orgId ? `?orgId=${encodeURIComponent(orgId)}` : "";
-      setTimeout(() => router.push(`/incidents/${incidentId}${qs}`), 350);
+      // PR 136B — replace the prior 350ms auto-redirect with a
+      // persistent confirmation panel. The operator chooses what
+      // happens next: "Next: write notes →" or "Back to incident".
+      // No auto-redirect — non-technical first-timers were missing
+      // the secured-✓ flash and the lack of guidance to write notes
+      // was Gap #3 of the Phase 1 audit.
+      setUploadConfirmation({ count: uploadedCount });
     } catch (e: any) {
       console.error("UPLOAD FAIL", e);
       const m = (e && (e.message || e.toString())) || String(e);
@@ -921,6 +937,51 @@ useEffect(() => {
           {cameraError ? <div className="text-xs text-red-300">Camera error: {cameraError}</div> : null}
         </div>
       )}
+
+      {/* PR 136B — Post-upload confirmation panel. Renders only when
+          uploadConfirmation is set (i.e. a successful uploadAll just
+          completed). Replaces the prior 350ms auto-redirect, which
+          flashed "Secured ✔️" too briefly for non-technical operators
+          to register success and gave no next-step guidance toward
+          notes. Operator chooses what's next; we never auto-navigate
+          away from a success state. */}
+      {!cameraOpen && uploadConfirmation ? (
+        <section
+          data-testid="upload-confirmation-panel"
+          className="rounded-2xl border border-emerald-400/30 bg-emerald-500/[0.07] p-4 space-y-3"
+        >
+          <div className="flex items-start gap-3">
+            <span aria-hidden className="text-emerald-300 text-[20px] leading-none mt-0.5">✓</span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-semibold text-emerald-50">
+                {uploadConfirmation.count} {uploadConfirmation.count === 1 ? "item" : "items"} captured and secured
+              </div>
+              <p className="text-[12px] text-emerald-200/85 mt-1 leading-relaxed">
+                Your proof is signed and stored. The required-proof checklist above reflects what&apos;s on file.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+            <a
+              data-testid="upload-confirmation-next-notes"
+              href={`/incidents/${incidentId}/notes${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`}
+              className="block w-full py-3 rounded-xl text-[13px] font-semibold text-black bg-white hover:bg-white/90 text-center transition"
+            >
+              Next: write notes →
+            </a>
+            <a
+              data-testid="upload-confirmation-back-incident"
+              href={`/incidents/${incidentId}${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`}
+              className="block w-full py-3 rounded-xl text-[13px] font-semibold text-white border border-white/15 bg-white/[0.04] hover:bg-white/[0.10] text-center transition"
+            >
+              Back to incident
+            </a>
+          </div>
+          <p className="text-[10px] text-emerald-200/60 italic">
+            Or capture more proof below — your queue is empty and ready for additional photos.
+          </p>
+        </section>
+      ) : null}
 
       {/* PICK / QUEUE */}
       {!cameraOpen && (
