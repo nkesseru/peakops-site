@@ -9,6 +9,10 @@ import { incidentStatusLabel, incidentStatusPill, normalizeIncidentStatusShared 
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
 import { useAuth } from "@/hooks/useAuth";
+// PR 135B — capture-gate UI affordance.
+import { CaptureGateNotice } from "@/components/CaptureGateNotice";
+import { captureGateShouldDisable } from "@/lib/captureGate/captureGateClient";
+import type { CaptureGateBlockResponse } from "@/lib/captureGate/types";
 
 type JobDoc = {
   id: string;
@@ -144,6 +148,12 @@ export default function JobDetailClient({
   const [loading, setLoading] = useState(false);
   const [savingNotes, setSavingNotes] = useState(false);
   const [markingComplete, setMarkingComplete] = useState(false);
+  // PR 135B — capture-gate state. The incident's readinessCache is
+  // surfaced via the existing `incident` state set by load(); these
+  // three fields drive the inline notice + override flow.
+  const [captureGateOverride, setCaptureGateOverride] = useState<{ reason: string } | null>(null);
+  const [captureGateServerMissing, setCaptureGateServerMissing] = useState<CaptureGateBlockResponse["missing"] | null>(null);
+  const [captureGateAckError, setCaptureGateAckError] = useState<CaptureGateBlockResponse["ackError"] | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
   const [err, setErr] = useState("");
@@ -462,7 +472,11 @@ export default function JobDetailClient({
     if (isJobSealed) return;
     try {
       setMarkingComplete(true);
-      await postJson(`/api/fn/markJobCompleteV1`, {
+      // PR 135B — include capture-gate override fields when admin
+      // has typed a valid reason in the inline notice above the
+      // button. captureGateOverride is null until the reason hits
+      // the 20-500 char floor.
+      const completeBody: Record<string, unknown> = {
         orgId,
         incidentId,
         jobId,
@@ -470,7 +484,35 @@ export default function JobDetailClient({
         actorUid: deriveActorUid(authUid),
         actorRole: deriveActorRole(authRole),
         actorEmail: deriveActorEmail(authEmail),
+      };
+      if (captureGateOverride?.reason) {
+        completeBody.acknowledgeCaptureGap = true;
+        completeBody.captureGapReason = captureGateOverride.reason;
+      }
+      // PR 135B — direct authedFetch so we can inspect a 412
+      // capture_gate_blocked body; postJson throws on non-2xx and
+      // would swallow the missing[] payload.
+      const mcRes = await authedFetch(`/api/fn/markJobCompleteV1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(completeBody),
       });
+      const mcTxt = await mcRes.text();
+      const out: any = mcTxt ? JSON.parse(mcTxt) : {};
+      // PR 135B — defensive 412 handler. The disabled button should
+      // usually prevent this; if it slips through (stale cache,
+      // race), surface the server's missing list and ackError so
+      // the notice updates inline.
+      if (out && out.error === "capture_gate_blocked") {
+        setCaptureGateServerMissing(Array.isArray(out.missing) ? out.missing : null);
+        setCaptureGateAckError(out.ackError || null);
+        await refresh();
+        return;
+      }
+      // Successful complete clears any stale gate state.
+      setCaptureGateServerMissing(null);
+      setCaptureGateAckError(null);
+      setCaptureGateOverride(null);
       await refresh();
     } catch (e: any) {
       const m = String(e?.message || e);
@@ -877,6 +919,18 @@ export default function JobDetailClient({
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="Job notes"
               />
+              {/* PR 135B — capture-gate notice above the Mark Complete
+                  button. Reads the incident's readinessCache from the
+                  loaded incident doc. Admin override input surfaces
+                  only when actorRole is owner/admin. */}
+              <CaptureGateNotice
+                action="mark_job_complete"
+                readiness={(incident as any)?.readinessCache || null}
+                serverMissing={captureGateServerMissing}
+                ackError={captureGateAckError}
+                actorRole={deriveActorRole(authRole)}
+                onOverrideChange={setCaptureGateOverride}
+              />
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -890,9 +944,20 @@ export default function JobDetailClient({
                   type="button"
                   className="px-3 py-1.5 rounded border border-emerald-300/30 bg-emerald-600/20 text-sm disabled:opacity-50"
                   onClick={markComplete}
-                  disabled={markingComplete || loading || !canMarkComplete}
+                  disabled={
+                    markingComplete || loading || !canMarkComplete
+                    // PR 135B — disable when capture-relevant
+                    // requirements missing UNLESS admin has typed a
+                    // valid override reason in the notice above.
+                    || (captureGateShouldDisable((incident as any)?.readinessCache || null) && !captureGateOverride)
+                  }
+                  title={
+                    captureGateShouldDisable((incident as any)?.readinessCache || null) && !captureGateOverride
+                      ? "Capture requirements not met — see notice above"
+                      : (captureGateOverride ? "Mark complete with admin override" : "Mark this job complete")
+                  }
                 >
-                  {markingComplete ? "Completing..." : "Mark Complete"}
+                  {markingComplete ? "Completing..." : (captureGateOverride ? "Mark Complete (override)" : "Mark Complete")}
                 </button>
               </div>
             </>
