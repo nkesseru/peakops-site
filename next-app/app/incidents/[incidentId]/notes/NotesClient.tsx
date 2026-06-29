@@ -23,6 +23,13 @@ export default function NotesClient({ incidentId, orgId }: { incidentId: string;
   const [siteNotes, setSiteNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string>("");
+  // PR 136B — persistent "Notes saved ✓ Ready to submit?" panel.
+  // Replaces the prior 1800ms transient toast which non-technical
+  // operators were missing entirely, leaving them stranded with no
+  // next-step guidance after Save. The panel offers a one-tap
+  // return to the incident page (where the Submit button lives in
+  // the bottom dock).
+  const [savedReadyToSubmit, setSavedReadyToSubmit] = useState(false);
   // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
   // incidentStatus drives the pre-emptive sealed UI; sealedAfterMutation
   // covers the reactive case where the record gets sealed mid-edit and
@@ -123,7 +130,6 @@ setMsg("");
       try {
         localStorage.setItem("peakops_notes_saved_" + String(incidentId), String(Date.now()));
       } catch {}
-      setMsg("Saved ✓")
       // OPTIMISTIC NOTES_SAVED timeline event
       try {
         const evt = {
@@ -134,8 +140,13 @@ setMsg("");
         };
         (window as any).__PEAKOPS_ADD_TIMELINE__?.(evt);
       } catch {}
-;
-      setTimeout(() => setMsg(""), 1800);
+      // PR 136B — switch from a 1800ms transient "Saved ✓" toast to a
+      // persistent panel with a clear next-step CTA back to the
+      // incident page (where Submit lives in the bottom dock).
+      // The msg row is cleared so it doesn't collide visually with
+      // the new banner.
+      setMsg("");
+      setSavedReadyToSubmit(true);
     } catch (e: any) {
       const m = (e && (e.message || String(e))) || "save failed";
       // PEAKOPS_SEALED_RECORD_UX_V1 (2026-05-18, PR 42)
@@ -218,7 +229,7 @@ setMsg("");
           }
           placeholder="What happened? Key decisions, summary, impact..."
           value={incidentNotes}
-          onChange={(e) => setIncidentNotes(e.target.value)}
+          onChange={(e) => { setIncidentNotes(e.target.value); if (savedReadyToSubmit) setSavedReadyToSubmit(false); }}
           readOnly={incidentStatus === "closed" || sealedAfterMutation}
           aria-readonly={incidentStatus === "closed" || sealedAfterMutation}
         />
@@ -233,7 +244,7 @@ setMsg("");
           }
           placeholder="Access info, hazards, panel location, gate codes, customer instructions..."
           value={siteNotes}
-          onChange={(e) => setSiteNotes(e.target.value)}
+          onChange={(e) => { setSiteNotes(e.target.value); if (savedReadyToSubmit) setSavedReadyToSubmit(false); }}
           readOnly={incidentStatus === "closed" || sealedAfterMutation}
           aria-readonly={incidentStatus === "closed" || sealedAfterMutation}
         />
@@ -254,6 +265,50 @@ setMsg("");
           </button>
         )}
       </div>
+
+      {/* PR 136B — persistent post-save "ready to submit?" panel.
+          Replaces the prior 1800ms transient toast that non-technical
+          first-timers were missing entirely. Surfaces a one-tap
+          return to the incident page (where Submit for approval
+          lives in the bottom dock). Auto-dismisses on edit so the
+          panel doesn't go stale while the operator is typing fresh
+          changes. Render guarded against the sealed state because
+          a sealed record can't be submitted anyway. */}
+      {savedReadyToSubmit && !(incidentStatus === "closed" || sealedAfterMutation) ? (
+        <section
+          data-testid="notes-saved-ready-panel"
+          className="rounded-2xl border border-emerald-400/30 bg-emerald-500/[0.07] p-4 mt-3 space-y-3"
+        >
+          <div className="flex items-start gap-3">
+            <span aria-hidden className="text-emerald-300 text-[20px] leading-none mt-0.5">✓</span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-semibold text-emerald-50">
+                Notes saved — ready to submit?
+              </div>
+              <p className="text-[12px] text-emerald-200/85 mt-1 leading-relaxed">
+                Your notes are recorded. The next step is the Submit for approval button on the incident page.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+            <a
+              data-testid="notes-saved-return-button"
+              href={`/incidents/${incidentId}${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`}
+              className="block w-full py-3 rounded-xl text-[13px] font-semibold text-black bg-white hover:bg-white/90 text-center transition"
+            >
+              Return to incident → submit
+            </a>
+            <button
+              type="button"
+              data-testid="notes-saved-dismiss"
+              onClick={() => setSavedReadyToSubmit(false)}
+              className="block w-full py-3 rounded-xl text-[13px] font-semibold text-white border border-white/15 bg-white/[0.04] hover:bg-white/[0.10] text-center transition"
+            >
+              Keep editing notes
+            </button>
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }
