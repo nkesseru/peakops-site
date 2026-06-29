@@ -3672,11 +3672,15 @@ useEffect(() => {
             Arrive
           </button>
 
-          {/* Evidence */}
+          {/* Evidence — PR 85 dock vocabulary; PR 136C relabel
+              "Proof" → "Capture proof" so a first-time operator
+              reading the dock sees a verb-led label that matches
+              the NextBestAction CTA above. */}
           <button
+            data-testid="dock-button-capture-proof"
             type="button"
             className={
-              "py-3 rounded-xl text-sm font-semibold border transition " +
+              "py-3 rounded-xl text-[11px] sm:text-sm font-semibold border transition " +
               (_hasEvidence
                 ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
                 : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
@@ -3688,26 +3692,45 @@ useEffect(() => {
                 ? "Incident is closed (read-only)"
                 : (_hasEvidence ? "Proof captured (done)" : "Go to proof capture")
             }>
-            {/* PR 85 — dock button reframed to proof vocabulary. */}
-            Proof
+            Capture proof
           </button>
 
-          {/* Notes */}
+          {/* Notes — PR 136C: dim + disable until proof is captured.
+              Field tech who taps Notes first lands on an empty
+              textarea with no orientation; making it a soft
+              prerequisite (proof first → notes second → submit
+              third) matches the NextBestAction sequence the
+              cockpit already surfaces. Explanatory title tells the
+              tech WHY the button is dimmed. Also relabeled "Notes"
+              → "Write notes" for verb-led consistency with the
+              other dock entries. */}
           <button
+            data-testid="dock-button-write-notes"
             type="button"
             className={
-              "py-3 rounded-xl text-sm font-semibold border transition " +
+              "py-3 rounded-xl text-[11px] sm:text-sm font-semibold border transition " +
               (_hasNotes
                 ? "bg-indigo-500/14 border-indigo-300/25 text-indigo-100"
-                : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
+                : (!_hasEvidence || isClosed)
+                  ? "bg-white/5 border-white/10 text-gray-400 cursor-not-allowed"
+                  : "bg-white/6 border-white/12 text-gray-200 hover:bg-white/10")
             }
             onClick={() => { try {
               const o = String(sp?.get("orgId") || "").trim();
               const qs = o ? `?orgId=${encodeURIComponent(o)}` : "";
               router.push(`/incidents/${incidentId}/notes${qs}`);
             } catch {} }}
-            title={_hasNotes ? "Notes saved (done)" : "Write notes"}>
-            Notes
+            disabled={isClosed || (!_hasEvidence && !_hasNotes)}
+            title={
+              isClosed
+                ? "Incident is closed (read-only)"
+                : _hasNotes
+                  ? "Notes saved (done)"
+                  : !_hasEvidence
+                    ? "Capture proof first — notes come next"
+                    : "Write notes"
+            }>
+            Write notes
           </button>
 
           {/* Submit */}
