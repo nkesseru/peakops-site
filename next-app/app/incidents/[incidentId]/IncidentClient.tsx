@@ -458,6 +458,20 @@ useEffect(() => {
   const [closingIncident, setClosingIncident] = useState(false);
   const [incidentStatus, setIncidentStatus] = useState<string>("open");
   const [incidentUpdatedAtSec, setIncidentUpdatedAtSec] = useState<number | null>(null);
+  // PR pr-recovery-A — Recovery-state UI lock relaxation.
+  // When the incident is in customer_rejected, the static
+  // isFieldWorkLocked() returns true (incident is past field flow). But
+  // a field tech with an OPEN recovery action assigned on this incident
+  // is SUPPOSED to be able to capture evidence to satisfy the gap.
+  // `actorHasOpenRecoveryAction` is fetched only while status is
+  // customer_rejected (no extra traffic on normal incident views), and
+  // is consumed by the render-scoped `fieldWorkLocked` const that wraps
+  // isFieldWorkLocked. Loading state is null → still locked (safe
+  // default — no UI flash of capture controls before we know).
+  // This is a UI-only relaxation. _captureGate.js (server-side) is
+  // unchanged and still enforces required-proof gating on submission.
+  const [actorHasOpenRecoveryAction, setActorHasOpenRecoveryAction] = useState<boolean | null>(null);
+  const [recoveryActionRefreshTick, setRecoveryActionRefreshTick] = useState(0);
   // PEAKOPS_INCIDENT_HERO_CONVERGENCE_V1 (PR 56)
   // Title + location lifted from getIncidentV1's response so the
   // header can render the Summary-style identity hero. Both are
@@ -802,6 +816,51 @@ async function markArrived() {
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs, incidentId]);
+
+  // PR pr-recovery-A — fetch "does the current actor have an OPEN
+  // recovery action on this incident?" only while status is
+  // customer_rejected. The shape mirrors RecoveryWorkSection's fetch
+  // (same endpoint, same actor sniff) so we get visibility-correct
+  // results without duplicating the server filtering logic.
+  // - !customer_rejected → null (no fetch, no relaxation)
+  // - fetch in-flight    → null (still locked, no UI flash)
+  // - fetch error        → false (stay locked, safer than racing open)
+  // - openWork[] empty   → false (no assigned action → no relaxation)
+  // - openWork[] populated → true (at least one action visible to actor)
+  useEffect(() => {
+    const status = String(incidentStatus || "").toLowerCase();
+    if (status !== "customer_rejected") {
+      setActorHasOpenRecoveryAction(null);
+      return;
+    }
+    const orgIdStr = String(orgId || "").trim();
+    const incidentIdStr = String(incidentId || "").trim();
+    let uid = "";
+    try { uid = String(getActorUid() || "").trim(); } catch {}
+    if (!orgIdStr || !incidentIdStr || !uid) {
+      setActorHasOpenRecoveryAction(null);
+      return;
+    }
+    let cancelled = false;
+    setActorHasOpenRecoveryAction(null);
+    (async () => {
+      try {
+        const url =
+          `/api/fn/listRecoveryActionsForIncidentV1` +
+          `?orgId=${encodeURIComponent(orgIdStr)}` +
+          `&incidentId=${encodeURIComponent(incidentIdStr)}` +
+          `&actorUid=${encodeURIComponent(uid)}`;
+        const res = await authedFetch(url, { cache: "no-store" });
+        const out: any = await res.json().catch(() => ({ ok: false }));
+        if (cancelled) return;
+        const items = Array.isArray(out?.openWork) ? out.openWork : [];
+        setActorHasOpenRecoveryAction(res.ok && out?.ok ? items.length > 0 : false);
+      } catch {
+        if (!cancelled) setActorHasOpenRecoveryAction(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId, incidentId, incidentStatus, recoveryActionRefreshTick]);
 
 
 const [activeJobId, setActiveJobId] = useState<string>("");
@@ -1295,6 +1354,26 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   const actorUid = () => getActorUid();
   const actorRole = () => getActorRole();
   const actorEmail = () => String(localStorage.getItem("peakops_email") || "").trim();
+
+  // PR pr-recovery-A — effective UI lock predicate.
+  // isFieldWorkLocked() (line 357) remains the STATIC baseline of
+  // "this status forbids field work." For customer_rejected we
+  // additionally consider whether the actor has an open recovery
+  // action on this incident — if they do, capture/jobs/notes are
+  // unlocked so the recovery loop can run end-to-end.
+  // - All other locked states (closed / customer_accepted /
+  //   submitted_to_customer) stay locked unconditionally.
+  // - Loading (actorHasOpenRecoveryAction === null) → keep locked.
+  // - This is UI ONLY. Server-side mutations remain gated by
+  //   _captureGate.js (submission requires required-proof) and the
+  //   per-callable authz checks. We are not weakening that surface.
+  const fieldWorkLocked: boolean = (() => {
+    const baseline = isFieldWorkLocked(incidentStatus);
+    if (!baseline) return false;
+    const s = String(incidentStatus || "").toLowerCase();
+    if (s !== "customer_rejected") return baseline;
+    return actorHasOpenRecoveryAction === true ? false : baseline;
+  })();
   const functionsBaseIsLocal = useMemo(() => {
     try {
       const u = new URL(String(functionsBase || ""));
@@ -1367,7 +1446,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function createJob() {
-    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
+    if (fieldWorkLocked) return toast("This record is locked from field work.", 2600);
     const title = String(jobTitle || "").trim();
     if (!title) return toast("Job title is required.", 2200);
     try {
@@ -1400,7 +1479,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function setJobStatus(jobId: string, status: JobStatus) {
-    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
+    if (fieldWorkLocked) return toast("This record is locked from field work.", 2600);
     try {
       setJobsBusy(true);
       const out: any = await postJson(`/api/fn/updateJobStatusV1`, {
@@ -1440,7 +1519,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignJobOrg(jobId: string, assignedOrgIdRaw: string) {
-    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
+    if (fieldWorkLocked) return toast("This record is locked from field work.", 2600);
     const assignedOrgId = String(assignedOrgIdRaw || "").trim();
     try {
       setJobsBusy(true);
@@ -1511,7 +1590,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function markCurrentJobComplete() {
-    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
+    if (fieldWorkLocked) return toast("This record is locked from field work.", 2600);
     const jid = String(currentJobId || "").trim();
     if (!jid) return toast("Select My job first.", 2200);
     const completeOk = window.confirm("Mark complete?");
@@ -1520,7 +1599,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignAllUnassignedToCurrentJob() {
-    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
+    if (fieldWorkLocked) return toast("This record is locked from field work.", 2600);
     const jid = String(currentJobId || "").trim();
     if (!jid) return toast("Select My job first.", 2200);
 
@@ -1586,7 +1665,7 @@ const [contextLockId, setContextLockId] = useState<string | null>(null);
   }
 
   async function assignEvidenceJob(evidenceId: string, jobIdRaw: string) {
-    if (isFieldWorkLocked(incidentStatus)) return toast("This record is locked from field work.", 2600);
+    if (fieldWorkLocked) return toast("This record is locked from field work.", 2600);
     const nextJobId = String(jobIdRaw || "").trim();
     setEvidence((prev: any[]) =>
       (Array.isArray(prev) ? prev : []).map((ev: any) =>
@@ -2862,7 +2941,7 @@ useEffect(() => {
               {/* Add proof routes into the field-evidence upload flow.
                   Hidden on closed and post-review records — no proof
                   mutation should be reachable from a locked record. */}
-              {!isFieldWorkLocked(incidentStatus) ? (
+              {!fieldWorkLocked ? (
                 <button
                   type="button"
                   className="px-3 py-2 rounded-xl border text-sm transition bg-white/6 border-white/10 hover:bg-white/10 text-gray-100"
@@ -2902,7 +2981,7 @@ useEffect(() => {
           banner dismisses without leaving the record. Open-state
           only — sealed records have their own dossier panel and
           don't need a "first step" affordance. */}
-      {!isFieldWorkLocked(incidentStatus) && sp?.get("next") === "capture-proof" ? (
+      {!fieldWorkLocked && sp?.get("next") === "capture-proof" ? (
         <div className="px-4 pt-3">
           <div className="rounded-2xl border border-amber-300/25 bg-amber-500/[0.05] px-4 py-4 sm:px-5 sm:py-5 space-y-3">
             <div className="text-[10px] uppercase tracking-[0.18em] font-semibold text-amber-200/70">
@@ -3046,7 +3125,7 @@ useEffect(() => {
     customer_rejected) — the "Capture proof" / "Add proof" prompt
     surfaces an active mutation CTA, which is misleading once the
     record is locked from field work. */}
-        {activeTab === "overview" && !isFieldWorkLocked(incidentStatus) ? (
+        {activeTab === "overview" && !fieldWorkLocked ? (
 		<NextBestAction
 	  arrived={arrived}
 	  hasSession={_hasSession}
@@ -3179,7 +3258,18 @@ useEffect(() => {
           <RecoveryWorkSection
             orgId={orgId}
             incidentId={incidentId}
-            onWorkChanged={refresh}
+            onWorkChanged={() => {
+              // PR pr-recovery-A — also bump the recovery-action
+              // refresh tick so `actorHasOpenRecoveryAction`
+              // re-fetches. When the tech marks their last open
+              // action done, the relaxation should fall away on
+              // the next render — refresh() alone won't trigger
+              // that re-fetch because incidentStatus may not
+              // have changed (the case-level status flip lives
+              // in a separate Firestore collection).
+              setRecoveryActionRefreshTick((n) => n + 1);
+              refresh();
+            }}
           />
         )}
 
@@ -3337,7 +3427,7 @@ useEffect(() => {
             for choosing which job a future upload will attach to. On
             sealed records no new evidence can attach, so the section
             has no purpose. The Jobs tab keeps the job list itself. */}
-        {activeTab === "jobs" && !isFieldWorkLocked(incidentStatus) ? (
+        {activeTab === "jobs" && !fieldWorkLocked ? (
         <section className="rounded-2xl bg-white/[0.04] border border-white/[0.08] p-4">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs uppercase tracking-[0.16em] text-gray-400">My Job</div>
@@ -3445,7 +3535,7 @@ useEffect(() => {
             evidence.jobId. On sealed records evidence linkage is
             immutable. Hidden when isClosed. The Evidence gallery
             above this section stays visible as a read-only display. */}
-        {activeTab === "evidence" && !isFieldWorkLocked(incidentStatus) ? (
+        {activeTab === "evidence" && !fieldWorkLocked ? (
         <section ref={evidenceMappingSectionRef} className="rounded-2xl bg-white/5 border border-white/10 p-4">
           <div className="flex items-center justify-between gap-2">
             <div id="evidence-mapping" className="text-xs uppercase tracking-wide text-gray-400">Evidence to Job Mapping</div>
@@ -3863,7 +3953,7 @@ useEffect(() => {
               <div className="mt-3">
                 <div className="text-[11px] uppercase tracking-wide text-gray-400">Evidence label</div>
 
-                {isFieldWorkLocked(incidentStatus) ? (
+                {fieldWorkLocked ? (
                   <div className="mt-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-gray-200">
                     {getCaption(selectedEvidenceId) || <span className="text-gray-500">—</span>}
                   </div>
