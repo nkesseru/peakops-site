@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { uploadEvidence } from "@/lib/evidence/uploadEvidence";
+// PR 137B-2 — client-side HEIC → JPEG convert at capture time.
+// Iron rule: never blocks capture. On failure/timeout, original HEIC
+// is kept and surfaced in the tile as "Couldn't preview · original kept".
+import { maybeConvertHeicToJpeg } from "@/lib/evidence/maybeConvertHeicToJpeg";
 import { getFunctionsBase } from "@/lib/functionsBase";
 import { authedFetch } from "@/lib/apiClient";
 import { SealedRecordPanel } from "@/components/sealedRecord/SealedRecordPanel";
@@ -35,7 +39,20 @@ type ProofSlot = {
   requirementSource: "customer_template" | "org_template" | "archetype";
   requirementIndex: number;   // position in resolvedRequirements.requiredProof
 };
-type Item = { id: string; file: File; url: string; slot?: ProofSlot };
+type Item = {
+  id: string;
+  file: File;
+  url: string;
+  slot?: ProofSlot;
+  // PR 137B-2 — HEIC convert state. `optimizing` is true while the
+  // background client-side convert is running; the upload button is
+  // disabled while any item is optimizing. On convert failure or
+  // timeout the original HEIC is kept (`originalRetained: true`) and
+  // the tile shows the "original kept" badge.
+  optimizing?: boolean;
+  originalRetained?: boolean;
+  convertReason?: string;
+};
 type JobLite = { id: string; jobId?: string; title?: string; rawStatus?: string; status?: string };
 
 function makeId() {
@@ -526,14 +543,55 @@ useEffect(() => {
     //   3. undefined — no unsatisfied slots, picker items stay
     //      unassigned (same as pre-PR-114 behavior for that case)
     const slot = currentSlot || nextTargetSlot || undefined;
+
+    // PR 137B-2 — push items to the queue immediately so capture is
+    // never blocked. HEIC items start as `optimizing: true` and run
+    // the client-side convert in the background. The upload button
+    // gates on `items.some(i => i.optimizing)` so the user can't
+    // ship original HEIC bytes while a convert is still in flight.
     const next: Item[] = [];
     for (const f of Array.from(fileList)) {
+      const heicCandidate =
+        /\.(heic|heif)$/i.test(f.name) || /heic|heif/i.test(f.type);
       const url = URL.createObjectURL(f);
-      next.push({ id: makeId(), file: f, url, slot });
+      next.push({
+        id: makeId(),
+        file: f,
+        url,
+        slot,
+        optimizing: heicCandidate,
+      });
     }
     setItems((prev) => [...next, ...prev]);
     // PR 136B — dismiss confirmation panel; new capture activity starts here.
     setUploadConfirmation(null);
+
+    // PR 137B-2 — kick off convert in parallel for each HEIC item.
+    // Each resolves independently and patches its item in place.
+    for (const seed of next) {
+      if (!seed.optimizing) continue;
+      const seedId = seed.id;
+      const originalFile = seed.file;
+      void (async () => {
+        const result = await maybeConvertHeicToJpeg(originalFile);
+        setItems((prev) =>
+          prev.map((it) => {
+            if (it.id !== seedId) return it;
+            // Revoke the now-obsolete blob URL before swapping it.
+            try { URL.revokeObjectURL(it.url); } catch {}
+            const newUrl = URL.createObjectURL(result.file);
+            return {
+              ...it,
+              file: result.file,
+              url: newUrl,
+              optimizing: false,
+              originalRetained: !result.converted,
+              convertReason: result.reason,
+            };
+          })
+        );
+      })();
+    }
   }
 
   function removeItem(id: string) {
@@ -1170,8 +1228,27 @@ useEffect(() => {
                     title={it.slot ? `Assigned: ${it.slot.requirementLabel} — tap to remove` : "Remove"}
                     disabled={busy}
                   >
-                    {it.file.type.startsWith("video/") ? (
+                    {/* PR 137B-2 — tile content. HEIC blob URLs can't
+                        render as <img> in most desktop browsers, so
+                        we substitute placeholders for the "still
+                        optimizing" and "convert fell back, original
+                        kept" states. */}
+                    {it.optimizing ? (
+                      <div
+                        data-testid="capture-tile-optimizing"
+                        className="w-full h-full flex items-center justify-center text-[11px] text-gray-300 px-1 text-center leading-tight"
+                      >
+                        Optimizing photo…
+                      </div>
+                    ) : it.file.type.startsWith("video/") ? (
                       <div className="w-full h-full flex items-center justify-center text-xs text-gray-300">VIDEO</div>
+                    ) : it.originalRetained ? (
+                      <div
+                        data-testid="capture-tile-original-retained"
+                        className="w-full h-full flex items-center justify-center text-[11px] text-amber-200/90 px-1 text-center leading-tight bg-amber-900/25"
+                      >
+                        HEIC original
+                      </div>
                     ) : (
                       <img src={it.url} className="w-full h-full object-cover" />
                     )}
@@ -1187,9 +1264,25 @@ useEffect(() => {
                         {it.slot.requirementLabel}
                       </div>
                     ) : null}
-                    <div className="absolute bottom-0 left-0 right-0 text-[10px] bg-black/60 text-gray-100 px-1 py-0.5 truncate">
-                      {it.file.name}
-                    </div>
+                    {/* PR 137B-2 — bottom strip. When the original
+                        HEIC was retained (convert failed/timeout),
+                        surface the "Couldn't preview · original kept"
+                        badge in place of the filename so the operator
+                        and downstream reviewers see the transparency
+                        signal directly on the tile. */}
+                    {it.originalRetained ? (
+                      <div
+                        data-testid="capture-tile-original-retained-badge"
+                        className="absolute bottom-0 left-0 right-0 text-[9px] bg-amber-700/85 text-amber-50 px-1 py-0.5 truncate"
+                        title={`Couldn't preview — original kept (${it.convertReason || "fallback"})`}
+                      >
+                        Couldn&apos;t preview · original kept
+                      </div>
+                    ) : (
+                      <div className="absolute bottom-0 left-0 right-0 text-[10px] bg-black/60 text-gray-100 px-1 py-0.5 truncate">
+                        {it.file.name}
+                      </div>
+                    )}
                   </button>
                 ))}
               </div>
@@ -1199,8 +1292,14 @@ useEffect(() => {
                 onClick={uploadAll}
                 // PR 111 — Job binding required only when the record has jobs;
                 // record-level proof is allowed when jobs.length === 0.
-                disabled={busy || sessionBusy || !sessionId || !items.length || (jobs.length > 0 && !selectedJobId)}
-                title={(jobs.length > 0 && !selectedJobId) ? "Return to the record and pick a work package first" : (items.length ? "Upload all queued proof items" : "Add proof items first")}
+                disabled={busy || sessionBusy || !sessionId || !items.length || items.some((i) => i.optimizing) || (jobs.length > 0 && !selectedJobId)}
+                title={
+                  items.some((i) => i.optimizing)
+                    ? `Optimizing ${items.filter((i) => i.optimizing).length} photo${items.filter((i) => i.optimizing).length === 1 ? "" : "s"}…`
+                    : (jobs.length > 0 && !selectedJobId)
+                      ? "Return to the record and pick a work package first"
+                      : (items.length ? "Upload all queued proof items" : "Add proof items first")
+                }
               >
                 {busy ? (status || "Working…") : "Upload & secure proof"}
               </button>
