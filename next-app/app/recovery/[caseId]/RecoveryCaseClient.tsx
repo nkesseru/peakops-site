@@ -112,6 +112,18 @@ function DetailContent({ caseId }: { caseId: string }) {
   const [mintBusy, setMintBusy] = useState(false);
   const [mintErr, setMintErr] = useState<string>("");
   const [mintedLink, setMintedLink] = useState<{ url: string; ordinal: number; token?: string } | null>(null);
+  // PR recovery-B — progressive disclosure stage for the two-step
+  // Regenerate-and-resubmit pipeline. "regenerating" while
+  // exportIncidentPacketV1 is in flight, "minting" while
+  // mintResubmissionLinkV1 is in flight, null when idle or done.
+  const [mintStage, setMintStage] = useState<"regenerating" | "minting" | null>(null);
+  // PR recovery-B — timestamp of the most recent successful export.
+  // If mint fails after a successful export, retrying within the
+  // window skips the re-export (the packet we just produced is still
+  // fresh and waiting on the incident's packetMeta). 60s is generous
+  // enough to cover slow network mints and short operator pauses.
+  const [lastSuccessfulExportAt, setLastSuccessfulExportAt] = useState<number | null>(null);
+  const EXPORT_FRESHNESS_WINDOW_MS = 60_000;
   // Stores the most-recently minted resubmission URL across the session
   // so the AwaitingCustomerBanner can render it even after the modal
   // closes. Lost on full reload (the cleartext token is never persisted).
@@ -324,13 +336,58 @@ function DetailContent({ caseId }: { caseId: string }) {
     }
   }
 
-  // PR 129b — mint a customer-review link for resubmission. Backend
-  // requires case.status === ready_to_resubmit and the linked incident
-  // to be in a mintable state. Returns the cleartext URL once.
-  async function handleMintResubmission(args: { changeSummary?: string }) {
+  // PR recovery-B — combined Regenerate-and-resubmit pipeline.
+  // Replaces the bare-mint flow (was PR 129b's handleMintResubmission).
+  //
+  // Pipeline:
+  //   1. exportIncidentPacketV1 — produces a fresh signed packet,
+  //      increments packetVersion, appends to packetMeta.history,
+  //      retains the prior packet at its versioned storagePath.
+  //   2. mintResubmissionLinkV1 — pins step 1's packetMeta into a new
+  //      customer_review_links token, appends to case.packetVersions,
+  //      flips case status to awaiting_customer, transitions incident
+  //      to submitted_to_customer.
+  //
+  // Iron rule: if step 1 FAILS, step 2 MUST NOT run. Pinning a stale
+  // (already-rejected) packet would re-send the SAME content to the
+  // customer, defeating the recovery loop. Always-export is the safe
+  // default — the lastSuccessfulExportAt freshness window only skips
+  // step 1 on a fast retry of a previously-successful export.
+  async function handleRegenerateAndResubmit(args: { changeSummary?: string }) {
     setMintErr("");
     setMintBusy(true);
     try {
+      // ── Step 1 — Regenerate packet (skip if a recent successful export is still fresh) ──
+      const nowMs = Date.now();
+      const exportIsFresh =
+        lastSuccessfulExportAt !== null &&
+        (nowMs - lastSuccessfulExportAt) < EXPORT_FRESHNESS_WINDOW_MS;
+
+      if (!exportIsFresh) {
+        setMintStage("regenerating");
+        const exportRes = await authedFetch(`/api/fn/exportIncidentPacketV1`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            orgId,
+            incidentId: caseData?.incidentId,
+            actorUid,
+          }),
+        });
+        const exportOut: any = await exportRes.json().catch(() => ({ ok: false }));
+        if (!exportRes.ok || !exportOut?.ok) {
+          // Iron rule — never mint after a failed export. Bail out.
+          throw new Error(
+            exportOut?.detail ||
+            exportOut?.error ||
+            `Regenerate packet failed (HTTP ${exportRes.status})`
+          );
+        }
+        setLastSuccessfulExportAt(Date.now());
+      }
+
+      // ── Step 2 — Mint the resubmission link (pins step 1's packet) ──
+      setMintStage("minting");
       const res = await authedFetch(`/api/fn/mintResubmissionLinkV1`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -343,7 +400,9 @@ function DetailContent({ caseId }: { caseId: string }) {
       if (!res.ok || !out.ok || !out.url) {
         // Surface server detail when available so the operator sees
         // exactly why the mint refused (e.g. incident not in a
-        // mintable state, outstanding pending packet).
+        // mintable state, outstanding pending packet). The export
+        // ALREADY succeeded — leaving lastSuccessfulExportAt set so a
+        // retry skips re-export and goes straight to mint.
         throw new Error(out.detail || out.error || `HTTP ${res.status}`);
       }
       // Compose full URL with origin for the modal display.
@@ -356,11 +415,16 @@ function DetailContent({ caseId }: { caseId: string }) {
         token: out.token,
       });
       setCachedReviewUrl(fullUrl);
+      // Clear the freshness window after a successful mint — the case
+      // has advanced to awaiting_customer; any future resubmission
+      // pass starts a brand-new export cycle.
+      setLastSuccessfulExportAt(null);
       await refresh();
     } catch (e: any) {
       setMintErr(e?.message || String(e));
     } finally {
       setMintBusy(false);
+      setMintStage(null);
     }
   }
 
@@ -460,8 +524,9 @@ function DetailContent({ caseId }: { caseId: string }) {
       {!isTerminal && caseData.status === "ready_to_resubmit" && (
         <ResubmissionBanner
           busy={mintBusy}
+          stage={mintStage}
           errorMessage={mintErr}
-          onMint={handleMintResubmission}
+          onRegenerateAndResubmit={handleRegenerateAndResubmit}
           changeSummarySuggestion={suggestions?.changeSummary ?? null}
         />
       )}
